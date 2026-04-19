@@ -1,0 +1,6 @@
+{
+  "watch": ["src", ".env"],
+  "ext": "ts",
+  "ignore": ["*.json", "node_modules", "data", ".next", "*.log", ".git"],
+  "exec": "ts-node src/worker.ts"
+}
