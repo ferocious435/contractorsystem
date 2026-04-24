@@ -98,26 +98,9 @@ export function Sidebar({ currentView = 'לוח בקרה', onNavigate, projectId
                     </h3>
                     <div className="flex flex-col gap-1 mt-3">
                         <NavItem icon="💰" label="תמחור" active={currentView === 'תמחור'} onClick={() => handleNav('תמחור')} />
+                        <NavItem icon="📚" label="מחירונים" active={currentView === 'מחירונים'} onClick={() => handleNav('מחירונים')} />
                         <NavItem icon="✉️" label="מחולל מכתבים" active={currentView === 'מחולל מכתבים'} onClick={() => handleNav('מחולל מכתבים')} />
                         <NavItem icon="🤖" label="יועץ AI" active={currentView === 'יועץ AI'} onClick={() => handleNav('יועץ AI')} />
-                    </div>
-                </div>
-
-                {/* ===== ZONE 3: Enterprise — תיעוד שטח (AI) ===== */}
-                <div className="mb-5">
-                    <h3 className="text-[11px] font-bold text-gray-400 mb-2 px-2 uppercase tracking-wider relative after:content-[''] after:absolute after:bottom-[-4px] after:right-2 after:w-8 after:h-[1px] after:bg-gray-600">
-                        🎥 תיעוד שטח (AI)
-                    </h3>
-                    <div className="flex flex-col gap-1 mt-3">
-                        <NavItem icon="📷" label="ניתוח תמונות" disabled />
-                        <NavItem icon="🎬" label="ניתוח וידאו וקול" disabled />
-                    </div>
-                </div>
-
-                {/* ===== Standalone — מחירונים ===== */}
-                <div className="mb-5 pt-2 border-t border-border-subtle">
-                    <div className="flex flex-col gap-1 mt-2">
-                        <NavItem icon="📚" label="מחירונים" active={currentView === 'מחירונים'} onClick={() => handleNav('מחירונים')} />
                     </div>
                 </div>
             </nav>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Clock, CheckCircle, FileText, Bot, AlertTriangle, ExternalLink } from 'lucide-react';
+import { Clock, CheckCircle, FileText, Bot, AlertTriangle, ExternalLink, Info } from 'lucide-react';
 
 interface Contradiction {
     id: string;
@@ -40,14 +40,19 @@ export default function PendingQueue({ items, onSelectForEstimation }: PendingQu
                         <span className="text-xs font-semibold text-gray-400 bg-black/30 px-2 py-1 rounded">
                             {item.id.substring(0, 8).toUpperCase()}
                         </span>
-                        {item.severity === 'CRITICAL' && (
+                        {item.severity === 'HIGH' && (
                             <span className="flex items-center gap-1 text-[10px] font-bold text-red-400 bg-red-400/10 px-2 py-0.5 rounded">
-                                <AlertTriangle className="w-3 h-3" /> קריטי
+                                <AlertTriangle className="w-3 h-3" /> קריטי (V.O)
                             </span>
                         )}
                         {item.severity === 'MEDIUM' && (
                             <span className="flex items-center gap-1 text-[10px] font-bold text-orange-400 bg-orange-400/10 px-2 py-0.5 rounded">
                                 <AlertTriangle className="w-3 h-3" /> בינוני
+                            </span>
+                        )}
+                        {item.severity === 'LOW' && (
+                            <span className="flex items-center gap-1 text-[10px] font-bold text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded">
+                                <Info className="w-3 h-3" /> נמוך
                             </span>
                         )}
                     </div>

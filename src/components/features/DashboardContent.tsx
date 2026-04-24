@@ -14,6 +14,7 @@ import PricingLedgerUI from './PricingLedgerUI';
 import AIConsultant from './AIConsultant';
 import SmartLetterGenerator from './SmartLetterGenerator';
 import DocumentsPageClient from '../documents/DocumentsPageClient';
+import PricelistsPageClient from '../pricelists/PricelistsPageClient';
 import SettingsView from './SettingsView';
 
 const PROJECT_IMAGES = [
@@ -414,8 +415,8 @@ export default function DashboardContent() {
                 );
             case 'מחירונים':
                 return (
-                    <div className="mt-4">
-                        <DocumentsPageClient projectId={projectId!} category="PRICELIST" />
+                    <div className="mt-4 bg-workspace/50 rounded-2xl border border-border-subtle overflow-hidden h-full min-h-[600px] flex flex-col p-6">
+                        <PricelistsPageClient projectId={projectId!} />
                     </div>
                 );
             case 'הגדרות':

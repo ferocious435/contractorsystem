@@ -1,10 +1,70 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@/utils/supabase/client';
-import { AlertTriangle, AlertCircle, Info, ChevronDown, ChevronRight, CheckCircle2, XCircle, ArrowRightLeft, Search, RefreshCw, Check, Download, FileText, Trash2, ShieldAlert, FileSearch, ArrowRight, ArrowLeft } from 'lucide-react';
+import { 
+    AlertTriangle, AlertCircle, Info, ChevronDown, ChevronRight, 
+    CheckCircle2, XCircle, ArrowRightLeft, Search, RefreshCw, 
+    Check, Download, FileText, Trash2, ShieldAlert, FileSearch, 
+    Scale, Gavel, Quote, ExternalLink, Sparkles, Database, Loader2
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface ContradictionRadarProps {
     projectId: string;
 }
+
+const RichText = ({ text, evidence }: { text: string; evidence?: any }) => {
+    if (!text) return null;
+    
+    const parts = text.split(/(\[[12]\])/);
+    
+    return (
+        <span dir="rtl" className="leading-relaxed">
+            {parts.map((part, i) => {
+                const isMarker1 = part === '[1]';
+                const isMarker2 = part === '[2]';
+                
+                if (isMarker1 || isMarker2) {
+                    const quote = isMarker1 ? evidence?.contract_quote : evidence?.work_quote;
+                    const title = isMarker1 ? evidence?.contract_title : evidence?.work_title;
+                    
+                    if (!quote) return <span key={i} className="text-primary/50 font-mono mx-0.5">{part}</span>;
+                    
+                    return (
+                        <span key={i} className="group relative inline-block mx-1">
+                            <motion.span 
+                                whileHover={{ scale: 1.1 }}
+                                className={`cursor-help px-2 py-0.5 rounded-md text-[10px] font-black border transition-all shadow-sm ${
+                                    isMarker1 
+                                    ? 'bg-primary/10 text-primary border-primary/20 hover:bg-primary/20' 
+                                    : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20'
+                                }`}
+                            >
+                                {part}
+                            </motion.span>
+                            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 w-72 p-4 bg-workspace/80 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-300 z-50 translate-y-2 group-hover:translate-y-0">
+                                <span className="block font-black text-[10px] uppercase tracking-widest text-gray-500 mb-2 border-b border-white/5 pb-2 flex items-center justify-between">
+                                    <span className="flex items-center gap-1.5">
+                                        <Quote className="w-3 h-3 text-primary" />
+                                        {isMarker1 ? 'ציטוט מהחוזה' : 'ציטוט מהביצוע'}
+                                    </span>
+                                    <span className="text-white/20 font-mono">{part}</span>
+                                </span>
+                                <p className="text-xs text-gray-200 leading-relaxed italic font-medium">
+                                    "{quote}"
+                                </p>
+                                <div className="mt-3 pt-2 border-t border-white/5 flex items-center gap-2 text-[9px] text-gray-500 font-bold truncate">
+                                    <FileText className="w-2.5 h-2.5" />
+                                    {title}
+                                </div>
+                            </span>
+                        </span>
+                    );
+                }
+                return part;
+            })}
+        </span>
+    );
+};
 
 export default function ContradictionRadar({ projectId }: ContradictionRadarProps) {
     const supabase = createClient();
@@ -12,10 +72,11 @@ export default function ContradictionRadar({ projectId }: ContradictionRadarProp
     const [isLoading, setIsLoading] = useState(true);
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [isScanning, setIsScanning] = useState(false);
-    const [scanMethod, setScanMethod] = useState<'gemini_ai' | 'gemini_fast' | 'structural'>('structural');
     const [isClearing, setIsClearing] = useState(false);
     const [scanResult, setScanResult] = useState<string | null>(null);
-    const [isExporting, setIsExporting] = useState(false);
+    const [isFromCache, setIsFromCache] = useState(false);
+    const [scanningItems, setScanningItems] = useState<string[]>([]);
+    const [movingItems, setMovingItems] = useState<string[]>([]);
 
     useEffect(() => {
         fetchContradictions();
@@ -28,33 +89,56 @@ export default function ContradictionRadar({ projectId }: ContradictionRadarProp
                 .from('contradictions')
                 .select('*, source_doc: documents!contradictions_source_execution_doc_id_fkey(title), target_doc: documents!contradictions_target_contract_doc_id_fkey(title)')
                 .eq('project_id', projectId)
-                .order('severity', { ascending: false }) // HIGH first, then MEDIUM, LOW
+                .order('severity', { ascending: false })
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
             setContradictions(data || []);
         } catch (err: any) {
             console.error('Error fetching contradictions:', err);
-            // alert("Ошибка загрузки противоречий");
         } finally {
             setIsLoading(false);
         }
     };
 
-    const getSeverityIcon = (severity: string) => {
+    const getSeverityStyles = (severity: string) => {
         switch (severity) {
-            case 'HIGH': return <AlertTriangle className="h-5 w-5 text-red-500" />;
-            case 'MEDIUM': return <AlertCircle className="h-5 w-5 text-orange-500" />;
-            case 'LOW': return <Info className="h-5 w-5 text-blue-500" />;
-            default: return <Info className="h-5 w-5 text-gray-400" />;
+            case 'HIGH': return {
+                icon: <ShieldAlert className="h-5 w-5 text-red-500" />,
+                bg: 'bg-red-500/10',
+                border: 'border-red-500/20',
+                text: 'text-red-400',
+                glow: 'shadow-[0_0_30px_rgba(239,68,68,0.15)]'
+            };
+            case 'MEDIUM': return {
+                icon: <AlertTriangle className="h-5 w-5 text-orange-500" />,
+                bg: 'bg-orange-500/10',
+                border: 'border-orange-500/20',
+                text: 'text-orange-400',
+                glow: 'shadow-none'
+            };
+            case 'LOW': return {
+                icon: <Info className="h-5 w-5 text-blue-500" />,
+                bg: 'bg-blue-500/10',
+                border: 'border-blue-500/20',
+                text: 'text-blue-400',
+                glow: 'shadow-none'
+            };
+            default: return {
+                icon: <Info className="h-5 w-5 text-gray-400" />,
+                bg: 'bg-gray-500/10',
+                border: 'border-gray-500/20',
+                text: 'text-gray-400',
+                glow: 'shadow-none'
+            };
         }
     };
 
     const getSeverityLabel = (severity: string) => {
         switch (severity) {
-            case 'HIGH': return 'קריטי (Критично)';
-            case 'MEDIUM': return 'בינוני (Средне)';
-            case 'LOW': return 'נמוך (Низко)';
+            case 'HIGH': return 'קריטי (V.O)';
+            case 'MEDIUM': return 'בינוני';
+            case 'LOW': return 'נמוך';
             default: return severity;
         }
     };
@@ -73,173 +157,115 @@ export default function ContradictionRadar({ projectId }: ContradictionRadarProp
             );
         } catch (err) {
             console.error('Error updating status:', err);
-            alert('שגיאה בעדכון הסטטוס');
         }
     };
 
-    // Глобальный AI-скан: загружает документы и отправляет на анализ
-    const scanProject = async () => {
+    const scanProject = async (force = false, documentIds: string[] = []) => {
         setIsScanning(true);
-        setScanResult(null);
+        setScanResult(force ? 'מפעיל סריקה מלאה...' : 'בודק נתונים קיימים...');
+        setIsFromCache(false);
 
-        // Setup AbortController for network timeout (60 seconds)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        const timeoutId = setTimeout(() => controller.abort(), 120000); 
 
         try {
-            // 0. Автоматически очищаем старые противоречия перед новым сканированием
-            setScanResult('מנקה סריקות קודמות...');
-            try {
-                await fetch(`/api/scan/clear?projectId=${projectId}`, { method: 'DELETE' });
-            } catch (e) {
-                console.warn("Failed to clear old contradictions, proceeding with scan anyway", e);
-            }
-            setScanResult('מנתח מסמכים...');
-
-            // 1. Загружаем все документы проекта (client-side, с авторизацией)
-            const { data: docs, error: docsError } = await supabase
-                .from('documents')
-                .select('id, title, category, ai_status, extracted_text, file_url')
-                .eq('project_id', projectId);
-
-            if (docsError || !docs || docs.length === 0) {
-                setScanResult('אין מסמכים לסריקה');
-                setIsScanning(false);
-                clearTimeout(timeoutId);
-                return;
-            }
-
-            // 2. Отправляем документы в API для анализа
             const res = await fetch('/api/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId, documents: docs }),
+                body: JSON.stringify({ projectId, force, documentIds }),
                 signal: controller.signal
             });
+            
+            const data = await res.json();
             clearTimeout(timeoutId);
 
-            const data = await res.json();
-
-            if (data.success && data.found > 0 && data.contradictions) {
-                // 3. Вставляем в БД client-side (есть авторизация → RLS пропускает)
-                let savedCount = 0;
-                const workDocs = docs.filter(d => d.category === 'EXECUTION');
-                const contractDocs = docs.filter(d => d.category === 'CONTRACT');
-
-                for (const c of data.contradictions) {
-                    const { error: insertError } = await supabase
-                        .from('contradictions')
-                        .insert({
-                            project_id: projectId,
-                            title: c.title,
-                            description: c.description,
-                            strategy_advice: c.strategy_advice,
-                            severity: c.severity || 'MEDIUM',
-                            status: 'OPEN',
-                            source_execution_doc_id: c.source_doc_id || workDocs[0]?.id || null,
-                            target_contract_doc_id: c.target_doc_id || contractDocs[0]?.id || null,
-                        });
-
-                    if (!insertError) savedCount++;
-                }
-
-                setScanResult(`נמצאו ${data.found} סתירות, נשמרו ${savedCount} `);
+            if (data.success) {
+                setIsFromCache(!!data.cached);
+                setScanResult(data.cached ? 'נתונים נשלפו מהזיכרון' : `נמצאו ${data.found} סתירות חדשות`);
                 await fetchContradictions();
-            } else if (data.success) {
-                setScanResult(data.message || 'לא נמצאו סתירות חדשות');
             } else {
-                setScanResult(data.error || 'שגיאה בסריקה');
+                setScanResult(data.message || 'לא נמצאו סתירות');
             }
         } catch (err: any) {
             clearTimeout(timeoutId);
-            if (err.name === 'AbortError') {
-                setScanResult('הסריקה הופסקה: חריגת זמן (Timeout). נסה שנית.');
-            } else {
-                setScanResult('שגיאת רשת');
-            }
+            setScanResult(err.name === 'AbortError' ? 'חריגת זמן (Timeout)' : 'שגיאת מערכת');
             console.error('Scan error:', err);
         } finally {
             setIsScanning(false);
+            setTimeout(() => setScanResult(null), 5000);
         }
     };
 
-    // Передача противоречия в модуль ценообразования
-    const moveToPricing = async (contradiction: any) => {
+    const rescanSingleItem = async (contradiction: any) => {
+        if (!contradiction.source_execution_doc_id) return;
+        setScanningItems(prev => [...prev, contradiction.id]);
         try {
-            // 1. Создаём строку PENDING_VO в pricing_ledger
+            await scanProject(true, [contradiction.source_execution_doc_id]);
+        } finally {
+            setScanningItems(prev => prev.filter(id => id !== contradiction.id));
+        }
+    };
+
+    const moveToPricing = async (contradiction: any) => {
+        setMovingItems(prev => [...prev, contradiction.id]);
+        try {
+            // 1. Получаем AI оценку стоимости
+            const evalRes = await fetch('/api/pricing/evaluate-ai', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    contradictionId: contradiction.id, 
+                    projectId 
+                })
+            });
+
+            const evaluation = await evalRes.json();
+            
+            // 2. Создаем запись в леджере с данными от AI
             const { error: ledgerError } = await supabase
                 .from('pricing_ledger')
                 .insert({
                     project_id: projectId,
                     type: 'PENDING_VO',
-                    source: 'BOQ',
-                    item_code: '',
-                    description: contradiction.title + ' — ' + (contradiction.description || ''),
-                    unit: '',
-                    quantity: 1,
-                    unit_price_excl_vat: 0,
+                    source: evaluation.source || 'CUSTOM_ANALYSIS',
+                    item_code: evaluation.item_code || '',
+                    description: evaluation.suggested_description || `[סתירה] ${contradiction.title}`,
+                    unit: evaluation.suggested_unit || 'יח\'',
+                    quantity: evaluation.suggested_quantity || 1,
+                    unit_price_excl_vat: evaluation.suggested_unit_price_excl_vat || 0,
                     contradiction_id: contradiction.id,
                 });
-            if (ledgerError) throw ledgerError;
 
-            // 2. Обновляем статус карточки
+            if (ledgerError) throw ledgerError;
             await updateStatus(contradiction.id, 'MOVED_TO_PRICING');
         } catch (err) {
             console.error('Error moving to pricing:', err);
-            alert('שגיאה בהעברה לתמחור');
-        }
-    };
-
-    const handleExportCSV = () => {
-        setIsExporting(true);
-        try {
-            const headers = ['כותרת', 'חומרה', 'סטטוס', 'מסמך מקור', 'מסמך יעד', 'תיאור'];
-            const csvRows = [headers.join(',')];
-
-            contradictions.forEach(row => {
-                const values = [
-                    `"${(row.title || '').replace(/"/g, '""')}"`,
-                    getSeverityLabel(row.severity),
-                    row.status,
-                    `"${(row.source_doc?.title || '').replace(/"/g, '""')}"`,
-                    `"${(row.target_doc?.title || '').replace(/"/g, '""')}"`,
-                    `"${(row.description || '').replace(/"/g, '""')}"`
-                ];
-                csvRows.push(values.join(','));
+            alert('שגיאה בחישוב מחיר AI. הועבר עם מחיר 0.');
+            
+            // Fallback: создаем пустую запись если AI упал
+            await supabase.from('pricing_ledger').insert({
+                project_id: projectId,
+                type: 'PENDING_VO',
+                source: 'CUSTOM_ANALYSIS',
+                description: `[סתירה] ${contradiction.title}`,
+                quantity: 1,
+                unit_price_excl_vat: 0,
+                contradiction_id: contradiction.id,
             });
-
-            const blob = new Blob(['\uFEFF' + csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', 'contradictions_export.csv');
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        } catch (error) {
-            console.error('Error exporting CSV:', error);
+            await updateStatus(contradiction.id, 'MOVED_TO_PRICING');
         } finally {
-            setIsExporting(false);
+            setMovingItems(prev => prev.filter(id => id !== contradiction.id));
         }
     };
 
-    // 5. ניקוי סתירות
     const clearContradictions = async () => {
-        if (!confirm("האם למחוק את כל הסתירות שנמצאו בסריקות הקודמות? (לא ניתן לביטול)")) return;
-
+        if (!confirm("האם למחוק את כל הסתירות?")) return;
         setIsClearing(true);
         try {
-            const res = await fetch(`/api/scan/clear?projectId=${projectId}`, {
-                method: 'DELETE'
-            });
-
-            if (!res.ok) throw new Error("Failed to clear contradictions");
-
-            // Re-fetch (should be empty now)
+            await fetch(`/api/scan/clear?projectId=${projectId}`, { method: 'DELETE' });
             await fetchContradictions();
         } catch (error) {
-            console.error("Error clearing contradictions:", error);
-            alert("שגיאה במחיקת הסתירות. נסה שוב.");
+            console.error("Error clearing:", error);
         } finally {
             setIsClearing(false);
         }
@@ -247,194 +273,299 @@ export default function ContradictionRadar({ projectId }: ContradictionRadarProp
 
     return (
         <div className="space-y-6">
-            <div className="flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                    <h2 className="text-xl font-bold text-white flex items-center gap-3">
-                        <ShieldAlert className="w-6 h-6 text-red-400" />
-                        רדאר סתירות - זיהוי אוטומטי
-                    </h2>
-
+            {/* Header with Glass Effects */}
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 p-8 bg-workspace/30 backdrop-blur-3xl border border-white/5 rounded-[2rem] shadow-2xl relative overflow-hidden group">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-red-600/5 blur-[100px] -mr-32 -mt-32 group-hover:bg-red-600/10 transition-all duration-1000" />
+                <div className="absolute bottom-0 left-0 w-64 h-64 bg-primary/5 blur-[100px] -ml-32 -mb-32 group-hover:bg-primary/10 transition-all duration-1000" />
+                
+                <div className="flex flex-col gap-2 relative z-10">
                     <div className="flex items-center gap-3">
-                        <button
-                            onClick={fetchContradictions}
-                            disabled={isLoading}
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-workspace hover:bg-white/5 border border-border-subtle text-gray-400 hover:text-white transition-colors disabled:opacity-50"
-                            title="טען נתונים מקומיים ללא סריקה מחדש"
-                        >
-                            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-                            <span className="text-sm">רענן תצוגה</span>
-                        </button>
-
-                        {contradictions.length > 0 && (
-                            <button
-                                onClick={clearContradictions}
-                                disabled={isClearing || isScanning}
-                                className="px-4 py-2 rounded-lg bg-red-500/10 text-red-500 border border-red-500/20 hover:bg-red-500/20 font-medium transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                <Trash2 className="w-4 h-4" />
-                                {isClearing ? "מוחק..." : "נקה סריקות קודמות"}
-                            </button>
-                        )}
-
-                        <button
-                            onClick={scanProject}
-                            disabled={isScanning}
-                            className="px-6 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white font-medium transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="מבצע השוואה מחדש בין מסמכי החוזה למסמכי הביצוע באמצעות בינה מלאכותית"
-                        >
-                            <FileSearch className="w-4 h-4" />
-                            {isScanning ? "מנתח מסמכים..." : "סרוק וחפש סתירות (AI)"}
-                        </button>
+                        <div className="p-3 bg-red-500/10 rounded-2xl border border-red-500/20 shadow-inner">
+                            <ShieldAlert className="w-7 h-7 text-red-500" />
+                        </div>
+                        <div>
+                            <h2 className="text-3xl font-black text-white tracking-tight">
+                                רדאר סתירות
+                            </h2>
+                            <div className="flex items-center gap-2 mt-0.5">
+                                <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/10 border border-red-500/20 text-[9px] font-black uppercase tracking-widest text-red-500">
+                                    <Gavel className="w-2.5 h-2.5" />
+                                    Lawyer Mode v3.1
+                                </span>
+                                <span className="text-[9px] font-bold text-gray-600 uppercase tracking-tighter">Powered by Gemini 2.5 Flash</span>
+                                {isFromCache && (
+                                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/20 text-[9px] font-black uppercase tracking-widest text-blue-400">
+                                        <Database className="w-2.5 h-2.5" />
+                                        בזיכרון (Cached)
+                                    </span>
+                                )}
+                            </div>
+                        </div>
                     </div>
                     {scanResult && (
-                        <span className="text-sm text-green-400 animate-pulse">{scanResult}</span>
+                        <motion.div 
+                            initial={{ opacity: 0, x: -10 }} 
+                            animate={{ opacity: 1, x: 0 }}
+                            className="text-xs font-bold text-primary mt-2 flex items-center gap-2"
+                        >
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                            {scanResult}
+                        </motion.div>
                     )}
-                    <button
-                        onClick={handleExportCSV}
-                        disabled={isExporting || contradictions.length === 0}
-                        className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all ml-2"
-                    >
-                        {isExporting ? (
-                            <RefreshCw className="h-4 w-4 animate-spin" />
-                        ) : (
-                            <Download className="h-4 w-4" />
-                        )}
-                        ייצוא ל-CSV
-                    </button>
                 </div>
-                <div className="text-sm text-gray-400 border border-border-subtle bg-workspace rounded-lg px-3 py-1.5 flex gap-4">
-                    <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-red-500"></div>קריטי: {contradictions.filter(c => c.severity === 'HIGH' && c.status === 'OPEN').length}</span>
-                    <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-orange-500"></div>בינוני: {contradictions.filter(c => c.severity === 'MEDIUM' && c.status === 'OPEN').length}</span>
-                    <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-blue-500"></div>נמוך: {contradictions.filter(c => c.severity === 'LOW' && c.status === 'OPEN').length}</span>
+
+                <div className="flex flex-wrap items-center gap-4 relative z-10">
+                    <motion.button
+                        whileHover={{ scale: 1.02, y: -2 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => scanProject(false)}
+                        disabled={isScanning}
+                        className="relative group px-8 py-3.5 rounded-2xl bg-white text-black font-black text-sm transition-all shadow-[0_20px_40px_rgba(255,255,255,0.1)] flex items-center gap-3 overflow-hidden disabled:opacity-50"
+                    >
+                        <div className="absolute inset-0 bg-gradient-to-r from-gray-200 to-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <Sparkles className={`w-4 h-4 relative z-10 ${isScanning ? 'animate-spin' : ''}`} />
+                        <span className="relative z-10">{isScanning ? "מנתח..." : "סריקה חכמה (Smart Scan)"}</span>
+                    </motion.button>
+
+                    <div className="flex gap-2">
+                         <button
+                            onClick={() => scanProject(true)}
+                            disabled={isScanning}
+                            className="p-3.5 rounded-2xl bg-white/5 border border-white/5 text-gray-500 hover:text-primary hover:bg-primary/10 hover:border-primary/20 transition-all shadow-xl"
+                            title="סריקה מלאה מחדש (Force Refresh)"
+                        >
+                            <RefreshCw className={`w-5 h-5 ${isScanning ? 'animate-spin' : ''}`} />
+                        </button>
+
+                        <button
+                            onClick={clearContradictions}
+                            disabled={isClearing}
+                            className="p-3.5 rounded-2xl bg-white/5 border border-white/5 text-gray-500 hover:text-red-500 hover:bg-red-500/10 hover:border-red-500/20 transition-all shadow-xl"
+                            title="נקה הכל"
+                        >
+                            <Trash2 className="w-5 h-5" />
+                        </button>
+                    </div>
                 </div>
             </div>
 
+            {/* Stats Bar */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                {[
+                    { label: 'קריטי (V.O)', count: contradictions.filter(c => c.severity === 'HIGH').length, icon: ShieldAlert, color: 'text-red-500', bg: 'bg-red-500/5' },
+                    { label: 'בינוני', count: contradictions.filter(c => c.severity === 'MEDIUM').length, icon: AlertTriangle, color: 'text-orange-500', bg: 'bg-orange-500/5' },
+                    { label: 'נמוך', count: contradictions.filter(c => c.severity === 'LOW').length, icon: Info, color: 'text-blue-500', bg: 'bg-blue-500/5' },
+                    { label: 'טופלו', count: contradictions.filter(c => c.status !== 'OPEN').length, icon: CheckCircle2, color: 'text-green-500', bg: 'bg-green-500/5' }
+                ].map((stat, idx) => (
+                    <motion.div 
+                        key={idx}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.1 }}
+                        className="p-5 bg-workspace/20 backdrop-blur-xl border border-white/5 rounded-3xl flex items-center gap-5 shadow-xl group hover:border-white/10 transition-all"
+                    >
+                        <div className={`w-12 h-12 rounded-2xl ${stat.bg} flex items-center justify-center border border-white/5 group-hover:scale-110 transition-transform`}>
+                            <stat.icon className={`w-6 h-6 ${stat.color}`} />
+                        </div>
+                        <div>
+                            <div className="text-2xl font-black text-white">{stat.count}</div>
+                            <div className="text-[9px] text-gray-500 uppercase tracking-widest font-black">{stat.label}</div>
+                        </div>
+                    </motion.div>
+                ))}
+            </div>
+
+            {/* Main Feed */}
             {isLoading ? (
-                <div className="flex justify-center py-12">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                <div className="flex flex-col items-center justify-center py-24 gap-4">
+                    <div className="relative">
+                        <div className="w-16 h-16 rounded-full border-2 border-white/10 border-t-red-500 animate-spin" />
+                        <div className="absolute inset-0 flex items-center justify-center">
+                            <Sparkles className="w-6 h-6 text-red-500/50" />
+                        </div>
+                    </div>
+                    <p className="text-gray-400 animate-pulse font-medium">המערכת מעבדת נתונים...</p>
                 </div>
             ) : contradictions.length === 0 ? (
-                <div className="text-center py-16 bg-workspace border border-border-subtle rounded-xl border-dashed">
-                    <CheckCircle2 className="h-12 w-12 text-green-500/50 mx-auto mb-4" />
-                    <h3 className="text-lg font-medium text-gray-200 mb-2">לא נמצאו סתירות</h3>
-                    <p className="text-gray-400">הכל תקין! המערכת לא זיהתה סתירות במסמכים.</p>
-                </div>
+                <motion.div 
+                    initial={{ opacity: 0 }} 
+                    animate={{ opacity: 1 }}
+                    className="text-center py-24 bg-workspace/10 border border-white/5 rounded-2xl border-dashed"
+                >
+                    <CheckCircle2 className="h-16 w-16 text-green-500/30 mx-auto mb-6" />
+                    <h3 className="text-xl font-bold text-gray-300 mb-2">מסמכים מסונכרנים</h3>
+                    <p className="text-gray-500 max-w-sm mx-auto">לא נמצאו סתירות מהותיות בפרויקט הנוכחי. המשיכו בעבודה!</p>
+                </motion.div>
             ) : (
                 <div className="space-y-4">
-                    {contradictions.map((contradiction, index) => (
-                        <div
-                            key={contradiction.id}
-                            className={`border border-border-subtle bg-workspace rounded-xl overflow-hidden transition-all duration-200 ${expandedId === contradiction.id ? 'shadow-[0_4px_20px_rgba(0,0,0,0.3)] ring-1 ring-border-subtle' : 'hover:border-gray-700'
-                                }`}
-                        >
-                            <div
-                                className="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5"
-                                onClick={() => setExpandedId(expandedId === contradiction.id ? null : contradiction.id)}
-                            >
-                                <div className="flex items-center gap-4 flex-1">
-                                    {getSeverityIcon(contradiction.severity)}
-                                    <div className="flex-1">
-                                        <h3 className="text-lg font-medium text-gray-100 line-clamp-1 truncate" dir="rtl">
-                                            <span className="text-gray-500 font-mono text-sm ml-2">#{String(index + 1).padStart(2, '0')}</span>
-                                            {contradiction.title}
-                                        </h3>
-                                        <div className="flex items-center gap-2 mt-1 text-sm text-gray-400">
-                                            <span className="truncate max-w-[200px]" title={contradiction.source_doc?.title || 'Unknown Source'}>
-                                                {contradiction.source_doc?.title || 'מסמך ביצוע'}
-                                            </span>
-                                            <ArrowRightLeft className="h-3 w-3 flex-shrink-0" />
-                                            <span className="truncate max-w-[200px]" title={contradiction.target_doc?.title || 'Unknown Contract'}>
-                                                {contradiction.target_doc?.title || 'חוזה (Договор)'}
-                                            </span>
+                    <AnimatePresence mode="popLayout">
+                        {contradictions.map((c, i) => {
+                            const styles = getSeverityStyles(c.severity);
+                            const isExpanded = expandedId === c.id;
+                            
+                            return (
+                                <motion.div
+                                    key={c.id}
+                                    layout
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, scale: 0.95 }}
+                                    transition={{ duration: 0.3, delay: i * 0.05 }}
+                                    className={`relative group border border-white/10 bg-workspace/40 backdrop-blur-xl rounded-2xl overflow-hidden transition-all hover:border-white/20 ${styles.glow} ${isExpanded ? 'ring-1 ring-white/20 shadow-2xl' : ''}`}
+                                >
+                                    <div 
+                                        className="flex items-center gap-4 p-5 cursor-pointer"
+                                        onClick={() => setExpandedId(isExpanded ? null : c.id)}
+                                    >
+                                        <div className={`w-12 h-12 rounded-xl ${styles.bg} ${styles.border} flex items-center justify-center shrink-0`}>
+                                            {styles.icon}
+                                        </div>
+                                        
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-3 mb-1">
+                                                <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${styles.bg} ${styles.border} ${styles.text}`}>
+                                                    {getSeverityLabel(c.severity)}
+                                                </span>
+                                                <h3 className="text-lg font-bold text-gray-100 truncate" dir="rtl">{c.title}</h3>
+                                            </div>
+                                            <div className="flex items-center gap-2 text-xs text-gray-500 font-medium">
+                                                <span className="truncate max-w-[150px]">{c.source_doc?.title || 'ביצוע'}</span>
+                                                <ArrowRightLeft className="w-3 h-3 text-white/10" />
+                                                <span className="truncate max-w-[150px]">{c.target_doc?.title || 'חוזה'}</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-4 shrink-0">
+                                            <div className="flex flex-col items-end opacity-60 group-hover:opacity-100 transition-opacity">
+                                                <span className="text-[10px] uppercase text-gray-500 font-bold mb-1 tracking-tighter">סטטוס</span>
+                                                <div className="flex items-center gap-1.5 text-xs font-bold text-gray-300">
+                                                    <div className={`w-1.5 h-1.5 rounded-full ${c.status === 'OPEN' ? 'bg-yellow-500' : 'bg-green-500'}`} />
+                                                    {c.status}
+                                                </div>
+                                            </div>
+                                            {isExpanded ? <ChevronDown className="w-5 h-5 text-gray-600" /> : <ChevronRight className="w-5 h-5 text-gray-600" />}
                                         </div>
                                     </div>
-                                </div>
 
-                                <div className="flex items-center gap-6">
-                                    <div className="flex flex-col items-end">
-                                        <span className="text-xs text-gray-500 mb-1">סטטוס</span>
-                                        <select
-                                            value={contradiction.status}
-                                            onChange={(e) => {
-                                                e.stopPropagation();
-                                                updateStatus(contradiction.id, e.target.value);
-                                            }}
-                                            onClick={e => e.stopPropagation()}
-                                            className={`text-sm px-2 py-1 rounded-md bg-background border border-border-subtle focus:outline-none focus:ring-1 focus:ring-primary ${contradiction.status === 'OPEN' ? 'text-yellow-400' :
-                                                contradiction.status === 'MOVED_TO_PRICING' ? 'text-blue-400' :
-                                                    contradiction.status === 'IGNORED' ? 'text-gray-400' :
-                                                        'text-green-400'
-                                                }`}
-                                            dir="rtl"
-                                        >
-                                            <option value="OPEN">פתוח (Открыто)</option>
-                                            <option value="MOVED_TO_PRICING">לתמחור (В смету)</option>
-                                            <option value="IGNORED">התעלם (Игнорировать)</option>
-                                            <option value="AUTO_RESOLVED">נפתר (Решено)</option>
-                                        </select>
-                                    </div>
-
-                                    {expandedId === contradiction.id ? (
-                                        <ChevronDown className="h-5 w-5 text-gray-400" />
-                                    ) : (
-                                        <ChevronRight className="h-5 w-5 text-gray-400" />
-                                    )}
-                                </div>
-                            </div>
-
-                            {/* Expanded Content */}
-                            {expandedId === contradiction.id && (
-                                <div className="p-4 border-t border-border-subtle bg-background/50 space-y-4">
-                                    <div>
-                                        <h4 className="text-sm font-medium text-gray-400 mb-2">תיאור מלא</h4>
-                                        <p className="text-sm text-gray-200 whitespace-pre-wrap leading-relaxed bg-workspace p-3 rounded-lg border border-border-subtle" dir="rtl">
-                                            {contradiction.description || 'אין תיאור מפורט'}
-                                        </p>
-                                    </div>
-
-                                    {contradiction.strategy_advice && (
-                                        <div>
-                                            <h4 className="text-sm font-medium pr-1 text-primary mb-2 flex items-center gap-1.5" dir="rtl">
-                                                <Info className="h-4 w-4" />
-                                                המלצת פעולה
-                                            </h4>
-                                            <p className="text-sm text-gray-200 whitespace-pre-wrap leading-relaxed bg-primary/10 border border-primary/20 p-3 rounded-lg" dir="rtl">
-                                                {contradiction.strategy_advice}
-                                            </p>
-                                        </div>
-                                    )}
-
-                                    {contradiction.status === 'OPEN' && (
-                                        <div className="flex justify-end gap-3 pt-2">
-                                            <button
-                                                onClick={() => updateStatus(contradiction.id, 'IGNORED')}
-                                                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:text-white bg-workspace hover:bg-white/5 border border-border-subtle rounded-lg transition-colors"
+                                    {/* Expanded Content with Luxury Minimal Design */}
+                                    <AnimatePresence>
+                                        {isExpanded && (
+                                            <motion.div
+                                                initial={{ height: 0, opacity: 0 }}
+                                                animate={{ height: 'auto', opacity: 1 }}
+                                                exit={{ height: 0, opacity: 0 }}
+                                                className="border-t border-white/5 bg-black/20"
                                             >
-                                                <XCircle className="h-4 w-4" />
-                                                התעלם
-                                            </button>
-                                            <button
-                                                onClick={() => updateStatus(contradiction.id, 'AUTO_RESOLVED')}
-                                                className="flex items-center gap-2 px-4 py-2 text-sm text-green-400 hover:text-green-300 bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 rounded-lg transition-colors"
-                                            >
-                                                <Check className="h-4 w-4" />
-                                                טופל
-                                            </button>
-                                            <button
-                                                onClick={() => moveToPricing(contradiction)}
-                                                className="flex items-center gap-2 px-4 py-2 text-sm text-white bg-primary hover:bg-primary-hover border border-primary/50 shadow-blue rounded-lg transition-colors"
-                                            >
-                                                <ArrowRightLeft className="h-4 w-4" />
-                                                העבר לתמחור
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    ))}
+                                                <div className="p-6 space-y-6">
+                                                    {/* Strategy - Lawyer Mode */}
+                                                    <div className="relative p-5 rounded-2xl bg-indigo-500/5 border border-indigo-500/20 shadow-[inset_0_0_20px_rgba(99,102,241,0.05)]">
+                                                        <div className="absolute top-4 left-4 flex gap-2">
+                                                            <div className="p-2 bg-indigo-500/10 rounded-lg border border-indigo-500/20">
+                                                                <Gavel className="w-4 h-4 text-indigo-400" />
+                                                            </div>
+                                                            <button 
+                                                                onClick={(e) => { e.stopPropagation(); rescanSingleItem(c); }}
+                                                                disabled={isScanning}
+                                                                className="p-2 bg-white/5 hover:bg-white/10 rounded-lg border border-white/10 text-gray-500 hover:text-primary transition-all"
+                                                                title="סרוק מסמך זה מחדש"
+                                                            >
+                                                                <RefreshCw className={`w-4 h-4 ${scanningItems.includes(c.id) ? 'animate-spin text-primary' : ''}`} />
+                                                            </button>
+                                                        </div>
+                                                        <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-3 flex items-center gap-2" dir="rtl">
+                                                            אסטרטגיה מומלצת (LAWYER MODE)
+                                                        </h4>
+                                                        <p className="text-sm text-gray-200 leading-relaxed font-medium" dir="rtl">
+                                                            {c.strategy_advice || 'לא צוינה אסטרטגיה ספציפית.'}
+                                                        </p>
+                                                        
+                                                        {c.evidence_data?.business_value && (
+                                                            <div className="mt-4 pt-4 border-t border-indigo-500/10">
+                                                                <h5 className="text-[10px] font-black text-primary uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                                                                    <Sparkles className="w-2.5 h-2.5" />
+                                                                    ערך מסחרי
+                                                                </h5>
+                                                                <p className="text-xs text-gray-300" dir="rtl">{c.evidence_data.business_value}</p>
+                                                            </div>
+                                                        )}
+
+                                                        {c.evidence_data?.justification && (
+                                                            <div className="mt-3 pt-3 border-t border-indigo-500/10">
+                                                                <h5 className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                                                                    <Scale className="w-2.5 h-2.5" />
+                                                                    הצדקה הנדסית
+                                                                </h5>
+                                                                <p className="text-xs text-gray-400 leading-tight" dir="rtl">{c.evidence_data.justification}</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Fact & Description */}
+                                                    <div>
+                                                        <h4 className="text-xs font-black text-gray-500 uppercase tracking-widest mb-3" dir="rtl">תיאור הממצא</h4>
+                                                        <div className="text-sm text-gray-300 leading-relaxed bg-white/5 p-4 rounded-xl border border-white/5">
+                                                            <RichText text={c.description} evidence={c.evidence_data} />
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Evidence / Quotes */}
+                                                    {c.evidence_data && (
+                                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                            <div className="p-4 rounded-xl bg-white/5 border border-white/5">
+                                                                <div className="text-[10px] font-bold text-primary mb-2 flex items-center gap-1">
+                                                                    <Quote className="w-3 h-3" />
+                                                                    מתוך החוזה [1]
+                                                                </div>
+                                                                <p className="text-xs text-gray-400 italic" dir="rtl">"{c.evidence_data.contract_quote}"</p>
+                                                            </div>
+                                                            <div className="p-4 rounded-xl bg-white/5 border border-white/5">
+                                                                <div className="text-[10px] font-bold text-red-400 mb-2 flex items-center gap-1">
+                                                                    <Quote className="w-3 h-3" />
+                                                                    מתוך מסמך ביצוע [2]
+                                                                </div>
+                                                                <p className="text-xs text-gray-400 italic" dir="rtl">"{c.evidence_data.work_quote}"</p>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Actions */}
+                                                    <div className="flex justify-between items-center pt-4 border-t border-white/5">
+                                                        <div className="flex gap-2">
+                                                            <button 
+                                                                onClick={() => updateStatus(c.id, 'IGNORED')}
+                                                                className="px-4 py-2 text-xs font-bold text-gray-400 hover:text-white transition-colors"
+                                                            >
+                                                                התעלם
+                                                            </button>
+                                                            <button 
+                                                                onClick={() => updateStatus(c.id, 'AUTO_RESOLVED')}
+                                                                className="px-4 py-2 text-xs font-bold text-green-500 hover:bg-green-500/10 rounded-lg transition-all"
+                                                            >
+                                                                נפתר
+                                                            </button>
+                                                        </div>
+                                                        
+                                                        <motion.button
+                                                            whileHover={{ scale: 1.05 }}
+                                                            whileTap={{ scale: 0.95 }}
+                                                            onClick={() => moveToPricing(c)}
+                                                            className="px-6 py-2 rounded-xl bg-white text-black font-bold text-xs flex items-center gap-2 shadow-xl hover:bg-gray-100 transition-all"
+                                                        >
+                                                            <ArrowRightLeft className="w-3 h-3" />
+                                                            העבר לתמחור (V.O.)
+                                                        </motion.button>
+                                                    </div>
+                                                </div>
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
+                                </motion.div>
+                            );
+                        })}
+                    </AnimatePresence>
                 </div>
             )}
         </div>
     );
 }
+

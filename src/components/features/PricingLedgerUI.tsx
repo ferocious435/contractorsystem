@@ -46,13 +46,11 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
             setLedgerItems(data || []);
         } catch (err) {
             console.error('Error fetching ledger items:', err);
-            // alert("Ошибка загрузки данных сметы");
         } finally {
             setIsLoading(false);
         }
     };
 
-    // Fetch contradictions with pricing_status = PENDING
     const fetchPendingQueue = async () => {
         try {
             const { data, error } = await supabase
@@ -84,7 +82,6 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
 
     const handleApproveEstimation = async (ledgerData: any) => {
         try {
-            // Insert into pricing_ledger
             const { data: newItem, error: insertError } = await supabase
                 .from('pricing_ledger')
                 .insert({
@@ -103,7 +100,6 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
 
             if (insertError) throw insertError;
 
-            // Update contradiction pricing_status
             if (ledgerData.contradiction_id) {
                 await supabase
                     .from('contradictions')
@@ -111,7 +107,6 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                     .eq('id', ledgerData.contradiction_id);
             }
 
-            // Update local state
             setLedgerItems(prev => [newItem, ...prev]);
             setQueueItems(prev => prev.filter(q => q.id !== ledgerData.contradiction_id));
             setSelectedContradiction(null);
@@ -206,7 +201,6 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
         }
     };
 
-    // Approve PENDING_VO → APPROVED_VO
     const approveVO = async (id: string) => {
         try {
             const { data, error } = await supabase
@@ -224,7 +218,6 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
         }
     };
 
-    // Export CSV
     const handleExportCSV = async () => {
         try {
             const res = await fetch(`/api/export?projectId=${projectId}&format=csv`);
@@ -286,7 +279,7 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
             <div className="flex-1 min-w-0 space-y-6">
                 {/* Header and Summary Cards */}
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                    <h2 className="text-2xl font-bold text-gray-100 flex items-center gap-2">
+                    <h2 className="text-2xl font-bold text-gray-100 flex items-center gap-2" dir="rtl">
                         <Calculator className="h-6 w-6 text-primary" />
                         תמחור וחשבונות
                     </h2>
@@ -308,9 +301,9 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4" dir="rtl">
                     <div className="bg-workspace border border-border-subtle rounded-xl p-4 flex flex-col justify-center">
-                        <span className="text-sm text-gray-400 mb-1">חוזה בסיס ללא מע"מ</span>
+                        <span className="text-sm text-gray-400 mb-1">חוזה בסיס (ללא מע"מ)</span>
                         <span className="text-xl font-bold text-gray-100">{formatCurrency(totalBaseExclVat)}</span>
                     </div>
                     <div className="bg-workspace border border-border-subtle rounded-xl p-4 flex flex-col justify-center">
@@ -318,7 +311,7 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                         <span className="text-xl font-bold text-blue-400">{formatCurrency(totalVOExclVat)}</span>
                     </div>
                     <div className="bg-workspace border border-border-subtle rounded-xl p-4 flex flex-col justify-center">
-                        <span className="text-sm text-gray-400 mb-1">מע"מ</span>
+                        <span className="text-sm text-gray-400 mb-1">מע"מ (18%)</span>
                         <span className="text-xl font-bold text-gray-300">{formatCurrency(grandTotalVat)}</span>
                     </div>
                     <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex flex-col justify-center">
@@ -344,14 +337,14 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-border-subtle">
-                                {/* Add New Item Row */}
                                 {isAddingNew && (
                                     <tr className="bg-primary/5">
                                         <td className="px-4 py-3 text-sm">
                                             <select
                                                 value={newItemForm.type}
                                                 onChange={(e) => setNewItemForm({ ...newItemForm, type: e.target.value })}
-                                                className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                                                className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none text-right"
+                                                dir="rtl"
                                             >
                                                 <option value="BASE_CONTRACT">חוזה בסיס</option>
                                                 <option value="APPROVED_VO">חריג מאושר</option>
@@ -363,8 +356,9 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                                 type="text"
                                                 value={newItemForm.item_code}
                                                 onChange={(e) => setNewItemForm({ ...newItemForm, item_code: e.target.value })}
-                                                placeholder="01.01.01"
-                                                className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                                                placeholder="קוד סעיף"
+                                                className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none text-right"
+                                                dir="rtl"
                                             />
                                         </td>
                                         <td className="px-4 py-3 text-sm">
@@ -373,7 +367,8 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                                 value={newItemForm.description}
                                                 onChange={(e) => setNewItemForm({ ...newItemForm, description: e.target.value })}
                                                 placeholder="תיאור העבודה..."
-                                                className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                                                className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none text-right"
+                                                dir="rtl"
                                             />
                                         </td>
                                         <td className="px-4 py-3 text-sm text-center">
@@ -394,7 +389,7 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                         </td>
                                         <td className="px-4 py-3 text-sm text-left">
                                             <div className="relative">
-                                                <span className="absolute left-2 top-1 text-gray-500">₪</span>
+                                                <span className="absolute left-2 top-1 text-gray-500 text-xs">₪</span>
                                                 <input
                                                     type="number"
                                                     value={newItemForm.unit_price_excl_vat}
@@ -408,10 +403,10 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                         </td>
                                         <td className="px-4 py-3 text-sm text-center">
                                             <div className="flex justify-center gap-2">
-                                                <button onClick={handleAddNew} className="p-1 text-green-400 hover:bg-green-400/10 rounded">
+                                                <button onClick={handleAddNew} className="p-1 text-green-400 hover:bg-green-400/10 rounded" title="שמור">
                                                     <Check className="h-4 w-4" />
                                                 </button>
-                                                <button onClick={() => setIsAddingNew(false)} className="p-1 text-gray-400 hover:bg-gray-400/10 rounded">
+                                                <button onClick={() => setIsAddingNew(false)} className="p-1 text-gray-400 hover:bg-gray-400/10 rounded" title="ביטול">
                                                     <X className="h-4 w-4" />
                                                 </button>
                                             </div>
@@ -419,7 +414,6 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                     </tr>
                                 )}
 
-                                {/* Data Rows */}
                                 {isLoading ? (
                                     <tr>
                                         <td colSpan={8} className="px-4 py-12 text-center">
@@ -435,14 +429,14 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                 ) : (
                                     ledgerItems.map((item) => (
                                         <tr key={item.id} className="hover:bg-white/5 transition-colors group">
-                                            {/* EDIT MODE */}
                                             {isEditing === item.id ? (
                                                 <>
                                                     <td className="px-4 py-3 text-sm">
                                                         <select
                                                             value={editForm.type}
                                                             onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
-                                                            className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary outline-none"
+                                                            className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary outline-none text-right"
+                                                            dir="rtl"
                                                         >
                                                             <option value="BASE_CONTRACT">חוזה בסיס</option>
                                                             <option value="APPROVED_VO">חריג מאושר</option>
@@ -454,7 +448,8 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                                             type="text"
                                                             value={editForm.item_code}
                                                             onChange={(e) => setEditForm({ ...editForm, item_code: e.target.value })}
-                                                            className="w-20 bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary outline-none"
+                                                            className="w-20 bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary outline-none text-right"
+                                                            dir="rtl"
                                                         />
                                                     </td>
                                                     <td className="px-4 py-3 text-sm">
@@ -462,7 +457,8 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                                             type="text"
                                                             value={editForm.description}
                                                             onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                                                            className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary outline-none"
+                                                            className="w-full bg-background border border-border-subtle rounded px-2 py-1 text-sm focus:border-primary outline-none text-right"
+                                                            dir="rtl"
                                                         />
                                                     </td>
                                                     <td className="px-4 py-3 text-sm text-center">
@@ -490,22 +486,20 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                                         />
                                                     </td>
                                                     <td className="px-4 py-3 text-sm text-left text-gray-400">
-                                                        {/* Calculating purely on UI side for preview during edit, DB takes over when saved */}
                                                         {formatCurrency(editForm.quantity * editForm.unit_price_excl_vat)}
                                                     </td>
                                                     <td className="px-4 py-3 text-sm text-center">
                                                         <div className="flex justify-center gap-2">
-                                                            <button onClick={handleSaveEdit} className="p-1 text-green-400 hover:bg-green-400/10 rounded">
+                                                            <button onClick={handleSaveEdit} className="p-1 text-green-400 hover:bg-green-400/10 rounded" title="שמור">
                                                                 <Check className="h-4 w-4" />
                                                             </button>
-                                                            <button onClick={handleCancelEdit} className="p-1 text-gray-400 hover:bg-gray-400/10 rounded">
+                                                            <button onClick={handleCancelEdit} className="p-1 text-gray-400 hover:bg-gray-400/10 rounded" title="ביטול">
                                                                 <X className="h-4 w-4" />
                                                             </button>
                                                         </div>
                                                     </td>
                                                 </>
                                             ) : (
-                                                /* VIEW MODE */
                                                 <>
                                                     <td className="px-4 py-3 text-sm">
                                                         <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${item.type === 'BASE_CONTRACT' ? 'bg-gray-800 text-gray-300' :
@@ -528,10 +522,10 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                                                                     <CheckCircle className="h-4 w-4" />
                                                                 </button>
                                                             )}
-                                                            <button onClick={() => handleEditClick(item)} className="p-1 text-gray-400 hover:text-white hover:bg-white/10 rounded">
+                                                            <button onClick={() => handleEditClick(item)} className="p-1 text-gray-400 hover:text-white hover:bg-white/10 rounded" title="ערוך">
                                                                 <Edit2 className="h-4 w-4" />
                                                             </button>
-                                                            <button onClick={() => handleDelete(item.id)} className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded">
+                                                            <button onClick={() => handleDelete(item.id)} className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded" title="מחק">
                                                                 <Trash2 className="h-4 w-4" />
                                                             </button>
                                                         </div>
@@ -547,7 +541,6 @@ export default function PricingLedgerUI({ projectId }: PricingLedgerProps) {
                 </div>
             </div>
 
-            {/* AI Estimator Modal */}
             {selectedContradiction && (
                 <AIEstimatorModal
                     contradiction={selectedContradiction}

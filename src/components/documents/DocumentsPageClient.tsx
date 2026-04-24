@@ -166,13 +166,13 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             if (!res.ok) throw new Error("Failed to process document");
             const data = await res.json();
 
-            // ALL documents auto-validate — no manual review ever
+            // AI прочитал документ — статус SCANNED (ждёт проверки пользователем)
             setDocuments(prev => prev.map(d => d.id === doc.id ? {
                 ...d,
-                ai_status: 'VALIDATED',
+                ai_status: 'SCANNED',
                 parsed_json: data.parsed_json,
                 extracted_text: extractedTextStr,
-                category: data.parsed_json?.category || d.category // update category if changed
+                category: data.parsed_json?.category || d.category
             } : d));
 
         } catch (e) {
@@ -303,9 +303,9 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                                     <CheckCircle className="w-3.5 h-3.5" /> מאומת ומקושר
                                                 </span>
                                             )}
-                                            {(doc.ai_status === 'SCANNED') && (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                                                    <CheckCircle className="w-3.5 h-3.5" /> נסרק ונקלט
+                                            {doc.ai_status === 'SCANNED' && (
+                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse">
+                                                    <AlertTriangle className="w-3.5 h-3.5" /> ממתין לאימות
                                                 </span>
                                             )}
                                             {doc.ai_status === 'PROCESSING' && (
@@ -318,6 +318,11 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                                     <Loader2 className="w-3.5 h-3.5 animate-spin" /> מחלץ טקסט מ-PDF...
                                                 </span>
                                             )}
+                                            {doc.ai_status === 'ERROR' && (
+                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">
+                                                    <AlertTriangle className="w-3.5 h-3.5" /> שגיאה
+                                                </span>
+                                            )}
                                             {doc.ai_status === 'PENDING' && (
                                                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-gray-700 text-gray-300 border border-gray-600">
                                                     <FileText className="w-3.5 h-3.5" /> ממתין לעיבוד
@@ -325,13 +330,21 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                             )}
                                         </td>
                                         <td className="px-6 py-3 text-center">
-                                            {doc.ai_status === 'PENDING' && (
+                                            {(doc.ai_status === 'PENDING' || doc.ai_status === 'ERROR') && (
                                                 <button
                                                     onClick={() => runAIParsing(doc)}
                                                     disabled={processingId === doc.id}
                                                     className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-colors text-xs font-medium"
                                                 >
-                                                    <Play className="w-3 h-3" /> הפעל OCR/סריקה
+                                                    <Play className="w-3 h-3" /> הפעל סריקה
+                                                </button>
+                                            )}
+                                            {doc.ai_status === 'SCANNED' && (
+                                                <button
+                                                    onClick={() => setSelectedDocForVerification(doc)}
+                                                    className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-colors text-xs font-bold"
+                                                >
+                                                    <CheckCircle className="w-3 h-3" /> לאמת ולקלוט
                                                 </button>
                                             )}
                                             {doc.ai_status === 'VALIDATED' && (
@@ -345,10 +358,10 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                                         <Eye className="w-4 h-4" />
                                                     </a>
                                                 )}
-                                                {doc.ai_status === 'VALIDATED' && (
+                                                {(doc.ai_status === 'VALIDATED' || doc.ai_status === 'SCANNED') && (
                                                     <button
                                                         onClick={() => setSelectedDocForVerification(doc)}
-                                                        className="p-1.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded transition-colors" title="צפה בנתונים מאומתים"
+                                                        className="p-1.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded transition-colors" title="צפה בנתוני AI"
                                                     >
                                                         <FileText className="w-4 h-4" />
                                                     </button>

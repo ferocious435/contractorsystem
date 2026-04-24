@@ -28,12 +28,12 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
         // Run the AI Estimation Mock automatically when modal opens
         const runEstimation = async () => {
             try {
-                const res = await fetch('/api/pricing/estimate', {
+                const res = await fetch('/api/pricing/evaluate-ai', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         contradictionId: contradiction.id,
-                        description: contradiction.description,
+                        projectId: contradiction.project_id || contradiction.projectId, // Убедимся, что передаем projectId
                     })
                 });
 
@@ -47,7 +47,7 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                     quantity: data.suggested_quantity || 1,
                     unitPrice: data.suggested_unit_price_excl_vat || 0,
                     markup: 15, // Default 15% markup
-                    source: data.source || 'CUSTOM_ANALYSIS'
+                    source: data.item_code === 'NEW' ? 'CUSTOM_ANALYSIS' : 'BOQ'
                 });
 
             } catch (e) {
@@ -101,8 +101,8 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                             <Calculator className="w-5 h-5" />
                         </div>
                         <div>
-                            <h2 className="text-lg font-bold text-white">AI Estimator: תמחור חריג</h2>
-                            <p className="text-xs text-gray-500 font-mono">ID: {contradiction.id}</p>
+                            <h2 className="text-lg font-bold text-white">אומדן בינה מלאכותית: תמחור חריג</h2>
+                            <p className="text-xs text-gray-500 font-mono">מזהה: {contradiction.id}</p>
                         </div>
                     </div>
                     <button onClick={onClose} className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors">
@@ -169,7 +169,7 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                                     <div className="col-span-2">
                                         <label className="block text-xs text-gray-400 mb-1 flex items-center justify-between">
                                             מקור תמחור (ניתן לשינוי)
-                                            {formState.source === 'CUSTOM_ANALYSIS' && <span className="text-orange-400 text-[10px]">מצב Zero-Match פעיל</span>}
+                                            {formState.source === 'CUSTOM_ANALYSIS' && <span className="text-orange-400 text-[10px]">מצב ניתוח מחיר חדש פעיל</span>}
                                         </label>
                                         <select
                                             name="source"
@@ -181,7 +181,7 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                                             <option value="BOQ">הסכם (BOQ)</option>
                                             <option value="DEKEL">מחירון דקל</option>
                                             <option value="CONTRACTOR">מחירון קבלן</option>
-                                            <option value="CUSTOM_ANALYSIS">ניתוח מחיר (Zero-Match)</option>
+                                            <option value="CUSTOM_ANALYSIS">ניתוח מחיר חדש</option>
                                         </select>
                                     </div>
 

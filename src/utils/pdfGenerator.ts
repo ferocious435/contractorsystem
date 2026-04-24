@@ -62,15 +62,41 @@ export const generatePricingPDF = ({
     yPos += (splitLegalText.length * 6) + 10;
 
     // --- Financial Table ---
-    const tableData = items.map((item, index) => [
-        formatCurrency(item.quantity * item.unit_price_excl_vat), // Total (Leftmost in RTL visually?)
-        formatCurrency(item.unit_price_excl_vat),
-        item.quantity.toString(),
-        item.unit,
-        item.description,
-        item.item_code || '-',
-        (index + 1).toString() // Row Num (Rightmost in rtl)
-    ]);
+    const tableData = items.map((item, index) => {
+        if (item.item_type === 'CHAPTER' || item.item_type === 'SUBCHAPTER') {
+            return [
+                '', // No Total
+                '', // No Price
+                '', // No Quantity
+                '', // No Unit
+                item.description,
+                item.item_type === 'CHAPTER' ? 'פרק' : 'תת-פרק',
+                ''
+            ];
+        }
+        
+        if (item.item_type === 'NOTE') {
+            return [
+                '',
+                '',
+                '',
+                '',
+                `ⓘ ${item.description}`,
+                'הערה',
+                ''
+            ];
+        }
+
+        return [
+            formatCurrency(item.quantity * item.unit_price_excl_vat),
+            formatCurrency(item.unit_price_excl_vat),
+            item.quantity.toString(),
+            item.unit,
+            item.description,
+            item.item_code || '-',
+            (index + 1).toString()
+        ];
+    });
 
     autoTable(doc, {
         startY: yPos,
@@ -78,23 +104,48 @@ export const generatePricingPDF = ({
         body: tableData,
         theme: 'grid',
         styles: {
-            halign: 'right', // align text to right
-            font: 'helvetica', // Should be replaced with actual Hebrew font name
+            halign: 'right',
+            font: 'helvetica', // Будет заменено на Rubik при наличии шрифта
         },
         headStyles: {
             fillColor: [21, 28, 36],
             textColor: 255,
-            halign: 'center'
+            halign: 'right'
+        },
+        columnStyles: {
+            0: { halign: 'left' }, // Sums
+            1: { halign: 'left' }, // Price
+            2: { halign: 'center' }, // Quantity
         },
         alternateRowStyles: {
             fillColor: [240, 240, 240]
+        },
+        // Важно для иврита:
+        margin: { right: 10, left: 10 },
+        tableWidth: 'auto',
+        didParseCell: (data) => {
+            const rowIndex = data.row.index;
+            const item = items[rowIndex];
+            
+            if (item?.item_type === 'CHAPTER') {
+                data.cell.styles.fontStyle = 'bold';
+                data.cell.styles.fillColor = [220, 220, 220];
+            } else if (item?.item_type === 'SUBCHAPTER') {
+                data.cell.styles.fontStyle = 'bold';
+                data.cell.styles.textColor = [59, 130, 246];
+            } else if (item?.item_type === 'NOTE') {
+                data.cell.styles.fontStyle = 'italic';
+                data.cell.styles.textColor = [100, 100, 100];
+            }
         }
     });
 
     // --- Footer Summary ---
     const finalY = (doc as any).lastAutoTable.finalY + 15;
 
-    const totalExclVat = items.reduce((sum, i) => sum + (i.quantity * i.unit_price_excl_vat), 0);
+    // Filter only ITEM types for calculations
+    const calculationItems = items.filter(i => !i.item_type || i.item_type === 'ITEM');
+    const totalExclVat = calculationItems.reduce((sum, i) => sum + (i.quantity * i.unit_price_excl_vat), 0);
     const totalVat = totalExclVat * vatRate;
     const totalInclVat = totalExclVat + totalVat;
 
@@ -103,7 +154,6 @@ export const generatePricingPDF = ({
     doc.text(`מע"מ (${(vatRate * 100).toFixed(0)}%): ${formatCurrency(totalVat)}`, 190, finalY + 8, { align: 'right' });
 
     doc.setFontSize(14);
-    // Using simple font weight approach
     doc.text(`סה"כ לתשלום: ${formatCurrency(totalInclVat)}`, 190, finalY + 18, { align: 'right' });
 
     // Save PDF

@@ -38,6 +38,7 @@
     *   `status` (enum: OPEN, IGNORED, MOVED_TO_PRICING, AUTO_RESOLVED)
     *   `source_execution_doc_id` (uuid, FK to documents) - Где нашли ошибку.
     *   `target_contract_doc_id` (uuid, FK to documents) - С чем конфликтует (правило).
+    *   `evidence_data` (jsonb) - Цитаты и доказательства [1] и [2] для RichText.
     *   `related_contradiction_id` (uuid, FK) - Meta-awareness (Связь с другими карточками).
 
 ### 💰 Смета и Вариации (תמחור וחריגים - The Ledger)

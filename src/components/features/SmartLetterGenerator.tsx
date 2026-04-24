@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from 'react';
+import { createClient } from '@/utils/supabase/client';
 import { FileText, Send, Copy, Check, Loader2, ChevronDown } from 'lucide-react';
 
 interface SmartLetterGeneratorProps {
@@ -30,6 +31,31 @@ export default function SmartLetterGenerator({ projectId }: SmartLetterGenerator
     const [generatedLetter, setGeneratedLetter] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
     const [isCopied, setIsCopied] = useState(false);
+    const [ledgerItems, setLedgerItems] = useState<any[]>([]);
+    const [selectedLedgerItems, setSelectedLedgerItems] = useState<string[]>([]);
+
+    const supabase = createClient();
+
+    React.useEffect(() => {
+        if (projectId) {
+            fetchLedgerItems();
+        }
+    }, [projectId]);
+
+    const fetchLedgerItems = async () => {
+        try {
+            const { data, error } = await supabase
+                .from('pricing_ledger')
+                .select('*')
+                .eq('project_id', projectId)
+                .in('type', ['PENDING_VO', 'APPROVED_VO']);
+            
+            if (error) throw error;
+            setLedgerItems(data || []);
+        } catch (err) {
+            console.error('Error fetching ledger items:', err);
+        }
+    };
 
     const handleGenerate = async () => {
         if (!letterType) return;
@@ -37,10 +63,22 @@ export default function SmartLetterGenerator({ projectId }: SmartLetterGenerator
         setGeneratedLetter('');
 
         try {
+            const selectedItemsData = ledgerItems.filter(item => selectedLedgerItems.includes(item.id));
+            const itemsContext = selectedItemsData.length > 0 
+                ? `פריטים לתמחור:\n${selectedItemsData.map(i => `- ${i.description}: ${i.quantity} ${i.unit} במחיר ${i.unit_price_excl_vat} ₪ ליחידה`).join('\n')}`
+                : '';
+
             const response = await fetch('/api/generate-letter', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId, letterType, recipient, subject, keyPoints, tone })
+                body: JSON.stringify({ 
+                    projectId, 
+                    letterType, 
+                    recipient, 
+                    subject, 
+                    keyPoints: `${keyPoints}\n\n${itemsContext}`.trim(), 
+                    tone 
+                })
             });
 
             const data = await response.json();
@@ -128,9 +166,35 @@ export default function SmartLetterGenerator({ projectId }: SmartLetterGenerator
                         />
                     </div>
 
+                    {/* Выбор элементов из леджера для V.O. */}
+                    {letterType === 'vo_request' && ledgerItems.length > 0 && (
+                        <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl space-y-3">
+                            <label className="block text-sm font-medium text-blue-300" dir="rtl">צרף פריטים מהלג'ר (תמחור)</label>
+                            <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar pr-2">
+                                {ledgerItems.map(item => (
+                                    <label key={item.id} className="flex items-center gap-3 p-2 bg-black/20 rounded-lg cursor-pointer hover:bg-black/40 transition-colors border border-white/5" dir="rtl">
+                                        <input 
+                                            type="checkbox"
+                                            checked={selectedLedgerItems.includes(item.id)}
+                                            onChange={(e) => {
+                                                if (e.target.checked) setSelectedLedgerItems(prev => [...prev, item.id]);
+                                                else setSelectedLedgerItems(prev => prev.filter(id => id !== item.id));
+                                            }}
+                                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-primary focus:ring-primary"
+                                        />
+                                        <div className="flex-1">
+                                            <p className="text-xs font-medium text-gray-200">{item.description}</p>
+                                            <p className="text-[10px] text-gray-500">{item.quantity} {item.unit} | {item.unit_price_excl_vat} ₪</p>
+                                        </div>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {/* Ключевые пункты */}
                     <div>
-                        <label className="block text-sm font-medium text-gray-300 mb-2" dir="rtl">נקודות מפתח</label>
+                        <label className="block text-sm font-medium text-gray-300 mb-2" dir="rtl">נקודות מפתח נוספות</label>
                         <textarea
                             value={keyPoints}
                             onChange={(e) => setKeyPoints(e.target.value)}

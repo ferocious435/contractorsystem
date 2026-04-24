@@ -13,6 +13,7 @@ export interface LedgerItem {
     vat_amount: number;
     source?: string;
     project_id?: string;
+    item_type?: 'CHAPTER' | 'SUBCHAPTER' | 'ITEM' | 'NOTE';
 }
 
 interface LedgerTableProps {
@@ -24,8 +25,11 @@ export default function LedgerTable({ items, vatRate = 0.18 }: LedgerTableProps)
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [isGeneratorModalOpen, setIsGeneratorModalOpen] = useState(false);
 
-    // Calculate Totals Before VAT for all items
-    const totalExclVat = items.reduce((acc, item) => acc + (item.quantity * item.unit_price_excl_vat), 0);
+    // Calculate Totals Before VAT only for actual ITEMS
+    const totalExclVat = items
+        .filter(i => !i.item_type || i.item_type === 'ITEM')
+        .reduce((acc, item) => acc + (item.quantity * item.unit_price_excl_vat), 0);
+    
     const totalVat = totalExclVat * vatRate;
     const totalInclVat = totalExclVat + totalVat;
 
@@ -45,7 +49,11 @@ export default function LedgerTable({ items, vatRate = 0.18 }: LedgerTableProps)
 
     const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.checked) {
-            setSelectedIds(new Set(items.map(item => item.id)));
+            // Only select ITEMS
+            const itemIds = items
+                .filter(i => !i.item_type || i.item_type === 'ITEM')
+                .map(item => item.id);
+            setSelectedIds(new Set(itemIds));
         } else {
             setSelectedIds(new Set());
         }
@@ -69,7 +77,7 @@ export default function LedgerTable({ items, vatRate = 0.18 }: LedgerTableProps)
                 <h2 className="text-lg font-semibold text-white">מטריצת ביצוע (The Ledger)</h2>
                 <div className="flex gap-2">
                     <span className="text-xs bg-white/5 text-gray-400 px-3 py-1 rounded-full border border-white/10">
-                        {selectedIds.size > 0 ? `${selectedIds.size} נבחרו מתוך ` : ''}{items.length} סעיפים
+                        {selectedIds.size > 0 ? `${selectedIds.size} נבחרו מתוך ` : ''}{items.filter(i => !i.item_type || i.item_type === 'ITEM').length} סעיפים
                     </span>
                     <button
                         onClick={() => {
@@ -96,7 +104,7 @@ export default function LedgerTable({ items, vatRate = 0.18 }: LedgerTableProps)
                             <th className="px-4 py-3 w-10">
                                 <input
                                     type="checkbox"
-                                    checked={selectedIds.size === items.length && items.length > 0}
+                                    checked={selectedIds.size > 0 && selectedIds.size === items.filter(i => !i.item_type || i.item_type === 'ITEM').length}
                                     onChange={handleSelectAll}
                                     className="rounded border-gray-500 text-emerald-500 focus:ring-emerald-500/50 bg-[#151C24]"
                                 />
@@ -118,33 +126,80 @@ export default function LedgerTable({ items, vatRate = 0.18 }: LedgerTableProps)
                                 </td>
                             </tr>
                         ) : (
-                            items.map((item) => (
-                                <tr key={item.id} className={`hover:bg-white/5 transition-colors group ${selectedIds.has(item.id) ? 'bg-emerald-500/5' : ''}`}>
-                                    <td className="px-4 py-3">
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedIds.has(item.id)}
-                                            onChange={(e) => handleSelectRow(item.id, e.target.checked)}
-                                            className="rounded border-gray-500 text-emerald-500 focus:ring-emerald-500/50 bg-[#151C24]"
-                                        />
-                                    </td>
-                                    <td className="px-6 py-3 text-xs font-medium text-gray-400">
-                                        <span className="bg-white/5 px-2 py-1 rounded border border-white/10">
-                                            {getSourceDisplayName(item.source)}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-3 text-sm font-mono text-gray-400">{item.item_code || '---'}</td>
-                                    <td className="px-6 py-3 text-sm font-medium text-gray-200">{item.description}</td>
-                                    <td className="px-6 py-3 text-sm text-gray-400 text-center">{item.unit}</td>
-                                    <td className="px-6 py-3 text-sm text-gray-300 text-center font-mono">{item.quantity}</td>
-                                    <td className="px-6 py-3 text-sm text-blue-300 font-mono border-r border-white/5 border-l bg-blue-500/5">
-                                        {formatCurrency(item.unit_price_excl_vat || 0)}
-                                    </td>
-                                    <td className="px-6 py-3 text-sm text-emerald-300 font-mono font-medium">
-                                        {formatCurrency(item.quantity * item.unit_price_excl_vat)}
-                                    </td>
-                                </tr>
-                            ))
+                            items.map((item) => {
+                                // CHAPTER STYLING
+                                if (item.item_type === 'CHAPTER') {
+                                    return (
+                                        <tr key={item.id} className="bg-[#1C252E] border-y border-white/10">
+                                            <td className="px-4 py-3"></td>
+                                            <td colSpan={2} className="px-6 py-3 text-xs font-bold text-emerald-500 uppercase tracking-wider">
+                                                פרק
+                                            </td>
+                                            <td colSpan={5} className="px-6 py-3 text-base font-bold text-white">
+                                                {item.description}
+                                            </td>
+                                        </tr>
+                                    );
+                                }
+
+                                // SUBCHAPTER STYLING
+                                if (item.item_type === 'SUBCHAPTER') {
+                                    return (
+                                        <tr key={item.id} className="bg-[#151C24]/50 border-y border-white/5">
+                                            <td className="px-4 py-2"></td>
+                                            <td colSpan={2} className="px-6 py-2 text-[10px] font-bold text-blue-400 uppercase tracking-widest">
+                                                תת-פרק
+                                            </td>
+                                            <td colSpan={5} className="px-6 py-2 text-sm font-semibold text-gray-300">
+                                                {item.description}
+                                            </td>
+                                        </tr>
+                                    );
+                                }
+
+                                // NOTE STYLING
+                                if (item.item_type === 'NOTE') {
+                                    return (
+                                        <tr key={item.id} className="bg-transparent italic">
+                                            <td className="px-4 py-2"></td>
+                                            <td className="px-6 py-2"></td>
+                                            <td colSpan={6} className="px-6 py-2 text-xs text-gray-500 border-r border-white/5">
+                                                <span className="text-emerald-500/50 ml-2 font-bold font-mono">ⓘ</span>
+                                                {item.description}
+                                            </td>
+                                        </tr>
+                                    );
+                                }
+
+                                // STANDARD ITEM STYLING
+                                return (
+                                    <tr key={item.id} className={`hover:bg-white/5 transition-colors group ${selectedIds.has(item.id) ? 'bg-emerald-500/5' : ''}`}>
+                                        <td className="px-4 py-3">
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedIds.has(item.id)}
+                                                onChange={(e) => handleSelectRow(item.id, e.target.checked)}
+                                                className="rounded border-gray-500 text-emerald-500 focus:ring-emerald-500/50 bg-[#151C24]"
+                                            />
+                                        </td>
+                                        <td className="px-6 py-3 text-xs font-medium text-gray-400">
+                                            <span className="bg-white/5 px-2 py-1 rounded border border-white/10">
+                                                {getSourceDisplayName(item.source)}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-3 text-sm font-mono text-gray-400">{item.item_code || '---'}</td>
+                                        <td className="px-6 py-3 text-sm font-medium text-gray-200">{item.description}</td>
+                                        <td className="px-6 py-3 text-sm text-gray-400 text-center">{item.unit}</td>
+                                        <td className="px-6 py-3 text-sm text-gray-300 text-center font-mono">{item.quantity}</td>
+                                        <td className="px-6 py-3 text-sm text-blue-300 font-mono border-r border-white/5 border-l bg-blue-500/5">
+                                            {formatCurrency(item.unit_price_excl_vat || 0)}
+                                        </td>
+                                        <td className="px-6 py-3 text-sm text-emerald-300 font-mono font-medium">
+                                            {formatCurrency(item.quantity * item.unit_price_excl_vat)}
+                                        </td>
+                                    </tr>
+                                );
+                            })
                         )}
                     </tbody>
                 </table>

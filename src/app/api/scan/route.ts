@@ -1,40 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { geminiModel, geminiFlashModel } from "@/lib/gemini";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const geminiApiKey = process.env.GEMINI_API_KEY!;
-
-// Лимит символов на документ для Gemini 3.1 Pro (поддерживает длинный контекст)
-const MAX_TEXT_LENGTH = 15000;
 
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
-        const { projectId, documents: clientDocuments } = body;
+        const { projectId, documents: clientDocuments, force = false, documentIds = [] } = body;
 
         if (!projectId) {
             return NextResponse.json({ error: "projectId is required" }, { status: 400 });
         }
 
-        // Документы приходят с фронтенда (обход RLS без service role key)
+        const supabase = createClient(supabaseUrl, supabaseKey);
+
+        // 1. Проверка кэша (если не force и не частичное сканирование)
+        if (!force && documentIds.length === 0) {
+            const { data: existingContradictions, error: fetchErr } = await supabase
+                .from("contradictions")
+                .select("*")
+                .eq("project_id", projectId);
+
+            if (!fetchErr && existingContradictions && existingContradictions.length > 0) {
+                console.log(`[scan] Returning ${existingContradictions.length} cached contradictions for project ${projectId}`);
+                return NextResponse.json({
+                    success: true,
+                    found: existingContradictions.length,
+                    contradictions: existingContradictions,
+                    cached: true
+                });
+            }
+        }
+
+        // 2. Получение документов
         let documents = clientDocuments;
-
-        // Если фронт не передал — пробуем загрузить сами
         if (!documents || documents.length === 0) {
-            try {
-                const supabase = createClient(supabaseUrl, supabaseKey);
-                const { data, error } = await supabase
-                    .from("documents")
-                    .select("id, title, category, ai_status, extracted_text, file_url")
-                    .eq("project_id", projectId);
+            const { data, error } = await supabase
+                .from("documents")
+                .select("id, title, category, ai_status, extracted_text, file_url")
+                .eq("project_id", projectId);
 
-                if (!error && data && data.length > 0) {
-                    documents = data;
-                }
-            } catch (e) {
-                console.warn("Could not fetch documents from DB:", e);
+            if (!error && data) {
+                documents = data;
             }
         }
 
@@ -42,37 +51,39 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ success: true, found: 0, message: "אין מסמכים לסריקה" });
         }
 
-        // Разделяем документы по категориям
-        const contractDocs = documents.filter((d: any) => d.category === "CONTRACT");
-        const workDocs = documents.filter((d: any) => d.category === "EXECUTION");
+        // Фильтрация по запрашиваемым ID, если они переданы
+        const targetDocs = documentIds.length > 0 
+            ? documents.filter((d: any) => documentIds.includes(d.id))
+            : documents;
 
-        if (contractDocs.length === 0) {
-            return NextResponse.json({ success: true, found: 0, message: "אין מסמכי חוזה להשוואה" });
+        const contractDocs = targetDocs.filter((d: any) => d.category === "CONTRACT");
+        const workDocs = targetDocs.filter((d: any) => d.category === "EXECUTION");
+
+        // Если это частичный скан и не хватает категорий, пробуем добрать из полных доков проекта
+        if (documentIds.length > 0) {
+            if (contractDocs.length === 0) {
+                const globalContracts = documents.filter((d: any) => d.category === "CONTRACT");
+                contractDocs.push(...globalContracts);
+            }
+            if (workDocs.length === 0) {
+                const globalWork = documents.filter((d: any) => d.category === "EXECUTION");
+                workDocs.push(...globalWork);
+            }
         }
-        if (workDocs.length === 0) {
-            return NextResponse.json({ success: true, found: 0, message: "אין מסמכי עבודה להשוואה" });
+
+        if (contractDocs.length === 0 || workDocs.length === 0) {
+            return NextResponse.json({ success: true, found: 0, message: "חסרים מסמכי חוזה או ביצוע להשוואה" });
         }
 
-        // ========================================================
-        // AUTO TEXT EXTRACTION: если у документов нет extracted_text —
-        // автоматически извлекаем текст из PDF через pdf-parse.
-        // Больше не блокируем сканирование с ложным предупреждением OCR.
-        // ========================================================
-        const supabaseForUpdate = createClient(supabaseUrl, supabaseKey);
-        const allDocs = [...contractDocs, ...workDocs];
-
-        for (const doc of allDocs) {
-            // Пропускаем если текст уже извлечён
-            if (doc.extracted_text && doc.extracted_text.length > 10 && !doc.extracted_text.startsWith("[NON-PDF")) {
+        // 3. Авто-экстракция текста
+        for (const doc of [...contractDocs, ...workDocs]) {
+            if (doc.extracted_text && doc.extracted_text.length > 50 && !doc.extracted_text.startsWith("[NON-PDF")) {
                 continue;
             }
 
-            // Пробуем автоматически извлечь текст
             try {
                 const isPDF = doc.title?.toLowerCase().endsWith(".pdf") || (doc.file_url && doc.file_url.toLowerCase().includes(".pdf"));
-
                 if (isPDF && doc.file_url) {
-                    console.log(`[scan/auto-extract] Extracting text from PDF: "${doc.title}"`);
                     const pdfResponse = await fetch(doc.file_url);
                     if (pdfResponse.ok) {
                         const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
@@ -82,279 +93,158 @@ export async function POST(req: NextRequest) {
                         const extractedText = pdfData.text || "";
 
                         if (extractedText.length > 0) {
-                            // Сохраняем в БД
-                            await supabaseForUpdate
+                            await supabase
                                 .from("documents")
-                                .update({ extracted_text: extractedText })
+                                .update({ extracted_text: extractedText, ai_status: "DONE" })
                                 .eq("id", doc.id);
-
-                            // Обновляем объект в памяти для дальнейшего анализа
                             doc.extracted_text = extractedText;
-                            console.log(`[scan/auto-extract] Extracted ${extractedText.length} chars from "${doc.title}"`);
                         }
                     }
-                } else if (!isPDF && doc.file_url) {
-                    // Для не-PDF файлов (Word и т.д.) — помечаем
-                    const marker = `[NON-PDF: ${doc.title}]`;
-                    await supabaseForUpdate
-                        .from("documents")
-                        .update({ extracted_text: marker })
-                        .eq("id", doc.id);
-                    doc.extracted_text = marker;
                 }
             } catch (extractErr) {
-                console.warn(`[scan/auto-extract] Failed to extract text from "${doc.title}":`, extractErr);
+                console.warn(`[scan/auto-extract] Failed for "${doc.title}":`, extractErr);
             }
         }
 
-        // Теперь фильтруем документы с реальным текстом
-        const contractsWithText = contractDocs.filter(
-            (d: any) => d.extracted_text && d.extracted_text.length > 10 && !d.extracted_text.startsWith("[NON-PDF")
-        );
-        const workWithText = workDocs.filter(
-            (d: any) => d.extracted_text && d.extracted_text.length > 10 && !d.extracted_text.startsWith("[NON-PDF")
-        );
+        // 4. Глобальный анализ через Gemini (Hybrid Model)
+        console.log(`[scan] Analyzing: ${contractDocs.length} contracts, ${workDocs.length} work docs. Force: ${force}`);
+        
+        const foundContradictions = await analyzeWithHybridModels(projectId, contractDocs, workDocs);
 
-        if (contractsWithText.length === 0 || workWithText.length === 0) {
-            return NextResponse.json({
-                success: false,
-                found: 0,
-                message: "לא נמצא טקסט מספיק במסמכים לצורך ניתוח. ודאו שהמסמכים מכילים טקסט מוקלד ולא סרוקים כתמונה.",
-            });
-        }
+        // 5. Сохранение результатов в БД
+        if (foundContradictions.length > 0) {
+            if (force || documentIds.length === 0) {
+                await supabase.from("contradictions").delete().eq("project_id", projectId);
+            } else if (documentIds.length > 0) {
+                await supabase.from("contradictions")
+                    .delete()
+                    .eq("project_id", projectId)
+                    .in("source_execution_doc_id", documentIds);
+            }
 
-        // Проверяем наличие API ключа Gemini
-        if (!geminiApiKey) {
-            return NextResponse.json({
-                success: false,
-                found: 0,
-                message: "מפתח Gemini API חסר. יש להגדיר GEMINI_API_KEY בהגדרות הסביבה.",
-            });
-        }
-
-        // Проверяем существующие противоречия — для исключения дубликатов
-        let existingTitles = new Set<string>();
-        try {
-            const supabase = createClient(supabaseUrl, supabaseKey);
-            const { data: existing } = await supabase
+            const { error: insertErr } = await supabase
                 .from("contradictions")
-                .select("title")
-                .eq("project_id", projectId)
-                .in("status", ["OPEN", "MOVED_TO_PRICING"]);
+                .insert(foundContradictions.map(c => ({
+                    project_id: projectId,
+                    title: c.title,
+                    description: c.description,
+                    strategy_advice: c.strategy_advice,
+                    severity: c.severity,
+                    source_execution_doc_id: c.source_doc_id,
+                    target_contract_doc_id: c.target_doc_id,
+                    evidence_data: c.evidence_data,
+                    status: "OPEN"
+                })));
 
-            if (existing) {
-                existingTitles = new Set(existing.map((c: any) => c.title));
-            }
-        } catch (e) {
-            console.warn("Could not check existing contradictions:", e);
-        }
-
-        // ========================================================
-        // GEMINI AI: анализ реальных текстов — ЕДИНСТВЕННЫЙ метод
-        // Без текста — сканирование НЕ запускается (см. pre-flight check выше)
-        // ========================================================
-        console.log(`[scan] Gemini AI analysis: ${contractsWithText.length} contracts × ${workWithText.length} work docs`);
-
-        let foundContradictions = await analyzeWithGemini(contractsWithText, workWithText);
-
-        // Исключаем дубликаты
-        foundContradictions = foundContradictions.filter(c => !existingTitles.has(c.title));
-
-        if (foundContradictions.length === 0) {
-            return NextResponse.json({ success: true, found: 0, message: "לא נמצאו סתירות מהותיות חדשות" });
+            if (insertErr) console.error("[scan] Error saving contradictions:", insertErr);
         }
 
         return NextResponse.json({
             success: true,
             found: foundContradictions.length,
             contradictions: foundContradictions,
-            method: "gemini_ai",
+            cached: false
         });
 
     } catch (error: any) {
         console.error("Scan error:", error);
-        return NextResponse.json(
-            { error: error.message || "Scan failed" },
-            { status: 500 }
-        );
+        return NextResponse.json({ error: error.message || "Scan failed" }, { status: 500 });
     }
 }
 
-/**
- * Gemini AI: анализирует реальный текст документов — ищет МЯСНЫЕ противоречия
- * Принцип: הבדל ≠ סתירה (Различие ≠ Противоречие)
- */
-async function analyzeWithGemini(contractDocs: any[], workDocs: any[]): Promise<any[]> {
-    const genAI = new GoogleGenerativeAI(geminiApiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-3.1-pro" });
+async function analyzeWithHybridModels(projectId: string, contractDocs: any[], workDocs: any[]): Promise<any[]> {
+    const contractsSummary = contractDocs
+        .filter(d => d.extracted_text?.length > 10)
+        .map(d => `📄 [CONTRACT ID: ${d.id}] TITLE: ${d.title}\nCONTENT: ${d.extracted_text.substring(0, 100000)}`)
+        .join("\n\n---\n\n");
+    
+    const workSummary = workDocs
+        .filter(d => d.extracted_text?.length > 10)
+        .map(d => `📄 [WORK ID: ${d.id}] TITLE: ${d.title}\nCONTENT: ${d.extracted_text.substring(0, 100000)}`)
+        .join("\n\n---\n\n");
 
-    const allContradictions: any[] = [];
+    if (!contractsSummary || !workSummary) return [];
 
-    // Prepare all valid pairs to analyze
-    const pairs: any[] = [];
-    for (const contractDoc of contractDocs) {
-        const contractText = (contractDoc.extracted_text || "").substring(0, MAX_TEXT_LENGTH);
-        if (!contractText || contractText.startsWith("[NON-PDF")) continue;
+    const detectionPrompt = `אתה מערכת לזיהוי מהיר של סתירות בין חוזה לביצוע.
+סרוק את הטקסטים ומצא נקודות שבהן יש שוני טכני או כמותי שיכול להיות שווה כסף.
+החזר רשימה תמציתית של סתירות בפורמט JSON:
+[{"point": "תיאור קצר", "contract_id": "...", "work_id": "..."}]
 
-        for (const workDoc of workDocs) {
-            const workText = (workDoc.extracted_text || "").substring(0, MAX_TEXT_LENGTH);
-            if (!workText || workText.startsWith("[NON-PDF")) continue;
+### חוזה:
+${contractsSummary}
 
-            pairs.push({ contractDoc, contractText, workDoc, workText });
-        }
-    }
+### ביצוע:
+${workSummary}`;
 
-    // Process in batches to balance speed and avoid API rate limits
-    const BATCH_SIZE = 3;
-    for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
-        const batch = pairs.slice(i, i + BATCH_SIZE);
+    try {
+        const detectionResult = await geminiFlashModel.generateContent(detectionPrompt);
+        const detectionText = detectionResult.response.text();
+        const potentialPoints = parseJsonSafe(detectionText);
 
-        const batchPromises = batch.map(async ({ contractDoc, contractText, workDoc, workText }) => {
-            try {
-                const prompt = buildAnalysisPrompt(contractDoc.title, contractText, workDoc.title, workText);
-                const result = await model.generateContent(prompt);
-                const response = result.response.text();
+        if (!Array.isArray(potentialPoints) || potentialPoints.length === 0) return [];
 
-                const parsed = parseGeminiResponse(response, contractDoc, workDoc);
-                console.log(`[scan] ${contractDoc.title} vs ${workDoc.title}: ${parsed.length} contradictions`);
-                return parsed;
-            } catch (err: any) {
-                console.error(`[scan] Gemini error for ${contractDoc.title} vs ${workDoc.title}:`, err.message);
-                return [];
-            }
-        });
+        const pointsStr = potentialPoints.map(p => `- ${p.point} (Docs: ${p.contract_id} vs ${p.work_id})`).join("\n");
+        
+        const analysisPrompt = `אתה מומחה משפטי-הנדסי בכיר (Senior Claims Manager). 
+הפכנו את הנקודות הבאות כחשודות לסתירות. נתח אותן לעומק, הבא ציטוטים מדויקים ובנה אסטרטגיית הגנה לקבלן.
 
-        // Wait for current batch to complete
-        const results = await Promise.all(batchPromises);
+### נקודות לניתוח:
+${pointsStr}
 
-        // Append all found contradictions
-        for (const parsed of results) {
-            allContradictions.push(...parsed);
-        }
-    }
+### דגשים:
+1. רק סתירות עם ערך כספי ממשי.
+2. ציטוטים מדויקים מהטקסט.
+3. פורמט JSON בלבד.
 
-    return allContradictions;
-}
-
-/**
- * Промпт для Gemini — с чётким определением: הבדל ≠ סתירה
- */
-function buildAnalysisPrompt(
-    contractTitle: string, contractText: string,
-    workTitle: string, workText: string
-): string {
-    return `אתה מומחה משפטי-הנדסי בתחום חוזי בנייה ותשתיות בישראל.
-
-## כלל ליבה: הבדל ≠ סתירה
-
-סתירה מהותית מתקיימת אך ורק כאשר מתקיימים **כל שלושת התנאים יחד:**
-1. **אותו אלמנט** — שני המסמכים מדברים על אותו פריט/רכיב/חומר/עבודה
-2. **אותו הקשר** — אותו מיקום, אותו תחום, אותו סעיף חוזי
-3. **דרישות סותרות** — הדרישות אינן יכולות להתקיים יחד
-
-### דוגמה — זו לא סתירה:
-- חוזה: "אבן שפה בתוך המפעל — סוג A"
-- ביצוע: "אבן שפה מחוץ למפעל — סוג B"
-→ זה **לא** סתירה! אלו שני פריטים שונים במיקומים שונים.
-
-### דוגמה — זו כן סתירה:
-- חוזה: "אבן שפה באזור X — סוג A"
-- ביצוע: "אבן שפה באזור X — סוג B"
-→ זו **כן** סתירה! אותו אלמנט, אותו מיקום, דרישות שונות.
-
-### סוגי סתירות מהותיות שיש לזהות:
-1. **שינוי פריט באותו הקשר** — חומר/סוג/מידה שונה עבור אותה עבודה
-2. **שינוי דרישה טכנית באותו סעיף** — תקן/שיטה/איכות שונה
-3. **הוראה חדשה הסותרת הוראה מחייבת** — פרוטוקול שסותר תנאי חוזה
-4. **שינוי כמויות** — כמות שונה עבור אותו פריט עבודה
-5. **שינוי מחיר/תנאי תשלום** — תנאים כספיים שונים לאותה עבודה
-6. **ביטול/החלפה ללא תיעוד** — שינוי הגדרה קיימת ללא שינוי צו או מכתב שינויים
-
-### מה לא לדווח:
-- הבדלים בהקשרים שונים (מיקומים שונים, עבודות שונות)
-- מידע קיים במסמך אחד וחסר בשני (זה השלמה, לא סתירה)
-- ניסוחים שונים של אותו רעיון
-- פרטים כלליים שאינם ספציפיים (כמו "חומרים, שיטות ביצוע, תקנים")
-
----
-
-## מסמכים לבדיקה:
-
-📄 **מסמך חוזי:** "${contractTitle}"
----
-${contractText}
----
-
-📄 **מסמך עבודה/ביצוע:** "${workTitle}"
----
-${workText}
----
-
-## פורמט תשובה — JSON בלבד:
+### פורמט פלט:
 [
   {
-    "title": "כותרת קצרה ומדויקת של הסתירה",
-    "description": "תיאור מפורט: מה בדיוק סותר, באיזה הקשר, ומדוע זו סתירה",
-    "contract_quote": "ציטוט מדויק מתוך מסמך החוזה",
-    "work_quote": "ציטוט מדויק מתוך מסמך העבודה",
-    "severity": "HIGH | MEDIUM | LOW",
-    "strategy_advice": "המלצה אסטרטגית לקבלן — מה לעשות, האם לדרוש שינוי צו"
+    "title": "כותרת",
+    "description": "הסבר הכולל [1] ו-[2]",
+    "contract_quote": "ציטוט מהחוזה",
+    "work_quote": "ציטוט מהביצוע",
+    "severity": "HIGH|MEDIUM|LOW",
+    "source_doc_id": "UUID של מסמך הביצוע",
+    "target_doc_id": "UUID של מסמך החוזה",
+    "business_value": "למה זה עוזר לקבלן?",
+    "justification": "הצדקה מקצועית",
+    "strategy_advice": "מה לעשות?"
   }
 ]
 
-**אם אין סתירות מהותיות — החזר מערך ריק: []**
-אל תמציא סתירות. אל תדווח על הבדלים הקשריים. רק סתירות מהותיות מבוססות על הטקסט.
-החזר JSON בלבד, ללא markdown, ללא הסברים נוספים.`;
-}
+### טקст מלא של המסמכים הרלוונטיים:
+${contractsSummary.substring(0, 500000)}
+${workSummary.substring(0, 500000)}`;
 
-/**
- * פרסור תשובת Gemini → מערך contradictions עם ציטוטים
- */
-function parseGeminiResponse(response: string, contractDoc: any, workDoc: any): any[] {
-    try {
-        // Чистим ответ от markdown-блоков
-        let cleaned = response.trim();
-        if (cleaned.startsWith("```json")) {
-            cleaned = cleaned.replace(/^```json\s*/, "").replace(/```\s*$/, "");
-        } else if (cleaned.startsWith("```")) {
-            cleaned = cleaned.replace(/^```\s*/, "").replace(/```\s*$/, "");
-        }
+        const analysisResult = await geminiModel.generateContent(analysisPrompt);
+        const analysisText = analysisResult.response.text();
+        const finalResults = parseJsonSafe(analysisText);
 
-        const parsed = JSON.parse(cleaned);
+        if (!Array.isArray(finalResults)) return [];
 
-        if (!Array.isArray(parsed)) return [];
-
-        return parsed.map((item: any) => ({
-            title: item.title || "סתירה שזוהתה",
-            description: buildRichDescription(item),
-            strategy_advice: item.strategy_advice || "",
-            severity: ["HIGH", "MEDIUM", "LOW"].includes(item.severity) ? item.severity : "MEDIUM",
-            source_doc_id: workDoc.id,
-            target_doc_id: contractDoc.id,
+        return finalResults.map((item: any) => ({
+            ...item,
+            evidence_data: {
+                contract_quote: item.contract_quote,
+                work_quote: item.work_quote,
+                business_value: item.business_value,
+                justification: item.justification
+            }
         }));
     } catch (e) {
-        console.error("[scan] Failed to parse Gemini response:", e);
-        console.error("[scan] Raw response:", response.substring(0, 500));
+        console.error("[scan] Hybrid AI Error:", e);
         return [];
     }
 }
 
-/**
- * Собираем богатое описание с цитатами из обоих документов
- */
-function buildRichDescription(item: any): string {
-    let desc = item.description || "";
-
-    // Добавляем цитаты если AI их вернул
-    if (item.contract_quote || item.work_quote) {
-        desc += "\n\n";
-        if (item.contract_quote) {
-            desc += `📄 מסמך חוזי: "${item.contract_quote}"\n`;
-        }
-        if (item.work_quote) {
-            desc += `📄 מסמך ביצוע: "${item.work_quote}"\n`;
-        }
+function parseJsonSafe(text: string): any {
+    try {
+        let cleaned = text.trim();
+        if (cleaned.startsWith("```json")) cleaned = cleaned.replace(/^```json\s*/, "").replace(/```\s*$/, "");
+        else if (cleaned.startsWith("```")) cleaned = cleaned.replace(/^```\s*/, "").replace(/```\s*$/, "");
+        return JSON.parse(cleaned);
+    } catch (e) {
+        console.warn("[scan] JSON Parse failed:", e, "Text snippet:", text.substring(0, 100));
+        return null;
     }
-
-    return desc;
 }

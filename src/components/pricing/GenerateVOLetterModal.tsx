@@ -36,7 +36,15 @@ export default function GenerateVOLetterModal({ selectedItems, onClose }: Genera
                     recipient,
                     subject,
                     keyPoints,
-                    tone
+                    tone,
+                    items: selectedItems.map(i => ({
+                        description: i.description,
+                        quantity: i.quantity,
+                        unit: i.unit,
+                        price: i.unit_price_excl_vat,
+                        total: i.quantity * i.unit_price_excl_vat,
+                        code: i.item_code
+                    }))
                 })
             });
 

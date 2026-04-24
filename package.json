@@ -16,6 +16,9 @@
     "@google/generative-ai": "^0.24.1",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.97.0",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "framer-motion": "^12.38.0",
     "jspdf": "^4.2.0",
     "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.575.0",
@@ -23,20 +26,19 @@
     "pdf-parse": "^2.4.5",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "express": "^5.2.1",
-    "dotenv": "^16.4.5"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/express": "^5.0.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/express": "^5.0.6",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
-    "tailwindcss": "^4",
-    "typescript": "^5",
     "nodemon": "^3.0.0",
-    "ts-node": "^10.0.0"
+    "tailwindcss": "^4",
+    "ts-node": "^10.0.0",
+    "typescript": "^5"
   }
 }

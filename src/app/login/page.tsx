@@ -1,4 +1,5 @@
 import { login, signup } from './actions'
+import { SubmitButton } from './SubmitButton'
 
 export default async function LoginPage({
     searchParams,
@@ -71,18 +72,18 @@ export default async function LoginPage({
                     </div>
 
                     <div className="flex flex-col sm:flex-row gap-3 mt-4">
-                        <button
+                        <SubmitButton
                             formAction={login}
                             className="flex-1 bg-primary hover:bg-primary/80 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-[0_0_15px_rgba(59,130,246,0.5)] transform hover:-translate-y-0.5"
                         >
                             התחבר
-                        </button>
-                        <button
+                        </SubmitButton>
+                        <SubmitButton
                             formAction={signup}
                             className="flex-1 bg-workspace hover:bg-secondary border border-border-subtle text-gray-300 font-medium py-3 px-4 rounded-lg transition-colors transform hover:-translate-y-0.5"
                         >
                             הירשם
-                        </button>
+                        </SubmitButton>
                     </div>
                 </form>
 

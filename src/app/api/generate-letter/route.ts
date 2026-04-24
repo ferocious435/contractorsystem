@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createClient } from "@/utils/supabase/server";
-
-const apiKey = process.env.GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(apiKey || "");
-
-const letterModel = genAI.getGenerativeModel({
-    model: "gemini-3.1-pro",
-});
+import { geminiModel } from "@/lib/gemini";
 
 const LETTER_TYPES: Record<string, string> = {
     claim: 'מכתב תביעה / דרישה (претензия)',
@@ -27,7 +20,7 @@ export async function POST(req: NextRequest) {
         }
 
         const body = await req.json();
-        const { projectId, letterType, recipient, subject, keyPoints, tone } = body;
+        const { projectId, letterType, recipient, subject, keyPoints, tone, items } = body;
 
         if (!projectId || !letterType) {
             return NextResponse.json({ error: "projectId and letterType are required" }, { status: 400 });
@@ -40,31 +33,53 @@ export async function POST(req: NextRequest) {
             .eq('id', projectId)
             .single();
 
-        const prompt = `
-אתה כותב מכתבים מקצועי לקבלני בניה בישראל.
+        // Подготовка списка работ для промпта
+        const itemsList = items && Array.isArray(items) 
+            ? items.map((i: any) => `- ${i.description} (קוד: ${i.code || '---'}): ${i.quantity} ${i.unit} x ${i.price} ₪ = ${i.total} ₪`).join('\n')
+            : 'לא צוינו סעיפים ספציפיים';
 
-כתוב ${LETTER_TYPES[letterType] || 'מכתב'} עבור הפרויקט הבא:
+        // Расчет итогов для AI (чтобы он не ошибся в арифметике)
+        const totalExclVat = items?.reduce((sum: number, i: any) => sum + i.total, 0) || 0;
+        const vat = totalExclVat * 0.18;
+        const totalInclVat = totalExclVat + vat;
+
+        const prompt = `
+אתה כותב מכתבים מקצועי ומומחה לניהול תביעות ושינויים (Variation Orders - V.O) עבור קבלני בניה בישראל.
+המטרה: להוציא מכתב רשמי, משפטי וברור שדורש תשלום או מודיע על שינויים בלו"ז/תקציב.
+
+סוג המכתב: ${LETTER_TYPES[letterType] || 'מכתב'}
+טון: ${tone === 'formal' ? 'פורמלי ומקצועי' : tone === 'firm' ? 'תקיף וחד משמעי (התראה)' : 'ענייני ומקצועי'}
+
+פרטי הפרויקט:
 - שם הפרויקט: ${project?.name || 'לא ידוע'}
-- שם הקבלן (שולח): ${project?.contractor_name || '[שם הקבלן]'}
-- שם הלקוח/מזמין: ${project?.client_name || '[שם המזמין]'}
+- הקבלן המבצע (השולח): ${project?.contractor_name || '[שם הקבלן]'}
+- המזמין/לקוח: ${project?.client_name || '[שם המזמין]'}
 - מיקום: ${project?.location || 'לא ידוע'}
 
-פרטי המכתב:
+פרטי הנמען והנושא:
 - נמען: ${recipient || '[נמען]'}
 - נושא: ${subject || '[נושא]'}
-- נקודות מפתח: ${keyPoints || 'לא צוינו'}
-- טון: ${tone === 'formal' ? 'פורמלי ומקצועי' : tone === 'firm' ? 'תקיף אך מקצועי' : 'ידידותי ומקצועי'}
 
-הנחיות:
-1. כתוב בעברית תקנית מקצועית.
-2. כלול תאריך, כותרת, גוף, וחתימה.
-3. התייחס לסעיפי חוזה רלוונטיים אם מתאים.
-4. סכומים תמיד בשקלים (₪).
-5. הפרד בין סכומים ללא מע"מ ועם מע"מ כשרלוונטי.
-6. תן מכתב מוכן לשליחה — לא טיוטה.
+פירוט הסעיפים והעבודות (הכנס את זה לתוך תוכן המכתב בצורה זורמת):
+${itemsList}
+
+נתונים כספיים לסיכום (חובה להשתמש בהם במדויק):
+- סה"כ לפני מע"מ: ${totalExclVat.toLocaleString()} ₪
+- מע"מ (18%): ${vat.toLocaleString()} ₪
+- סה"כ כולל מע"מ: ${totalInclVat.toLocaleString()} ₪
+
+הנחיות כתיבה:
+1. כתוב בעברית ברמה גבוהה (High-level Hebrew).
+2. פתח בברכה רשמית (לכבוד... א.נ...).
+3. בגוף המכתב, הסבר את הצורך בביצוע העבודות החריגות/נוספות ואזכר את הסעיפים שצוינו.
+4. ציין במפורש שהמחירים אינם כוללים מע"מ ושיש להוסיף מע"מ כחוק (18%).
+5. סיים בדרישה לתיאום חשבון או אישור העבודות ובחתימה רשמית.
+6. אל תשתמש בסימנים של Markdown (כמו **) בתוך הטקסט של המכתב עצמו - תן טקסט נקי שניתן להעתיק.
+
+המכתב המבוקש:
 `;
 
-        const result = await letterModel.generateContent(prompt);
+        const result = await geminiModel.generateContent(prompt);
         const responseText = result.response.text();
 
         return NextResponse.json({ success: true, letter: responseText });

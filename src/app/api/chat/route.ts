@@ -1,14 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createClient } from "@/utils/supabase/server";
-
-const apiKey = process.env.GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(apiKey || "");
-
-// Модель для чата — без принудительного JSON, текстовый режим
-const chatModel = genAI.getGenerativeModel({
-    model: "gemini-3.1-pro",
-});
+import { geminiModelText } from "@/lib/gemini";
 
 export async function POST(req: NextRequest) {
     try {
@@ -97,7 +89,7 @@ ${contradictions?.map(c => `- [${c.severity}] ${c.title}: ${c.description || ''}
 
         const lastMessage = messages[messages.length - 1];
 
-        const chat = chatModel.startChat({
+        const chat = geminiModelText.startChat({
             history: [
                 { role: 'user', parts: [{ text: 'מי אתה?' }] },
                 { role: 'model', parts: [{ text: systemPrompt }] },
