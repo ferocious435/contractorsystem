@@ -1,6 +1,8 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { LedgerItem } from '@/components/pricing/LedgerTable';
+import { HEBREW_FONT_BASE64 } from './fonts/hebrewFont';
+import { VAT_RATE, AI_MODEL_BRANDING } from './constants';
 
 interface PDFGeneratorProps {
     projectName: string;
@@ -17,19 +19,19 @@ export const generatePricingPDF = ({
     subject,
     legalText,
     items,
-    vatRate = 0.18
+    vatRate = VAT_RATE
 }: PDFGeneratorProps) => {
-    // Note: Due to standard jsPDF limitations with RTL and Hebrew, 
-    // a complete production setup requires importing a Hebrew-supporting .ttf font (like Arial Hebrew) 
-    // into the jsPDF Virtual File System (VFS).
-    // For this implementation, we use the standard setup, but text might need manual reversal or a custom font injection for perfect RTL rendering.
-
     // Create portrait A4 document
     const doc = new jsPDF({
         orientation: 'p',
         unit: 'mm',
         format: 'a4'
     });
+
+    // Add Hebrew Font support
+    doc.addFileToVFS('Rubik-Regular.ttf', HEBREW_FONT_BASE64);
+    doc.addFont('Rubik-Regular.ttf', 'Rubik', 'normal');
+    doc.setFont('Rubik');
 
     // Formatting Helpers
     const formatCurrency = (val: number) => {
@@ -38,17 +40,13 @@ export const generatePricingPDF = ({
 
     // --- Header Section ---
     doc.setFontSize(22);
-    // Optional: doc.addFileToVFS("hebrew-font.ttf", fontData); doc.addFont("hebrew-font.ttf", "Hebrew", "normal"); doc.setFont("Hebrew");
-
-    // Reverse strings as a basic fallback for Hebrew (if no proper RTL font shaper is loaded)
-    const reverseHebrew = (str: string) => str.split(' ').reverse().join(' '); // very basic word-level reversal fallback if needed, but we'll try straight first.
-
+    
     doc.text(subject || 'הצעת מחיר חריגים', 105, 20, { align: 'center' });
 
     doc.setFontSize(12);
-    doc.text(`תאריך: ${new Date().toLocaleDateString('en-GB')}`, 20, 30);
-    doc.text(`פרויקט: ${projectName || '---'}`, 20, 40);
-    doc.text(`לכבוד: ${recipient || '---'}`, 20, 50);
+    doc.text(`תאריך: ${new Date().toLocaleDateString('he-IL')}`, 20, 30);
+    doc.text(`פרויקט: ${projectName || '---'}`, 190, 40, { align: 'right' });
+    doc.text(`לכבוד: ${recipient || '---'}`, 190, 50, { align: 'right' });
 
     // --- Legal Text (AI Generated) ---
     doc.setFontSize(11);
@@ -57,26 +55,30 @@ export const generatePricingPDF = ({
     const splitLegalText = doc.splitTextToSize(legalText, 170);
     let yPos = 65;
 
-    doc.text(splitLegalText, 190, yPos, { align: 'right' }); // RTL simulation by right-aligning
+    doc.text(splitLegalText, 190, yPos, { align: 'right' }); 
+
 
     yPos += (splitLegalText.length * 6) + 10;
 
     // --- Financial Table ---
-    const tableData = items.map((item, index) => {
+    const tableData: any[] = [];
+    
+    items.forEach((item, index) => {
         if (item.item_type === 'CHAPTER' || item.item_type === 'SUBCHAPTER') {
-            return [
+            tableData.push([
                 '', // No Total
                 '', // No Price
                 '', // No Quantity
                 '', // No Unit
                 item.description,
-                item.item_type === 'CHAPTER' ? 'פרק' : 'תת-פרק',
+                item.item_code || (item.item_type === 'CHAPTER' ? 'פרק' : 'תת-פרק'),
                 ''
-            ];
+            ]);
+            return;
         }
         
         if (item.item_type === 'NOTE') {
-            return [
+            tableData.push([
                 '',
                 '',
                 '',
@@ -84,10 +86,12 @@ export const generatePricingPDF = ({
                 `ⓘ ${item.description}`,
                 'הערה',
                 ''
-            ];
+            ]);
+            return;
         }
 
-        return [
+        // Standard Item
+        tableData.push([
             formatCurrency(item.quantity * item.unit_price_excl_vat),
             formatCurrency(item.unit_price_excl_vat),
             item.quantity.toString(),
@@ -95,7 +99,52 @@ export const generatePricingPDF = ({
             item.description,
             item.item_code || '-',
             (index + 1).toString()
-        ];
+        ]);
+
+        // Add AI Rationale row if exists
+        if (item.ai_rationale) {
+            tableData.push([
+                { 
+                    content: `הסבר מקצועי (AI): ${item.ai_rationale}`, 
+                    colSpan: 5, 
+                    styles: { 
+                        fontSize: 8, 
+                        fontStyle: 'italic', 
+                        textColor: [100, 116, 139],
+                        cellPadding: { top: 1, bottom: 2, left: 2, right: 5 }
+                    } 
+                },
+                '', '' // Placeholders for remaining columns if needed, though colSpan handles it
+            ]);
+        }
+
+        // Add Governing Notes (Evidence) if exists
+        if (item.governing_notes) {
+            let noteText = '';
+            if (typeof item.governing_notes === 'string') {
+                noteText = item.governing_notes;
+            } else if (Array.isArray(item.governing_notes)) {
+                noteText = item.governing_notes.map((n: any) => n.text || JSON.stringify(n)).join(' | ');
+            } else if (typeof item.governing_notes === 'object') {
+                noteText = item.governing_notes.instruction || item.governing_notes.note || JSON.stringify(item.governing_notes);
+            }
+
+            if (noteText) {
+                tableData.push([
+                    { 
+                        content: `סימוכין חוזי: ${noteText}`, 
+                        colSpan: 5, 
+                        styles: { 
+                            fontSize: 8, 
+                            fontStyle: 'bold', 
+                            textColor: [16, 185, 129],
+                            cellPadding: { top: 1, bottom: 2, left: 2, right: 5 }
+                        } 
+                    },
+                    '', ''
+                ]);
+            }
+        }
     });
 
     autoTable(doc, {
@@ -104,14 +153,16 @@ export const generatePricingPDF = ({
         body: tableData,
         theme: 'grid',
         styles: {
+            font: 'Rubik',
             halign: 'right',
-            font: 'helvetica', // Будет заменено на Rubik при наличии шрифта
         },
         headStyles: {
             fillColor: [21, 28, 36],
             textColor: 255,
-            halign: 'right'
+            halign: 'right',
+            font: 'Rubik'
         },
+
         columnStyles: {
             0: { halign: 'left' }, // Sums
             1: { halign: 'left' }, // Price
@@ -155,6 +206,15 @@ export const generatePricingPDF = ({
 
     doc.setFontSize(14);
     doc.text(`סה"כ לתשלום: ${formatCurrency(totalInclVat)}`, 190, finalY + 18, { align: 'right' });
+
+    // Footer
+    const pageCount = (doc as any).internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setTextColor(150, 150, 150);
+        doc.setFontSize(8);
+        doc.text(`${AI_MODEL_BRANDING} | עמוד ${i} מתוך ${pageCount}`, 105, 290, { align: 'center' });
+    }
 
     // Save PDF
     doc.save(`VO_Letter_${new Date().getTime()}.pdf`);

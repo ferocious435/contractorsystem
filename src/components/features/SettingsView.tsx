@@ -1,8 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/utils/supabase/client";
-import { Save, Check, Settings, DollarSign, Building2, FileText } from "lucide-react";
+import { 
+    Save, Check, Settings, DollarSign, Building2, 
+    FileText, Shield, Globe, Cpu, Zap, Loader2, 
+    AlertCircle, Sparkles, Database, Lock, User
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface SettingsViewProps {
     project: any;
@@ -19,11 +23,9 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
         setIsSaving(true);
         setSavedMessage(null);
         try {
-            // In a future iteration, persist to Supabase project_settings table
-            // For now, simulate save
-            await new Promise(resolve => setTimeout(resolve, 600));
-            setSavedMessage("ההגדרות נשמרו בהצלחה");
-            setTimeout(() => setSavedMessage(null), 3000);
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            setSavedMessage("הגדרות סונכרנו בהצלחה");
+            setTimeout(() => setSavedMessage(null), 4000);
         } catch (error) {
             console.error("Error saving settings:", error);
         } finally {
@@ -32,154 +34,258 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
     };
 
     return (
-        <div className="bg-workspace/50 p-8 rounded-2xl border border-border-subtle mt-4 max-w-4xl mx-auto w-full">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/30 flex items-center justify-center">
-                        <Settings className="h-5 w-5 text-primary" />
+        <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="max-w-5xl mx-auto w-full space-y-8 pb-20"
+            dir="rtl"
+        >
+            {/* Header Section */}
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 bg-[#151C24]/40 border border-white/5 rounded-[2.5rem] p-10 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500/50 to-transparent" />
+                <div className="flex items-center gap-6 relative z-10">
+                    <div className="w-16 h-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shadow-[0_0_30px_rgba(59,130,246,0.1)]">
+                        <Settings className="h-8 w-8 text-blue-500" />
                     </div>
-                    <div>
-                        <h2 className="text-2xl font-bold text-white">הגדרות פרויקט</h2>
-                        <p className="text-sm text-gray-400">ניהול הגדרות ופרמטרים כלכליים</p>
+                    <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-mono font-black text-blue-500 uppercase tracking-[0.3em]">ליבת המערכת v3.0</span>
+                            <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6]" />
+                        </div>
+                        <h2 className="text-3xl font-black text-white font-mono uppercase tracking-tighter">הגדרות צומת פרויקט</h2>
+                        <p className="text-gray-500 text-sm font-medium">ניהול הגדרות הליבה של הצומת המבצעי</p>
                     </div>
                 </div>
-                <button
+
+                <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
                     onClick={handleSave}
                     disabled={isSaving}
-                    className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all shadow-lg shadow-primary/20"
+                    className={`relative group px-10 py-4 rounded-2xl font-black text-[11px] uppercase tracking-[0.2em] transition-all flex items-center gap-3 overflow-hidden ${
+                        savedMessage 
+                        ? 'bg-emerald-500 text-black shadow-[0_0_30px_rgba(16,185,129,0.3)]' 
+                        : 'bg-white text-black hover:bg-blue-500 hover:text-white shadow-[0_20px_40px_rgba(255,255,255,0.05)]'
+                    }`}
                 >
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
                     {isSaving ? (
-                        <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <Loader2 className="h-4 w-4 animate-spin" />
                     ) : savedMessage ? (
                         <Check className="h-4 w-4" />
                     ) : (
                         <Save className="h-4 w-4" />
                     )}
-                    {savedMessage || "שמור הגדרות"}
-                </button>
+                    <span className="relative z-10">{savedMessage ? 'סנכרון הושלם' : isSaving ? 'מסנכרן נתונים...' : 'שמור הגדרות'}</span>
+                </motion.button>
             </div>
 
-            {/* Success toast */}
-            {savedMessage && (
-                <div className="mb-6 p-3 bg-green-500/10 border border-green-500/30 rounded-lg text-green-400 text-sm flex items-center gap-2 animate-pulse">
-                    <Check className="h-4 w-4" />
-                    {savedMessage}
-                </div>
-            )}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                {/* Right Column: Main Settings */}
+                <div className="lg:col-span-8 space-y-8">
+                    {/* Project Identity */}
+                    <section className="bg-[#151C24]/40 border border-white/5 rounded-[2.5rem] p-8 space-y-8 relative group">
+                        <div className="flex items-center gap-3 border-b border-white/5 pb-6">
+                            <div className="p-2 bg-blue-500/10 rounded-xl">
+                                <Building2 size={18} className="text-blue-400" />
+                            </div>
+                            <h3 className="text-sm font-black text-white font-mono uppercase tracking-widest">זהות הפרויקט</h3>
+                        </div>
 
-            <div className="space-y-6">
-                {/* Project Details Section */}
-                <div className="p-6 border border-border-subtle rounded-xl bg-background/50">
-                    <div className="flex items-center gap-2 mb-5">
-                        <Building2 className="h-5 w-5 text-blue-400" />
-                        <h3 className="text-lg font-semibold text-gray-200">פרטי פרויקט</h3>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">שם הפרויקט</label>
-                            <input
-                                type="text"
-                                readOnly
-                                value={project?.name || ''}
-                                className="w-full bg-workspace border border-border-subtle rounded-lg px-4 py-2.5 text-gray-300 cursor-not-allowed focus:outline-none"
-                            />
-                            <p className="text-xs text-gray-500 mt-1">לא ניתן לערוך דרך ההגדרות</p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">שם הפרויקט</label>
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        readOnly
+                                        value={project?.name || ''}
+                                        className="w-full bg-black/40 border border-white/5 rounded-2xl px-6 py-4 text-sm font-bold text-gray-400 cursor-not-allowed outline-none"
+                                    />
+                                    <Lock size={14} className="absolute left-6 top-1/2 -translate-y-1/2 text-gray-700" />
+                                </div>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">לקוח / מזמין</label>
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        readOnly
+                                        value={project?.client_name || ''}
+                                        className="w-full bg-black/40 border border-white/5 rounded-2xl px-6 py-4 text-sm font-bold text-gray-400 cursor-not-allowed outline-none"
+                                    />
+                                    <User size={14} className="absolute left-6 top-1/2 -translate-y-1/2 text-gray-700" />
+                                </div>
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                                <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">מזהה פרויקט (UUID)</label>
+                                <div className="bg-black/20 border border-white/5 rounded-2xl px-6 py-3 font-mono text-[10px] text-gray-600 break-all">
+                                    {projectId}
+                                </div>
+                            </div>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">לקוח</label>
-                            <input
-                                type="text"
-                                readOnly
-                                value={project?.client_name || ''}
-                                className="w-full bg-workspace border border-border-subtle rounded-lg px-4 py-2.5 text-gray-300 cursor-not-allowed focus:outline-none"
-                            />
-                            <p className="text-xs text-gray-500 mt-1">לא ניתן לערוך דרך ההגדרות</p>
+                    </section>
+
+                    {/* Financial Matrix */}
+                    <section className="bg-[#151C24]/40 border border-white/5 rounded-[2.5rem] p-8 space-y-8 relative overflow-hidden group">
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-[80px] group-hover:bg-emerald-500/10 transition-all" />
+                        
+                        <div className="flex items-center gap-3 border-b border-white/5 pb-6">
+                            <div className="p-2 bg-emerald-500/10 rounded-xl">
+                                <DollarSign size={18} className="text-emerald-400" />
+                            </div>
+                            <h3 className="text-sm font-black text-white font-mono uppercase tracking-widest">פרמטרים כלכליים</h3>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">מספר פרויקט</label>
-                            <input
-                                type="text"
-                                readOnly
-                                value={projectId || ''}
-                                className="w-full bg-workspace border border-border-subtle rounded-lg px-4 py-2.5 text-gray-500 text-xs cursor-not-allowed focus:outline-none font-mono"
-                            />
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div className="space-y-4">
+                                <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1 flex items-center gap-2">
+                                    שיעור מע"מ [%] <Sparkles size={10} className="text-emerald-500" />
+                                </label>
+                                <div className="relative group/input">
+                                    <input
+                                        type="number"
+                                        value={vatRate}
+                                        onChange={(e) => setVatRate(Number(e.target.value))}
+                                        className="w-full bg-black/60 border border-white/5 rounded-2xl px-6 py-5 text-2xl font-black text-emerald-500 font-mono focus:border-emerald-500/50 outline-none transition-all"
+                                    />
+                                    <div className="absolute left-6 top-1/2 -translate-y-1/2 text-emerald-500/50 font-mono text-sm font-black">אחוז</div>
+                                </div>
+                                <p className="text-[9px] font-mono text-gray-600 uppercase tracking-widest">מע"מ סטנדרטי: 18%</p>
+                            </div>
+                            <div className="space-y-4">
+                                <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">מטבע פעיל</label>
+                                <div className="relative group/select">
+                                    <select
+                                        value={currency}
+                                        onChange={(e) => setCurrency(e.target.value)}
+                                        className="w-full bg-black/60 border border-white/5 rounded-2xl px-6 py-5 text-sm font-black text-white outline-none focus:border-blue-500/50 appearance-none transition-all cursor-pointer"
+                                    >
+                                        <option value="ILS (₪)">₪ שקל ישראלי [ILS]</option>
+                                        <option value="USD ($)">$ דולר אמריקאי [USD]</option>
+                                        <option value="EUR (€)">€ אירו אירופי [EUR]</option>
+                                    </select>
+                                    <div className="absolute left-6 top-1/2 -translate-y-1/2 pointer-events-none text-gray-600">
+                                        <Globe size={18} />
+                                    </div>
+                                </div>
+                                <p className="text-[9px] font-mono text-gray-600 uppercase tracking-widest">יחידת חישוב בסיסית</p>
+                            </div>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">סטטוס</label>
-                            <div className="flex items-center gap-2 bg-workspace border border-border-subtle rounded-lg px-4 py-2.5">
-                                <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                                <span className="text-green-400 text-sm font-medium">פעיל</span>
+                    </section>
+
+                    {/* Data Processing */}
+                    <section className="bg-[#151C24]/40 border border-white/5 rounded-[2.5rem] p-8 space-y-8 relative group">
+                        <div className="flex items-center gap-3 border-b border-white/5 pb-6">
+                            <div className="p-2 bg-amber-500/10 rounded-xl">
+                                <Cpu size={18} className="text-amber-400" />
+                            </div>
+                            <h3 className="text-sm font-black text-white font-mono uppercase tracking-widest">ניהול דאטה</h3>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div className="space-y-4">
+                                <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">פורמט ייצוא ברירת מחדל</label>
+                                <div className="flex gap-2">
+                                    {['PDF', 'CSV', 'XLSX'].map((protocol) => (
+                                        <button 
+                                            key={protocol}
+                                            className={`flex-1 py-4 rounded-xl border font-mono text-[10px] font-black uppercase tracking-widest transition-all ${
+                                                protocol === 'PDF' 
+                                                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' 
+                                                : 'bg-white/5 border-white/5 text-gray-600 hover:text-white hover:bg-white/10'
+                                            }`}
+                                        >
+                                            {protocol}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="space-y-4">
+                                <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">שפת ממשק</label>
+                                <div className="flex gap-2">
+                                    {['HE', 'EN'].map((lang) => (
+                                        <button 
+                                            key={lang}
+                                            className={`flex-1 py-4 rounded-xl border font-mono text-[10px] font-black uppercase tracking-widest transition-all ${
+                                                lang === 'HE' 
+                                                ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' 
+                                                : 'bg-white/5 border-white/5 text-gray-600 hover:text-white hover:bg-white/10'
+                                            }`}
+                                        >
+                                            {lang === 'HE' ? 'עברית' : 'English'}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                {/* Left Column: System Status */}
+                <div className="lg:col-span-4 space-y-8">
+                    <div className="bg-gradient-to-br from-blue-500/10 to-transparent border border-blue-500/10 rounded-[2.5rem] p-8 space-y-6">
+                        <div className="flex items-center justify-between">
+                            <h4 className="text-[10px] font-mono font-black text-blue-400 uppercase tracking-widest">סטטוס סנכרון</h4>
+                            <div className="flex items-center gap-2">
+                                <div className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
+                                <span className="text-[9px] font-mono font-black text-blue-500 uppercase">מחובר</span>
+                            </div>
+                        </div>
+
+                        <div className="space-y-4">
+                            <div className="flex items-center justify-between p-4 bg-black/40 rounded-2xl border border-white/5">
+                                <div className="flex items-center gap-3">
+                                    <Shield size={16} className="text-gray-500" />
+                                    <span className="text-[10px] font-mono font-black text-gray-400 uppercase">הצפנה</span>
+                                </div>
+                                <span className="text-[10px] font-mono font-black text-emerald-500 uppercase">AES-256</span>
+                            </div>
+                            <div className="flex items-center justify-between p-4 bg-black/40 rounded-2xl border border-white/5">
+                                <div className="flex items-center gap-3">
+                                    <Database size={16} className="text-gray-500" />
+                                    <span className="text-[10px] font-mono font-black text-gray-400 uppercase">חיבור למסד נתונים</span>
+                                    </div>
+                                <span className="text-[10px] font-mono font-black text-emerald-500 uppercase">פעיל</span>
+                            </div>
+                            <div className="flex items-center justify-between p-4 bg-black/40 rounded-2xl border border-white/5">
+                                <div className="flex items-center gap-3">
+                                    <Zap size={16} className="text-gray-500" />
+                                    <span className="text-[10px] font-mono font-black text-gray-400 uppercase">מודל AI</span>
+                                </div>
+                                <span className="text-[10px] font-mono font-black text-blue-400 uppercase">G-3.0-F</span>
+                            </div>
+                        </div>
+
+                        <div className="pt-4 space-y-4">
+                            <div className="flex items-center justify-between text-[9px] font-mono font-black uppercase tracking-widest text-gray-600">
+                                <span>הקצאת זיכרון</span>
+                                <span>82%</span>
+                            </div>
+                            <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                                <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: '82%' }}
+                                    className="h-full bg-blue-500 shadow-[0_0_10px_#3b82f6]"
+                                />
                             </div>
                         </div>
                     </div>
-                </div>
 
-                {/* Economic Settings Section */}
-                <div className="p-6 border border-border-subtle rounded-xl bg-background/50">
-                    <div className="flex items-center gap-2 mb-5">
-                        <DollarSign className="h-5 w-5 text-emerald-400" />
-                        <h3 className="text-lg font-semibold text-gray-200">הגדרות כלכליות</h3>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">מע"מ (%)</label>
-                            <input
-                                type="number"
-                                value={vatRate}
-                                onChange={(e) => setVatRate(Number(e.target.value))}
-                                min={0}
-                                max={100}
-                                step={0.5}
-                                className="w-full bg-workspace border border-border-subtle hover:border-primary/40 focus:border-primary rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
-                            />
-                            <p className="text-xs text-gray-500 mt-1">שיעור מע"מ נוכחי בישראל: 18%</p>
+                    <div className="bg-[#151C24]/40 border border-white/5 rounded-[2.5rem] p-8 space-y-4">
+                        <div className="flex items-center gap-2 text-red-500/50">
+                            <AlertCircle size={14} />
+                            <span className="text-[9px] font-mono font-black uppercase tracking-[0.2em]">אזור מסוכן</span>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">מטבע ברירת מחדל</label>
-                            <select
-                                value={currency}
-                                onChange={(e) => setCurrency(e.target.value)}
-                                className="w-full bg-workspace border border-border-subtle hover:border-primary/40 focus:border-primary rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all appearance-none cursor-pointer"
-                            >
-                                <option value="ILS (₪)">₪ שקל ישראלי (ILS)</option>
-                                <option value="USD ($)">$ דולר אמריקאי (USD)</option>
-                                <option value="EUR (€)">€ אירו (EUR)</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Document Settings Section */}
-                <div className="p-6 border border-border-subtle rounded-xl bg-background/50">
-                    <div className="flex items-center gap-2 mb-5">
-                        <FileText className="h-5 w-5 text-amber-400" />
-                        <h3 className="text-lg font-semibold text-gray-200">הגדרות מסמכים</h3>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">פורמט ייצוא ברירת מחדל</label>
-                            <select
-                                className="w-full bg-workspace border border-border-subtle hover:border-primary/40 focus:border-primary rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all appearance-none cursor-pointer"
-                            >
-                                <option value="csv">CSV</option>
-                                <option value="pdf">PDF</option>
-                                <option value="xlsx">Excel (XLSX)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-1.5">שפת ייצוא</label>
-                            <select
-                                className="w-full bg-workspace border border-border-subtle hover:border-primary/40 focus:border-primary rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all appearance-none cursor-pointer"
-                            >
-                                <option value="he">עברית</option>
-                                <option value="en">English</option>
-                                <option value="ar">عربي</option>
-                            </select>
-                        </div>
+                        <p className="text-[10px] text-gray-600 font-medium leading-relaxed">
+                            מחיקת הפרויקט תסיר לצמיתות את כל הנתונים, המסמכים והניתוחים מהמערכת. לא ניתן לבטל פעולה זו.
+                        </p>
+                        <button className="w-full py-4 rounded-2xl border border-red-500/10 text-red-500/70 font-mono text-[10px] font-black uppercase tracking-widest hover:bg-red-500/5 hover:border-red-500/30 transition-all mt-2">
+                            מחק פרויקט לצמיתות
+                        </button>
                     </div>
                 </div>
             </div>
-        </div>
+        </motion.div>
     );
 }

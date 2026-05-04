@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, Sparkles } from 'lucide-react';
+import { AI_MODEL_BRANDING } from '@/utils/constants';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -95,14 +96,17 @@ export default function AIConsultant({ projectId }: AIConsultantProps) {
                     <Bot className="w-5 h-5 text-primary" />
                 </div>
                 <div>
-                    <h2 className="text-xl font-bold text-gray-100">יועץ AI</h2>
+                    <h2 className="text-xl font-bold text-gray-100 flex items-center gap-2">
+                        יועץ AI
+                        <span className="text-[10px] font-mono text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-widest font-black">Powered by {AI_MODEL_BRANDING}</span>
+                    </h2>
                     <p className="text-xs text-gray-400">שאל כל שאלה על הפרויקט שלך — הבינה המלאכותית מכירה את כל הנתונים</p>
                 </div>
             </div>
 
-            {/* Область чата */}
+            {/* אזור הצ'אט */}
             <div className="bg-workspace border border-border-subtle rounded-xl overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 320px)', minHeight: '400px' }}>
-                {/* Сообщения */}
+                {/* הודעות */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
                     {messages.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full gap-6 text-center">
@@ -167,7 +171,7 @@ export default function AIConsultant({ projectId }: AIConsultantProps) {
                     <div ref={messagesEndRef} />
                 </div>
 
-                {/* Поле ввода */}
+                {/* שדה הזנה */}
                 <div className="p-4 border-t border-border-subtle bg-background/50">
                     <div className="flex gap-3 items-end">
                         <button

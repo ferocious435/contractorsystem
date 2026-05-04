@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
 
         const { data: contradictions } = await supabase
             .from('contradictions')
-            .select('title, severity, status, description')
+            .select('title, severity, category, status, description')
             .eq('project_id', projectId)
             .eq('status', 'OPEN')
             .limit(10);
@@ -42,6 +42,18 @@ export async function POST(req: NextRequest) {
             .from('pricing_ledger')
             .select('type, total_price_excl_vat, vat_amount, total_price_incl_vat')
             .eq('project_id', projectId);
+
+        // Fetch project-specific governing notes (סעיפי הערה)
+        const { data: governingNotes } = await supabase
+            .from('pricelist_items')
+            .select(`
+                item_code,
+                description,
+                pricelists!inner (name)
+            `)
+            .eq('item_type', 'NOTE')
+            .eq('pricelists.project_id', projectId)
+            .limit(50);
 
         // Агрегируем данные сметы
         const totalBase = pricingSummary?.filter(i => i.type === 'BASE_CONTRACT')
@@ -60,6 +72,7 @@ export async function POST(req: NextRequest) {
 - הפרד תמיד בין מחיר ללא מע"מ, מע"מ, ומחיר כולל מע"מ.
 - תן תשובות מקצועיות אך ידידותיות.
 - השתמש בידע שלך על חוזי בניה ישראליים, כתבי כמויות, ותקנות.
+- דגש קריטי: סעיפי הערה והנחיות (NOTE) הם המחייבים ביותר בחוזה. אם משתמש שואל על היקף עבודה או מה כלול במחיר, בדוק קודם כל את סעיפי ההערה הרלוונטיים לפני שתענה.
 
 === נתוני הפרויקט הנוכחי ===
 שם הפרויקט: ${project?.name || 'לא ידוע'}
@@ -72,12 +85,15 @@ export async function POST(req: NextRequest) {
 ${documents?.map(d => `- ${d.title} (${d.doc_type}, סטטוס AI: ${d.ai_status})`).join('\n') || 'אין מסמכים'}
 
 סתירות פתוחות (${contradictions?.length || 0}):
-${contradictions?.map(c => `- [${c.severity}] ${c.title}: ${c.description || ''}`).join('\n') || 'אין סתירות'}
+${contradictions?.map(c => `- [${c.category || c.severity}] ${c.title}: ${c.description || ''}`).join('\n') || 'אין סתירות'}
 
 סיכום תמחור:
 - חוזה בסיס כולל מע"מ: ₪${totalBase.toLocaleString('he-IL')}
 - שינויים/חריגים כולל מע"מ: ₪${totalVO.toLocaleString('he-IL')}
 - סה"כ: ₪${(totalBase + totalVO).toLocaleString('he-IL')}
+
+סעיפי הערה והנחיות חשובים מהחוזה (${governingNotes?.length || 0}):
+${governingNotes?.map((n: any) => `- [${n.item_code || 'כללי'}] (${n.pricelists?.name}): ${n.description}`).join('\n') || 'אין הערות מיוחדות'}
 === סוף נתוני פרויקט ===
 `;
 

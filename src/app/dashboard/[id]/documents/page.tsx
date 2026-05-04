@@ -2,13 +2,12 @@ import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
 import DocumentsPageClient from '@/components/documents/DocumentsPageClient';
 
-export default async function DocumentsPage({ params }: { params: { id: string } }) {
+export default async function DocumentsPage({ params }: { params: Promise<{ id: string }> }) {
+    const { id: projectId } = await params;
     const supabase = await createClient();
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return redirect('/login');
-
-    const projectId = params.id;
 
     // Fetch initial documents for SSR speed
     const { data: documents } = await supabase

@@ -8,11 +8,11 @@
 - **Хранилище файлов:** Supabase Storage.
 ### AI Stack
 - **Engine:** Google Gemini API
-- **Primary Model:** `gemini-2.5-pro` (Стабильная, основная логика "Radar")
-- **Secondary Model:** `gemini-2.5-flash` (Для OCR и нормализации BOQ)
-- **Experimental:** `gemini-3.1-pro-preview` (Для глубокого анализа рисков)
+- **Stable Engine:** `gemini-2.5-flash` (Основной стандарт для Radar, OCR и генерации писем)
+- **High-Performance:** `gemini-2.5-pro` (Для глубокого анализа сложных юридических конструкций)
 - **Constraint:** JSON Mode (`responseMimeType: "application/json"`)
 - **Worker:** Express (`src/worker.ts`) для тяжелых задач парсинга.
+
 
 ## 2. Развертывание (DevOps)
 - **Локальная разработка (Local Dev):** Локальная машина (Windows + Node.js), доступ по `http://localhost:3000`.

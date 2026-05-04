@@ -33,6 +33,7 @@ export async function updateSession(request: NextRequest) {
         data: { user },
     } = await supabase.auth.getUser()
 
+    // TEMPORARY BYPASS FOR DEBUGGING
     if (
         !user &&
         !request.nextUrl.pathname.startsWith('/login') &&

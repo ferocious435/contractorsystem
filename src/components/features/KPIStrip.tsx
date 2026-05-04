@@ -8,6 +8,7 @@ export function KPIStrip({ projectId }: { projectId: string | null }) {
     const [approvedExceptions, setApprovedExceptions] = useState(0);
     const [openExceptions, setOpenExceptions] = useState(0);
     const [identifiedRisks, setIdentifiedRisks] = useState(0);
+    const [rationaleCoverage, setRationaleCoverage] = useState(0);
 
     const supabase = createClient();
 
@@ -25,7 +26,7 @@ export function KPIStrip({ projectId }: { projectId: string | null }) {
             // 2. Загружаем ВСЕ строки pricing_ledger для расчёта KPI
             const { data: ledgerData } = await supabase
                 .from('pricing_ledger')
-                .select('type, quantity, unit_price_excl_vat, total_price_excl_vat')
+                .select('type, quantity, unit_price_excl_vat, total_price_excl_vat, ai_rationale, governing_notes')
                 .eq('project_id', projectId);
 
             if (ledgerData) {
@@ -47,6 +48,11 @@ export function KPIStrip({ projectId }: { projectId: string | null }) {
                 setOriginalBudget(projectData?.budget || baseBudget);
                 setApprovedExceptions(approvedVO);
                 setOpenExceptions(pendingVO);
+
+                // Расчет покрытия доказательствами
+                const totalItems = ledgerData.length;
+                const itemsWithRationale = ledgerData.filter(r => r.ai_rationale || r.governing_notes).length;
+                setRationaleCoverage(totalItems > 0 ? Math.round((itemsWithRationale / totalItems) * 100) : 0);
             } else if (projectData?.budget) {
                 setOriginalBudget(projectData.budget);
             }
@@ -74,10 +80,11 @@ export function KPIStrip({ projectId }: { projectId: string | null }) {
         { label: 'חריגים מאושרים', value: formatCurrency(approvedExceptions), color: 'text-success drop-shadow-[0_0_8px_rgba(0,208,132,0.4)]' },
         { label: 'חריגים פתוחים', value: formatCurrency(openExceptions), color: 'text-warning drop-shadow-[0_0_8px_rgba(249,115,22,0.4)]' },
         { label: 'סיכון מזוהה (AI)', value: `${identifiedRisks}`, color: 'text-critical drop-shadow-[0_0_8px_rgba(255,77,79,0.4)]' },
+        { label: 'כיסוי הוכחות', value: `${rationaleCoverage}%`, color: 'text-blue-400 drop-shadow-[0_0_8px_rgba(59,130,246,0.4)]' },
     ];
 
     return (
-        <div className="grid grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-5 gap-6 mb-8">
             {kpis.map((kpi, i) => (
                 <div
                     key={i}

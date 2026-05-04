@@ -1,91 +1,89 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/utils/supabase/server";
-import { geminiModel } from "@/lib/gemini";
+import { genAI, GEMINI_CONFIG } from "@/lib/gemini";
+import { NextResponse } from "next/server";
 
-const LETTER_TYPES: Record<string, string> = {
-    claim: 'מכתב תביעה / דרישה (претензия)',
-    notice: 'הודעה רשמית (официальное уведомление)',
-    vo_request: 'בקשת חריג / שינוי (запрос на дополнительную работу)',
-    response: 'תשובה ללקוח / מזמין (ответ заказчику)',
-    general: 'מכתב כללי (общее письмо)'
-};
+const model = genAI.getGenerativeModel({ model: GEMINI_CONFIG.STABLE_FLASH });
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
     try {
-        const supabase = await createClient();
-        const { data: { session } } = await supabase.auth.getSession();
+        const { projectId, letterType, recipient, subject, keyPoints, tone, items } = await req.json();
 
-        if (!session) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        if (!process.env.GEMINI_API_KEY) {
+            return NextResponse.json({ success: false, error: "API Key missing" }, { status: 500 });
         }
 
-        const body = await req.json();
-        const { projectId, letterType, recipient, subject, keyPoints, tone, items } = body;
+        const itemsContext = items.map((item: any) => {
+            const evidenceStr = item.evidence_data && Array.isArray(item.evidence_data) 
+                ? item.evidence_data.map((ev: any) => `- ${ev.document_title || 'מסמך'} (עמ' ${ev.page || '?'})`).join('\n              ')
+                : 'אין הוכחות מתועדות';
 
-        if (!projectId || !letterType) {
-            return NextResponse.json({ error: "projectId and letterType are required" }, { status: 400 });
-        }
+            return `
+            - פריט: ${item.description}
+            - קוד: ${item.code}
+            - כמות: ${item.quantity} ${item.unit}
+            - מחיר יחידה: ${item.price} ₪
+            - סה"כ: ${item.total} ₪
+            - נימוק: ${item.ai_rationale || 'לא צוין'}
+            - הערות: ${JSON.stringify(item.governing_notes) || 'אין'}
+            - הוכחות (Evidence Links):
+              ${evidenceStr}
+            `;
+        }).join('\n');
 
-        // Контекст проекта
-        const { data: project } = await supabase
-            .from('projects')
-            .select('name, client_name, contractor_name, location')
-            .eq('id', projectId)
-            .single();
+        const typeSpecificInstructions = {
+            rfi: "זהו מכתב הבהרה (RFI). הטון צריך להיות שאלתי ומקצועי. התמקד בבקשת הנחיות לגבי סתירות או אי-בהירויות בתוכניות המונעות את המשך העבודה התקין.",
+            vo_request: "זוהי דרישת תשלום לחריגים (VO Request). הטון צריך להיות דורש אך מקצועי. הדגש כי העבודות המפורטות אינן חלק מההסכם המקורי ובוצעו/מבוצעות לבקשת המזמין.",
+            official_vo: "זוהי פקודת שינויים רשמית (Official VO). הטון צריך להיות סמכותי וסיכומי. המכתב מהווה תיעוד סופי של השינויים שאושרו והשפעתם על לוחות הזמנים והתקציב."
+        }[letterType as 'rfi' | 'vo_request' | 'official_vo'] || "";
 
-        // Подготовка списка работ для промпта
-        const itemsList = items && Array.isArray(items) 
-            ? items.map((i: any) => `- ${i.description} (קוד: ${i.code || '---'}): ${i.quantity} ${i.unit} x ${i.price} ₪ = ${i.total} ₪`).join('\n')
-            : 'לא צוינו סעיפים ספציפיים';
-
-        // Расчет итогов для AI (чтобы он не ошибся в арифметике)
-        const totalExclVat = items?.reduce((sum: number, i: any) => sum + i.total, 0) || 0;
-        const vat = totalExclVat * 0.18;
-        const totalInclVat = totalExclVat + vat;
+        const toneMap: Record<string, string> = {
+            professional: "מקצועי וענייני (Professional/Objective). התמקד בעובדות ובנתונים.",
+            formal: "פורמלי ורשמי מאוד. שימוש בשפה משפטית גבוהה.",
+            firm: "תקיף ודורש זכויות (Firm/Assertive). הדגש את חובות המזמין.",
+            aggressive: "אגרסיבי ולוחמני. השתמש במושגים של התראה לפני נקיטת צעדים, הפרת חוזה ודרישה חד משמעית לתיקון המצב.",
+            friendly: "נעים, משתף פעולה ומכיל. הדגש את הרצון להמשך עבודה תקינה ופתרון משותף של הסוגיות.",
+            skeleton: "שלד / מבנה בלבד (Skeleton). אל תכתוב את המכתב המלא. ספק רק את הכותרות, סדר הנושאים ונקודות המפתח. בכל מקום שנדרש תוכן, שים Placeholder בסגנון [כאן להוסיף את הטיעון האישי/הסבר על...]. זה נועד לאפשר למשתמש לכתוב את המכתב בעצמו על בסיס המבנה."
+        };
+        const toneInstructions: string = toneMap[tone as string] || "מקצועי";
 
         const prompt = `
-אתה כותב מכתבים מקצועי ומומחה לניהול תביעות ושינויים (Variation Orders - V.O) עבור קבלני בניה בישראל.
-המטרה: להוציא מכתב רשמי, משפטי וברור שדורש תשלום או מודיע על שינויים בלו"ז/תקציב.
+            אתה מומחה בכיר לניהול פרויקטי בנייה ומשפט חוזי בישראל, המתמחה בניסוח מכתבים רשמיים עבור קבלנים.
+            המשימה שלך היא לכתוב ${tone === 'skeleton' ? 'שלד למכתב' : 'מכתב'} רשמי בעברית עבור קבלן בנייה המופנה ל${recipient || 'מזמין העבודה'}.
+            
+            הנחיה ספציפית לסוג המסמך (${letterType}):
+            ${typeSpecificInstructions}
+ 
+            סגנון כתיבה (Tone) הנדרש:
+            ${toneInstructions}
 
-סוג המכתב: ${LETTER_TYPES[letterType] || 'מכתב'}
-טון: ${tone === 'formal' ? 'פורמלי ומקצועי' : tone === 'firm' ? 'תקיף וחד משמעי (התראה)' : 'ענייני ומקצועי'}
+            פרטי המכתב:
+            - נושא: ${subject || 'דרישה לתשלום עבור חריגים ושינויים'}
+            - דגשים נוספים מהמשתמש: ${keyPoints || 'אין'}
+            
+            הפריטים הרלוונטיים מהלג'ר (Pricing Ledger):
+            ${itemsContext}
+            
+            מבנה המכתב הנדרש:
+            1. פתיח: התייחסות רשמית לנמען, ציון הנושא וסימוכין רלוונטיים.
+            2. רקע: הסבר קצר על נסיבות העניין (סתירה בתוכניות, בקשת שינוי בשטח, וכו').
+            3. פירוט טכני-כספי: סקירה של הפריטים המופיעים ברשימה לעיל.
+               **חשוב מאוד**: השתמש ב"הוכחות (Evidence Links)" לכל פריט. ציין בתוך הטקסט את שם המסמך ומספר העמוד כהוכחה חותכת לזכאות הקבלן.
+            4. סיכום כספי: (במידה ורלוונטי) הצגת הסכום הכולל (לפני מע"מ) וציון מפורש שמע"מ בשיעור 18% יתווסף כחוק.
+            5. חתימה: סיומת מקצועית ומקום לחתימת מורשה חתימה.
+ 
+            דגשים מקצועיים:
+            - השתמש במינוח מקצועי כגון: "סעיף חוזי", "כתב כמויות", "פקודת שינויים", "אישור מפקח בשטח", "סעיפי הצמדה".
+            ${tone === 'skeleton' ? '- צור מבנה ברור עם כותרות והערות בסוגריים עבור המשתמש.' : '- המכתב צריך להיות מוכן לחתימה, אך מותאם לסגנון שנבחר.'}
+            
+            פלט ה${tone === 'skeleton' ? 'שלד' : 'מכתב'} בלבד (ללא טקסט מקדים או הסברים):
+        `;
 
-פרטי הפרויקט:
-- שם הפרויקט: ${project?.name || 'לא ידוע'}
-- הקבלן המבצע (השולח): ${project?.contractor_name || '[שם הקבלן]'}
-- המזמין/לקוח: ${project?.client_name || '[שם המזמין]'}
-- מיקום: ${project?.location || 'לא ידוע'}
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
 
-פרטי הנמען והנושא:
-- נמען: ${recipient || '[נמען]'}
-- נושא: ${subject || '[נושא]'}
-
-פירוט הסעיפים והעבודות (הכנס את זה לתוך תוכן המכתב בצורה זורמת):
-${itemsList}
-
-נתונים כספיים לסיכום (חובה להשתמש בהם במדויק):
-- סה"כ לפני מע"מ: ${totalExclVat.toLocaleString()} ₪
-- מע"מ (18%): ${vat.toLocaleString()} ₪
-- סה"כ כולל מע"מ: ${totalInclVat.toLocaleString()} ₪
-
-הנחיות כתיבה:
-1. כתוב בעברית ברמה גבוהה (High-level Hebrew).
-2. פתח בברכה רשמית (לכבוד... א.נ...).
-3. בגוף המכתב, הסבר את הצורך בביצוע העבודות החריגות/נוספות ואזכר את הסעיפים שצוינו.
-4. ציין במפורש שהמחירים אינם כוללים מע"מ ושיש להוסיף מע"מ כחוק (18%).
-5. סיים בדרישה לתיאום חשבון או אישור העבודות ובחתימה רשמית.
-6. אל תשתמש בסימנים של Markdown (כמו **) בתוך הטקסט של המכתב עצמו - תן טקסט נקי שניתן להעתיק.
-
-המכתב המבוקש:
-`;
-
-        const result = await geminiModel.generateContent(prompt);
-        const responseText = result.response.text();
-
-        return NextResponse.json({ success: true, letter: responseText });
-
+        return NextResponse.json({ success: true, letter: text });
     } catch (error: any) {
-        console.error("Error in /api/generate-letter:", error);
-        return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+        console.error("API Error:", error);
+        return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
 }

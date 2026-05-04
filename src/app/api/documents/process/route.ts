@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { genAI, GEMINI_CONFIG, DOCUMENT_ANALYSIS_PROMPT } from '@/lib/gemini';
+import { genAI, GEMINI_CONFIG, DOCUMENT_ANALYSIS_PROMPT, geminiModel } from '@/lib/gemini';
 
 /**
  * POST /api/documents/process
@@ -44,81 +44,57 @@ export async function POST(req: Request) {
         let parsedData: any;
 
         try {
-            const model = genAI.getGenerativeModel({
-                model: GEMINI_CONFIG.STABLE_FLASH,
-                generationConfig: {
-                    responseMimeType: "application/json",
-                },
-            });
+            const model = geminiModel;
 
-            // Проверяем, есть ли уже извлечённый текст
-            if (doc.extracted_text && doc.extracted_text.length > 50) {
-                // Текстовый документ — отправляем текст в Gemini
-                console.log(`[process] Analyzing text for "${doc.title}" (${doc.extracted_text.length} chars)`);
-
-                const result = await model.generateContent([
-                    DOCUMENT_ANALYSIS_PROMPT,
-                    `Document title: "${doc.title}"\nDocument category set by user: ${doc.category}\n\nDocument content:\n${doc.extracted_text.substring(0, 30000)}`
-                ]);
-
-                const responseText = result.response.text();
-                parsedData = JSON.parse(responseText);
-
-            } else if (doc.file_url) {
-                // Скан/изображение — скачиваем и отправляем как изображение в Gemini Vision
-                console.log(`[process] Vision analysis for "${doc.title}"`);
-
-                const fileResponse = await fetch(doc.file_url);
-                if (!fileResponse.ok) {
-                    throw new Error(`Failed to download file: ${fileResponse.status}`);
-                }
-
-                const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
-                const contentType = fileResponse.headers.get('content-type') || 'application/pdf';
-
-                // Определяем MIME тип для Gemini
-                let mimeType = contentType;
-                if (doc.title?.toLowerCase().endsWith('.pdf')) mimeType = 'application/pdf';
-                else if (doc.title?.toLowerCase().match(/\.(jpg|jpeg)$/)) mimeType = 'image/jpeg';
-                else if (doc.title?.toLowerCase().endsWith('.png')) mimeType = 'image/png';
-
-                const result = await model.generateContent([
-                    DOCUMENT_ANALYSIS_PROMPT,
-                    `Document title: "${doc.title}"\nDocument category set by user: ${doc.category}`,
-                    {
-                        inlineData: {
-                            mimeType: mimeType,
-                            data: fileBuffer.toString('base64'),
-                        }
-                    }
-                ]);
-
-                const responseText = result.response.text();
-                parsedData = JSON.parse(responseText);
-
-            } else {
-                // Нет ни текста, ни файла
-                parsedData = {
-                    type: doc.category === 'CONTRACT' ? 'מסמך חוזי' : 'מסמך עבודה',
-                    category: doc.category,
-                    summary: 'לא ניתן לקרוא את המסמך — אין קובץ או טקסט',
-                    warnings: ['לא נמצא תוכן לקריאה'],
-                    status: 'נקלט ✓'
-                };
+            const fileResponse = await fetch(doc.file_url);
+            if (!fileResponse.ok) {
+                throw new Error(`Failed to download file: ${fileResponse.status}`);
             }
 
-            // Добавляем статус
-            parsedData.status = 'נקלט ✓';
+            const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+            const contentType = fileResponse.headers.get('content-type') || 'application/pdf';
+
+            // Определяем MIME тип
+            let mimeType = contentType;
+            if (doc.title?.toLowerCase().endsWith('.pdf')) mimeType = 'application/pdf';
+            else if (doc.title?.toLowerCase().match(/\.(jpg|jpeg)$/)) mimeType = 'image/jpeg';
+            else if (doc.title?.toLowerCase().endsWith('.png')) mimeType = 'image/png';
+
+            console.log(`[process] Deep analysis for "${doc.title}" with Gemini 3 Flash (Free Tier)`);
+
+            const result = await model.generateContent([
+                DOCUMENT_ANALYSIS_PROMPT,
+                `Document title: "${doc.title}"\nCategory: ${doc.category}`,
+                {
+                    inlineData: {
+                        mimeType: mimeType,
+                        data: fileBuffer.toString('base64'),
+                    }
+                }
+            ]);
+
+            const responseText = result.response.text();
+            parsedData = JSON.parse(responseText);
+
+            // СОХРАНЯЕМ ИЗВЛЕЧЕННЫЙ MARKDOWN В БД
+            if (parsedData.full_markdown) {
+                await supabase
+                    .from('documents')
+                    .update({ 
+                        extracted_text: parsedData.full_markdown,
+                        ocr_status: 'COMPLETED'
+                    })
+                    .eq('id', documentId);
+                console.log(`[process] Digital Twin created (${parsedData.full_markdown.length} chars)`);
+            }
 
         } catch (aiError: any) {
             console.error("[process] Gemini AI error:", aiError);
-
-            // Fallback — если AI упал, сохраняем базовую классификацию
             parsedData = classifyByTitle(doc.title, doc.category);
-            parsedData.warnings = [`שגיאת AI: ${aiError.message || 'שגיאה לא ידועה'}. סיווג בוצע לפי שם הקובץ.`];
+            parsedData.warnings = [`שגיאת AI: ${aiError.message || 'שגיאה לא ידועה'}`];
         }
 
-        // 4. Сохраняем результат — документ VALIDATED (проверен и подключён)
+        // 4. Сохраняем результат
         const { error: updateError } = await supabase
             .from('documents')
             .update({
@@ -142,12 +118,13 @@ export async function POST(req: Request) {
         // Обновляем статус на ERROR
         try {
             const supabase = await createClient();
-            const { documentId } = await (error as any)._req?.json?.() || {};
-            if (documentId) {
+            // Используем documentId из начала функции, так как он доступен в замыкании
+            if (error.documentId || (req as any).documentId) {
+                const id = error.documentId || (req as any).documentId;
                 await supabase
                     .from('documents')
                     .update({ ai_status: 'ERROR' })
-                    .eq('id', documentId);
+                    .eq('id', id);
             }
         } catch { /* ignore cleanup errors */ }
 

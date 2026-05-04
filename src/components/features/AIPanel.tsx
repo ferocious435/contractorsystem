@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { AlertTriangle, AlertCircle, TrendingUp, Zap, ArrowRight } from "lucide-react";
+import { AI_MODEL_BRANDING } from "@/utils/constants";
 
 interface AIInsight {
     id: string;
@@ -141,10 +142,10 @@ export function AIPanel({ projectId }: { projectId: string | null }) {
             <div className="flex items-center justify-between mb-6 pb-4 border-b border-white/10">
                 <h3 className="text-base font-bold text-primary flex items-center gap-3 drop-shadow-md">
                     <Zap className="w-5 h-5" />
-                    AI Insights
+                    תובנות {AI_MODEL_BRANDING.split(' ')[0]}
                 </h3>
                 <span className="text-xs font-medium text-gray-400 bg-black/30 px-2 py-1 rounded">
-                    {isLoading ? 'Scanning...' : `${insights.length} ממצאים`}
+                    {isLoading ? 'סורק...' : `${insights.length} ממצאים`}
                 </span>
             </div>
 
@@ -162,7 +163,7 @@ export function AIPanel({ projectId }: { projectId: string | null }) {
                             </svg>
                         </div>
                         <div>
-                            <h4 className="text-sm font-medium text-gray-200 mb-1">הכל תקין</h4>
+                            <h3 className="text-sm font-bold text-white uppercase tracking-wider mb-1">תמיכת {AI_MODEL_BRANDING.split(' ')[0]}</h3>
                             <p className="text-xs text-gray-400">לא אותרו סיכונים או סתירות בפרויקט זה</p>
                         </div>
                     </div>

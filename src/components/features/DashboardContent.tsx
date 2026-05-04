@@ -1,14 +1,17 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { KPIStrip } from "./KPIStrip";
-import { LedgerTable } from "./LedgerTable";
 import { createClient } from "@/utils/supabase/client";
-import { MoreVertical, Trash2, Edit2 } from "lucide-react";
+import { 
+    MoreVertical, Trash2, Edit2, Plus, LayoutDashboard, 
+    FileText, Search, Settings, ArrowRight, Activity, 
+    Shield, Target, Zap, Layers, Loader2, Calendar, 
+    User, Briefcase, ChevronRight, Sparkles, Building2
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 import { Sidebar } from "../layout/Sidebar";
 import { TopBar } from "../layout/TopBar";
-import { AIPanel } from "./AIPanel";
 import ContradictionRadar from './ContradictionRadar';
 import PricingLedgerUI from './PricingLedgerUI';
 import AIConsultant from './AIConsultant';
@@ -16,6 +19,8 @@ import SmartLetterGenerator from './SmartLetterGenerator';
 import DocumentsPageClient from '../documents/DocumentsPageClient';
 import PricelistsPageClient from '../pricelists/PricelistsPageClient';
 import SettingsView from './SettingsView';
+import { KPIStrip } from "./KPIStrip";
+import ProjectOverview from "./ProjectOverview";
 
 const PROJECT_IMAGES = [
     'https://images.unsplash.com/photo-1589939705384-5185137a7f0f?q=80&w=600&auto=format&fit=crop',
@@ -41,16 +46,18 @@ export default function DashboardContent() {
     const [projectId, setProjectId] = useState<string | null>(null);
     const [projects, setProjects] = useState<any[]>([]);
     const [isLoadingProjects, setIsLoadingProjects] = useState(true);
-
-    // Project Context Menu and Delete
+    const [currentView, setCurrentView] = useState('dashboard');
+    const [viewParams, setViewParams] = useState<any>(null);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-    const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
-    const [currentView, setCurrentView] = useState('לוח בקרה');
-
-    // Edit Project Modal
     const [editingProject, setEditingProject] = useState<any | null>(null);
     const [editForm, setEditForm] = useState({ name: '', client_name: '', budget: 0 });
     const [isSavingProject, setIsSavingProject] = useState(false);
+
+    const handleNavigate = (view: string, params: any = null) => {
+        console.log(`[Dashboard] Navigating to: ${view}`, params);
+        setCurrentView(view);
+        setViewParams(params);
+    };
 
     const supabase = createClient();
 
@@ -60,30 +67,33 @@ export default function DashboardContent() {
 
     const fetchProjects = async () => {
         setIsLoadingProjects(true);
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) {
+                setIsLoadingProjects(false);
+                return;
+            }
 
-        let { data: projectsList, error } = await supabase
-            .from('projects')
-            .select('*')
-            .eq('contractor_id', user.id)
-            .order('created_at', { ascending: false });
+            let { data: projectsList, error } = await supabase
+                .from('projects')
+                .select('*')
+                .eq('contractor_id', user.id)
+                .order('created_at', { ascending: false });
 
-        if (error) {
-            console.error("Error fetching projects:", error);
+            if (error) console.error("Error fetching projects:", error);
+            if (projectsList) setProjects(projectsList || []);
+        } catch (error) {
+            console.error("Error in fetchProjects:", error);
+        } finally {
+            setIsLoadingProjects(false);
         }
-
-        if (projectsList) {
-            setProjects(projectsList);
-        }
-        setIsLoadingProjects(false);
     };
 
     const handleCreateProject = async () => {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
 
-        const newProjectName = `NEW-${Math.floor(Math.random() * 1000)}`;
+        const newProjectName = `פרויקט_${Math.floor(Math.random() * 1000)}`;
         const randomImageIndex = Math.floor(Math.random() * 100);
         const { data: newProject, error } = await supabase.from('projects').insert({
             name: newProjectName,
@@ -92,51 +102,33 @@ export default function DashboardContent() {
             image_index: randomImageIndex
         }).select().single();
 
-        if (error) {
-            alert("שגיאה ביצירת פרויקט: " + error.message);
-            return;
-        }
-
-        if (newProject) {
-            setProjects([newProject, ...projects]);
-            // Do NOT automatically go into the project, let the user click it as PRD "Instant 1-click creation of a new card" implies it just adds to list.
-        }
+        if (error) return;
+        if (newProject) setProjects([newProject, ...projects]);
     };
 
     const handleDeleteProject = async (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
+        if (!confirm('האם אתה בטוח שברצונך למחוק פרויקט זה? כל הנתונים יאבדו.')) return;
         const { error } = await supabase.from('projects').delete().eq('id', id);
-        if (error) {
-            alert("שגיאה במחיקת הפרויקט: " + error.message);
-        } else {
-            setProjects(projects.filter(p => p.id !== id));
-            setProjectToDelete(null);
-            setOpenMenuId(null);
-        }
+        if (!error) setProjects(projects.filter(p => p.id !== id));
+        setOpenMenuId(null);
+    };
+
+    const handleNav = (view: string) => {
+        console.log(`[Dashboard] Switching to view: ${view}`);
+        setCurrentView(view);
     };
 
     const handleEditClick = (proj: any, e: React.MouseEvent) => {
         e.stopPropagation();
         setEditingProject(proj);
-        setEditForm({
-            name: proj.name || '',
-            client_name: proj.client_name || '',
-            budget: proj.budget || 0
-        });
+        setEditForm({ name: proj.name, client_name: proj.client_name || '', budget: proj.budget || 0 });
         setOpenMenuId(null);
     };
 
     const handleSaveProject = async () => {
-        console.log("Save button clicked");
         if (!editingProject) return;
-
-        if (!editForm.name.trim()) {
-            alert("שם הפרויקט לא יכול להיות ריק (Project name cannot be empty)");
-            return;
-        }
-
         setIsSavingProject(true);
-        console.log("Saving Project Payload:", editForm);
         try {
             const { error } = await supabase
                 .from('projects')
@@ -147,321 +139,312 @@ export default function DashboardContent() {
                 })
                 .eq('id', editingProject.id);
 
-            if (error) {
-                console.error("Supabase update error:", JSON.stringify(error, null, 2));
-                alert("שגיאה בעדכון הפרויקט: " + (error.message || JSON.stringify(error)));
-            } else {
-                console.log("Project updated successfully");
+            if (!error) {
                 setProjects(projects.map(p => p.id === editingProject.id ? { ...p, ...editForm } : p));
                 setEditingProject(null);
             }
-        } catch (err: any) {
-            console.error("Unexpected error during save:", err);
-            alert("שגיאה בלתי צפויה: " + err.message);
         } finally {
             setIsSavingProject(false);
         }
     };
 
+    const activeProject = projects.find(p => p.id === projectId);
+
     // --- VIEW: Project List (Home) ---
     if (!projectId) {
         return (
-            <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
-                <main className="flex-1 flex flex-col relative bg-background">
-                    <TopBar />
-                    <div className="flex-1 p-8 overflow-y-auto custom-scrollbar flex flex-col gap-8">
-                        <div className="flex justify-between items-center bg-workspace p-6 rounded-lg border border-border-subtle shadow-md">
-                            <div>
-                                <h2 className="text-2xl font-rubik font-bold text-white mb-1">הפרויקטים שלי</h2>
-                                <p className="text-secondary text-sm">נהל את פרויקטי הבנייה והתשתיות שלך</p>
+            <div className="flex h-screen w-full bg-[#0B0F14] text-white overflow-hidden" dir="rtl">
+                <main className="flex-1 flex flex-col relative overflow-hidden">
+                    <TopBar title="ניהול מערכת" />
+                    
+                    <div className="flex-1 p-10 overflow-y-auto custom-scrollbar space-y-12">
+                        {/* Hero Section */}
+                        <motion.div 
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-[#151C24]/50 border border-white/5 rounded-[3rem] p-12 relative overflow-hidden group"
+                        >
+                            <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-blue-500/10 to-transparent pointer-events-none" />
+                            <div className="absolute -top-24 -right-24 w-64 h-64 bg-blue-500/5 rounded-full blur-[100px]" />
+                            
+                            <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-10">
+                                <div className="flex flex-col gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_10px_#3b82f6]" />
+                                        <span className="text-[10px] font-mono font-black text-gray-500 uppercase tracking-[0.3em]">בקרת תשתית מתקדמת</span>
+                                    </div>
+                                    <h2 className="text-4xl font-black text-white tracking-tighter uppercase font-mono">
+                                        הפרויקטים שלי
+                                    </h2>
+                                    <p className="text-gray-500 text-sm font-medium max-w-lg leading-relaxed text-right">
+                                        ניהול מתקדם של תשתיות בנייה וחוזים. המערכת סורקת ומנטרת את כל הפעילות המסחרית שלך בזמן אמת.
+                                    </p>
+                                </div>
+                                <motion.button
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={handleCreateProject}
+                                    className="bg-white text-black px-10 py-4 rounded-[1.5rem] font-black text-[11px] uppercase tracking-[0.2em] shadow-[0_20px_40px_rgba(255,255,255,0.1)] hover:bg-blue-500 hover:text-white transition-all flex items-center gap-3 group/btn"
+                                >
+                                    <Plus className="w-4 h-4 group-hover/btn:rotate-90 transition-transform" />
+                                    צור פרויקט חדש
+                                </motion.button>
                             </div>
-                            <button
-                                onClick={handleCreateProject}
-                                className="btn-primary flex items-center gap-2"
-                            >
-                                <span>+</span> פרויקט חדש
-                            </button>
-                        </div>
+                        </motion.div>
 
-                        {isLoadingProjects ? (
-                            <div className="flex justify-center items-center h-32">
-                                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-                            </div>
-                        ) : projects.length === 0 ? (
-                            <div className="glass-panel p-12 text-center rounded-lg flex flex-col items-center justify-center border-dashed border-2 border-border-subtle">
-                                <div className="text-4xl mb-4">🏗️</div>
-                                <h3 className="text-xl text-white font-bold mb-2">אין פרויקטים פעילים</h3>
-                                <p className="text-gray-400 mb-6">לחץ על הכפתור למעלה כדי לפתוח פרויקט חדש ולהתחיל לעבוד.</p>
-                                <button onClick={handleCreateProject} className="btn-primary">+ פרויקט ראשון</button>
-                            </div>
-                        ) : (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 justify-items-center">
-                                {projects.map((proj) => {
-                                    const imageSrc = getProjectImage(proj);
-                                    return (
-                                        <div
-                                            key={proj.id}
-                                            onClick={() => setProjectId(proj.id)}
-                                            className="bg-workspace rounded-xl border border-border-subtle cursor-pointer hover:border-primary/50 transition-all hover:shadow-[0_4px_20px_rgba(59,130,246,0.1)] group relative overflow-hidden flex flex-col"
-                                        >
-                                            {/* Header Image Area */}
-                                            <div className="h-32 w-full relative overflow-hidden bg-gray-800">
-                                                <img src={imageSrc} alt={proj.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-                                                <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded text-xs text-white border border-white/10">
-                                                    {proj.name.split(' ')[0]} {/* Badge/ID */}
-                                                </div>
+                        {/* Projects Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+                            <AnimatePresence mode="popLayout">
+                                {isLoadingProjects ? (
+                                    Array(4).fill(0).map((_, i) => (
+                                        <div key={i} className="h-80 bg-white/5 animate-pulse rounded-[2.5rem] border border-white/5" />
+                                    ))
+                                ) : projects.map((proj, idx) => (
+                                    <motion.div 
+                                        key={proj.id}
+                                        initial={{ opacity: 0, scale: 0.9 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        transition={{ delay: idx * 0.05 }}
+                                        onClick={() => setProjectId(proj.id)}
+                                        className="group relative h-[420px] bg-[#151C24]/50 border border-white/5 rounded-[2.5rem] overflow-hidden cursor-pointer hover:bg-white/[0.03] transition-all hover:shadow-[0_30px_60px_rgba(0,0,0,0.5)] hover:-translate-y-2"
+                                    >
+                                        {/* Project Image Background */}
+                                        <div className="absolute inset-0 z-0">
+                                            <img 
+                                                src={getProjectImage(proj)} 
+                                                alt={proj.name}
+                                                className="w-full h-full object-cover opacity-20 grayscale group-hover:grayscale-0 group-hover:scale-110 transition-all duration-700 brightness-50"
+                                            />
+                                            <div className="absolute inset-0 bg-gradient-to-t from-[#0B0F14] via-[#0B0F14]/60 to-transparent" />
+                                        </div>
 
-                                                {/* Context Menu Button */}
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setOpenMenuId(openMenuId === proj.id ? null : proj.id);
-                                                    }}
-                                                    className="absolute top-2 left-2 p-1.5 bg-black/40 hover:bg-black/80 backdrop-blur-md rounded-md text-white border border-white/10 transition-colors"
-                                                >
-                                                    <MoreVertical size={16} />
-                                                </button>
+                                        {/* Status Tag */}
+                                        <div className="absolute top-6 left-6 z-10">
+                                            <div className="px-3 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center gap-2">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]" />
+                                                <span className="text-[9px] font-mono font-black text-gray-300 uppercase tracking-widest">פרויקט פעיל</span>
+                                            </div>
+                                        </div>
 
-                                                {/* Context Menu Dropdown */}
+                                        {/* Actions Menu */}
+                                        <div className="absolute top-6 right-6 z-20">
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === proj.id ? null : proj.id); }}
+                                                className="p-2 bg-black/60 backdrop-blur-md border border-white/10 rounded-xl text-gray-400 hover:text-white transition-all"
+                                            >
+                                                <MoreVertical size={16} />
+                                            </button>
+                                            <AnimatePresence>
                                                 {openMenuId === proj.id && (
-                                                    <div className="absolute top-10 left-2 bg-workspace border border-border-subtle shadow-xl rounded-md py-1 z-10 w-32">
-                                                        <button
-                                                            onClick={(e) => handleEditClick(proj, e)}
-                                                            className="w-full text-right px-4 py-2 text-sm text-gray-300 hover:bg-white/5 flex items-center justify-between"
+                                                    <motion.div 
+                                                        initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                                                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                                                        exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                                                        className="absolute top-12 right-0 w-48 bg-[#151C24] border border-white/10 rounded-2xl p-2 shadow-2xl overflow-hidden"
+                                                    >
+                                                        <button 
+                                                            onClick={(e) => { handleEditClick(proj, e); }}
+                                                            className="w-full flex items-center gap-3 px-4 py-2 text-[10px] font-black uppercase text-gray-400 hover:text-white hover:bg-white/5 rounded-xl transition-all"
                                                         >
-                                                            <span>עריכה</span>
-                                                            <Edit2 size={14} />
+                                                            <Edit2 size={14} /> הגדרות
                                                         </button>
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                setProjectToDelete(proj.id);
-                                                            }}
-                                                            className="w-full text-right px-4 py-2 text-sm text-red-400 hover:bg-red-500/10 flex items-center justify-between"
+                                                        <button 
+                                                            onClick={(e) => handleDeleteProject(proj.id, e)}
+                                                            className="w-full flex items-center gap-3 px-4 py-2 text-[10px] font-black uppercase text-red-500/70 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all"
                                                         >
-                                                            <span>מחיקה</span>
-                                                            <Trash2 size={14} />
+                                                            <Trash2 size={14} /> מחק פרויקט
                                                         </button>
-                                                    </div>
+                                                    </motion.div>
                                                 )}
+                                            </AnimatePresence>
+                                        </div>
+
+                                        {/* Content */}
+                                        <div className="absolute inset-0 z-10 p-10 flex flex-col justify-end gap-4 text-right">
+                                            <div className="space-y-1">
+                                                <div className="flex items-center justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
+                                                    <span className="text-[10px] font-mono font-black text-gray-500 uppercase tracking-widest">{proj.client_name || 'לקוח לא ידוע'}</span>
+                                                    <Building2 size={12} className="text-blue-400" />
+                                                </div>
+                                                <h3 className="text-2xl font-black text-white font-mono tracking-tighter uppercase group-hover:text-blue-400 transition-colors line-clamp-1">
+                                                    {proj.name}
+                                                </h3>
                                             </div>
 
-                                            {/* Card Content Area */}
-                                            <div className="p-4 flex-1 flex flex-col">
-                                                <h3 className="font-bold text-lg text-white mb-3 line-clamp-1" title={proj.name}>{proj.name}</h3>
-
-                                                <div className="mt-auto space-y-2 text-sm">
-                                                    <div className="flex justify-between items-center pb-2 border-b border-border-subtle/50">
-                                                        <span className="text-gray-500">לקוח/מזמין</span>
-                                                        <span className="text-gray-200">{proj.client_name || 'לא הוגדר'}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center text-primary font-medium">
-                                                        <span className="text-gray-500 text-sm font-normal">תקציב</span>
-                                                        <span>₪{proj.budget ? proj.budget.toLocaleString() : '0'}</span>
-                                                    </div>
+                                            <div className="grid grid-cols-2 gap-4 mt-2">
+                                                <div className="flex flex-col items-end">
+                                                    <span className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">תקציב</span>
+                                                    <span className="text-sm font-black text-emerald-500 font-mono">₪{proj.budget?.toLocaleString() || '0.00'}</span>
+                                                </div>
+                                                <div className="flex flex-col items-start">
+                                                    <span className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">סנכרון</span>
+                                                    <span className="text-sm font-black text-blue-400 font-mono">100%</span>
                                                 </div>
                                             </div>
+
+                                            <div className="pt-6 border-t border-white/5 mt-2 flex items-center justify-between group-hover:border-blue-500/30 transition-all">
+                                                <div className="p-2 bg-white/5 rounded-xl group-hover:bg-blue-500 group-hover:text-black transition-all">
+                                                    <ArrowRight size={16} />
+                                                </div>
+                                                <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest font-black">כניסה לפרויקט</span>
+                                            </div>
                                         </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-
-                        {/* Edit Project Dialog */}
-                        {editingProject && (
-                            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                                <div className="bg-workspace p-6 rounded-xl border border-border-subtle shadow-2xl max-w-md w-full" onClick={e => e.stopPropagation()}>
-                                    <h3 className="text-xl font-bold text-white mb-4">עריכת פרויקט</h3>
-
-                                    <div className="space-y-4 mb-6">
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-400 mb-1 text-right">שם הפרויקט</label>
-                                            <input
-                                                type="text"
-                                                value={editForm.name}
-                                                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                                                className="w-full bg-background border border-border-subtle rounded-md px-3 py-2 text-white outline-none focus:border-primary text-right"
-                                                dir="rtl"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-400 mb-1 text-right">לקוח / שם המזמין</label>
-                                            <input
-                                                type="text"
-                                                value={editForm.client_name}
-                                                onChange={(e) => setEditForm({ ...editForm, client_name: e.target.value })}
-                                                className="w-full bg-background border border-border-subtle rounded-md px-3 py-2 text-white outline-none focus:border-primary text-right"
-                                                dir="rtl"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-400 mb-1 text-right">תקציב (₪)</label>
-                                            <input
-                                                type="number"
-                                                value={editForm.budget}
-                                                onChange={(e) => setEditForm({ ...editForm, budget: parseFloat(e.target.value) || 0 })}
-                                                className="w-full bg-background border border-border-subtle rounded-md px-3 py-2 text-white outline-none focus:border-primary text-left"
-                                                dir="ltr"
-                                            />
-                                        </div>
-                                    </div>
-
-                                    <div className="flex justify-end gap-3">
-                                        <button
-                                            type="button"
-                                            onClick={(e) => { e.stopPropagation(); setEditingProject(null); }}
-                                            className="px-4 py-2 rounded-md text-sm font-medium text-gray-300 hover:bg-white/5 transition-colors"
-                                            disabled={isSavingProject}
-                                        >
-                                            ביטול
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={(e) => handleSaveProject()}
-                                            className="px-4 py-2 bg-primary hover:bg-primary-hover rounded-md text-sm font-medium text-white shadow-lg shadow-primary/20 transition-all flex items-center justify-center disabled:opacity-50"
-                                            disabled={isSavingProject}
-                                        >
-                                            {isSavingProject ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div> : 'שמירה'}
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Delete Confirmation Dialog */}
-                        {projectToDelete && (
-                            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-                                <div className="bg-workspace p-6 rounded-xl border border-border-subtle shadow-2xl max-w-sm w-full" onClick={e => e.stopPropagation()}>
-                                    <h3 className="text-xl font-bold text-white mb-2">?האם אתה בטוח</h3>
-                                    <p className="text-gray-400 mb-6 text-sm">פעולה זו תמחק את הפרויקט לחלוטין ולא ניתנת לביטול.</p>
-                                    <div className="flex justify-end gap-3">
-                                        <button
-                                            type="button"
-                                            onClick={() => setProjectToDelete(null)}
-                                            className="px-4 py-2 rounded-md text-sm font-medium text-gray-300 hover:bg-white/5 transition-colors"
-                                        >
-                                            ביטול
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={(e) => handleDeleteProject(projectToDelete, e as any)}
-                                            className="px-4 py-2 bg-red-500 hover:bg-red-600 rounded-md text-sm font-medium text-white shadow-lg shadow-red-500/20 transition-all"
-                                        >
-                                            כן, מחק פרויקט
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-
+                                    </motion.div>
+                                ))}
+                            </AnimatePresence>
+                        </div>
                     </div>
                 </main>
+
+                {/* Edit Modal */}
+                <AnimatePresence>
+                    {editingProject && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-2xl p-6">
+                            <motion.div 
+                                initial={{ scale: 0.9, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                className="bg-[#151C24] w-full max-w-xl border border-white/10 rounded-[3rem] overflow-hidden"
+                            >
+                                <div className="p-10 space-y-10">
+                                    <div className="flex items-center justify-between">
+                                        <button onClick={() => setEditingProject(null)} className="p-3 text-gray-500 hover:text-white"><XCircle size={24} /></button>
+                                        <div className="flex flex-col gap-1 text-right">
+                                            <span className="text-[10px] font-mono text-blue-500 uppercase font-black tracking-widest">הגדרות מערכת</span>
+                                            <h3 className="text-2xl font-black text-white font-mono uppercase tracking-tighter">עדכון פרויקט</h3>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-6">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest block px-1 text-right">שם הפרויקט</label>
+                                            <input 
+                                                value={editForm.name}
+                                                onChange={(e) => setEditForm({...editForm, name: e.target.value})}
+                                                className="w-full bg-black/40 border border-white/5 rounded-2xl px-6 py-4 text-sm font-bold text-white focus:border-blue-500 outline-none transition-all text-right"
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest block px-1 text-right">שם הלקוח</label>
+                                            <input 
+                                                value={editForm.client_name}
+                                                onChange={(e) => setEditForm({...editForm, client_name: e.target.value})}
+                                                className="w-full bg-black/40 border border-white/5 rounded-2xl px-6 py-4 text-sm font-bold text-white focus:border-blue-500 outline-none transition-all text-right"
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest block px-1 text-right">תקציב הפרויקט [₪]</label>
+                                            <input 
+                                                type="number"
+                                                value={editForm.budget}
+                                                onChange={(e) => setEditForm({...editForm, budget: Number(e.target.value)})}
+                                                className="w-full bg-black/40 border border-white/5 rounded-2xl px-6 py-4 text-sm font-black text-emerald-500 font-mono focus:border-emerald-500 outline-none transition-all text-right"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <button 
+                                        onClick={handleSaveProject}
+                                        disabled={isSavingProject}
+                                        className="w-full bg-blue-500 text-black py-5 rounded-2xl font-black text-[12px] uppercase tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50"
+                                    >
+                                        {isSavingProject ? 'מעדכן נתונים...' : 'אשר ועדכן'}
+                                    </button>
+                                </div>
+                            </motion.div>
+                        </div>
+                    )}
+                </AnimatePresence>
             </div>
         );
     }
 
-    // --- VIEW: Project Dashboard (Inside a project) ---
-    const currentProject = projects.find(p => p.id === projectId);
-
-    const renderDashboardView = () => {
+    // --- VIEW: Inside Project ---
+    const renderView = () => {
         switch (currentView) {
-            case 'לוח בקרה':
-                return (
-                    <>
-                        <KPIStrip projectId={projectId} />
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
-                            <div className="md:col-span-3">
-                                <LedgerTable projectId={projectId} />
-                            </div>
-                        </div>
-                    </>
-                );
-            case 'מסמכי חוזה':
-                return (
-                    <div className="mt-4 bg-workspace/50 rounded-2xl border border-border-subtle overflow-hidden h-full min-h-[600px] flex flex-col p-6">
-                        <DocumentsPageClient projectId={projectId} category="CONTRACT" />
-                    </div>
-                );
-            case 'מסמכי עבודה':
-                return (
-                    <div className="mt-4 bg-workspace/50 rounded-2xl border border-border-subtle overflow-hidden h-full min-h-[600px] flex flex-col p-6">
-                        <DocumentsPageClient projectId={projectId} category="EXECUTION" />
-                    </div>
-                );
-            case 'בקרת סתירות':
-                return (
-                    <div className="bg-workspace/50 p-6 rounded-2xl border border-border-subtle mt-4">
-                        <ContradictionRadar projectId={projectId} />
-                    </div>
-                );
-            case 'תמחור':
-                return (
-                    <div className="bg-workspace/50 p-6 rounded-2xl border border-border-subtle mt-4">
-                        <PricingLedgerUI projectId={projectId} />
-                    </div>
-                );
-            case 'מחולל מכתבים':
-                return (
-                    <div className="bg-workspace/50 p-6 rounded-2xl border border-border-subtle mt-4">
-                        <SmartLetterGenerator projectId={projectId!} />
-                    </div>
-                );
-            case 'יועץ AI':
-                return (
-                    <div className="bg-workspace/50 p-6 rounded-2xl border border-border-subtle mt-4">
-                        <AIConsultant projectId={projectId!} />
-                    </div>
-                );
-            case 'מחירונים':
-                return (
-                    <div className="mt-4 bg-workspace/50 rounded-2xl border border-border-subtle overflow-hidden h-full min-h-[600px] flex flex-col p-6">
-                        <PricelistsPageClient projectId={projectId!} />
-                    </div>
-                );
-            case 'הגדרות':
-                return <SettingsView project={currentProject} projectId={projectId} />;
-            default:
-                return (
-                    <div className="glass-panel p-12 text-center rounded-lg border border-border-subtle mt-4">
-                        <div className="text-5xl mb-6">🚧</div>
-                        <h2 className="text-2xl font-bold text-white mb-4">{currentView}</h2>
-                        <p className="text-gray-400">פיצ'ר זה יהיה זמין בגרסאות הבאות.</p>
-                    </div>
-                );
+            case 'dashboard':
+            case 'לוח בקרה': 
+                return projectId ? <ProjectOverview projectId={projectId} onNavigate={handleNavigate} /> : <KPIStrip projectId={null} />;
+            
+            case 'radar':
+            case 'בקרת סתירות': 
+                return <ContradictionRadar projectId={projectId} projectName={activeProject?.name} onNavigate={handleNavigate} />;
+            
+            case 'pricing':
+            case 'תמחור': 
+                return <PricingLedgerUI projectId={projectId} initialParams={viewParams} onNavigate={handleNavigate} />;
+            
+            case 'contracts':
+            case 'מסמכי חוזה': 
+                return <DocumentsPageClient projectId={projectId} category="CONTRACT" />;
+            
+            case 'execution':
+            case 'מסמכי עבודה': 
+                return <DocumentsPageClient projectId={projectId} category="EXECUTION" />;
+            
+            case 'pricelists':
+            case 'מחירונים': 
+                return <PricelistsPageClient projectId={projectId} />;
+            
+            case 'consultant':
+            case 'יועץ AI': 
+                return <AIConsultant projectId={projectId} />;
+            
+            case 'letters':
+            case 'מחולל מכתבים': 
+                return <SmartLetterGenerator projectId={projectId} initialSelectedItems={viewParams?.items || (viewParams?.contradictionId ? [viewParams.contradictionId] : [])} />;
+            
+            case 'settings':
+            case 'הגדרות': 
+                return <SettingsView projectId={projectId} project={activeProject} />;
+            
+            default: 
+                return <div className="text-white p-10 font-mono uppercase tracking-widest opacity-20">מדור לא זמין</div>;
         }
     };
 
     return (
-        <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
-            <Sidebar projectId={projectId} currentView={currentView} onNavigate={setCurrentView} />
-
-            <main className="flex-1 flex flex-col relative bg-background h-screen overflow-hidden">
-                <TopBar title={currentProject?.name} />
-
-                <div className="flex-1 flex overflow-hidden">
-                    {/* Left Side - AI Panel (Visible on large screens) */}
-                    {projectId && (
-                        <div className="hidden xl:block w-80 lg:w-96 flex-shrink-0 p-6 overflow-y-auto custom-scrollbar">
-                            <AIPanel projectId={projectId} />
-                        </div>
-                    )}
-
-                    {/* Right Side - Main Content */}
-                    <div className="flex-1 p-8 overflow-y-auto custom-scrollbar flex flex-col gap-6">
-                        <div className="flex justify-between items-center mb-2">
-                            <div>
-                                <button onClick={() => setProjectId(null)} className="text-primary hover:text-white transition-colors text-sm mb-2 text-right w-full block">
-                                    &rarr; חזור לרשימת הפרויקטים
-                                </button>
-                                <h2 className="text-2xl font-bold text-white">{currentProject?.name}</h2>
-                            </div>
-                        </div>
-
-                        {renderDashboardView()}
-                    </div>
+        <div className="flex h-screen w-full bg-[#0B0F14] text-white overflow-hidden" dir="rtl">
+            <Sidebar 
+                onNavigate={handleNavigate} 
+                currentView={currentView} 
+                projectId={projectId}
+            />
+            <main className="flex-1 flex flex-col relative overflow-hidden bg-[#0B0F14]">
+                <TopBar 
+                    title={`${activeProject?.name || 'טוען פרויקט...'}`} 
+                />
+                <div className="flex-1 p-8 overflow-y-auto custom-scrollbar">
+                    <motion.div
+                        key={currentView}
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.4, ease: "easeOut" }}
+                    >
+                        {renderView()}
+                    </motion.div>
                 </div>
             </main>
         </div>
     );
+}
+
+function XCircle(props: any) {
+    return (
+        <svg
+            {...props}
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <circle cx="12" cy="12" r="10" />
+            <path d="m15 9-6 6" />
+            <path d="m9 9 6 6" />
+        </svg>
+    )
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
+import { VAT_RATE } from '@/utils/constants';
 
 export async function POST(req: Request) {
     try {
@@ -26,7 +27,7 @@ export async function POST(req: Request) {
             user_notes,
             source = 'CUSTOM_ANALYSIS',
             type = 'PENDING_VO',
-            vat_rate = 0.18, // Default 18%
+            vat_rate = VAT_RATE, // Using global constant
         } = data;
 
         // Determine correct ID to use (queue_id is legacy, contradiction_id is preferred in AIEstimatorModal)

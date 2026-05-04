@@ -50,15 +50,21 @@ export async function DELETE(req: NextRequest) {
         }
 
         // 3. Delete from database
+        console.log(`[delete] Attempting to delete doc ${documentId} from DB...`);
         const { error: dbError } = await supabase
             .from('documents')
             .delete()
             .eq('id', documentId);
 
         if (dbError) {
-            console.error("Error deleting from database:", dbError);
-            return NextResponse.json({ error: "Failed to delete from database" }, { status: 500 });
+            console.error("[delete] Database error:", JSON.stringify(dbError, null, 2));
+            return NextResponse.json({ 
+                error: "Failed to delete from database",
+                details: dbError.message,
+                code: dbError.code 
+            }, { status: 500 });
         }
+        console.log(`[delete] Successfully deleted doc ${documentId}`);
 
         return NextResponse.json({ success: true });
 

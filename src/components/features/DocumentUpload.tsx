@@ -59,7 +59,7 @@ export default function DocumentUpload({ projectId, onUploadSuccess, docType = '
 
         } catch (err: any) {
             console.error("Upload error:", err);
-            setError(err.message || "Failed to upload document.");
+            setError(err.message || "שגיאה בהעלאת המסמך.");
         } finally {
             setIsUploading(false);
             // Reset input

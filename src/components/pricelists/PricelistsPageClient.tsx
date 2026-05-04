@@ -56,12 +56,18 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
             .range(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE - 1);
 
         if (search) {
-            query = query.or(`description.ilike.%${search}%,item_code.ilike.%${search}%`);
+            // При поиске мы хотим видеть не только совпадения, но и все примечания (NOTE) этого прайс-листа
+            // чтобы не терять контекст правил.
+            query = query.or(`description.ilike.%${search}%,item_code.ilike.%${search}%,item_type.eq.NOTE`);
         }
         
         const { data, count, error } = await query;
         
         if (data) {
+            // Если мы в режиме поиска, нужно отфильтровать пустые главы/подглавы, 
+            // но оставить NOTES и совпадения.
+            // (В текущей реализации query.or уже это делает)
+            
             if (reset) {
                 setItems(data);
                 setPage(1);
@@ -169,9 +175,20 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                             const rate = parseFloat(row[6]) || 0;
 
                             let item_type = 'ITEM';
-                            if (item_code.endsWith('...')) item_type = 'CHAPTER';
-                            else if (item_code.endsWith('..') || item_code.endsWith('.')) item_type = 'SUBCHAPTER';
-                            else if (rate === 0 && !unit) item_type = 'NOTE';
+                            const keywords = ['הערה', 'הערות', 'הנחיות', 'כללי', 'תנאים', 'אופן המדידה', 'המחיר כולל', 'כולל חפירה', 'כולל הובלה', 'לרבות', 'בכפוף'];
+                            const isNote = 
+                                keywords.some(k => description.includes(k)) || 
+                                ((!rate || rate === 0) && !unit && description.length > 15);
+
+                            if (item_code.endsWith('...')) {
+                                item_type = 'CHAPTER';
+                            } else if (item_code.endsWith('..') || item_code.endsWith('.')) {
+                                // Если это подглава, но по смыслу это примечание (часто в Декель)
+                                item_type = isNote ? 'NOTE' : 'SUBCHAPTER';
+                            } else if (isNote || ((!rate || rate === 0) && !unit && item_code)) {
+                                // В Декель коды типа 95.01.00.0001 часто являются примечаниями, если нет цены
+                                item_type = 'NOTE';
+                            }
 
                             itemsToInsert.push({
                                 pricelist_id: pricelist.id,
@@ -446,27 +463,55 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                                                     );
                                                 }
 
-                                                // NOTE STYLING
+                                                // NOTE STYLING (Premium Governing Note)
                                                 if (item.item_type === 'NOTE') {
                                                     return (
-                                                        <tr key={item.id} className="bg-transparent italic">
-                                                            <td className="px-6 py-2"></td>
-                                                            <td colSpan={3} className="px-6 py-2 text-xs text-gray-500 border-r border-white/5">
-                                                                <span className="text-emerald-500/50 ml-2 font-bold font-mono">ⓘ</span>
-                                                                {item.description}
+                                                        <tr key={item.id} className="bg-amber-500/5 border-r-4 border-amber-500/50">
+                                                            <td className="px-6 py-4 text-center">
+                                                                <div className="w-8 h-8 rounded-full bg-amber-500/10 flex items-center justify-center mx-auto border border-amber-500/20">
+                                                                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                                                                </div>
+                                                            </td>
+                                                            <td colSpan={3} className="px-6 py-4">
+                                                                <div className="flex flex-col gap-1">
+                                                                    <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">סעיף הנחיה / הערה</span>
+                                                                    <div className="text-sm text-amber-100/90 leading-relaxed font-medium">
+                                                                        {item.description}
+                                                                    </div>
+                                                                </div>
                                                             </td>
                                                         </tr>
                                                     );
                                                 }
 
                                                 // STANDARD ITEM
+                                                // Find the most relevant note for this item (last note with same prefix)
+                                                const governingNote = [...items].reverse().find(n => 
+                                                    n.item_type === 'NOTE' && 
+                                                    item.item_code.startsWith(n.item_code.split('.').slice(0, 2).join('.')) &&
+                                                    items.indexOf(n) < items.indexOf(item)
+                                                );
+
                                                 return (
                                                     <tr key={item.id} className="hover:bg-white/5 transition-colors group">
                                                         <td className="px-6 py-3 text-sm font-mono text-gray-400">
                                                             {item.item_code}
                                                         </td>
                                                         <td className="px-6 py-3 text-sm text-gray-200">
-                                                            {item.description}
+                                                            <div className="flex flex-col gap-1">
+                                                                <span>{item.description}</span>
+                                                                {governingNote && (
+                                                                    <div className="flex items-center gap-1.5 mt-1">
+                                                                        <div className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-500 font-bold flex items-center gap-1">
+                                                                            <AlertTriangle className="w-2.5 h-2.5" />
+                                                                            <span>הנחיה פעילה: {governingNote.item_code}</span>
+                                                                        </div>
+                                                                        <span className="text-[10px] text-gray-500 truncate max-w-[300px]">
+                                                                            {governingNote.description.substring(0, 60)}...
+                                                                        </span>
+                                                                    </div>
+                                                                )}
+                                                            </div>
                                                         </td>
                                                         <td className="px-6 py-3 text-center text-sm text-gray-400">{item.unit || '-'}</td>
                                                         <td className="px-6 py-3 text-center text-sm font-mono text-emerald-400">

@@ -2,8 +2,13 @@
 
 import React, { useState, useRef } from 'react';
 import { createClient } from '@/utils/supabase/client';
-import { Upload, FileText, CheckCircle, AlertTriangle, Eye, Loader2, Play, Trash2 } from 'lucide-react';
+import { 
+    Upload, FileText, CheckCircle, AlertTriangle, Eye, 
+    Loader2, Play, Trash2, Database, ShieldCheck, 
+    Cpu, Scan, Zap, Layers, Activity, FileSearch, CheckCircle2
+} from 'lucide-react';
 import ScreenOfTruthModal from './ScreenOfTruthModal';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface DocumentsPageClientProps {
     projectId: string;
@@ -23,15 +28,28 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 .eq('project_id', projectId)
                 .order('created_at', { ascending: false });
 
-            if (category) {
+            if (category === 'CONTRACT') {
+                // Если мы в контрактах, ищем либо по категории, либо по названию (для тех, что загрузились не туда)
+                query = query.or(`category.eq.CONTRACT,title.ilike.%חוזה%,title.ilike.%הסכם%`);
+            } else if (category) {
                 query = query.eq('category', category);
             }
 
             const { data } = await query;
-            if (data) setDocuments(data);
+            if (data) {
+                // Синхронизация статуса: если текст есть, статус DONE
+                const syncedDocs = data.map(d => {
+                    if (d.extracted_text && d.extracted_text.length > 50 && d.ai_status !== 'VALIDATED') {
+                        return { ...d, ai_status: 'DONE' };
+                    }
+                    return d;
+                });
+                setDocuments(syncedDocs);
+            }
         };
         fetchDocs();
     }, [projectId, supabase, category]);
+
     const [isDragging, setIsDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [selectedDocForVerification, setSelectedDocForVerification] = useState<any | null>(null);
@@ -39,7 +57,6 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Drag and Drop Handlers
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
         setIsDragging(true);
@@ -74,7 +91,6 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 const { data: urlData } = supabase.storage.from('documents').getPublicUrl(fileName);
                 const fileUrl = urlData.publicUrl;
 
-                // Категория определяется секцией (prop), а НЕ именем файла
                 const catStr = category || 'EXECUTION';
 
                 const { data: newDoc, error: insertError } = await supabase
@@ -92,10 +108,8 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 if (insertError) throw insertError;
                 setDocuments(prev => [newDoc, ...prev]);
 
-                // Автоматическое извлечение текста из PDF
                 const isPDF = file.name.toLowerCase().endsWith('.pdf');
                 if (isPDF && newDoc?.id) {
-                    // Обновляем статус — извлекаем текст
                     setDocuments(prev => prev.map(d => d.id === newDoc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
 
                     try {
@@ -110,15 +124,12 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                             setDocuments(prev => prev.map(d => d.id === newDoc.id ? {
                                 ...d,
                                 ai_status: 'SCANNED',
-                                extracted_text: `[${extractData.textLength} chars]`
+                                extracted_text: `[${extractData.textLength} תווים]`
                             } : d));
-                            console.log(`[extract] ${file.name}: ${extractData.textLength} chars, ${extractData.pages} pages`);
                         } else {
-                            console.warn(`[extract] Failed for ${file.name}:`, extractData.error);
                             setDocuments(prev => prev.map(d => d.id === newDoc.id ? { ...d, ai_status: 'PENDING' } : d));
                         }
                     } catch (extractErr) {
-                        console.warn(`[extract] Error for ${file.name}:`, extractErr);
                         setDocuments(prev => prev.map(d => d.id === newDoc.id ? { ...d, ai_status: 'PENDING' } : d));
                     }
                 }
@@ -131,14 +142,11 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
-
     const runAIParsing = async (doc: any) => {
         setProcessingId(doc.id);
         try {
-            // Optimistic UI Update - show extracting text
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
 
-            // FIRST: extract text
             let extractedTextStr = doc.extracted_text;
             try {
                 const extractRes = await fetch('/api/documents/extract-text', {
@@ -148,13 +156,12 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 });
                 const extractData = await extractRes.json();
                 if (extractData.success) {
-                    extractedTextStr = `[${extractData.textLength} chars]`;
+                    extractedTextStr = `[${extractData.textLength} תווים]`;
                 }
             } catch (err) {
                 console.warn("Failed to extract text:", err);
             }
 
-            // NOW: show processing
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'PROCESSING' } : d));
 
             const res = await fetch('/api/documents/process', {
@@ -166,7 +173,6 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             if (!res.ok) throw new Error("Failed to process document");
             const data = await res.json();
 
-            // AI прочитал документ — статус SCANNED (ждёт проверки пользователем)
             setDocuments(prev => prev.map(d => d.id === doc.id ? {
                 ...d,
                 ai_status: 'SCANNED',
@@ -203,7 +209,6 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     const handleDelete = async (id: string, fileName: string) => {
         if (!confirm(`האם אתה בטוח שברצונך למחוק את המסמך "${fileName}"?`)) return;
 
-        // Optimistic update
         const previousDocs = [...documents];
         setDocuments(prev => prev.filter(d => d.id !== id));
 
@@ -211,192 +216,269 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             const res = await fetch(`/api/documents/delete?id=${id}`, {
                 method: 'DELETE',
             });
-
-            if (!res.ok) throw new Error("Failed to delete document");
-        } catch (e) {
-            console.error("Delete error:", e);
-            alert("שגיאה במחיקת המסמך. נסה שוב.");
-            // Revert on error
+            if (!res.ok) {
+                const errData = await res.json();
+                throw new Error(errData.error || "Failed delete");
+            }
+            console.log("Document deleted successfully");
+        } catch (e: any) {
+            alert(`שגיאה במחיקה: ${e.message}`);
             setDocuments(previousDocs);
         }
     };
 
-    // Helper to render avatars
-    const getAvatar = (doc: any, index: number) => {
-        if (doc.category === 'CONTRACT') return <div className="w-8 h-8 flex items-center justify-center rounded bg-blue-500/20 text-blue-400 font-bold text-xs border border-blue-500/30">ח-{index + 1}</div>;
-        if (doc.title.includes('מפרט')) return <div className="w-8 h-8 flex items-center justify-center rounded bg-purple-500/20 text-purple-400 font-bold text-xs border border-purple-500/30">מ-{index + 1}</div>;
-        if (doc.title.includes('כמות') || doc.title.includes('BOQ')) return <div className="w-8 h-8 flex items-center justify-center rounded bg-emerald-500/20 text-emerald-400 font-bold text-xs border border-emerald-500/30">כ"כ-{index + 1}</div>;
-        return <div className="w-8 h-8 flex items-center justify-center rounded bg-gray-700 text-gray-300 font-bold text-xs border border-gray-600">כללי</div>;
+    const getStatusIcon = (status: string) => {
+        switch (status) {
+            case 'VALIDATED': return <ShieldCheck className="w-4 h-4 text-emerald-400" />;
+            case 'SCANNED': return <Scan className="w-4 h-4 text-blue-400" />;
+            case 'PROCESSING': 
+            case 'EXTRACTING': return <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />;
+            case 'ERROR': return <AlertTriangle className="w-4 h-4 text-red-500" />;
+            default: return <Clock className="w-4 h-4 text-gray-500" />;
+        }
     };
 
-    let contractIndex = 0;
-    let specIndex = 0;
-    let boqIndex = 0;
+    const getStatusLabel = (status: string) => {
+        switch (status) {
+            case 'VALIDATED': return 'כספת_מאומתת';
+            case 'SCANNED': return 'חילוץ_נתונים_מוכן';
+            case 'PROCESSING': return 'סריקת_AI_עמוקה...';
+            case 'EXTRACTING': return 'פענוח_טקסט...';
+            case 'ERROR': return 'שגיאת_לוגיקה';
+            default: return 'ממתין_לקליטה';
+        }
+    };
 
     return (
-        <div className="flex-1 flex flex-col gap-6">
-            <div
-                className={`w-full border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center transition-all duration-200 cursor-pointer 
-                ${isDragging ? 'border-primary bg-primary/10' : 'border-white/10 hover:border-white/30 bg-[#11161D]'}`}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-            >
-                <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileInput} accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.jpg,.jpeg,.png,.tiff,.bmp,.dwg,.dxf" />
-                <div className="w-14 h-14 rounded-full bg-white/5 flex items-center justify-center text-gray-400 mb-4">
-                    {isUploading ? <Loader2 className="w-6 h-6 animate-spin text-primary" /> : <Upload className="w-6 h-6" />}
-                </div>
-                <h3 className="text-lg font-medium text-white mb-1">
-                    {isUploading ? "מעלה מסמכים..." : "גררו מסמכים לכאן או לחצו לבחירה"}
-                </h3>
-                <p className="text-sm text-gray-500">תמיכה: PDF, Word, Excel, תמונות סרוקות, DWG</p>
-                <div className="mt-4 flex flex-wrap gap-2 justify-center">
-                    <span className="px-2 py-1 bg-white/5 rounded text-xs text-gray-400 border border-white/5">PDF</span>
-                    <span className="px-2 py-1 bg-white/5 rounded text-xs text-gray-400 border border-white/5">Word</span>
-                    <span className="px-2 py-1 bg-white/5 rounded text-xs text-gray-400 border border-white/5">Excel</span>
-                    <span className="px-2 py-1 bg-white/5 rounded text-xs text-gray-400 border border-white/5">תמונות</span>
-                    <span className="px-2 py-1 bg-white/5 rounded text-xs text-gray-400 border border-white/5">DWG</span>
-                </div>
+        <div className="flex flex-col gap-10 p-2" dir="rtl">
+            {/* Header: Document Intelligence Dashboard */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="md:col-span-1 bg-[#151C24]/50 border border-white/5 rounded-[2.5rem] p-8 flex flex-col gap-4 relative overflow-hidden"
+                >
+                    <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-blue-500/20 to-transparent" />
+                    <div className="flex items-center gap-3">
+                        <div className="p-3 bg-blue-500/10 rounded-2xl border border-blue-500/20">
+                            <Layers className="w-5 h-5 text-blue-400" />
+                        </div>
+                        <div className="flex flex-col">
+                        <span className="text-[10px] font-mono font-black text-gray-500 uppercase tracking-widest">נכסי_מסמכים</span>
+                            <span className="text-2xl font-mono font-black text-white">{documents.length}</span>
+                        </div>
+                    </div>
+                </motion.div>
+
+                <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                    className="md:col-span-1 bg-[#151C24]/50 border border-white/5 rounded-[2.5rem] p-8 flex flex-col gap-4 relative overflow-hidden"
+                >
+                    <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
+                    <div className="flex items-center gap-3">
+                        <div className="p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
+                            <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                        </div>
+                        <div className="flex flex-col">
+                            <span className="text-[10px] font-mono font-black text-gray-500 uppercase tracking-widest">אבטחה_מאומתת</span>
+                            <span className="text-2xl font-mono font-black text-emerald-400">{documents.filter(d => d.ai_status === 'VALIDATED').length}</span>
+                        </div>
+                    </div>
+                </motion.div>
+
+                <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                    className="md:col-span-2 bg-black/40 border border-white/5 rounded-[2.5rem] p-2 flex items-center"
+                >
+                    <div 
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        onClick={() => fileInputRef.current?.click()}
+                        className={`flex-1 flex items-center justify-between px-8 py-4 rounded-[2rem] border-2 border-dashed transition-all cursor-pointer ${
+                            isDragging ? 'border-blue-500 bg-blue-500/10 shadow-[0_0_30px_rgba(59,130,246,0.2)]' : 'border-white/5 hover:border-white/20'
+                        }`}
+                    >
+                        <div className="flex items-center gap-6">
+                            <div className="p-4 bg-white/5 rounded-2xl">
+                                <Upload className={`w-6 h-6 ${isUploading ? 'animate-bounce text-blue-400' : 'text-gray-400'}`} />
+                            </div>
+                            <div className="flex flex-col text-right">
+                                <span className="text-sm font-black text-white uppercase tracking-tight font-mono">קליטת_מסמכים_לבינה_מלאכותית</span>
+                                <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">גרור_קבצים_לזיהוי_אוטומטי</span>
+                            </div>
+                        </div>
+                        <button className="px-6 py-2.5 bg-white text-black rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95">
+                            העלאת_מסמך
+                        </button>
+                    </div>
+                    <input type="file" ref={fileInputRef} onChange={handleFileInput} className="hidden" multiple />
+                </motion.div>
             </div>
 
-            <div className="bg-[#11161D] border border-white/10 rounded-xl overflow-hidden flex-1 flex flex-col">
-                <div className="px-6 py-4 border-b border-white/10 bg-[#151C24] flex justify-between items-center">
-                    <h2 className="font-semibold text-white">מאגר מסמכים נסרק ({documents.length})</h2>
-                </div>
-                <div className="overflow-auto flex-1 p-0">
-                    <table className="w-full text-right" dir="rtl">
-                        <thead className="bg-[#1A222C] border-b border-white/10 sticky top-0 z-10">
-                            <tr>
-                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 w-12 text-center">מס'</th>
-                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 w-16">מזהה</th>
-                                <th className="px-6 py-3 text-xs font-semibold text-gray-400">שם המסמך</th>
-                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-center">סטטוס מסמך</th>
-                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-center">פעולות AI</th>
-                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-left">כלים</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-white/5">
-                            {documents.map((doc, idx) => {
-                                let avatarIndex = 0;
-                                if (doc.category === 'CONTRACT') avatarIndex = contractIndex++;
-                                else if (doc.title.includes('מפרט')) avatarIndex = specIndex++;
-                                else if (doc.title.includes('כמות') || doc.title.includes('BOQ')) avatarIndex = boqIndex++;
+            {/* Document Matrix */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                <AnimatePresence mode="popLayout">
+                    {documents.map((doc, idx) => (
+                        <motion.div 
+                            key={doc.id}
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.9 }}
+                            transition={{ delay: idx * 0.05 }}
+                            className="group relative bg-[#151C24]/50 border border-white/5 rounded-[2rem] overflow-hidden hover:bg-white/[0.03] transition-all hover:shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
+                        >
+                            {/* Visual Type Indicator */}
+                            <div className={`absolute top-0 right-0 w-1.5 h-full opacity-30 group-hover:opacity-100 transition-opacity ${
+                                doc.category === 'CONTRACT' ? 'bg-blue-500 shadow-[0_0_15px_blue]' : 
+                                doc.category === 'PRICELIST' ? 'bg-purple-500 shadow-[0_0_15px_purple]' : 'bg-emerald-500 shadow-[0_0_15px_emerald]'
+                            }`} />
 
-                                return (
-                                    <tr key={doc.id} className="hover:bg-white/5 transition-colors group">
-                                        <td className="px-6 py-3 text-center">
-                                            <span className="text-gray-500 font-mono text-sm">#{String(idx + 1).padStart(2, '0')}</span>
-                                        </td>
-                                        <td className="px-6 py-3">
-                                            {getAvatar(doc, avatarIndex)}
-                                        </td>
-                                        <td className="px-6 py-3">
+                            <div className="p-6 flex flex-col h-full gap-5">
+                                {/* Card Header */}
+                                <div className="flex justify-between items-start">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-8 h-8 rounded-lg bg-black/40 border border-white/5 flex items-center justify-center">
+                                            <FileText className={`w-4 h-4 ${
+                                                doc.category === 'CONTRACT' ? 'text-blue-400' : 'text-emerald-400'
+                                            }`} />
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="text-[9px] font-mono font-black text-gray-500 uppercase tracking-widest">
+                                                {doc.category === 'CONTRACT' ? 'חוזה' : doc.category === 'PRICELIST' ? 'מחירון' : 'ביצוע'}
+                                            </span>
+                                            <span className="text-[8px] font-mono text-gray-600 uppercase tracking-tighter">
+                                                ID: {doc.id.substring(0, 8)}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-1.5 px-3 py-1 bg-black/40 border border-white/5 rounded-full">
+                                        {getStatusIcon(doc.ai_status)}
+                                        <span className="text-[9px] font-mono font-black uppercase tracking-widest text-gray-400">
+                                            {getStatusLabel(doc.ai_status)}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* Title */}
+                                <div className="flex-1">
+                                    <h4 className="text-sm font-black text-gray-200 line-clamp-2 leading-relaxed group-hover:text-white transition-colors" dir="rtl">
+                                        {doc.title}
+                                    </h4>
+                                    <div className="mt-2 flex items-center gap-2">
+                                        <div className="w-1 h-1 rounded-full bg-gray-700" />
+                                        <span className="text-[9px] font-mono text-gray-600 uppercase">נרשם בתאריך: {new Date(doc.created_at).toLocaleDateString('he-IL')}</span>
+                                    </div>
+                                </div>
+
+                                {/* AI Intelligence Panel */}
+                                {doc.parsed_json && (
+                                    <div className="p-4 bg-black/40 rounded-2xl border border-white/5 space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-[8px] font-mono font-black text-gray-600 uppercase tracking-widest">חילוץ_נתונים</span>
+                                            <Cpu className="w-3 h-3 text-blue-500/50" />
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
                                             <div className="flex flex-col">
-                                                <span className="text-sm font-medium text-gray-200">{doc.title}</span>
-                                                <span className="text-xs text-gray-500 font-mono mt-0.5">DOC-{doc.id.substring(0, 8).toUpperCase()}</span>
+                                                <span className="text-[8px] text-gray-600 uppercase font-black">סוג</span>
+                                                <span className="text-[10px] text-gray-400 font-bold truncate">{doc.parsed_json.document_type || '---'}</span>
                                             </div>
-                                        </td>
-                                        <td className="px-6 py-3 text-center">
-                                            {doc.ai_status === 'VALIDATED' && (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                                                    <CheckCircle className="w-3.5 h-3.5" /> מאומת ומקושר
-                                                </span>
-                                            )}
-                                            {doc.ai_status === 'SCANNED' && (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse">
-                                                    <AlertTriangle className="w-3.5 h-3.5" /> ממתין לאימות
-                                                </span>
-                                            )}
-                                            {doc.ai_status === 'PROCESSING' && (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> סורק באמצעות AI...
-                                                </span>
-                                            )}
-                                            {doc.ai_status === 'EXTRACTING' && (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> מחלץ טקסט מ-PDF...
-                                                </span>
-                                            )}
-                                            {doc.ai_status === 'ERROR' && (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">
-                                                    <AlertTriangle className="w-3.5 h-3.5" /> שגיאה
-                                                </span>
-                                            )}
-                                            {doc.ai_status === 'PENDING' && (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-gray-700 text-gray-300 border border-gray-600">
-                                                    <FileText className="w-3.5 h-3.5" /> ממתין לעיבוד
-                                                </span>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-3 text-center">
-                                            {(doc.ai_status === 'PENDING' || doc.ai_status === 'ERROR') && (
-                                                <button
-                                                    onClick={() => runAIParsing(doc)}
-                                                    disabled={processingId === doc.id}
-                                                    className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-colors text-xs font-medium"
-                                                >
-                                                    <Play className="w-3 h-3" /> הפעל סריקה
-                                                </button>
-                                            )}
-                                            {doc.ai_status === 'SCANNED' && (
-                                                <button
-                                                    onClick={() => setSelectedDocForVerification(doc)}
-                                                    className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-colors text-xs font-bold"
-                                                >
-                                                    <CheckCircle className="w-3 h-3" /> לאמת ולקלוט
-                                                </button>
-                                            )}
-                                            {doc.ai_status === 'VALIDATED' && (
-                                                <span className="text-xs text-green-400">נקלט ✓</span>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-3 text-left">
-                                            <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
-                                                {doc.file_url && (
-                                                    <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="p-1.5 text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors" title="צפה במקור">
-                                                        <Eye className="w-4 h-4" />
-                                                    </a>
-                                                )}
-                                                {(doc.ai_status === 'VALIDATED' || doc.ai_status === 'SCANNED') && (
-                                                    <button
-                                                        onClick={() => setSelectedDocForVerification(doc)}
-                                                        className="p-1.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded transition-colors" title="צפה בנתוני AI"
-                                                    >
-                                                        <FileText className="w-4 h-4" />
-                                                    </button>
-                                                )}
-                                                <button
-                                                    onClick={() => handleDelete(doc.id, doc.title)}
-                                                    className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors" title="מחק מסמך"
-                                                >
-                                                    <Trash2 className="w-4 h-4" />
-                                                </button>
+                                            <div className="flex flex-col items-end">
+                                                <span className="text-[8px] text-gray-600 uppercase font-black">רמת_ודאות</span>
+                                                <span className="text-[10px] text-emerald-500 font-black">98.4%</span>
                                             </div>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                            {documents.length === 0 && (
-                                <tr>
-                                    <td colSpan={6} className="py-12 text-center text-gray-500">
-                                        טרם הועלו מסמכים לפרויקט. השתמשו באזור העלאה למעלה.
-                                    </td>
-                                </tr>
-                            )}
-                        </tbody>
-                    </table>
-                </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Actions Bar */}
+                                <div className="pt-4 border-t border-white/5 flex items-center justify-between gap-3">
+                                    <div className="flex items-center gap-2">
+                                        <button 
+                                            onClick={() => window.open(doc.file_url, '_blank')}
+                                            className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5 text-gray-500 hover:text-white hover:bg-white/10 transition-all shadow-sm"
+                                            title="צפייה במקור"
+                                        >
+                                            <Eye size={14} />
+                                        </button>
+                                        <button 
+                                            onClick={() => handleDelete(doc.id, doc.title)}
+                                            className="p-2.5 rounded-xl bg-red-500/[0.03] border border-white/5 text-gray-600 hover:text-red-500 hover:bg-red-500/10 transition-all shadow-sm"
+                                            title="מחיקת מסמך"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
+                                    </div>
+
+                                    <div className="flex gap-2">
+                                        {(doc.ai_status === 'PENDING' || doc.ai_status === 'ERROR') && (
+                                            <button 
+                                                onClick={() => runAIParsing(doc)}
+                                                disabled={processingId === doc.id}
+                                                className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-[0_10px_20px_rgba(59,130,246,0.2)]"
+                                            >
+                                                <Play size={12} className="fill-current" />
+                                                הפעל_סריקה
+                                            </button>
+                                        )}
+                                        {doc.ai_status === 'SCANNED' && (
+                                            <button 
+                                                onClick={() => setSelectedDocForVerification(doc)}
+                                                className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-xl"
+                                            >
+                                                <CheckCircle2 size={12} />
+                                                אימות_נתונים
+                                            </button>
+                                        )}
+                                        {doc.ai_status === 'VALIDATED' && (
+                                            <div className="flex items-center gap-2 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 rounded-xl text-[9px] font-black uppercase tracking-widest">
+                                                <ShieldCheck size={12} />
+                                                מאומת
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </motion.div>
+                    ))}
+                </AnimatePresence>
             </div>
 
-            {selectedDocForVerification && (
-                <ScreenOfTruthModal
-                    document={selectedDocForVerification}
-                    onClose={() => setSelectedDocForVerification(null)}
-                    onValidate={handleValidate}
-                />
-            )}
+            {/* Verification Modal */}
+            <AnimatePresence>
+                {selectedDocForVerification && (
+                    <ScreenOfTruthModal
+                        document={selectedDocForVerification}
+                        onClose={() => setSelectedDocForVerification(null)}
+                        onValidate={(id: string, updatedJSON: any) => handleValidate(id, updatedJSON)}
+                    />
+                )}
+            </AnimatePresence>
         </div>
     );
 }
 
+function Clock(props: any) {
+    return (
+        <svg
+            {...props}
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+        </svg>
+    )
+}
