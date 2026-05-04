@@ -412,6 +412,7 @@ export default function DashboardContent() {
             <main className="flex-1 flex flex-col relative overflow-hidden bg-[#0B0F14]">
                 <TopBar 
                     title={`${activeProject?.name || 'טוען פרויקט...'}`} 
+                    onBack={() => setProjectId(null)}
                 />
                 <div className="flex-1 p-8 overflow-y-auto custom-scrollbar">
                     <motion.div

@@ -126,17 +126,6 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                     </div>
                     <h2 className="text-3xl font-black text-white font-mono tracking-tighter uppercase">לוח בקרה פרויקטלי</h2>
                 </div>
-                
-                <div className="flex items-center gap-3">
-                    <div className="px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                        <span className="text-[11px] font-bold text-emerald-500 uppercase">מערכת מסונכרנת</span>
-                    </div>
-                    <div className="px-4 py-2 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center gap-2 text-blue-400">
-                        <Sparkles size={14} />
-                        <span className="text-[11px] font-bold uppercase">טכנולוגיית {AI_MODEL_BRANDING.split(' ')[0]} 3</span>
-                    </div>
-                </div>
             </div>
 
             {/* Financial Status Grid */}
@@ -279,44 +268,6 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                 ))}
             </div>
 
-            {/* AI Advisor Snapshot */}
-            <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.6 }}
-                className="bg-gradient-to-br from-blue-500/10 to-purple-500/10 border border-blue-500/20 rounded-[2.5rem] p-10 relative overflow-hidden"
-            >
-                <div className="flex items-center gap-4 mb-6">
-                    <div className="p-3 bg-white text-black rounded-2xl">
-                        <Sparkles size={24} />
-                    </div>
-                    <div>
-                        <h3 className="text-xl font-black text-white font-mono uppercase tracking-tighter">סיכום תובנות בינה מלאכותית</h3>
-                        <p className="text-[10px] font-mono text-blue-400 uppercase tracking-widest">Powered by {AI_MODEL_BRANDING}</p>
-                    </div>
-                </div>
-                <div className="space-y-4 text-gray-300 text-sm leading-relaxed max-w-3xl">
-                    <p>
-                        המערכת זיהתה פוטנциаל להגדלת התקציב בשיעור של <span className="text-emerald-400 font-bold">{(stats.pendingVO / stats.originalBudget * 100 || 0).toFixed(1)}%</span> דרך חריגים הממתינים לאישור.
-                    </p>
-                    <p>
-                        יש להקפיד על כיסוי הוכחות (כרגע {stats.evidenceCoverage}%) עבור סעיפי הבסיס כדי למנוע דחיות עתידיות של דרישות תשלום. <span onClick={() => onNavigate('בקרת סתירות')} className="text-blue-400 underline cursor-pointer">לחץ כאן לצפייה בפירוט.</span>
-                    </p>
-                </div>
-                <div className="flex items-center gap-3 mt-6">
-                    <button 
-                        onClick={() => window.print()}
-                        className="px-6 py-3 bg-white text-black font-black text-xs uppercase tracking-tighter hover:bg-blue-400 transition-all flex items-center gap-2 rounded-lg shadow-[0_0_20px_rgba(255,255,255,0.2)]"
-                    >
-                        <FileText size={16} />
-                        הפק דוח סטטוס פרויקט (PDF)
-                    </button>
-                    <div className="h-px flex-1 bg-gradient-to-r from-blue-500/50 to-transparent" />
-                </div>
-                <div className="absolute top-1/2 left-0 -translate-y-1/2 opacity-20 pointer-events-none">
-                    <Zap size={200} className="text-blue-500 blur-3xl" />
-                </div>
-            </motion.div>
         </div>
     );
 }
