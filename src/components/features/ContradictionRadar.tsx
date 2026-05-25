@@ -254,7 +254,9 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                         source: 'CUSTOM_ANALYSIS',
                         description: contradiction.description || contradiction.title,
                         ai_rationale: contradiction.evidence_data?.expert_strategy?.commercial_risk || '',
-                        unit: 'יח'
+                        unit: 'יח',
+                        quantity: 1,
+                        unit_price_excl_vat: 0
                     });
 
                 if (ledgerError) {

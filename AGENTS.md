@@ -6,11 +6,12 @@
 Проект использует Слой A (глобальные технические навыки) и Слой B (доменная экспертиза подрядчика Израиля).
 
 ### Слой A (Global Technical Skills)
-Использовать глобальные навыки (через `view_file` из `C:\Users\SergeyRaihshtat\.gemini\antigravity\skills`):
-- `frontend-ui-dark-ts` / `frontend-dev-guidelines`: UI, TailwindCSS, Luxury Minimal.
-- `gemini-api-integration`: AI OCR, работа с моделями.
+Использовать актуальные навыки Codex из текущей сессии/окружения. Старые AntiGravity-пути не являются рабочим источником правил.
 - `senior-architect`: Архитектура, Supabase SQL, Next.js.
 - `test-driven-development`: Тесты, валидация.
+- `security-best-practices` / `security-audit`: секреты, RLS, API, webhooks, production config.
+- `ui-ux-pro-max` / `frontend-developer`: UI, RTL, TailwindCSS, рабочий интерфейс.
+- `openai-docs` или официальный поиск документации: только если задача зависит от актуального поведения внешнего API.
 
 ### Слой B (Local Domain Skills)
 Использовать профильные навыки (через `view_file` из `.agent/skills/`):

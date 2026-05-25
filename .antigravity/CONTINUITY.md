@@ -1,4 +1,7 @@
-# Loki Mode Continuity: ContractorSystem
+# Historical AntiGravity Continuity: ContractorSystem
+
+> Historical note: this file came from the previous AntiGravity workflow.
+> Current Codex work should follow root `CONTINUITY.md`, `GEMINI.md`, `AGENTS.md`, and `docs/specs/`.
 
 ## Текущая цель
 
@@ -6,7 +9,7 @@
 
 ## Статус проекта
 
-- **AI Models:**  `gemini-2.5-flash`.
+- **AI Models:** historical note was `gemini-2.5-flash`; current project standard is `gemini-3-flash-preview` via `src/lib/gemini.ts`.
 - **UI:** Темная тема, Glassmorphism, RTL (Hebrew).
 - **Architecture:** Next.js + Supabase.
 

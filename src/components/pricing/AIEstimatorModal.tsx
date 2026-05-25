@@ -5,7 +5,7 @@ import { X, Bot, AlertTriangle, Calculator, Check, ArrowRightLeft, FileSpreadshe
 import { motion, AnimatePresence } from 'framer-motion';
 import ScreenOfTruthModal from '@/components/documents/ScreenOfTruthModal';
 import { createClient } from '@/utils/supabase/client';
-import { VAT_RATE, AI_MODEL_BRANDING } from '@/utils/constants';
+import { VAT_RATE } from '@/utils/constants';
 import { ContradictionItem } from '@/types';
 import { ApproveEstimationPayload } from '@/components/features/PricingLedgerUI';
 
@@ -25,11 +25,6 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
     const [estimateData, setEstimateData] = useState<any>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [isExpertMode, setIsExpertMode] = useState(false);
-    
-    if (!contradiction) return null;
-
-
-
     const [formState, setFormState] = useState({
         description: '',
         unit: '',

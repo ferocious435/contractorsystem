@@ -7,7 +7,7 @@
 
 | Назначение | Модель API | Отображение в UI |
 |---|---|---|
-| Все задачи (Radar, Chat, Parse, Letter, OCR) | `gemini-2.5-flash` | Gemini 2.5 Flash |
+| Все задачи (Radar, Chat, Parse, Letter, OCR) | `gemini-3-flash-preview` | Gemini 3 Flash |
 
 **Централизованный конфиг:** `src/lib/gemini.ts` → `GEMINI_CONFIG.STABLE_FLASH`
 
@@ -26,7 +26,7 @@
 
 | Модель | Описание |
 |---|---|
-| `gemini-2.5-flash` | ✅ Стабильная, основной стандарт проекта |
+| `gemini-2.5-flash` | ⚠️ Резервная стабильная модель, не основной стандарт |
 | `gemini-2.5-pro` | ✅ Стабильная, для сверхсложной аналитики |
 | `gemini-2.5-flash-lite` | ✅ Легкая версия (не использовать без согласования) |
 | `gemini-3-flash-preview` | 🟢 Stable (основная модель проекта) |
