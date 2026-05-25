@@ -63,6 +63,19 @@ export async function POST(req: Request) {
             return NextResponse.json({ success: false, error: "projectId and items are required" }, { status: 400 });
         }
 
+        const hasUnverifiedItems = items.some((item: any) => {
+            const evidenceData = item.evidence_data;
+            if (Array.isArray(evidenceData)) return evidenceData.length === 0;
+            return !evidenceData || evidenceData.evidence_status !== "VERIFIED";
+        });
+
+        if (letterType === "official_vo" && hasUnverifiedItems) {
+            return NextResponse.json({
+                success: false,
+                error: "Official VO requires verified evidence for every selected item"
+            }, { status: 400 });
+        }
+
         const { data: project, error: projectError } = await supabase
             .from("projects")
             .select("id, name, client_name, contractor_id")

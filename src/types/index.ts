@@ -55,6 +55,7 @@ export interface EstimationData {
     ai_rationale?: string;
     governing_notes?: string[];
     contradiction_id?: string;
+    evidence_data?: any;
 }
 
 export interface PricingLedgerProps {

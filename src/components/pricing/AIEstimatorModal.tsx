@@ -94,6 +94,18 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                     ...(estimateData.needed_documents || []).map((doc: string) => `נדרש לאימות: ${doc}`)
                 ].filter(Boolean) : [])
             ];
+            const linkedEvidence = {
+                ...(contradiction.evidence_data || {}),
+                pricing_evaluation: {
+                    match_found: estimateData?.match_found,
+                    source: estimateData?.source,
+                    confidence: estimateData?.confidence,
+                    match_quality: estimateData?.match_quality,
+                    source_trace: estimateData?.source_trace,
+                    needed_documents: estimateData?.needed_documents || [],
+                    zero_match_reason: estimateData?.zero_match_reason || null
+                }
+            };
 
             await onApprove({
                 contradiction_id: contradiction.id,
@@ -107,7 +119,8 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                 markup_percentage: formState.markup / 100,
                 ai_rationale: estimateData?.ai_rationale || '',
                 governing_notes: pricingNotes,
-                expert_strategy: estimateData?.expert_strategy || null
+                expert_strategy: estimateData?.expert_strategy || null,
+                evidence_data: linkedEvidence
             });
             onClose();
         } catch (e) {

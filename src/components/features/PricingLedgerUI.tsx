@@ -17,6 +17,7 @@ export interface ApproveEstimationPayload extends EstimationData {
     ai_rationale?: string;
     governing_notes?: string[];
     expert_strategy?: Record<string, unknown> | null;
+    evidence_data?: Record<string, unknown> | unknown[] | null;
 }
 
 export default function PricingLedgerUI({ projectId, initialParams, onNavigate }: PricingLedgerProps) {
@@ -217,6 +218,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                 ai_rationale: ledgerData.ai_rationale,
                 governing_notes: ledgerData.governing_notes,
                 contradiction_id: ledgerData.contradiction_id,
+                evidence_data: ledgerData.evidence_data || {},
                 vat_rate: VAT_RATE
             };
 

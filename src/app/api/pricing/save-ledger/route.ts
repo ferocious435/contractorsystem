@@ -51,6 +51,7 @@ export async function POST(req: Request) {
             ai_rationale,
             governing_notes,
             expert_strategy,
+            evidence_data,
             source = 'CUSTOM_ANALYSIS',
             type = 'PENDING_VO',
             vat_rate = VAT_RATE, // Using global constant
@@ -101,6 +102,7 @@ export async function POST(req: Request) {
                         ai_rationale: rationale,
                         governing_notes: notes,
                         expert_strategy,
+                        evidence_data: evidence_data || {},
                         vat_rate: safeVatRate
                     })
                     .eq('id', existingLedgerItem.id)
@@ -138,6 +140,7 @@ export async function POST(req: Request) {
                 ai_rationale: rationale,
                 governing_notes: notes,
                 expert_strategy,
+                evidence_data: evidence_data || {},
                 vat_rate: safeVatRate
             })
             .select(`
