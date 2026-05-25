@@ -6,7 +6,7 @@ export async function POST(req: Request) {
     const supabase = await createClient();
     
     try {
-        const { contradictionId, projectId } = await req.json();
+        const { contradictionId, projectId, expertMode = false } = await req.json();
 
         if (!contradictionId || !projectId) {
             return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
             .from('documents')
             .select('title, parsed_json')
             .eq('project_id', projectId)
-            .eq('category', 'CONTRACT');
+            .in('category', ['CONTRACT', 'BOQ', 'SPECS']);
 
         const boqRawContext = contractDocs
             ?.filter(d => d.parsed_json)
@@ -181,12 +181,16 @@ export async function POST(req: Request) {
            - [CONTRACT ITEM]: Use if direct match exists.
            - [DEKEL]: Use "מחירון דקל" as the industry standard for claims.
            - [CUSTOM]: Synthesize only if no matches found.
-        5. LANGUAGE: All output text (Rationale, Description, Notes) MUST be in professional Hebrew.
+        5. ZERO MATCH: If no direct source item exists in the provided context, do not invent a confident source. Return match_found=false, source=CUSTOM_ANALYSIS, item_code="NEW", price 0 unless you can clearly justify a pre-VAT analysis as editable draft only.
+        6. EVIDENCE: Separate verified source evidence from AI inference. If evidence is missing, say exactly what must be checked.
+        7. LANGUAGE: All output text (Rationale, Description, Notes) MUST be in professional Hebrew.
 
         OUTPUT FORMAT (JSON ONLY):
         {
             "match_found": boolean,
             "source": "BOQ" | "DEKEL" | "CONTRACTOR" | "CUSTOM_ANALYSIS",
+            "confidence": number,
+            "match_quality": "DIRECT" | "PARTIAL" | "ZERO_MATCH",
             "suggested_unit_price_excl_vat": number,
             "suggested_unit": "string (Hebrew)",
             "suggested_quantity": number,
@@ -194,6 +198,8 @@ export async function POST(req: Request) {
             "ai_rationale": "Deep Hebrew justification including contractual basis",
             "suggested_description": "Professional Hebrew description for the invoice/letter",
             "governing_notes": ["Hebrew strings regarding measurements, inclusions, or risks"],
+            "needed_documents": ["Hebrew strings naming documents or approvals needed before saving as confirmed claim"],
+            "zero_match_reason": "Hebrew explanation when match_quality is ZERO_MATCH",
             "questions": ["Clarifying questions to maximize claim value"]
         }
         `;
@@ -202,10 +208,26 @@ export async function POST(req: Request) {
         const pricingText = pricingResult.response.text();
         const cleanPricingJson = pricingText.replace(/```json|```/g, '').trim();
         const evaluation = JSON.parse(cleanPricingJson);
+        const hasSourceMatches = Boolean(ledgerMatches?.length || pricelistMatches.some(m => m.item_type === 'ITEM'));
+
+        if (!hasSourceMatches && evaluation.match_quality !== 'PARTIAL') {
+            evaluation.match_found = false;
+            evaluation.source = 'CUSTOM_ANALYSIS';
+            evaluation.item_code = evaluation.item_code || 'NEW';
+            evaluation.match_quality = 'ZERO_MATCH';
+            evaluation.confidence = Math.min(Number(evaluation.confidence) || 0.35, 0.45);
+            evaluation.suggested_unit_price_excl_vat = 0;
+            evaluation.zero_match_reason = evaluation.zero_match_reason || 'לא נמצאה התאמה ישירה בחוזה, בדקל או במחירון הקבלן לפי הנתונים הזמינים. נדרש ניתוח מחיר ידני לפני שמירה כדרישה מאומתת.';
+            evaluation.needed_documents = evaluation.needed_documents?.length
+                ? evaluation.needed_documents
+                : ['אישור מפקח או יומן עבודה', 'צילום/תיעוד שטח', 'סעיף חוזי או כתב כמויות רלוונטי', 'הצעת מחיר או מחירון להשוואה'];
+            evaluation.questions = evaluation.questions?.length
+                ? evaluation.questions
+                : ['מה הכמות המדויקת שבוצעה בפועל?', 'האם קיימת הוראה כתובה או אישור מפקח לעבודה?', 'איזה ציוד, כוח אדם וחומרים נדרשו בפועל?'];
+        }
 
         // 5. Engineering Expert Mode (Deep Technical Strategy)
         let expertStrategy = null;
-        const { expertMode } = await req.clone().json(); 
 
         if (expertMode) {
             const { ENGINEERING_STRATEGY_PROMPT } = await import('@/lib/gemini');
@@ -230,14 +252,25 @@ export async function POST(req: Request) {
             expertStrategy = JSON.parse(cleanExpertJson);
         }
 
-        // Update the contradiction with the expert strategy for persistence (used in PDF/reports)
+        const currentEvidence = contradiction.evidence_data || {};
+        const nextEvidenceData = {
+            ...currentEvidence,
+            pricing_evaluation: {
+                match_found: evaluation.match_found,
+                source: evaluation.source,
+                confidence: evaluation.confidence,
+                match_quality: evaluation.match_quality,
+                needed_documents: evaluation.needed_documents || [],
+                zero_match_reason: evaluation.zero_match_reason || null
+            },
+            ...(expertStrategy ? { expert_strategy: expertStrategy } : {})
+        };
+
+        // Update the contradiction with pricing evidence for persistence (used in PDF/reports)
         await supabase
             .from('contradictions')
             .update({
-                evidence_data: {
-                    ...(contradiction.evidence_data || {}),
-                    expert_strategy: expertStrategy
-                }
+                evidence_data: nextEvidenceData
             })
             .eq('id', contradictionId);
 

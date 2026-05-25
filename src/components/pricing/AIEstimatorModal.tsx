@@ -60,8 +60,8 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                 unit: data.suggested_unit || 'מ"ר',
                 quantity: data.suggested_quantity || 1,
                 unitPrice: data.suggested_unit_price_excl_vat || 0,
-                markup: prev.markup || 15,
-                source: data.item_code === 'NEW' ? 'CUSTOM_ANALYSIS' : 'BOQ'
+                markup: data.match_quality === 'ZERO_MATCH' ? (prev.markup || 15) : 0,
+                source: data.source || (data.item_code === 'NEW' ? 'CUSTOM_ANALYSIS' : 'BOQ')
             }));
 
         } catch (e) {
@@ -86,6 +86,15 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
     const handleSubmit = async () => {
         setIsSaving(true);
         try {
+            const effectiveUnitPriceExclVat = formState.unitPrice * (1 + (formState.markup / 100));
+            const pricingNotes = [
+                ...(estimateData?.governing_notes || []),
+                ...(estimateData?.match_quality === 'ZERO_MATCH' ? [
+                    estimateData.zero_match_reason,
+                    ...(estimateData.needed_documents || []).map((doc: string) => `נדרש לאימות: ${doc}`)
+                ].filter(Boolean) : [])
+            ];
+
             await onApprove({
                 contradiction_id: contradiction.id,
                 type: 'PENDING_VO',
@@ -94,10 +103,10 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                 description: formState.description,
                 unit: formState.unit,
                 quantity: formState.quantity,
-                unit_price_excl_vat: formState.unitPrice,
+                unit_price_excl_vat: effectiveUnitPriceExclVat,
                 markup_percentage: formState.markup / 100,
                 ai_rationale: estimateData?.ai_rationale || '',
-                governing_notes: estimateData?.governing_notes || [],
+                governing_notes: pricingNotes,
                 expert_strategy: estimateData?.expert_strategy || null
             });
             onClose();
@@ -135,6 +144,12 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
     const totalExclVat = formState.quantity * formState.unitPrice * (1 + (formState.markup / 100));
     const vatAmount = totalExclVat * VAT_RATE;
     const totalInclVat = totalExclVat + vatAmount;
+    const confidencePct = Math.round((Number(estimateData?.confidence) || 0) * 100);
+    const isZeroMatch = estimateData?.match_quality === 'ZERO_MATCH' || estimateData?.match_found === false;
+    const expert = estimateData?.expert_strategy;
+    const expertTechnical = expert?.technical_foundation || expert?.ripple_effect?.technical_analysis;
+    const expertArgument = expert?.professional_argument || expert?.contractual_diagnostic?.argument_for_supervisor;
+    const expertDiary = expert?.site_diary_instruction || expert?.operational_instructions?.site_diary_draft;
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/95 backdrop-blur-3xl overflow-y-auto" dir="rtl">
@@ -289,7 +304,50 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                                         <p className="text-xl text-gray-200 leading-relaxed font-sans font-medium" dir="rtl">
                                             {estimateData?.ai_rationale}
                                         </p>
+                                        {estimateData && (
+                                            <div className="mt-6 flex flex-wrap gap-3">
+                                                <span className={`px-3 py-1 rounded-lg border text-[10px] font-mono font-black ${
+                                                    isZeroMatch ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                                }`}>
+                                                    {isZeroMatch ? 'ללא התאמה ישירה' : 'התאמה נמצאה'} · ודאות {confidencePct || '—'}%
+                                                </span>
+                                                <span className="px-3 py-1 rounded-lg border bg-white/5 text-gray-400 border-white/10 text-[10px] font-mono font-black">
+                                                    מקור: {formState.source}
+                                                </span>
+                                            </div>
+                                        )}
                                     </div>
+
+                                    {isZeroMatch && (
+                                        <div className="p-8 bg-amber-500/[0.05] border border-amber-500/20 rounded-[2rem] space-y-6">
+                                            <div className="flex items-center gap-3">
+                                                <ShieldAlert className="w-5 h-5 text-amber-400" />
+                                                <h4 className="text-[11px] font-mono font-black text-amber-400 uppercase tracking-[0.35em]">בדיקת Zero Match</h4>
+                                            </div>
+                                            <p className="text-sm text-amber-100/80 leading-relaxed">
+                                                {estimateData?.zero_match_reason || 'לא נמצאה התאמה ישירה. יש לאמת את הנתונים לפני הפקת דרישה כספית.'}
+                                            </p>
+                                            {estimateData?.needed_documents?.length > 0 && (
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                    {estimateData.needed_documents.map((doc: string, idx: number) => (
+                                                        <div key={`needed-${idx}`} className="p-3 bg-black/30 border border-amber-500/10 rounded-xl text-xs text-gray-300">
+                                                            {doc}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {estimateData?.questions?.length > 0 && (
+                                                <div className="space-y-2">
+                                                    <div className="text-[10px] font-mono text-amber-500/70 font-black uppercase">שאלות לפני אישור</div>
+                                                    {estimateData.questions.map((q: string, idx: number) => (
+                                                        <div key={`question-${idx}`} className="text-sm text-gray-300 border-r-2 border-amber-500/30 pr-3">
+                                                            {q}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
 
                                     {/* Expert Strategy */}
                                     {isExpertMode && estimateData?.expert_strategy && (
@@ -310,18 +368,18 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                                                 <div className="p-6 bg-black/40 rounded-2xl border border-amber-500/10">
                                                     <div className="text-[10px] font-mono text-amber-500/60 uppercase mb-2">ביסוס מקצועי:</div>
                                                     <p className="text-lg font-bold text-amber-100 leading-relaxed pr-4 border-r-4 border-amber-500/40" dir="rtl">
-                                                        {estimateData.expert_strategy.technical_foundation}
+                                                        {expertTechnical}
                                                     </p>
                                                 </div>
 
                                                 <div className="grid grid-cols-1 gap-4">
                                                     <div className="p-4 bg-white/5 rounded-xl border border-white/5">
                                                         <div className="text-[9px] font-mono text-gray-500 uppercase mb-1">טיעון מקצועי:</div>
-                                                        <p className="text-sm text-gray-300">{estimateData.expert_strategy.professional_argument}</p>
+                                                        <p className="text-sm text-gray-300">{expertArgument}</p>
                                                     </div>
                                                     <div className="p-4 bg-white/5 rounded-xl border border-white/5">
                                                         <div className="text-[9px] font-mono text-gray-500 uppercase mb-1">הנחיה ליומן עבודה:</div>
-                                                        <p className="text-sm text-gray-300 font-mono italic">"{estimateData.expert_strategy.site_diary_instruction}"</p>
+                                                        <p className="text-sm text-gray-300 font-mono italic">"{expertDiary}"</p>
                                                     </div>
                                                 </div>
 
@@ -410,8 +468,39 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                                                                 </button>
 
                                                             </div>
-                                                        )) : (
-                                                            <div className="text-xs text-gray-500 italic px-4">אין מידע ויזואלי ישיר המקושר לפריט זה.</div>
+                                                        )) : contradiction.evidence_data?.contract_quote || contradiction.evidence_data?.work_quote ? (
+                                                            [
+                                                                {
+                                                                    document_title: contradiction.evidence_data.contract_title,
+                                                                    page: contradiction.evidence_data.contract_page,
+                                                                    reference: '[1]',
+                                                                    document_id: contradiction.target_contract_doc_id,
+                                                                    quote: contradiction.evidence_data.contract_quote
+                                                                },
+                                                                {
+                                                                    document_title: contradiction.evidence_data.work_title,
+                                                                    page: contradiction.evidence_data.work_page,
+                                                                    reference: '[2]',
+                                                                    document_id: contradiction.source_execution_doc_id,
+                                                                    quote: contradiction.evidence_data.work_quote
+                                                                }
+                                                            ].filter(ev => ev.quote).map((ev, idx) => (
+                                                                <div key={`direct-${idx}`} className="flex items-center justify-between p-4 bg-black/40 border border-white/5 rounded-2xl hover:border-white/20 transition-all">
+                                                                    <div className="flex flex-col">
+                                                                        <span className="text-sm font-bold text-gray-300">{ev.document_title || 'מסמך מקור'}</span>
+                                                                        <span className="text-[10px] font-mono text-gray-600 uppercase tracking-tight">עמוד: {ev.page || 'לא זמין'} | סימוכין: {ev.reference}</span>
+                                                                        <span className="mt-2 text-xs text-gray-500 line-clamp-2">{ev.quote}</span>
+                                                                    </div>
+                                                                    <button 
+                                                                        onClick={() => handleViewSource(ev)}
+                                                                        className="px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-xl text-[10px] font-black transition-all shrink-0"
+                                                                    >
+                                                                        הצג מקור
+                                                                    </button>
+                                                                </div>
+                                                            ))
+                                                        ) : (
+                                                            <div className="text-xs text-amber-400 italic px-4">אין מקור ישיר מאומת לפריט זה. נדרש אימות לפני דרישה כספית.</div>
                                                         )}
                                                     </div>
                                                 </div>

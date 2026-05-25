@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
 
         const { data: documents } = await supabase
             .from('documents')
-            .select('title, doc_type, ai_status')
+            .select('title, category, ai_status')
             .eq('project_id', projectId)
             .limit(20);
 
@@ -56,10 +56,12 @@ export async function POST(req: NextRequest) {
             .limit(50);
 
         // Агрегируем данные сметы
-        const totalBase = pricingSummary?.filter(i => i.type === 'BASE_CONTRACT')
-            .reduce((s, i) => s + Number(i.total_price_incl_vat), 0) || 0;
-        const totalVO = pricingSummary?.filter(i => i.type !== 'BASE_CONTRACT')
-            .reduce((s, i) => s + Number(i.total_price_incl_vat), 0) || 0;
+        const baseItems = pricingSummary?.filter(i => i.type === 'BASE_CONTRACT') || [];
+        const voItems = pricingSummary?.filter(i => i.type !== 'BASE_CONTRACT') || [];
+        const totalBaseExclVat = baseItems.reduce((s, i) => s + Number(i.total_price_excl_vat || 0), 0);
+        const totalBaseVat = baseItems.reduce((s, i) => s + Number(i.vat_amount || 0), 0);
+        const totalVoExclVat = voItems.reduce((s, i) => s + Number(i.total_price_excl_vat || 0), 0);
+        const totalVoVat = voItems.reduce((s, i) => s + Number(i.vat_amount || 0), 0);
 
         // Формируем системный промпт с контекстом
         const systemPrompt = `
@@ -82,15 +84,17 @@ export async function POST(req: NextRequest) {
 קבלן: ${project?.contractor_name || 'לא ידוע'}
 
 מסמכים (${documents?.length || 0}):
-${documents?.map(d => `- ${d.title} (${d.doc_type}, סטטוס AI: ${d.ai_status})`).join('\n') || 'אין מסמכים'}
+${documents?.map(d => `- ${d.title} (${d.category}, סטטוס AI: ${d.ai_status})`).join('\n') || 'אין מסמכים'}
 
 סתירות פתוחות (${contradictions?.length || 0}):
 ${contradictions?.map(c => `- [${c.category || c.severity}] ${c.title}: ${c.description || ''}`).join('\n') || 'אין סתירות'}
 
 סיכום תמחור:
-- חוזה בסיס כולל מע"מ: ₪${totalBase.toLocaleString('he-IL')}
-- שינויים/חריגים כולל מע"מ: ₪${totalVO.toLocaleString('he-IL')}
-- סה"כ: ₪${(totalBase + totalVO).toLocaleString('he-IL')}
+- חוזה בסיס ללא מע"מ: ₪${totalBaseExclVat.toLocaleString('he-IL')}
+- מע"מ חוזה בסיס (18%): ₪${totalBaseVat.toLocaleString('he-IL')}
+- שינויים/חריגים ללא מע"מ: ₪${totalVoExclVat.toLocaleString('he-IL')}
+- מע"מ שינויים/חריגים (18%): ₪${totalVoVat.toLocaleString('he-IL')}
+- סה"כ כולל מע"מ: ₪${(totalBaseExclVat + totalBaseVat + totalVoExclVat + totalVoVat).toLocaleString('he-IL')}
 
 סעיפי הערה והנחיות חשובים מהחוזה (${governingNotes?.length || 0}):
 ${governingNotes?.map((n: any) => `- [${n.item_code || 'כללי'}] (${n.pricelists?.name}): ${n.description}`).join('\n') || 'אין הערות מיוחדות'}

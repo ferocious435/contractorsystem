@@ -30,7 +30,13 @@ const EvidenceMarker = ({
     const page = isMarker1 ? evidence?.contract_page : evidence?.work_page;
     const url = isMarker1 ? evidence?.contract_url : evidence?.work_url;
     
-    if (!quote) return <span className="text-blue-500/50 font-mono mx-0.5">{part}</span>;
+    if (!quote) {
+        return (
+            <span className="inline-flex items-center mx-0.5 px-2 py-0.5 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[10px] font-black align-middle">
+                {part} נדרש אימות
+            </span>
+        );
+    }
 
     return (
         <span 

@@ -98,7 +98,7 @@ export async function POST(req: Request) {
         const { error: updateError } = await supabase
             .from('documents')
             .update({
-                ai_status: 'VALIDATED',
+                ai_status: 'SCANNED',
                 parsed_json: parsedData
             })
             .eq('id', documentId);
@@ -107,8 +107,8 @@ export async function POST(req: Request) {
 
         return NextResponse.json({
             success: true,
-            autoValidated: true,
-            message: `המסמך "${parsedData.type}" נסרק ונקלט בהצלחה ✓`,
+            autoValidated: false,
+            message: `המסמך "${parsedData.type}" נסרק. נדרש אימות נתונים לפני קליטה סופית.`,
             parsed_json: parsedData
         });
 

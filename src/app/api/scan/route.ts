@@ -115,8 +115,10 @@ ${workDoc.extracted_text}
     "work_page": "עמוד במסמך השטח",
     "original_instruction": "מה שנדרש לפי החוזה",
     "new_requirement": "מה שקרה בפועל",
-    "contract_quote": "ציטוט מהחוזה [1]",
-    "work_quote": "ציטוט מהדוח [2]"
+    "contract_quote": "ציטוט מדויק מהחוזה [1] או null אם אין מקור ישיר",
+    "work_quote": "ציטוט מדויק מהדוח [2] או null אם אין מקור ישיר",
+    "evidence_status": "VERIFIED / REQUIRES_VERIFICATION",
+    "missing_evidence": ["רשימת מסמכים/בדיקות שחסרים לפני קביעה ודאית"]
   }
 ]`;
 
@@ -145,6 +147,8 @@ ${workDoc.extracted_text}
                         target_contract_doc_id: contractDocs[0]?.id,
                         status: "OPEN",
                         evidence_data: {
+                            evidence_status: p.contract_quote && p.work_quote ? "VERIFIED" : "REQUIRES_VERIFICATION",
+                            missing_evidence: p.missing_evidence || [],
                             clause_reference: p.clause_reference,
                             contract_page: p.contract_page || null,
                             work_page: p.work_page || null,

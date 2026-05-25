@@ -70,6 +70,8 @@ export default function ContradictionRadarFeedItem({
     };
 
     const styles = getCategoryStyles(c.category, c.severity);
+    const evidenceStatus = c.evidence_data?.evidence_status || (c.evidence_data?.contract_quote && c.evidence_data?.work_quote ? 'VERIFIED' : 'REQUIRES_VERIFICATION');
+    const missingEvidence = Array.isArray(c.evidence_data?.missing_evidence) ? c.evidence_data.missing_evidence : [];
 
     return (
         <motion.div 
@@ -103,6 +105,16 @@ export default function ContradictionRadarFeedItem({
                                     <span className="text-xs font-bold uppercase tracking-wide">נפתר</span>
                                 </div>
                             )}
+                            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full border ${
+                                evidenceStatus === 'VERIFIED'
+                                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                    : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                            }`}>
+                                <ShieldAlert size={13} />
+                                <span className="text-xs font-bold uppercase tracking-wide">
+                                    {evidenceStatus === 'VERIFIED' ? 'ראיות מאומתות' : 'דורש אימות'}
+                                </span>
+                            </div>
                         </div>
 
                         <h3 className="text-xl font-bold text-white leading-tight group-hover:text-blue-400 transition-colors">
@@ -213,6 +225,26 @@ export default function ContradictionRadarFeedItem({
                                     <div className="text-base text-gray-300 leading-relaxed font-medium">
                                         <RichText text={c.description || ''} evidence={c.evidence_data} onOpen={onRadarOpenDocument} />
                                     </div>
+                                    {evidenceStatus !== 'VERIFIED' && (
+                                        <div className="mt-5 p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl">
+                                            <div className="flex items-center gap-2 text-amber-400 text-xs font-black mb-2">
+                                                <ShieldAlert className="w-4 h-4" />
+                                                הממצא אינו מאומת במלואו
+                                            </div>
+                                            <p className="text-xs text-gray-400 leading-relaxed">
+                                                אין מספיק מקור ישיר לכל הטענות. יש לאמת לפני העברה לדרישה כספית או מכתב רשמי.
+                                            </p>
+                                            {missingEvidence.length > 0 && (
+                                                <div className="mt-3 flex flex-wrap gap-2">
+                                                    {missingEvidence.map((missing: string, missingIdx: number) => (
+                                                        <span key={`missing-${missingIdx}`} className="px-2 py-1 bg-black/30 border border-amber-500/10 rounded-lg text-[10px] text-amber-100/70">
+                                                            {missing}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 

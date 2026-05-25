@@ -14,6 +14,10 @@ ALTER TABLE documents
   ADD COLUMN IF NOT EXISTS immutable_code VARCHAR,
   ADD COLUMN IF NOT EXISTS evidence_index VARCHAR;
 
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS location VARCHAR,
+  ADD COLUMN IF NOT EXISTS contractor_name VARCHAR;
+
 ALTER TABLE contradictions
   ADD COLUMN IF NOT EXISTS category VARCHAR,
   ADD COLUMN IF NOT EXISTS evidence_data JSONB DEFAULT '{}'::jsonb;
