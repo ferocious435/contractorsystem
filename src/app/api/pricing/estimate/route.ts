@@ -11,13 +11,11 @@ export async function POST(request: Request) {
         }
 
         const body = await request.json();
-        const { contradictionId, description, priorityOverride } = body;
+        const { description, priorityOverride } = body;
 
-        // Extract relevant project pricing info if possible
-        // For demonstration and following the PRD, we send the intent to Gemini 
-        // to act as the AI Estimator following the hierarchy BOQ -> Dekel -> Contractor -> Zero-Match.
-
-        const priorityText = priorityOverride ? `Force source exactly to: ${priorityOverride}.` : "Follow strictly: 1. BOQ (Contract) -> 2. Dekel -> 3. Contractor.";
+        // The estimator must follow the contractor-first pricing hierarchy:
+        // BOQ -> Dekel -> Contractor -> Zero-Match.
+        const priorityText = priorityOverride ? `Force source exactly to: ${priorityOverride}.` : 'Follow strictly: 1. BOQ (Contract) -> 2. Dekel -> 3. Contractor.';
 
         const prompt = `
 You are the AI Pricing Estimator for the CONTRACTORSYSTEM.
@@ -26,12 +24,13 @@ Work Description: "${description}"
 
 RULES:
 1. All prices must be EXCLUDING VAT (Pre-VAT).
-2. ${priorityText} 
+2. ${priorityText}
 3. If there is a direct match, output a unit, a price, and match_found = true.
 4. If there is no clear match, return match_found = false, 0 for price, and provide a list of 2 clarifying questions (questions array) to build a "Zero-Match" (Custom Analysis) from scratch.
 5. If match_found is true, provide a brief reasoning in Hebrew in "ai_rationale".
-6. If match_found is false, put "לא נמצאה התאמה במחירונים הקיימים. יש לבנות ניתוח מחיר ידני (מערכת הכינה תבנית ריקה)." in ai_rationale.
-7. You must ONLY output a valid JSON object.
+6. If match_found is false, put "לא נמצאה התאמה ישירה במחירונים הקיימים. נדרש לבנות ניתוח מחיר ידני ולאמת מול מסמכי הפרויקט." in ai_rationale.
+7. Never invent a confident price without a clear source.
+8. You must ONLY output a valid JSON object.
 
 JSON STRUCTURE:
 {
@@ -53,15 +52,16 @@ JSON STRUCTURE:
         let parsedData;
         try {
             parsedData = JSON.parse(textResponse);
-        } catch (e) {
-            console.error("Failed to parse Gemini JSON for estimator:", textResponse);
-            throw new Error("Invalid format from AI Estimator.");
+        } catch {
+            console.error('Failed to parse Gemini JSON for estimator:', textResponse);
+            throw new Error('Invalid format from AI Estimator.');
         }
 
         return NextResponse.json(parsedData);
 
-    } catch (error: any) {
-        console.error("Error in AI Estimator:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+    } catch (error: unknown) {
+        console.error('Error in AI Estimator:', error);
+        const message = error instanceof Error ? error.message : 'Unknown AI Estimator error.';
+        return NextResponse.json({ error: message }, { status: 500 });
     }
 }

@@ -277,8 +277,8 @@ export default function DashboardContent() {
                                                     <span className="text-sm font-black text-emerald-500 font-mono">₪{proj.budget?.toLocaleString() || '0.00'}</span>
                                                 </div>
                                                 <div className="flex flex-col items-start">
-                                                    <span className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">סנכרון</span>
-                                                    <span className="text-sm font-black text-blue-400 font-mono">100%</span>
+                                                    <span className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">סטטוס בדיקה</span>
+                                                    <span className="text-sm font-black text-amber-400 font-mono">נדרש סנכרון</span>
                                                 </div>
                                             </div>
 

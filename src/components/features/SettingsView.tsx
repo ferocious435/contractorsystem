@@ -7,6 +7,7 @@ import {
     AlertCircle, Sparkles, Database, Lock, User
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { AI_MODEL_BRANDING } from "@/utils/constants";
 
 interface SettingsViewProps {
     project: any;
@@ -253,7 +254,7 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                                     <Zap size={16} className="text-gray-500" />
                                     <span className="text-[10px] font-mono font-black text-gray-400 uppercase">מודל AI</span>
                                 </div>
-                                <span className="text-[10px] font-mono font-black text-blue-400 uppercase">G-3.0-F</span>
+                                <span className="text-[10px] font-mono font-black text-blue-400 uppercase">{AI_MODEL_BRANDING}</span>
                             </div>
                         </div>
 
