@@ -2,6 +2,21 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { genAI, GEMINI_CONFIG, DOCUMENT_ANALYSIS_PROMPT, geminiModel } from '@/lib/gemini';
 
+function parseGeminiJsonObject(responseText: string) {
+    try {
+        return JSON.parse(responseText);
+    } catch {
+        const start = responseText.indexOf('{');
+        const end = responseText.lastIndexOf('}');
+
+        if (start === -1 || end === -1 || end <= start) {
+            throw new Error('Gemini response did not contain a JSON object');
+        }
+
+        return JSON.parse(responseText.slice(start, end + 1));
+    }
+}
+
 /**
  * POST /api/documents/process
  * 
@@ -60,7 +75,7 @@ export async function POST(req: Request) {
             else if (doc.title?.toLowerCase().match(/\.(jpg|jpeg)$/)) mimeType = 'image/jpeg';
             else if (doc.title?.toLowerCase().endsWith('.png')) mimeType = 'image/png';
 
-            console.log(`[process] Deep analysis for "${doc.title}" with Gemini 3 Flash (Free Tier)`);
+            console.log(`[process] Deep analysis for "${doc.title}" with Gemini 3.5 Flash`);
 
             const result = await model.generateContent([
                 DOCUMENT_ANALYSIS_PROMPT,
@@ -74,7 +89,7 @@ export async function POST(req: Request) {
             ]);
 
             const responseText = result.response.text();
-            parsedData = JSON.parse(responseText);
+            parsedData = parseGeminiJsonObject(responseText);
 
             // СОХРАНЯЕМ ИЗВЛЕЧЕННЫЙ MARKDOWN В БД
             if (parsedData.full_markdown) {

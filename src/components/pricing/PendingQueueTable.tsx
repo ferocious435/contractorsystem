@@ -343,7 +343,7 @@ export default function PendingQueueTable({
                     </div>
                     <div className="flex items-center gap-2 text-gray-600">
                         <span>מעבד:</span>
-                        <span className="text-white">Powered by Gemini 3 Flash</span>
+                        <span className="text-white">Powered by Gemini 3.5 Flash</span>
                     </div>
                     <div className="flex items-center gap-2 text-gray-600">
                         <span>מע"מ:</span>

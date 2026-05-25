@@ -383,7 +383,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                 <div className="flex items-center gap-6">
                     <div className="flex items-center gap-2">
                         <Cpu className="w-3 h-3 text-blue-500/50" />
-                        <span className="text-[11px] font-mono text-gray-400 font-black tracking-widest uppercase">מופעל על ידי Gemini 3 Flash</span>
+                        <span className="text-[11px] font-mono text-gray-400 font-black tracking-widest uppercase">מופעל על ידי Gemini 3.5 Flash</span>
                     </div>
                     <div className="h-3 w-px bg-white/10" />
                     <div className="flex items-center gap-2">

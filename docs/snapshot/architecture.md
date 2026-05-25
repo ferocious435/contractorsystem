@@ -5,7 +5,7 @@
 - **Стилизация**: Tailwind CSS v4 (Luxury Minimal).
 - **БД и Авторизация**: Supabase PostgreSQL + Auth (Row Level Security).
 - **Хранилище**: Supabase Storage (бакеты `project-documents`, `vo-evidence`).
-- **ИИ**: Gemini 3 Flash (мультимодальный анализ: текст, фото, видео).
+- **ИИ**: Gemini 3.5 Flash (мультимодальный анализ: текст, фото, видео).
 
 ## Структура проекта
 - `/src/components/features`: Изолированные компоненты бизнес-логики.

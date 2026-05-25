@@ -1,39 +1,38 @@
-# Стандарт моделей Gemini API для проекта ContractorSystem
+# Gemini API Model Standard for ContractorSystem
 
-> **КРИТИЧЕСКОЕ ПРАВИЛО:** Перед изменением модели — ОБЯЗАТЕЛЬНО проверить через API,
-> а не угадывать. Скрипт проверки: `scratch/list_all_models.ts`
+Last verified: 2026-05-25 via the live Gemini API `models` endpoint for the configured project key.
 
-## Текущая конфигурация (Апрель 2026)
+## Current Project Standard
 
-| Назначение | Модель API | Отображение в UI |
+| Purpose | API model | UI branding |
 |---|---|---|
-| Все задачи (Radar, Chat, Parse, Letter, OCR) | `gemini-3-flash-preview` | Gemini 3 Flash |
+| Main document/OCR/Radar/Pricing/Letter analysis | `gemini-3.5-flash` | Gemini 3.5 Flash |
+| Lightweight classification and short tasks | `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite |
+| Fallback if the main model is temporarily unavailable | `gemini-2.5-flash` | Gemini 2.5 Flash |
 
-**Централизованный конфиг:** `src/lib/gemini.ts` → `GEMINI_CONFIG.STABLE_FLASH`
+Central config: `src/lib/gemini.ts`.
 
-## Модели, КАТЕГОРИЧЕСКИ ЗАПРЕЩЕННЫЕ к использованию
-> Эти модели либо удалены из API, либо не соответствуют стандартам качества проекта. Использование версий 1.5 и 2.0 запрещено.
+## Required Rules
 
-| Модель | Статус | Причина |
-|---|---|---|
-| `gemini-1.5-pro` | ❌ ЗАПРЕЩЕНО | Устарела, нестабильна |
-| `gemini-1.5-flash` | ❌ ЗАПРЕЩЕНО | Устарела, плохой OCR |
-| `gemini-2.0-flash` | ❌ ЗАПРЕЩЕНО | Выведена из использования |
-| `gemini-2.0-flash-lite` | ❌ ЗАПРЕЩЕНО | Недостаточная точность |
-| `gemini-2.0-flash-exp` | ❌ ЗАПРЕЩЕНО | 404 Not Found |
+1. All Gemini calls must go through `src/lib/gemini.ts`.
+2. Do not hardcode model names inside API routes or UI components.
+3. For structured analysis, keep JSON mode enabled where supported.
+4. For document analysis, parse Gemini output defensively: prefer strict JSON, but recover a valid JSON object if the model adds surrounding text.
+5. Do not use deprecated preview models for core production flow.
 
-## Доступные стабильные модели (по данным API)
+## Explicitly Not Allowed As Project Standard
 
-| Модель | Описание |
+| Model | Reason |
 |---|---|
-| `gemini-2.5-flash` | ⚠️ Резервная стабильная модель, не основной стандарт |
-| `gemini-2.5-pro` | ✅ Стабильная, для сверхсложной аналитики |
-| `gemini-2.5-flash-lite` | ✅ Легкая версия (не использовать без согласования) |
-| `gemini-3-flash-preview` | 🟢 Stable (основная модель проекта) |
+| `gemini-3-pro-preview` | Deprecated/shut down in official Gemini API docs as of 2026-03-09. |
+| `gemini-3-flash-preview` | Still available for this API key, but superseded by `gemini-3.5-flash` for this project. |
+| `gemini-1.5-*` | Legacy generation; not suitable for current project standard. |
+| `gemini-2.0-*` | Legacy generation; do not use unless a future official migration note requires it. |
 
-## Правила обновления модели
+## Verification Command
 
-1. **НЕ УГАДЫВАТЬ** — всегда запускать `npx tsx scratch/list_all_models.ts`
-2. Обновлять **ТОЛЬКО** `GEMINI_CONFIG.STABLE_FLASH` в `src/lib/gemini.ts`
-3. Обновлять UI-бейджи во всех компонентах (`grep -r "Powered by Gemini"`)
-4. Обновлять этот файл (`docs/GEMINI_MODELS.md`)
+Run this before changing the model standard:
+
+```powershell
+node -e "require('dotenv').config({path:'.env.local'}); const key=process.env.GEMINI_API_KEY||process.env.NEXT_PUBLIC_GEMINI_API_KEY; fetch('https://generativelanguage.googleapis.com/v1beta/models?key='+key).then(r=>r.json()).then(j=>console.log((j.models||[]).map(m=>m.name).join('\n')))"
+```

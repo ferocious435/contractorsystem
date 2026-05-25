@@ -154,7 +154,7 @@ export async function POST(req: Request) {
         ${notesContext || 'No specific governing notes found.'}
         `;
 
-        // 4. Финальный промпт для Gemini 3 Flash - Deep Diagnostic Engine
+        // 4. Финальный промпт для Gemini 3.5 Flash - Deep Diagnostic Engine
         const pricingPrompt = `
         Senior Israeli Construction Claims Expert and Estimator (תמחירן ומומחה תביעות בכיר).
         Your goal is to analyze a construction contradiction and build a high-impact financial and commercial justification for a Variation Order (V.O.).

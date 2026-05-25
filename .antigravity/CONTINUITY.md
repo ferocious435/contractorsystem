@@ -9,7 +9,7 @@
 
 ## Статус проекта
 
-- **AI Models:** historical note was `gemini-2.5-flash`; current project standard is `gemini-3-flash-preview` via `src/lib/gemini.ts`.
+- **AI Models:** historical note was `gemini-2.5-flash`; current project standard is `gemini-3.5-flash` via `src/lib/gemini.ts`.
 - **UI:** Темная тема, Glassmorphism, RTL (Hebrew).
 - **Architecture:** Next.js + Supabase.
 

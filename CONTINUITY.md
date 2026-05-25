@@ -10,7 +10,7 @@ ContractorSystem is now maintained from Codex in this repository folder. AntiGra
 - UI language: Hebrew only, RTL.
 - Financial storage: base amounts are stored without VAT.
 - VAT: 18%.
-- AI model standard: all Gemini calls go through `src/lib/gemini.ts` and use `gemini-3-flash-preview` unless a newer project standard explicitly replaces it.
+- AI model standard: all Gemini calls go through `src/lib/gemini.ts` and use `gemini-3.5-flash`; lightweight tasks may use `gemini-3.1-flash-lite`, with `gemini-2.5-flash` as fallback.
 
 ## Current Completion Focus
 

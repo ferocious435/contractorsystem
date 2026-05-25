@@ -14,6 +14,11 @@ function roundMoney(value: number) {
     return Math.round(value * 100) / 100;
 }
 
+function normalizeMarkupPercentage(value: unknown) {
+    const parsed = toNumber(value, 0);
+    return parsed > 1 ? parsed / 100 : parsed;
+}
+
 export async function POST(req: Request) {
     try {
         const supabase = await createClient();
@@ -79,7 +84,7 @@ export async function POST(req: Request) {
                 unit: unit || 'יח',
                 quantity: safeQuantity,
                 unit_price_excl_vat: safeUnitPrice,
-                markup_percentage: toNumber(markup_percentage, 0),
+                markup_percentage: normalizeMarkupPercentage(markup_percentage),
                 ai_rationale: rationale,
                 governing_notes: notes,
                 expert_strategy,

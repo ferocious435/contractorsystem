@@ -41,7 +41,7 @@ export default function PricingStatusBar({ projectId }: PricingStatusBarProps) {
                 <div className="flex items-center gap-2">
                     <Zap size={12} className="text-blue-500" />
                     <span className="text-[9px] font-mono text-gray-600 font-black uppercase tracking-widest">בינה מלאכותית:</span>
-                    <span className="text-[9px] font-mono text-blue-400 font-black uppercase tracking-widest">מופעל על ידי Gemini 3 Flash</span>
+                    <span className="text-[9px] font-mono text-blue-400 font-black uppercase tracking-widest">מופעל על ידי Gemini 3.5 Flash</span>
                 </div>
             </div>
         </div>

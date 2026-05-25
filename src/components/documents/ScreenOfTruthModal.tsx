@@ -87,7 +87,7 @@ export default function ScreenOfTruthModal({ document: doc, onClose, onValidate 
                         <div className="hidden xl:flex items-center gap-10 border-l border-white/10 pr-10">
                             <div className="flex flex-col">
                                 <span className="text-[9px] font-mono text-gray-600 uppercase tracking-[0.2em] mb-1 font-black">מודל_עצבי</span>
-                                <span className="text-[11px] font-black text-gray-400 uppercase tracking-widest">Powered by Gemini 3 Flash</span>
+                                <span className="text-[11px] font-black text-gray-400 uppercase tracking-widest">Powered by Gemini 3.5 Flash</span>
                             </div>
                             <div className="flex flex-col">
                                 <span className="text-[9px] font-mono text-gray-600 uppercase tracking-[0.2em] mb-1 font-black">רמת_ביטחון_חילוץ</span>

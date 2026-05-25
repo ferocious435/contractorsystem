@@ -23,6 +23,6 @@
 Использование TypeScript и TDD.
 
 ## 6. Стандарты AI Моделей (Gemini 3)
-- **СТАНДАРТ:** Основная модель для всех задач (Анализ и OCR) — `gemini-3-flash-preview` (Free Tier).
+- **СТАНДАРТ:** Основная модель для всех задач (Анализ и OCR) — `gemini-3.5-flash`.
 - **КОНФИГУРАЦИЯ:** Все вызовы через `src/lib/gemini.ts`.
-- **БРЕНДИНГ:** В UI отображать только "Powered by Gemini 3 Flash".
+- **БРЕНДИНГ:** В UI отображать только "Powered by Gemini 3.5 Flash".

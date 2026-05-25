@@ -11,4 +11,4 @@ export const VAT_RATE = 0.18;
 /**
  * AI Models Branding
  */
-export const AI_MODEL_BRANDING = 'Powered by Gemini 3 Flash';
+export const AI_MODEL_BRANDING = 'Powered by Gemini 3.5 Flash';

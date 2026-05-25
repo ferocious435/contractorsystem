@@ -28,10 +28,12 @@ export async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 15
 
 export const GEMINI_CONFIG = {
   /** 
-   * מודל Gemini 3 Flash לביצועים מהירים
+   * Current stable Gemini API standard for ContractorSystem.
    */
-  STABLE_FLASH: "gemini-3-flash-preview",
-  PRO_MODEL: "gemini-3-flash-preview", // Переопределено на Flash для Free Tier
+  STABLE_FLASH: "gemini-3.5-flash",
+  FAST_LIGHT: "gemini-3.1-flash-lite",
+  FALLBACK_FLASH: "gemini-2.5-flash",
+  PRO_MODEL: "gemini-3.5-flash",
 } as const;
 
 // מודל מרכזי לניתוח עומק (Radar)
