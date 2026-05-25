@@ -1,85 +1,136 @@
 import { genAI, GEMINI_CONFIG } from "@/lib/gemini";
+import { createClient } from "@/utils/supabase/server";
 import { NextResponse } from "next/server";
 
 const model = genAI.getGenerativeModel({ model: GEMINI_CONFIG.STABLE_FLASH });
 
+function formatEvidenceForLetter(evidenceData: any) {
+    if (Array.isArray(evidenceData) && evidenceData.length > 0) {
+        return evidenceData
+            .map((ev: any) => `- ${ev.document_title || "מסמך"} (עמ' ${ev.page || "?"})`)
+            .join("\n");
+    }
+
+    if (!evidenceData || typeof evidenceData !== "object") {
+        return "- אין הוכחות מתועדות. יש לנסח כטיוטה הדורשת אימות.";
+    }
+
+    const lines: string[] = [];
+    const evidenceStatus = evidenceData.evidence_status || (evidenceData.contract_quote && evidenceData.work_quote ? "VERIFIED" : "REQUIRES_VERIFICATION");
+    lines.push(`- סטטוס ראיות: ${evidenceStatus}`);
+
+    if (evidenceData.contract_title || evidenceData.contract_quote) {
+        lines.push(`- חוזה/BOQ: ${evidenceData.contract_title || "מסמך חוזי"}${evidenceData.contract_page ? `, עמ' ${evidenceData.contract_page}` : ""}`);
+        if (evidenceData.contract_quote) lines.push(`  ציטוט חוזי: "${evidenceData.contract_quote}"`);
+    }
+
+    if (evidenceData.work_title || evidenceData.work_quote) {
+        lines.push(`- ביצוע/שטח: ${evidenceData.work_title || "מסמך ביצוע"}${evidenceData.work_page ? `, עמ' ${evidenceData.work_page}` : ""}`);
+        if (evidenceData.work_quote) lines.push(`  ציטוט ביצוע: "${evidenceData.work_quote}"`);
+    }
+
+    if (evidenceData.pricing_evaluation) {
+        lines.push(`- תמחור: ${evidenceData.pricing_evaluation.match_quality || "לא ידוע"} / מקור: ${evidenceData.pricing_evaluation.source || "לא ידוע"}`);
+    }
+
+    if (Array.isArray(evidenceData.missing_evidence) && evidenceData.missing_evidence.length > 0) {
+        lines.push(`- חסר לאימות: ${evidenceData.missing_evidence.join(", ")}`);
+    }
+
+    return lines.join("\n");
+}
+
+function formatMoney(value: any) {
+    const numeric = Number(value || 0);
+    return new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(numeric);
+}
+
 export async function POST(req: Request) {
     try {
+        const supabase = await createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+        }
+
         const { projectId, letterType, recipient, subject, keyPoints, tone, items } = await req.json();
 
         if (!process.env.GEMINI_API_KEY) {
             return NextResponse.json({ success: false, error: "API Key missing" }, { status: 500 });
         }
 
+        if (!projectId || !Array.isArray(items)) {
+            return NextResponse.json({ success: false, error: "projectId and items are required" }, { status: 400 });
+        }
+
+        const { data: project, error: projectError } = await supabase
+            .from("projects")
+            .select("id, name, client_name, contractor_id")
+            .eq("id", projectId)
+            .single();
+
+        if (projectError || !project) {
+            return NextResponse.json({ success: false, error: "Project not found or not accessible" }, { status: 404 });
+        }
+
         const itemsContext = items.map((item: any) => {
-            const evidenceStr = item.evidence_data && Array.isArray(item.evidence_data) 
-                ? item.evidence_data.map((ev: any) => `- ${ev.document_title || 'מסמך'} (עמ' ${ev.page || '?'})`).join('\n              ')
-                : 'אין הוכחות מתועדות';
-
+            const unitPrice = item.price ?? item.unit_price_excl_vat;
+            const total = item.total ?? item.total_price_excl_vat;
             return `
-            - פריט: ${item.description}
-            - קוד: ${item.code}
-            - כמות: ${item.quantity} ${item.unit}
-            - מחיר יחידה: ${item.price} ₪
-            - סה"כ: ${item.total} ₪
-            - נימוק: ${item.ai_rationale || 'לא צוין'}
-            - הערות: ${JSON.stringify(item.governing_notes) || 'אין'}
-            - הוכחות (Evidence Links):
-              ${evidenceStr}
-            `;
-        }).join('\n');
+- פריט: ${item.description}
+- קוד: ${item.code || item.item_code || "NEW"}
+- כמות: ${item.quantity} ${item.unit}
+- מחיר יחידה לפני מע"מ: ${formatMoney(unitPrice)}
+- סה"כ לפני מע"מ: ${formatMoney(total)}
+- נימוק: ${item.ai_rationale || "לא צוין"}
+- הערות: ${JSON.stringify(item.governing_notes || [])}
+- הוכחות:
+${formatEvidenceForLetter(item.evidence_data)}
+`;
+        }).join("\n");
 
-        const typeSpecificInstructions = {
-            rfi: "זהו מכתב הבהרה (RFI). הטון צריך להיות שאלתי ומקצועי. התמקד בבקשת הנחיות לגבי סתירות או אי-בהירויות בתוכניות המונעות את המשך העבודה התקין.",
-            vo_request: "זוהי דרישת תשלום לחריגים (VO Request). הטון צריך להיות דורש אך מקצועי. הדגש כי העבודות המפורטות אינן חלק מההסכם המקורי ובוצעו/מבוצעות לבקשת המזמין.",
-            official_vo: "זוהי פקודת שינויים רשמית (Official VO). הטון צריך להיות סמכותי וסיכומי. המכתב מהווה תיעוד סופי של השינויים שאושרו והשפעתם על לוחות הזמנים והתקציב."
-        }[letterType as 'rfi' | 'vo_request' | 'official_vo'] || "";
-
-        const toneMap: Record<string, string> = {
-            professional: "מקצועי וענייני (Professional/Objective). התמקד בעובדות ובנתונים.",
-            formal: "פורמלי ורשמי מאוד. שימוש בשפה משפטית גבוהה.",
-            firm: "תקיף ודורש זכויות (Firm/Assertive). הדגש את חובות המזמין.",
-            aggressive: "אגרסיבי ולוחמני. השתמש במושגים של התראה לפני נקיטת צעדים, הפרת חוזה ודרישה חד משמעית לתיקון המצב.",
-            friendly: "נעים, משתף פעולה ומכיל. הדגש את הרצון להמשך עבודה תקינה ופתרון משותף של הסוגיות.",
-            skeleton: "שלד / מבנה בלבד (Skeleton). אל תכתוב את המכתב המלא. ספק רק את הכותרות, סדר הנושאים ונקודות המפתח. בכל מקום שנדרש תוכן, שים Placeholder בסגנון [כאן להוסיף את הטיעון האישי/הסבר על...]. זה נועד לאפשר למשתמש לכתוב את המכתב בעצמו על בסיס המבנה."
+        const typeInstructions: Record<string, string> = {
+            rfi: "זה מכתב הבהרה (RFI). הטון צריך להיות שאלתי, מקצועי וממוקד בהשלמת מידע חסר.",
+            vo_request: "זו דרישת תשלום לחריגים. הטון צריך להגן על זכויות הקבלן, אך להישאר מקצועי ומבוסס ראיות.",
+            official_vo: "זו פקודת שינויים רשמית. יש לנסח באופן סמכותי ומסכם, רק על בסיס מידע מאומת."
         };
-        const toneInstructions: string = toneMap[tone as string] || "מקצועי";
 
         const prompt = `
-            אתה מומחה בכיר לניהול פרויקטי בנייה ומשפט חוזי בישראל, המתמחה בניסוח מכתבים רשמיים עבור קבלנים.
-            המשימה שלך היא לכתוב ${tone === 'skeleton' ? 'שלד למכתב' : 'מכתב'} רשמי בעברית עבור קבלן בנייה המופנה ל${recipient || 'מזמין העבודה'}.
-            
-            הנחיה ספציפית לסוג המסמך (${letterType}):
-            ${typeSpecificInstructions}
- 
-            סגנון כתיבה (Tone) הנדרש:
-            ${toneInstructions}
+אתה מומחה בכיר לניהול פרויקטי בנייה בישראל ולניסוח דרישות קבלן.
+המערכת בנויה לטובת הקבלן: להגן על זכויותיו, לבסס חריגים, לשמור על רווחיות ולהציג דרישה מקצועית.
 
-            פרטי המכתב:
-            - נושא: ${subject || 'דרישה לתשלום עבור חריגים ושינויים'}
-            - דגשים נוספים מהמשתמש: ${keyPoints || 'אין'}
-            
-            הפריטים הרלוונטיים מהלג'ר (Pricing Ledger):
-            ${itemsContext}
-            
-            מבנה המכתב הנדרש:
-            1. פתיח: התייחסות רשמית לנמען, ציון הנושא וסימוכין רלוונטיים.
-            2. רקע: הסבר קצר על נסיבות העניין (סתירה בתוכניות, בקשת שינוי בשטח, וכו').
-            3. פירוט טכני-כספי: סקירה של הפריטים המופיעים ברשימה לעיל.
-               **חשוב מאוד**: השתמש ב"הוכחות (Evidence Links)" לכל פריט. ציין בתוך הטקסט את שם המסמך ומספר העמוד כהוכחה חותכת לזכאות הקבלן.
-            4. סיכום כספי: (במידה ורלוונטי) הצגת הסכום הכולל (לפני מע"מ) וציון מפורש שמע"מ בשיעור 18% יתווסף כחוק.
-            5. חתימה: סיומת מקצועית ומקום לחתימת מורשה חתימה.
- 
-            דגשים מקצועיים:
-            - השתמש במינוח מקצועי כגון: "סעיף חוזי", "כתב כמויות", "פקודת שינויים", "אישור מפקח בשטח", "סעיפי הצמדה".
-            ${tone === 'skeleton' ? '- צור מבנה ברור עם כותרות והערות בסוגריים עבור המשתמש.' : '- המכתב צריך להיות מוכן לחתימה, אך מותאם לסגנון שנבחר.'}
-            
-            פלט ה${tone === 'skeleton' ? 'שלד' : 'מכתב'} בלבד (ללא טקסט מקדים או הסברים):
-        `;
+כתוב ${tone === "skeleton" ? "שלד מכתב" : "מכתב"} בעברית בלבד.
+
+פרויקט: ${project.name || projectId}
+נמען: ${recipient || "מזמין העבודה"}
+סוג מכתב: ${letterType}
+הנחיה לסוג: ${typeInstructions[letterType] || "מכתב מקצועי"}
+נושא: ${subject || "דרישה לתשלום עבור חריגים ושינויים"}
+דגשים מהמשתמש: ${keyPoints || "אין"}
+
+פריטים:
+${itemsContext}
+
+חוקי חובה:
+- אל תציג טענה כוודאית אם סטטוס הראיות הוא REQUIRES_VERIFICATION.
+- במקרה של ראיות חסרות, כתוב שהדרישה היא טיוטה/דורשת אימות והוסף מה חסר.
+- כל סכום יוצג לפני מע"מ. מע"מ 18% יוצג בנפרד בלבד.
+- הפרד בין עובדה ממסמך, מסקנת AI, ומה צריך לבדוק עכשיו.
+- אל תכניס טקסט טכני על המערכת.
+
+מבנה:
+1. פתיחה רשמית.
+2. רקע קצר.
+3. פירוט החריגים והסימוכין.
+4. סיכום כספי לפני מע"מ + מע"מ 18% בנפרד אם רלוונטי.
+5. דרישה לפעולה/אישור/השלמת מידע.
+6. חתימה.
+
+החזר רק את נוסח המכתב.
+`;
 
         const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+        const text = result.response.text();
 
         return NextResponse.json({ success: true, letter: text });
     } catch (error: any) {

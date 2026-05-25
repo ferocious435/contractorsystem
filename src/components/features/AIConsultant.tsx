@@ -98,7 +98,7 @@ export default function AIConsultant({ projectId }: AIConsultantProps) {
                 <div>
                     <h2 className="text-xl font-bold text-gray-100 flex items-center gap-2">
                         יועץ AI
-                        <span className="text-[10px] font-mono text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-widest font-black">Powered by {AI_MODEL_BRANDING}</span>
+                        <span className="text-[10px] font-mono text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-widest font-black">{AI_MODEL_BRANDING}</span>
                     </h2>
                     <p className="text-xs text-gray-400">שאל כל שאלה על הפרויקט שלך — הבינה המלאכותית מכירה את כל הנתונים</p>
                 </div>

@@ -248,6 +248,48 @@ export default function ContradictionRadarFeedItem({
                                 </div>
                             </div>
 
+                            {(c.evidence_data?.original_instruction || c.evidence_data?.new_requirement || c.evidence_data?.risk_reason || c.evidence_data?.next_check) && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="bg-white/[0.02] p-5 rounded-2xl border border-white/5 space-y-3">
+                                        <div className="flex items-center gap-2 text-xs font-black text-gray-400 uppercase tracking-widest">
+                                            <Shield className="w-4 h-4 text-blue-400" />
+                                            לפי החוזה / BOQ
+                                        </div>
+                                        <p className="text-sm text-gray-300 leading-relaxed">
+                                            {c.evidence_data?.original_instruction || c.evidence_data?.contract_quote || 'לא נמצא מקור חוזי ישיר.'}
+                                        </p>
+                                        {c.evidence_data?.clause_reference && (
+                                            <span className="inline-flex px-2 py-1 bg-blue-500/10 border border-blue-500/20 rounded-lg text-[10px] text-blue-300">
+                                                {c.evidence_data.clause_reference}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="bg-white/[0.02] p-5 rounded-2xl border border-white/5 space-y-3">
+                                        <div className="flex items-center gap-2 text-xs font-black text-gray-400 uppercase tracking-widest">
+                                            <FileSearch className="w-4 h-4 text-amber-400" />
+                                            בפועל / בשטח
+                                        </div>
+                                        <p className="text-sm text-gray-300 leading-relaxed">
+                                            {c.evidence_data?.new_requirement || c.evidence_data?.work_quote || 'לא נמצא מקור ביצוע ישיר.'}
+                                        </p>
+                                    </div>
+                                    <div className="md:col-span-2 bg-amber-500/5 p-5 rounded-2xl border border-amber-500/10 space-y-2">
+                                        <div className="flex flex-wrap gap-2 text-[10px] font-black uppercase tracking-widest">
+                                            {c.evidence_data?.comparison_type && <span className="px-2 py-1 bg-black/20 rounded-lg text-amber-300">{c.evidence_data.comparison_type}</span>}
+                                            {typeof c.evidence_data?.confidence === 'number' && <span className="px-2 py-1 bg-black/20 rounded-lg text-gray-300">Confidence: {Math.round(c.evidence_data.confidence * 100)}%</span>}
+                                        </div>
+                                        {c.evidence_data?.risk_reason && (
+                                            <p className="text-sm text-amber-100/80 leading-relaxed">{c.evidence_data.risk_reason}</p>
+                                        )}
+                                        {c.evidence_data?.next_check && (
+                                            <p className="text-xs text-gray-400 leading-relaxed">
+                                                <span className="font-bold text-amber-300">מה לבדוק עכשיו: </span>{c.evidence_data.next_check}
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
                             {/* Two Column details */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                                 {/* Contractual */}

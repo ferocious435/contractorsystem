@@ -39,6 +39,34 @@ export default function PendingQueueTable({
     const [collapsedGroups, setCollapsedGroups] = React.useState<string[]>([]);
     const allSelected = items.length > 0 && selectedIds.length === items.length;
 
+    const getEvidenceSummary = (evidenceData: any) => {
+        if (Array.isArray(evidenceData)) {
+            return {
+                hasEvidence: evidenceData.length > 0,
+                verified: evidenceData.length > 0,
+                label: `הוכחות: ${evidenceData.length}`,
+                detail: 'נמצאו קישורי מקור לפריט הזה.'
+            };
+        }
+
+        const hasQuoteEvidence = Boolean(evidenceData?.contract_quote || evidenceData?.work_quote);
+        const missingCount = Array.isArray(evidenceData?.missing_evidence) ? evidenceData.missing_evidence.length : 0;
+        const pricingEvaluation = evidenceData?.pricing_evaluation;
+        const hasPricingTrace = Boolean(pricingEvaluation?.match_quality || pricingEvaluation?.source);
+        const isVerified = evidenceData?.evidence_status === 'VERIFIED' || Boolean(evidenceData?.contract_quote && evidenceData?.work_quote);
+
+        return {
+            hasEvidence: hasQuoteEvidence || missingCount > 0 || hasPricingTrace || Boolean(evidenceData?.linked_ids?.length),
+            verified: isVerified,
+            label: isVerified ? 'ראיות מאומתות' : 'דורש אימות',
+            detail: pricingEvaluation?.match_quality === 'ZERO_MATCH'
+                ? 'לא נמצא סעיף ישיר. נדרש אימות לפני דרישה.'
+                : missingCount > 0
+                    ? `חסרים מקורות/בדיקות: ${missingCount}`
+                    : 'קיים קישור למקור או לתמחור.'
+        };
+    };
+
     const toggleGroup = (title: string) => {
         setCollapsedGroups(prev => 
             prev.includes(title) ? prev.filter(t => t !== title) : [...prev, title]
@@ -130,7 +158,7 @@ export default function PendingQueueTable({
                                 {!collapsedGroups.includes(sourceTitle) && groupItems.map((item, itemIdx) => {
                                     const isScanning = scanningItems.includes(item.id);
                                     const isSelected = selectedIds.includes(item.id);
-                                    const hasLinks = item.evidence_data?.linked_ids && item.evidence_data.linked_ids.length > 0;
+                                    const evidenceSummary = getEvidenceSummary(item.evidence_data);
                                     
                                     return (
                                         <motion.tr 
@@ -214,7 +242,7 @@ export default function PendingQueueTable({
                                                         </div>
                                                     )}
 
-                                                    {Array.isArray(item.evidence_data) && item.evidence_data.length > 0 && (
+                                                    {evidenceSummary.hasEvidence && (
                                                         <div className="inline-flex items-center justify-center w-8 h-8 bg-blue-500/10 border border-blue-500/20 rounded-xl hover:bg-blue-500/20 transition-all group/evidence relative">
                                                             <Shield className="w-4 h-4 text-blue-400" />
                                                             <div className="absolute bottom-full right-0 mb-3 w-56 p-4 bg-[#151C24] border border-blue-500/30 rounded-2xl shadow-2xl opacity-0 invisible group-hover/evidence:opacity-100 group-hover/evidence:visible transition-all z-[60] backdrop-blur-2xl">
@@ -223,15 +251,15 @@ export default function PendingQueueTable({
                                                                     <Shield className="w-3 h-3 text-blue-400" />
                                                                 </div>
                                                                 <p className="text-[10px] text-gray-400 leading-relaxed text-right">
-                                                                    נמצאו הוכחות חותכות בתאום דיגיטלי ({item.evidence_data.length}).
+                                                                    {evidenceSummary.detail}
                                                                     <br />
-                                                                    <span className="text-blue-300 font-bold">מוכן להגנה משפטית.</span>
+                                                                    <span className="text-blue-300 font-bold">{evidenceSummary.verified ? 'מוכן לתמחור עם סימוכין.' : 'לא להציג כדרישה ודאית לפני בדיקה.'}</span>
                                                                 </p>
                                                             </div>
                                                         </div>
                                                     )}
 
-                                                    {((item.evidence_data?.linked_ids?.length ?? 0) === 0) && !(Array.isArray(item.evidence_data) && item.evidence_data.length > 0) && (
+                                                    {!evidenceSummary.hasEvidence && (
                                                         <span className="text-gray-800 font-mono text-[10px]">--</span>
                                                     )}
                                                 </div>

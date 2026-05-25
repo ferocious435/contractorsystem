@@ -52,6 +52,11 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const [isGeneratingLetter, setIsGeneratingLetter] = useState(false);
     const [scanningItems, setScanningItems] = useState<string[]>([]);
 
+    const normalizeMarkupPercentage = (value?: number | null) => {
+        const numericValue = Number(value || 0);
+        return numericValue > 1 ? numericValue / 100 : numericValue;
+    };
+
     useEffect(() => {
         fetchLedgerItems();
         fetchPendingQueue();
@@ -197,7 +202,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                     unit: ledgerData.unit,
                     quantity: ledgerData.quantity,
                     unit_price_excl_vat: ledgerData.unit_price_excl_vat,
-                    markup_percentage: ledgerData.markup_percentage || 0,
+                    markup_percentage: normalizeMarkupPercentage(ledgerData.markup_percentage),
                     ai_rationale: ledgerData.ai_rationale,
                     governing_notes: ledgerData.governing_notes,
                     contradiction_id: ledgerData.contradiction_id,
@@ -259,7 +264,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                     unit: editForm.unit,
                     quantity: editForm.quantity,
                     unit_price_excl_vat: editForm.unit_price_excl_vat,
-                    markup_percentage: editForm.markup_percentage,
+                    markup_percentage: normalizeMarkupPercentage(editForm.markup_percentage),
                     type: editForm.type
                 })
                 .eq('id', editForm.id)
@@ -283,6 +288,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                 .insert({
                     project_id: projectId,
                     ...newItemForm,
+                    markup_percentage: normalizeMarkupPercentage(newItemForm.markup_percentage),
                     vat_rate: VAT_RATE
                 })
                 .select()

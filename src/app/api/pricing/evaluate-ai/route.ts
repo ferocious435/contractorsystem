@@ -2,6 +2,15 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { geminiFlashModel } from '@/lib/gemini';
 
+function parseGeminiJsonObject(text: string): any {
+    const cleanText = text.replace(/```json|```/g, '').trim();
+    const objectMatch = cleanText.match(/\{[\s\S]*\}/);
+    if (!objectMatch) {
+        throw new Error('Gemini did not return a JSON object');
+    }
+    return JSON.parse(objectMatch[0]);
+}
+
 export async function POST(req: Request) {
     const supabase = await createClient();
     
@@ -206,9 +215,19 @@ export async function POST(req: Request) {
 
         const pricingResult = await geminiFlashModel.generateContent(pricingPrompt);
         const pricingText = pricingResult.response.text();
-        const cleanPricingJson = pricingText.replace(/```json|```/g, '').trim();
-        const evaluation = JSON.parse(cleanPricingJson);
+        const evaluation = parseGeminiJsonObject(pricingText);
         const hasSourceMatches = Boolean(ledgerMatches?.length || pricelistMatches.some(m => m.item_type === 'ITEM'));
+        evaluation.source_trace = {
+            contract_matches: ledgerMatches?.length || 0,
+            pricelist_item_matches: pricelistMatches.filter(m => m.item_type === 'ITEM').length,
+            governing_note_matches: pricelistMatches.filter(m => m.item_type === 'NOTE').length,
+            keywords
+        };
+        evaluation.matched_items = {
+            contract: ledgerMatches || [],
+            pricelist: pricelistMatches.filter(m => m.item_type === 'ITEM').slice(0, 10),
+            notes: pricelistMatches.filter(m => m.item_type === 'NOTE').slice(0, 10)
+        };
 
         if (!hasSourceMatches && evaluation.match_quality !== 'PARTIAL') {
             evaluation.match_found = false;
@@ -248,8 +267,7 @@ export async function POST(req: Request) {
             
             const expertResult = await geminiFlashModel.generateContent(expertPrompt);
             const expertText = expertResult.response.text();
-            const cleanExpertJson = expertText.replace(/```json|```/g, '').trim();
-            expertStrategy = JSON.parse(cleanExpertJson);
+            expertStrategy = parseGeminiJsonObject(expertText);
         }
 
         const currentEvidence = contradiction.evidence_data || {};
@@ -260,6 +278,8 @@ export async function POST(req: Request) {
                 source: evaluation.source,
                 confidence: evaluation.confidence,
                 match_quality: evaluation.match_quality,
+                source_trace: evaluation.source_trace,
+                matched_items: evaluation.matched_items,
                 needed_documents: evaluation.needed_documents || [],
                 zero_match_reason: evaluation.zero_match_reason || null
             },

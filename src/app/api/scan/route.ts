@@ -5,6 +5,15 @@ import { geminiModel, withRetry } from "@/lib/gemini";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
+function parseGeminiJsonArray(text: string): any[] {
+    const cleanText = text.replace(/```json|```/g, '').trim();
+    const arrayMatch = cleanText.match(/\[[\s\S]*\]/);
+    if (!arrayMatch) {
+        throw new Error('Gemini did not return a JSON array');
+    }
+    return JSON.parse(arrayMatch[0]);
+}
+
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
@@ -122,12 +131,19 @@ ${workDoc.extracted_text}
   }
 ]`;
 
-            const result = await withRetry(() => geminiModel.generateContent(prompt));
-            const responseText = result.response.text();
-            const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+            const contractorFirstScanRules = `
 
-            if (jsonMatch) {
-                const points = JSON.parse(jsonMatch[0]);
+Mandatory contractor-first rules:
+- The finding must help the contractor protect payment, margin, time, and proof.
+- evidence_status can be VERIFIED only when both contract_quote and work_quote exist.
+- If proof is partial, use REQUIRES_VERIFICATION and list the missing evidence.
+- Distinguish a true contradiction from a site event, missing data, or AI assumption.
+- Add these JSON fields to every item: comparison_type, risk_reason, confidence, next_check.
+`;
+            const result = await withRetry(() => geminiModel.generateContent(`${prompt}\n${contractorFirstScanRules}`));
+            const responseText = result.response.text();
+            const points = parseGeminiJsonArray(responseText);
+            if (points.length > 0) {
                 // Очистка текста от подписей AI модели
                 const cleanText = (text: string) => text?.replace(/\s*Powered by[^\.\n]*/gi, '').replace(/\s*מופעל על ידי[^\.\n]*/gi, '').trim() || text;
 
@@ -160,6 +176,16 @@ ${workDoc.extracted_text}
                             work_title: workDoc.title,
                             contract_url: contractDocs[0]?.file_url || null,
                             work_url: workDoc.file_url || null,
+                            comparison_type: p.comparison_type || null,
+                            risk_reason: p.risk_reason || null,
+                            confidence: typeof p.confidence === 'number' ? p.confidence : null,
+                            next_check: p.next_check || null,
+                            document_pair: {
+                                contract_doc_id: contractDocs[0]?.id || null,
+                                contract_title: contractDocs[0]?.title || null,
+                                work_doc_id: workDoc.id,
+                                work_title: workDoc.title
+                            },
                             expert_strategy: p.expert_strategy || {}
                         }
                     }).select().single();

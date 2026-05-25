@@ -1,7 +1,7 @@
 export interface LedgerItem {
     id: string;
     project_id: string;
-    type: 'BASE_CONTRACT' | 'APPROVED_VO' | 'PENDING_VO';
+    type: 'BASE_CONTRACT' | 'APPROVED_VO' | 'PENDING_VO' | 'SENT_VO';
     source: string;
     item_code: string;
     description: string;
@@ -44,7 +44,7 @@ export interface ContradictionItem extends QueueItem {
 }
 
 export interface EstimationData {
-    type?: 'BASE_CONTRACT' | 'APPROVED_VO' | 'PENDING_VO';
+    type?: 'BASE_CONTRACT' | 'APPROVED_VO' | 'PENDING_VO' | 'SENT_VO';
     source?: string;
     item_code?: string;
     description: string;
