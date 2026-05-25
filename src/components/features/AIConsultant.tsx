@@ -100,7 +100,7 @@ export default function AIConsultant({ projectId }: AIConsultantProps) {
                         יועץ AI
                         <span className="text-[10px] font-mono text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-widest font-black">{AI_MODEL_BRANDING}</span>
                     </h2>
-                    <p className="text-xs text-gray-400">שאל כל שאלה על הפרויקט שלך — הבינה המלאכותית מכירה את כל הנתונים</p>
+                    <p className="text-xs text-gray-400">שאל כל שאלה על הפרויקט. היועץ משתמש בנתונים הזמינים ומסמן מה עדיין דורש אימות.</p>
                 </div>
             </div>
 
@@ -116,7 +116,7 @@ export default function AIConsultant({ projectId }: AIConsultantProps) {
                             <div>
                                 <h3 className="text-lg font-medium text-gray-200 mb-2">שלום! אני היועץ AI שלך</h3>
                                 <p className="text-sm text-gray-400 max-w-md">
-                                    אני מכיר את כל נתוני הפרויקט — מסמכים, סתירות, תמחור ותקציב. שאל אותי כל שאלה.
+                                    אני משתמש בנתונים הזמינים בפרויקט: מסמכים, ממצאים, תמחור ותקציב. אם חסרה הוכחה, אסמן זאת במקום לנחש.
                                 </p>
                             </div>
                             <div className="grid grid-cols-2 gap-2 max-w-lg w-full" dir="rtl">

@@ -94,7 +94,7 @@ export default function PendingQueueTable({
                     <CheckCircle className="w-10 h-10 text-emerald-500" />
                 </div>
                 <h3 className="text-xl font-black text-white font-mono uppercase tracking-widest">התור נקי</h3>
-                <p className="mt-2 text-gray-500 text-sm font-medium max-w-xs">אין חריגים הממתינים לתמחור. המערכת מסונכרנת במלואה.</p>
+                <p className="mt-2 text-gray-500 text-sm font-medium max-w-xs">אין חריגים פתוחים שממתינים לתמחור כרגע. אם נוספו מסמכים חדשים, יש להריץ סנכרון חכם לפני מסקנה סופית.</p>
             </motion.div>
         );
     }

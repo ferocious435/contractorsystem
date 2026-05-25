@@ -165,9 +165,8 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    projectId, 
-                    force,
-                    documentIds: []
+                    projectId,
+                    force
                 })
             });
 
@@ -241,27 +240,10 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
 
             if (statusError) throw statusError;
 
-            // 2. If moving to pricing, create a ledger entry
+            // Financial rows are created only after the user approves a real estimate.
+            // Moving a finding to pricing should not create a zero-price ledger item.
             if (newStatus === 'MOVED_TO_PRICING' && contradiction) {
-                console.log('[Radar] Creating ledger entry for contradiction:', id);
-                
-                const { error: ledgerError } = await supabase
-                    .from('pricing_ledger')
-                    .insert({
-                        project_id: projectId,
-                        contradiction_id: id,
-                        type: 'PENDING_VO',
-                        source: 'CUSTOM_ANALYSIS',
-                        description: contradiction.description || contradiction.title,
-                        ai_rationale: contradiction.evidence_data?.expert_strategy?.commercial_risk || '',
-                        unit: 'יח',
-                        quantity: 1,
-                        unit_price_excl_vat: 0
-                    });
-
-                if (ledgerError) {
-                    console.error('[Radar] Failed to create ledger entry:', ledgerError.message);
-                }
+                console.log('[Radar] Finding moved to pricing queue:', id);
             }
 
             setContradictions(prev => prev.map(c => c.id === id ? { ...c, status: newStatus } : c));
@@ -347,7 +329,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                         </div>
                         <div className="flex flex-col items-center gap-2">
                             <span className="text-lg font-black text-gray-700 uppercase tracking-widest font-mono">לא נמצאו סתירות</span>
-                            <span className="text-[10px] text-gray-800 uppercase tracking-[0.2em] font-black">הפרויקט שלך נמצא באיזון לוגי מלא</span>
+                            <span className="text-[10px] text-gray-800 uppercase tracking-[0.2em] font-black">אין ממצאים פתוחים כרגע. אם נוספו מסמכים, יש להריץ סנכרון חכם לפני קביעה סופית.</span>
                         </div>
                     </div>
                 ) : (

@@ -70,6 +70,56 @@ export async function POST(req: Request) {
         const safeVatRate = toNumber(vat_rate, VAT_RATE) === VAT_RATE ? VAT_RATE : VAT_RATE;
         const rationale = ai_rationale || ai_explanation || '';
         const notes = governing_notes || (user_notes ? [user_notes] : []);
+        const safeDescription = description || item_name || user_notes || ai_explanation;
+
+        if (!safeDescription || String(safeDescription).trim().length < 3) {
+            return NextResponse.json({ error: 'description is required before saving a ledger item' }, { status: 400 });
+        }
+
+        if (activeContradictionId) {
+            const { data: existingLedgerItem, error: existingError } = await supabase
+                .from('pricing_ledger')
+                .select('id')
+                .eq('project_id', project_id)
+                .eq('contradiction_id', activeContradictionId)
+                .maybeSingle();
+
+            if (existingError) throw existingError;
+
+            if (existingLedgerItem?.id) {
+                const { data: updatedLedgerItem, error: updateError } = await supabase
+                    .from('pricing_ledger')
+                    .update({
+                        type: safeType,
+                        source: safeSource,
+                        item_code: item_code || null,
+                        description: safeDescription,
+                        unit: unit || 'יח',
+                        quantity: safeQuantity,
+                        unit_price_excl_vat: safeUnitPrice,
+                        markup_percentage: normalizeMarkupPercentage(markup_percentage),
+                        ai_rationale: rationale,
+                        governing_notes: notes,
+                        expert_strategy,
+                        vat_rate: safeVatRate
+                    })
+                    .eq('id', existingLedgerItem.id)
+                    .select(`
+                        *,
+                        projects ( id, name )
+                    `)
+                    .single();
+
+                if (updateError) throw updateError;
+
+                await supabase
+                    .from('contradictions')
+                    .update({ pricing_status: 'PRICED', status: 'MOVED_TO_PRICING' })
+                    .eq('id', activeContradictionId);
+
+                return NextResponse.json({ success: true, item: updatedLedgerItem });
+            }
+        }
 
         // Start by saving to ledger
         const { data: newLedgerItem, error: insertError } = await supabase
@@ -80,7 +130,7 @@ export async function POST(req: Request) {
                 type: safeType,
                 source: safeSource,
                 item_code: item_code || null,
-                description: description || item_name || user_notes || ai_explanation || 'פריט תמחור ללא תיאור',
+                description: safeDescription,
                 unit: unit || 'יח',
                 quantity: safeQuantity,
                 unit_price_excl_vat: safeUnitPrice,

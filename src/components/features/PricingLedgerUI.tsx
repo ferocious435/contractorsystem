@@ -149,7 +149,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     projectId,
-                    documentIds: [item.source_execution_doc_id]
+                    workDocId: item.source_execution_doc_id
                 })
             });
 
@@ -191,41 +191,66 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
 
     const handleApproveEstimation = async (ledgerData: ApproveEstimationPayload) => {
         try {
-            const { data: newItem, error: insertError } = await supabase
-                .from('pricing_ledger')
-                .insert({
-                    project_id: projectId,
-                    type: ledgerData.type || 'PENDING_VO',
-                    source: ledgerData.source || 'CUSTOM_ANALYSIS',
-                    item_code: ledgerData.item_code || '',
-                    description: ledgerData.description,
-                    unit: ledgerData.unit,
-                    quantity: ledgerData.quantity,
-                    unit_price_excl_vat: ledgerData.unit_price_excl_vat,
-                    markup_percentage: normalizeMarkupPercentage(ledgerData.markup_percentage),
-                    ai_rationale: ledgerData.ai_rationale,
-                    governing_notes: ledgerData.governing_notes,
-                    contradiction_id: ledgerData.contradiction_id,
-                    vat_rate: VAT_RATE
-                })
+            let existingLedgerItem: LedgerItem | null = null;
+
+            if (ledgerData.contradiction_id) {
+                const { data: existing } = await supabase
+                    .from('pricing_ledger')
+                    .select('*')
+                    .eq('project_id', projectId)
+                    .eq('contradiction_id', ledgerData.contradiction_id)
+                    .maybeSingle();
+
+                existingLedgerItem = existing;
+            }
+
+            const payload = {
+                project_id: projectId,
+                type: ledgerData.type || 'PENDING_VO',
+                source: ledgerData.source || 'CUSTOM_ANALYSIS',
+                item_code: ledgerData.item_code || '',
+                description: ledgerData.description,
+                unit: ledgerData.unit,
+                quantity: ledgerData.quantity,
+                unit_price_excl_vat: ledgerData.unit_price_excl_vat,
+                markup_percentage: normalizeMarkupPercentage(ledgerData.markup_percentage),
+                ai_rationale: ledgerData.ai_rationale,
+                governing_notes: ledgerData.governing_notes,
+                contradiction_id: ledgerData.contradiction_id,
+                vat_rate: VAT_RATE
+            };
+
+            const query = existingLedgerItem
+                ? supabase
+                    .from('pricing_ledger')
+                    .update(payload)
+                    .eq('id', existingLedgerItem.id)
+                : supabase
+                    .from('pricing_ledger')
+                    .insert(payload);
+
+            const { data: savedItem, error: saveError } = await query
                 .select()
                 .single();
 
-            if (insertError) throw insertError;
+            if (saveError) throw saveError;
 
             if (ledgerData.contradiction_id) {
                 await supabase
                     .from('contradictions')
-                    .update({ pricing_status: 'ESTIMATED' })
+                    .update({ pricing_status: 'ESTIMATED', status: 'MOVED_TO_PRICING' })
                     .eq('id', ledgerData.contradiction_id);
             }
 
-            setLedgerItems(prev => [newItem, ...prev]);
+            setLedgerItems(prev => existingLedgerItem
+                ? prev.map(item => item.id === existingLedgerItem?.id ? savedItem : item)
+                : [savedItem, ...prev]
+            );
             setQueueItems(prev => prev.filter(q => q.id !== ledgerData.contradiction_id));
             setSelectedContradiction(null);
         } catch (err) {
             console.error('Error approving estimation:', err);
-            alert('שגיאה בשמירת הערכה');
+            alert('׳©׳’׳™׳׳” ׳‘׳©׳׳™׳¨׳× ׳”׳¢׳¨׳›׳”');
         }
     };
 
