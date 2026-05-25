@@ -17,7 +17,22 @@ interface DocumentsPageClientProps {
 }
 
 export default function DocumentsPageClient({ projectId, initialDocuments = [], category }: DocumentsPageClientProps) {
-    const [documents, setDocuments] = useState<any[]>(initialDocuments);
+    const normalizeDocument = (doc: any) => {
+        const hasUsefulExtraction = Boolean(
+            doc.extracted_text_hash ||
+            doc.ocr_status === 'COMPLETED' ||
+            (typeof doc.extracted_text === 'string' && doc.extracted_text.length > 1000)
+        );
+
+        if (doc.ai_status === 'VALIDATED') return doc;
+        if (hasUsefulExtraction && (doc.ai_status === 'PENDING' || doc.ai_status === 'DONE')) {
+            return { ...doc, ai_status: 'SCANNED' };
+        }
+
+        return doc;
+    };
+
+    const [documents, setDocuments] = useState<any[]>(initialDocuments.map(normalizeDocument));
     const supabase = createClient();
 
     React.useEffect(() => {
@@ -37,14 +52,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
             const { data } = await query;
             if (data) {
-                // Синхронизация статуса: если текст есть, статус DONE
-                const syncedDocs = data.map(d => {
-                    if (d.extracted_text && d.extracted_text.length > 50 && d.ai_status !== 'VALIDATED') {
-                        return { ...d, ai_status: 'DONE' };
-                    }
-                    return d;
-                });
-                setDocuments(syncedDocs);
+                setDocuments(data.map(normalizeDocument));
             }
         };
         fetchDocs();
@@ -249,8 +257,22 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         }
     };
 
+    const getEvidenceConfidenceLabel = (doc: any) => {
+        const rawConfidence = doc.parsed_json?.confidence ?? doc.parsed_json?.confidence_score ?? doc.parsed_json?.document_confidence;
+        const confidence = typeof rawConfidence === 'number' ? rawConfidence : Number(rawConfidence);
+
+        if (Number.isFinite(confidence) && confidence > 0) {
+            const percent = confidence <= 1 ? confidence * 100 : confidence;
+            return `${Math.round(percent)}%`;
+        }
+
+        if (doc.ai_status === 'VALIDATED') return 'אומת ידנית';
+        if (doc.extracted_text_hash || doc.ocr_status === 'COMPLETED' || doc.ai_status === 'SCANNED') return 'נדרש אימות';
+        return 'לא אומת';
+    };
+
     return (
-        <div className="flex flex-col gap-10 p-2" dir="rtl">
+        <div className="flex flex-col gap-10 p-2 max-w-full overflow-x-hidden" dir="rtl">
             {/* Header: Document Intelligence Dashboard */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <motion.div 
@@ -299,20 +321,20 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                         onDragLeave={handleDragLeave}
                         onDrop={handleDrop}
                         onClick={() => fileInputRef.current?.click()}
-                        className={`flex-1 flex items-center justify-between px-8 py-4 rounded-[2rem] border-2 border-dashed transition-all cursor-pointer ${
+                        className={`flex-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 px-4 sm:px-8 py-4 rounded-[2rem] border-2 border-dashed transition-all cursor-pointer min-w-0 ${
                             isDragging ? 'border-blue-500 bg-blue-500/10 shadow-[0_0_30px_rgba(59,130,246,0.2)]' : 'border-white/5 hover:border-white/20'
                         }`}
                     >
-                        <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-4 sm:gap-6 min-w-0">
                             <div className="p-4 bg-white/5 rounded-2xl">
                                 <Upload className={`w-6 h-6 ${isUploading ? 'animate-bounce text-blue-400' : 'text-gray-400'}`} />
                             </div>
-                            <div className="flex flex-col text-right">
+                            <div className="flex flex-col text-right min-w-0">
                                 <span className="text-sm font-black text-white uppercase tracking-tight font-mono">קליטת_מסמכים_לבינה_מלאכותית</span>
                                 <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">גרור_קבצים_לזיהוי_אוטומטי</span>
                             </div>
                         </div>
-                        <button className="px-6 py-2.5 bg-white text-black rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95">
+                        <button className="min-h-11 px-6 py-3 bg-white text-black rounded-xl text-xs font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95">
                             העלאת_מסמך
                         </button>
                     </div>
@@ -390,7 +412,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                             </div>
                                             <div className="flex flex-col items-end">
                                                 <span className="text-[8px] text-gray-600 uppercase font-black">רמת_ודאות</span>
-                                                <span className="text-[10px] text-emerald-500 font-black">98.4%</span>
+                                                <span className="text-[10px] text-amber-400 font-black">{getEvidenceConfidenceLabel(doc)}</span>
                                             </div>
                                         </div>
                                     </div>
@@ -401,14 +423,14 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                     <div className="flex items-center gap-2">
                                         <button 
                                             onClick={() => window.open(doc.file_url, '_blank')}
-                                            className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5 text-gray-500 hover:text-white hover:bg-white/10 transition-all shadow-sm"
+                                            className="w-11 h-11 flex items-center justify-center rounded-xl bg-white/[0.03] border border-white/5 text-gray-500 hover:text-white hover:bg-white/10 transition-all shadow-sm"
                                             title="צפייה במקור"
                                         >
                                             <Eye size={14} />
                                         </button>
                                         <button 
                                             onClick={() => handleDelete(doc.id, doc.title)}
-                                            className="p-2.5 rounded-xl bg-red-500/[0.03] border border-white/5 text-gray-600 hover:text-red-500 hover:bg-red-500/10 transition-all shadow-sm"
+                                            className="w-11 h-11 flex items-center justify-center rounded-xl bg-red-500/[0.03] border border-white/5 text-gray-600 hover:text-red-500 hover:bg-red-500/10 transition-all shadow-sm"
                                             title="מחיקת מסמך"
                                         >
                                             <Trash2 size={14} />
@@ -420,7 +442,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                             <button 
                                                 onClick={() => runAIParsing(doc)}
                                                 disabled={processingId === doc.id}
-                                                className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-[0_10px_20px_rgba(59,130,246,0.2)]"
+                                                className="min-h-11 flex items-center gap-2 px-4 py-3 bg-blue-500 text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-[0_10px_20px_rgba(59,130,246,0.2)]"
                                             >
                                                 <Play size={12} className="fill-current" />
                                                 הפעל_סריקה
@@ -429,14 +451,14 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                         {doc.ai_status === 'SCANNED' && (
                                             <button 
                                                 onClick={() => setSelectedDocForVerification(doc)}
-                                                className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-xl"
+                                                className="min-h-11 flex items-center gap-2 px-4 py-3 bg-white text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-xl"
                                             >
                                                 <CheckCircle2 size={12} />
                                                 אימות_נתונים
                                             </button>
                                         )}
                                         {doc.ai_status === 'VALIDATED' && (
-                                            <div className="flex items-center gap-2 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 rounded-xl text-[9px] font-black uppercase tracking-widest">
+                                            <div className="min-h-11 flex items-center gap-2 px-4 py-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 rounded-xl text-[9px] font-black uppercase tracking-widest">
                                                 <ShieldCheck size={12} />
                                                 מאומת
                                             </div>

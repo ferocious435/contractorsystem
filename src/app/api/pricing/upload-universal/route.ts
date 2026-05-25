@@ -102,7 +102,7 @@ export async function POST(req: Request) {
         title: pricelistName,
         category: 'PRICELIST',
         file_url: publicUrl.publicUrl,
-        ai_status: 'DONE',
+        ai_status: 'SCANNED',
         parsed_json: parsedData
       });
     }

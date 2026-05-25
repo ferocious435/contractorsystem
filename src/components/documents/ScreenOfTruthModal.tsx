@@ -23,6 +23,12 @@ export default function ScreenOfTruthModal({ document: doc, onClose, onValidate 
     const hasFinancialItems = jsonData.financial_data?.items?.length > 0;
     const hasWarnings = jsonData.warnings?.length > 0 && jsonData.warnings[0] !== undefined;
     const isAlreadyValidated = doc.ai_status === 'VALIDATED';
+    const rawConfidence = jsonData.confidence ?? jsonData.confidence_score ?? jsonData.document_confidence;
+    const parsedConfidence = typeof rawConfidence === 'number' ? rawConfidence : Number(rawConfidence);
+    const confidencePercent = Number.isFinite(parsedConfidence) && parsedConfidence > 0
+        ? Math.round(parsedConfidence <= 1 ? parsedConfidence * 100 : parsedConfidence)
+        : null;
+    const confidenceLabel = confidencePercent ? `${confidencePercent}%` : (isAlreadyValidated ? 'אומת ידנית' : 'נדרש אימות');
 
     const handleValidate = async () => {
         setIsValidating(true);
@@ -93,9 +99,12 @@ export default function ScreenOfTruthModal({ document: doc, onClose, onValidate 
                                 <span className="text-[9px] font-mono text-gray-600 uppercase tracking-[0.2em] mb-1 font-black">רמת_ביטחון_חילוץ</span>
                                 <div className="flex items-center gap-2">
                                     <div className="w-20 h-1 bg-white/5 rounded-full overflow-hidden">
-                                        <div className="h-full bg-emerald-500 w-[98%]" />
+                                        <div
+                                            className={`h-full ${confidencePercent ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                                            style={{ width: `${confidencePercent || 45}%` }}
+                                        />
                                     </div>
-                                    <span className="text-[11px] font-mono text-emerald-500 font-black">98.4%</span>
+                                    <span className={`text-[11px] font-mono font-black ${confidencePercent ? 'text-emerald-500' : 'text-amber-400'}`}>{confidenceLabel}</span>
                                 </div>
                             </div>
                         </div>
