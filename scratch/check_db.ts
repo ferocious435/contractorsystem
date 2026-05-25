@@ -1,45 +1,28 @@
-import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
 
-dotenv.config({ path: '.env.local' });
+import { createClient } from '@supabase/supabase-js'
+import dotenv from 'dotenv'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+dotenv.config({ path: '.env.local' })
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error('❌ Ошибка: Отсутствуют переменные окружения в .env.local');
-  process.exit(1);
-}
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(supabaseUrl, supabaseKey)
 
-async function checkConnection() {
-  console.log('📡 Проверка подключения к Supabase...');
-  
-  const { data: projects, error } = await supabase
-    .from('projects')
-    .select('*')
-    .limit(1);
-
-  if (error) {
-    console.error('❌ Ошибка при запросе к таблице projects:', error.message);
-    if (error.message.includes('relation "projects" does not exist')) {
-        console.log('💡 Таблица projects еще не создана. Нужно запустить миграции.');
+async function check() {
+    const { data: projects, error: pError } = await supabase.from('projects').select('*').limit(5)
+    if (pError) {
+        console.error('Projects Error:', pError)
+    } else {
+        console.log('Projects:', JSON.stringify(projects, null, 2))
     }
-  } else {
-    console.log('✅ Подключение успешно! Найдено проектов:', projects.length);
-  }
 
-  const { data: profiles, error: pError } = await supabase
-    .from('profiles')
-    .select('*')
-    .limit(1);
-
-  if (pError) {
-    console.error('❌ Ошибка при запросе к таблице profiles:', pError.message);
-  } else {
-    console.log('✅ Таблица profiles доступна. Найдено профилей:', profiles.length);
-  }
+    const { data: authUsers, error: aError } = await supabase.auth.admin.listUsers()
+    if (aError) {
+        console.error('Users Error:', aError)
+    } else {
+        console.log('Users:', authUsers.users.map(u => ({ id: u.id, email: u.email })))
+    }
 }
 
-checkConnection();
+check()
