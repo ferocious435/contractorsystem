@@ -18,7 +18,7 @@ export async function DELETE(req: NextRequest) {
         // 1. Get document to find its file_url (to extract storage path)
         const { data: doc, error: fetchError } = await supabase
             .from('documents')
-            .select('file_url')
+            .select('id, project_id, file_url')
             .eq('id', documentId)
             .single();
 
@@ -49,7 +49,25 @@ export async function DELETE(req: NextRequest) {
             }
         }
 
-        // 3. Delete from database
+        // 3. Invalidate analysis created from this document before deletion.
+        await supabase
+            .from('contradictions')
+            .update({
+                status: 'ARCHIVED',
+                evidence_data: {
+                    deletion_notice: 'Source document was deleted; finding requires rescan before use.',
+                    deleted_document_id: documentId,
+                    deleted_at: new Date().toISOString()
+                }
+            })
+            .or(`source_execution_doc_id.eq.${documentId},target_contract_doc_id.eq.${documentId}`);
+
+        await supabase
+            .from('document_scan_state')
+            .delete()
+            .or(`work_doc_id.eq.${documentId},contract_doc_ids.cs.{${documentId}}`);
+
+        // 4. Delete from database
         console.log(`[delete] Attempting to delete doc ${documentId} from DB...`);
         const { error: dbError } = await supabase
             .from('documents')

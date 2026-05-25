@@ -108,8 +108,9 @@ export default function ContradictionRadarHeader({
 
                     <div className="flex items-center gap-3">
                         <button 
-                            onClick={() => scanProject(true)}
+                            onClick={() => scanProject(false)}
                             disabled={isScanning}
+                            title="סנכרון חכם: משתמש בתוצאות קיימות וסורק רק מסמכים חדשים או חסרים"
                             className={`px-8 py-4 rounded-3xl font-black text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center gap-3 shadow-2xl ${
                                 isScanning 
                                 ? 'bg-white/5 text-gray-500 cursor-not-allowed border border-white/5' 
@@ -117,7 +118,7 @@ export default function ContradictionRadarHeader({
                             }`}
                         >
                             <Zap className={`w-4 h-4 ${isScanning ? 'animate-spin' : ''}`} />
-                            {isScanning ? 'סריקה...' : 'סריקה מלאה (הכל מול הכל)'}
+                            {isScanning ? 'סריקה...' : 'סנכרון חכם'}
                         </button>
                          <button 
                             className="flex items-center gap-3 px-6 py-4 bg-white/5 border border-white/10 text-gray-400 rounded-3xl hover:bg-white/10 hover:text-white transition-all active:scale-95 disabled:opacity-30"

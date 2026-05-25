@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { geminiModel, withRetry } from "@/lib/gemini";
+import { createHash } from "crypto";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const MAX_CONTRACT_CONTEXT_CHARS = 180_000;
+const MAX_WORK_CONTEXT_CHARS = 80_000;
+const MAX_CHARS_PER_CONTRACT_DOC = 35_000;
 
 function parseGeminiJsonArray(text: string): any[] {
     const cleanText = text.replace(/```json|```/g, '').trim();
@@ -12,6 +16,49 @@ function parseGeminiJsonArray(text: string): any[] {
         throw new Error('Gemini did not return a JSON array');
     }
     return JSON.parse(arrayMatch[0]);
+}
+
+function sha256(input: string) {
+    return createHash("sha256").update(input).digest("hex");
+}
+
+function getDocumentSignature(doc: any) {
+    const textHash = doc.extracted_text_hash || sha256(String(doc.extracted_text || ''));
+    return `${doc.id}:${doc.content_hash || 'no-file-hash'}:${textHash}:${doc.updated_at || doc.processed_at || doc.created_at || ''}`;
+}
+
+function buildContractSignature(contractDocs: any[]) {
+    return sha256(contractDocs.map(getDocumentSignature).sort().join('|'));
+}
+
+function buildScanSignature(projectId: string, contractSignature: string, workSignature: string) {
+    return sha256(`${projectId}:${contractSignature}:${workSignature}`);
+}
+
+function buildBoundedDocumentContext(docs: any[], maxTotalChars: number, maxPerDoc: number) {
+    let usedChars = 0;
+    const includedDocs: any[] = [];
+    const sections: string[] = [];
+
+    for (const doc of docs) {
+        const rawText = String(doc.extracted_text || '').trim();
+        if (!rawText) continue;
+        const remaining = maxTotalChars - usedChars;
+        if (remaining <= 0) break;
+
+        const sliceLength = Math.min(rawText.length, maxPerDoc, remaining);
+        const textSlice = rawText.slice(0, sliceLength);
+        usedChars += textSlice.length;
+        includedDocs.push(doc);
+        sections.push(`--- Document ID: ${doc.id}\nTitle: ${doc.title}\nCategory: ${doc.category}\nChars included: ${textSlice.length}/${rawText.length} ---\n${textSlice}`);
+    }
+
+    return {
+        context: sections.join("\n\n"),
+        includedDocs,
+        usedChars,
+        truncated: docs.some(doc => String(doc.extracted_text || '').length > maxPerDoc) || usedChars >= maxTotalChars
+    };
 }
 
 export async function POST(req: NextRequest) {
@@ -26,17 +73,14 @@ export async function POST(req: NextRequest) {
         const supabase = createClient(supabaseUrl, supabaseKey);
 
         // 1. Проверка кэша или очистка при force/granular rescan
-        if (!force && !workDocId) {
-            const { data: existing } = await supabase.from("contradictions").select("*").eq("project_id", projectId);
-            if (existing && existing.length > 0) {
-                return NextResponse.json({ success: true, found: existing.length, contradictions: existing, cached: true });
-            }
-        } else if (force) {
+        if (force) {
             console.log(`[scan] Clearing old contradictions for project ${projectId} due to force scan`);
             await supabase.from("contradictions").delete().eq("project_id", projectId);
+            await supabase.from("document_scan_state").delete().eq("project_id", projectId);
         } else if (workDocId) {
             console.log(`[scan] Clearing old contradictions for doc ${workDocId} for granular rescan`);
             await supabase.from("contradictions").delete().eq("project_id", projectId).eq("source_execution_doc_id", workDocId);
+            await supabase.from("document_scan_state").delete().eq("project_id", projectId).eq("work_doc_id", workDocId);
         }
 
         // 2. Получение документов
@@ -57,12 +101,13 @@ export async function POST(req: NextRequest) {
         }
 
         // 3. Прямой анализ (Digital Twin Scan)
-        const foundContradictions = await analyzeDirectly(supabase, projectId, contractDocs, workDocs);
+        const foundContradictions = await analyzeDirectly(supabase, projectId, contractDocs, workDocs, force);
 
         return NextResponse.json({
             success: true,
             found: foundContradictions.length,
-            contradictions: foundContradictions
+            contradictions: foundContradictions,
+            cached: foundContradictions.length > 0 && foundContradictions.every((item: any) => item.__cached === true)
         });
 
     } catch (error: any) {
@@ -71,18 +116,72 @@ export async function POST(req: NextRequest) {
     }
 }
 
-async function analyzeDirectly(supabase: any, projectId: string, contractDocs: any[], workDocs: any[]): Promise<any[]> {
+async function analyzeDirectly(supabase: any, projectId: string, contractDocs: any[], workDocs: any[], force = false): Promise<any[]> {
     const results: any[] = [];
+    const contractSignature = buildContractSignature(contractDocs);
+    const contractDocIds = contractDocs.map((doc: any) => String(doc.id)).sort();
     
-    const contractContext = contractDocs
-        .filter(d => d.extracted_text)
-        .map(d => `--- Document: ${d.title} ---\n${d.extracted_text}`)
-        .join("\n\n");
+    const contractContextBundle = buildBoundedDocumentContext(
+        contractDocs.filter(d => d.extracted_text),
+        MAX_CONTRACT_CONTEXT_CHARS,
+        MAX_CHARS_PER_CONTRACT_DOC
+    );
+    const contractContext = contractContextBundle.context;
 
     for (const workDoc of workDocs) {
         if (!workDoc.extracted_text) continue;
+        const workText = String(workDoc.extracted_text || '').slice(0, MAX_WORK_CONTEXT_CHARS);
+        const workSignature = getDocumentSignature(workDoc);
+        const scanSignature = buildScanSignature(projectId, contractSignature, workSignature);
 
         try {
+            if (!force) {
+                const { data: existingForWorkDoc } = await supabase
+                    .from("contradictions")
+                    .select("*")
+                    .eq("project_id", projectId)
+                    .eq("source_execution_doc_id", workDoc.id);
+
+                if (existingForWorkDoc?.length) {
+                    existingForWorkDoc.forEach((item: any) => results.push({
+                        ...item,
+                        __cached: true,
+                        __legacy_cache: !item.scan_signature
+                    }));
+                    continue;
+                }
+
+                const { data: scanState } = await supabase
+                    .from("document_scan_state")
+                    .select("*")
+                    .eq("scan_signature", scanSignature)
+                    .maybeSingle();
+
+                if (scanState?.status === "COMPLETED") {
+                    const { data: cachedContradictions } = await supabase
+                        .from("contradictions")
+                        .select("*")
+                        .eq("project_id", projectId)
+                        .eq("scan_signature", scanSignature);
+
+                    if (cachedContradictions?.length) {
+                        cachedContradictions.forEach((item: any) => results.push({ ...item, __cached: true }));
+                        continue;
+                    }
+                }
+
+                await supabase
+                    .from("contradictions")
+                    .delete()
+                    .eq("project_id", projectId)
+                    .eq("source_execution_doc_id", workDoc.id);
+                await supabase
+                    .from("document_scan_state")
+                    .delete()
+                    .eq("project_id", projectId)
+                    .eq("work_doc_id", workDoc.id);
+            }
+
             const prompt = `אתה מומחה בכיר לניהול תביעות הנדסיות, אומדן עלויות (Estimator) וחוזים במערכת הבנייה הישראלית.
 מטרה: ביצוע השוואה מקצועית בין מסמכי החוזה לבין דוחות הביצוע וייצור אסטרטגיה הנדסית-מסחרית להגנה על רווחיות הקבלן.
 
@@ -90,7 +189,11 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
 ${contractContext}
 
 דוח ביצוע נוכחי / מסמך שטח:
-${workDoc.extracted_text}
+--- Document ID: ${workDoc.id}
+Title: ${workDoc.title}
+Category: ${workDoc.category}
+Chars included: ${workText.length}/${String(workDoc.extracted_text || '').length} ---
+${workText}
 
 הנחיה קריטית לניתוח הנדסי:
 שים לב: תגלית של תשתיות תת קרקעיות (כגון: צינורות, כבלים, שוחות) במהלך עבודות חפירה *אינה* מוגדרת כסתירה (Contradiction) לנתוני סוג הקרקע בחוזה. סוג קרקע מתייחס למאפיינים הגיאוטכניים (סלע, חול, חרסית). גילוי תשתיות הוא 'אירוע שטח' (Site Event) נפרד המצריך התייחסות למכשולים ולפגיעה ברצף העבודה, ויש לסווגו כ'אירוע שטח' ולא כ'סתירה'.
@@ -126,6 +229,8 @@ ${workDoc.extracted_text}
     "new_requirement": "מה שקרה בפועל",
     "contract_quote": "ציטוט מדויק מהחוזה [1] או null אם אין מקור ישיר",
     "work_quote": "ציטוט מדויק מהדוח [2] או null אם אין מקור ישיר",
+    "contract_document_id": "Document ID from the contract context, or null",
+    "work_document_id": "Document ID from the work context, or null",
     "evidence_status": "VERIFIED / REQUIRES_VERIFICATION",
     "missing_evidence": ["רשימת מסמכים/בדיקות שחסרים לפני קביעה ודאית"]
   }
@@ -152,6 +257,7 @@ Mandatory contractor-first rules:
                     if (p.category?.includes("סתירה")) severity = "HIGH";
                     else if (p.category?.includes("שינוי")) severity = "MEDIUM";
 
+                    const matchedContractDoc = contractDocs.find((doc: any) => doc.id === p.contract_document_id) || contractContextBundle.includedDocs[0] || contractDocs[0];
                     const { data, error } = await supabase.from("contradictions").insert({
                         project_id: projectId,
                         title: cleanText(p.title),
@@ -160,8 +266,9 @@ Mandatory contractor-first rules:
                         category: p.category,
                         strategy_advice: cleanText(p.advice),
                         source_execution_doc_id: workDoc.id,
-                        target_contract_doc_id: contractDocs[0]?.id,
+                        target_contract_doc_id: matchedContractDoc?.id,
                         status: "OPEN",
+                        scan_signature: scanSignature,
                         evidence_data: {
                             evidence_status: p.contract_quote && p.work_quote ? "VERIFIED" : "REQUIRES_VERIFICATION",
                             missing_evidence: p.missing_evidence || [],
@@ -172,28 +279,61 @@ Mandatory contractor-first rules:
                             new_requirement: p.new_requirement,
                             contract_quote: p.contract_quote,
                             work_quote: p.work_quote,
-                            contract_title: contractDocs[0]?.title || "חוזה",
+                            contract_title: matchedContractDoc?.title || "חוזה",
                             work_title: workDoc.title,
-                            contract_url: contractDocs[0]?.file_url || null,
+                            contract_url: matchedContractDoc?.file_url || null,
                             work_url: workDoc.file_url || null,
                             comparison_type: p.comparison_type || null,
                             risk_reason: p.risk_reason || null,
                             confidence: typeof p.confidence === 'number' ? p.confidence : null,
                             next_check: p.next_check || null,
                             document_pair: {
-                                contract_doc_id: contractDocs[0]?.id || null,
-                                contract_title: contractDocs[0]?.title || null,
+                                contract_doc_id: matchedContractDoc?.id || null,
+                                contract_title: matchedContractDoc?.title || null,
                                 work_doc_id: workDoc.id,
                                 work_title: workDoc.title
+                            },
+                            context_window: {
+                                contract_chars_used: contractContextBundle.usedChars,
+                                contract_context_truncated: contractContextBundle.truncated,
+                                work_chars_used: workText.length,
+                                work_context_truncated: String(workDoc.extracted_text || '').length > workText.length
                             },
                             expert_strategy: p.expert_strategy || {}
                         }
                     }).select().single();
                     if (!error && data) results.push(data);
                 }
+
+                await supabase
+                    .from("document_scan_state")
+                    .upsert({
+                        project_id: projectId,
+                        contract_doc_ids: contractDocIds,
+                        work_doc_id: workDoc.id,
+                        contract_signature: contractSignature,
+                        work_signature: workSignature,
+                        scan_signature: scanSignature,
+                        status: "COMPLETED",
+                        findings_count: points.length,
+                        scanned_at: new Date().toISOString()
+                    }, { onConflict: "scan_signature" });
             }
         } catch (err) {
             console.error(`[scan] Analysis error for ${workDoc.title}:`, err);
+            await supabase
+                .from("document_scan_state")
+                .upsert({
+                    project_id: projectId,
+                    contract_doc_ids: contractDocIds,
+                    work_doc_id: workDoc.id,
+                    contract_signature: contractSignature,
+                    work_signature: workSignature,
+                    scan_signature: scanSignature,
+                    status: "ERROR",
+                    findings_count: 0,
+                    scanned_at: new Date().toISOString()
+                }, { onConflict: "scan_signature" });
         }
     }
     return results;
