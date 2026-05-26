@@ -96,6 +96,10 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
             const effectiveUnitPriceExclVat = formState.unitPrice * (1 + (formState.markup / 100));
             const pricingNotes = [
                 ...(estimateData?.governing_notes || []),
+                ...(estimateData?.quantity_review_required ? [
+                    'הכמות בתמחור הזה עדיין דורשת אימות סופי לפני אישור סופי של הסכום.'
+                ] : []),
+                ...(estimateData?.ancillary_notes || []),
                 ...(estimateData?.match_quality === 'ZERO_MATCH' ? [
                     estimateData.zero_match_reason,
                     ...(estimateData.needed_documents || []).map((doc: string) => `לדיוק סופי כדאי לבדוק: ${doc}`)
@@ -108,9 +112,13 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                     source: estimateData?.source,
                     confidence: estimateData?.confidence,
                     match_quality: estimateData?.match_quality,
+                    quantity_basis: estimateData?.quantity_basis || null,
+                    quantity_review_required: Boolean(estimateData?.quantity_review_required),
+                    ancillary_scope: estimateData?.ancillary_scope || null,
                     source_trace: estimateData?.source_trace,
                     needed_documents: estimateData?.needed_documents || [],
                     questions: estimateData?.questions || [],
+                    ancillary_notes: estimateData?.ancillary_notes || [],
                     zero_match_reason: estimateData?.zero_match_reason || null
                 }
             };

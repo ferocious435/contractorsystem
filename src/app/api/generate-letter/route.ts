@@ -48,6 +48,15 @@ function formatEvidenceForLetter(evidenceData: any) {
 
     if (evidenceData.pricing_evaluation) {
         lines.push(`- תמחור: ${evidenceData.pricing_evaluation.match_quality || "לא ידוע"} / מקור: ${evidenceData.pricing_evaluation.source || "לא ידוע"}`);
+        if (evidenceData.pricing_evaluation.quantity_basis) {
+            lines.push(`- בסיס כמות: ${evidenceData.pricing_evaluation.quantity_basis}`);
+        }
+        if (evidenceData.pricing_evaluation.quantity_review_required) {
+            lines.push(`- כמות לתמחור: דורשת אימות סופי לפני אישור מלא`);
+        }
+        if (evidenceData.pricing_evaluation.ancillary_scope && evidenceData.pricing_evaluation.ancillary_scope !== "NONE") {
+            lines.push(`- עבודות נלוות: ${evidenceData.pricing_evaluation.ancillary_scope}`);
+        }
     }
 
     if (Array.isArray(evidenceData.missing_evidence) && evidenceData.missing_evidence.length > 0) {

@@ -40,6 +40,20 @@ function normalizePositiveQuantity(value: unknown, fallback = 1) {
     return numericValue;
 }
 
+function normalizeEnumValue<T extends string>(
+    value: unknown,
+    allowedValues: readonly T[],
+    fallback: T,
+) {
+    const normalizedValue = String(value || '').trim().toUpperCase() as T;
+    return allowedValues.includes(normalizedValue) ? normalizedValue : fallback;
+}
+
+function looksLikeLumpSumUnit(unit: unknown) {
+    const normalizedUnit = String(unit || '').trim().toLowerCase();
+    return ['קומפ', 'קומפלט', 'פאושל', 'יחידה קומפלטית', 'lump sum', 'ls'].includes(normalizedUnit);
+}
+
 export async function POST(req: Request) {
     const supabase = await createClient();
     
@@ -221,7 +235,17 @@ export async function POST(req: Request) {
            - [CUSTOM]: Synthesize only if no matches found.
         5. ZERO MATCH: If no direct source item exists in the provided context, you should STILL build the best editable draft estimate you can from the contradiction, BOQ/spec context, execution implications, standards, and market logic. Use source=CUSTOM_ANALYSIS, lower confidence, and clearly mark what is source-backed versus AI inference. Ask clarifying questions only when a missing parameter can materially change the amount.
         6. EVIDENCE: Separate verified source evidence from AI inference. If anything is missing, describe only what affects the final amount or final approval, not what is needed to recognize the contradiction itself.
-        7. LANGUAGE: All output text (Rationale, Description, Notes) MUST be in professional Hebrew.
+        7. QUANTITY LOGIC:
+           - Prefer strongest quantity source: explicit quantity > derived quantity > estimated quantity.
+           - For m2 work, use explicit area first. If no explicit area but reliable length and width exist, derive area. If neither exists, mark quantity as estimated and ask only the minimum question needed.
+           - For linear work, use explicit or clearly confirmed line length. Do not silently trust 1 meter as final quantity.
+           - For count-based work, use explicit or clearly confirmed count. Do not silently trust 1 item as final quantity.
+           - Use quantity_basis: EXPLICIT, DERIVED, ESTIMATED, or LUMP_SUM.
+        8. ANCILLARY WORKS:
+           - Supporting works may be suggested, but do not automatically bake them into the final amount unless they are clearly documented or inseparable from the core work.
+           - If supporting works are only likely or context-based, mark them as suggestion/review, not as confirmed scope.
+           - Use ancillary_scope: NONE, SUGGEST_ONLY, REVIEW_ONLY, or BLOCKED_AUTO_INCLUDE.
+        9. LANGUAGE: All output text (Rationale, Description, Notes) MUST be in professional Hebrew.
 
         OUTPUT FORMAT (JSON ONLY):
         {
@@ -238,7 +262,11 @@ export async function POST(req: Request) {
             "governing_notes": ["Hebrew strings regarding measurements, inclusions, or risks"],
             "needed_documents": ["Hebrew strings naming only documents or approvals that materially affect the final amount or final approval"],
             "zero_match_reason": "Hebrew explanation when match_quality is ZERO_MATCH",
-            "questions": ["Targeted Hebrew questions only when a missing parameter truly changes the amount"]
+            "questions": ["Targeted Hebrew questions only when a missing parameter truly changes the amount"],
+            "quantity_basis": "EXPLICIT" | "DERIVED" | "ESTIMATED" | "LUMP_SUM",
+            "quantity_review_required": boolean,
+            "ancillary_scope": "NONE" | "SUGGEST_ONLY" | "REVIEW_ONLY" | "BLOCKED_AUTO_INCLUDE",
+            "ancillary_notes": ["Hebrew notes about supporting works that must stay suggestion/review unless confirmed"]
         }
         `;
 
@@ -262,6 +290,36 @@ export async function POST(req: Request) {
         evaluation.suggested_quantity = normalizePositiveQuantity(evaluation.suggested_quantity, 1);
         evaluation.needed_documents = normalizeNonEmptyStrings(evaluation.needed_documents, 4);
         evaluation.questions = normalizeNonEmptyStrings(evaluation.questions, 3);
+        evaluation.ancillary_notes = normalizeNonEmptyStrings(evaluation.ancillary_notes, 4);
+        evaluation.quantity_basis = normalizeEnumValue(
+            evaluation.quantity_basis,
+            ['EXPLICIT', 'DERIVED', 'ESTIMATED', 'LUMP_SUM'] as const,
+            looksLikeLumpSumUnit(evaluation.suggested_unit) ? 'LUMP_SUM' : 'ESTIMATED',
+        );
+        evaluation.ancillary_scope = normalizeEnumValue(
+            evaluation.ancillary_scope,
+            ['NONE', 'SUGGEST_ONLY', 'REVIEW_ONLY', 'BLOCKED_AUTO_INCLUDE'] as const,
+            'NONE',
+        );
+        evaluation.quantity_review_required = Boolean(evaluation.quantity_review_required);
+
+        if (evaluation.quantity_basis === 'LUMP_SUM') {
+            evaluation.suggested_quantity = 1;
+        }
+
+        if (evaluation.quantity_basis === 'ESTIMATED' && !looksLikeLumpSumUnit(evaluation.suggested_unit)) {
+            evaluation.quantity_review_required = true;
+        }
+
+        if (
+            evaluation.suggested_quantity === 1 &&
+            !looksLikeLumpSumUnit(evaluation.suggested_unit) &&
+            evaluation.quantity_basis !== 'EXPLICIT' &&
+            evaluation.quantity_basis !== 'DERIVED'
+        ) {
+            evaluation.quantity_review_required = true;
+            evaluation.quantity_basis = 'ESTIMATED';
+        }
 
         if (!hasSourceMatches && evaluation.match_quality !== 'PARTIAL') {
             const draftPrice = normalizePositiveMoney(evaluation.suggested_unit_price_excl_vat, 0);
@@ -292,6 +350,10 @@ export async function POST(req: Request) {
                         'מה סוג החומר, הגמר או הרכיב שנדרש בפועל?',
                         'האם יש פירוק, פינוי או עבודות נלוות שמשפיעות על המחיר?'
                     ]);
+        }
+
+        if (evaluation.quantity_review_required && evaluation.questions.length === 0) {
+            evaluation.questions = ['יש לאשר את הכמות, השטח או האורך שבוצעו בפועל לפני אישור סופי של הסכום.'];
         }
 
         // 5. Engineering Expert Mode (Deep Technical Strategy)
@@ -327,10 +389,14 @@ export async function POST(req: Request) {
                 source: evaluation.source,
                 confidence: evaluation.confidence,
                 match_quality: evaluation.match_quality,
+                quantity_basis: evaluation.quantity_basis,
+                quantity_review_required: evaluation.quantity_review_required,
+                ancillary_scope: evaluation.ancillary_scope,
                 source_trace: evaluation.source_trace,
                 matched_items: evaluation.matched_items,
                 needed_documents: evaluation.needed_documents || [],
                 questions: evaluation.questions || [],
+                ancillary_notes: evaluation.ancillary_notes || [],
                 zero_match_reason: evaluation.zero_match_reason || null
             },
             ...(expertStrategy ? { expert_strategy: expertStrategy } : {})
