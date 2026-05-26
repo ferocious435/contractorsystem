@@ -11,13 +11,52 @@ const MAX_CHARS_PER_CONTRACT_DOC = 35_000;
 const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER", "PRICELIST"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
 
-function parseGeminiJsonArray(text: string): any[] {
+function extractFirstJsonArray(text: string) {
     const cleanText = text.replace(/```json|```/g, "").trim();
-    const arrayMatch = cleanText.match(/\[[\s\S]*\]/);
-    if (!arrayMatch) {
+    const start = cleanText.indexOf("[");
+    if (start === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let i = start; i < cleanText.length; i++) {
+        const char = cleanText[i];
+
+        if (escapeNext) {
+            escapeNext = false;
+            continue;
+        }
+
+        if (char === "\\") {
+            escapeNext = true;
+            continue;
+        }
+
+        if (char === "\"") {
+            inString = !inString;
+            continue;
+        }
+
+        if (inString) continue;
+
+        if (char === "[") depth++;
+        if (char === "]") depth--;
+
+        if (depth === 0) {
+            return cleanText.slice(start, i + 1);
+        }
+    }
+
+    return null;
+}
+
+function parseGeminiJsonArray(text: string): any[] {
+    const jsonArray = extractFirstJsonArray(text);
+    if (!jsonArray) {
         throw new Error("Gemini did not return a JSON array");
     }
-    return JSON.parse(arrayMatch[0]);
+    return JSON.parse(jsonArray);
 }
 
 function sha256(input: string) {
