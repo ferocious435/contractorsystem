@@ -28,6 +28,26 @@ function normalizeNonEmptyStrings(value: unknown, limit = 4) {
         .slice(0, limit);
 }
 
+function filterPricingQuestions(value: unknown, limit = 3) {
+    const normalizedQuestions = normalizeNonEmptyStrings(value, 8);
+    const approvalKeywords = ['אישור', 'אישר', 'פרוטוקול', 'ישיבה', 'תקציב', 'תקציבי', 'מנכ', 'הפיקוח'];
+    const measurementKeywords = ['כמות', 'שטח', 'אורך', 'נפח', 'קוטר', 'סוג', 'מ"ר', 'מ״ר', 'מ"ק', 'מ״ק', 'יח', 'מספר', 'פירוק', 'פינוי', 'בדיקות'];
+
+    const filteredQuestions = normalizedQuestions.filter(question => {
+        const hasApprovalKeyword = approvalKeywords.some(keyword => question.includes(keyword));
+        const hasMeasurementKeyword = measurementKeywords.some(keyword => question.includes(keyword));
+
+        // Approval/protocol questions belong in needed_documents unless they directly affect quantity or price.
+        if (hasApprovalKeyword && !hasMeasurementKeyword) {
+            return false;
+        }
+
+        return true;
+    });
+
+    return filteredQuestions.slice(0, limit);
+}
+
 function normalizePositiveMoney(value: unknown, fallback = 0) {
     const numericValue = Number(value);
     if (!Number.isFinite(numericValue) || numericValue < 0) return fallback;
@@ -233,19 +253,20 @@ export async function POST(req: Request) {
            - [CONTRACT ITEM]: Use if direct match exists.
            - [DEKEL]: Use "מחירון דקל" as the industry standard for claims.
            - [CUSTOM]: Synthesize only if no matches found.
-        5. ZERO MATCH: If no direct source item exists in the provided context, you should STILL build the best editable draft estimate you can from the contradiction, BOQ/spec context, execution implications, standards, and market logic. Use source=CUSTOM_ANALYSIS, lower confidence, and clearly mark what is source-backed versus AI inference. Ask clarifying questions only when a missing parameter can materially change the amount.
+        5. ZERO MATCH: If no direct source item exists in the provided context, you should STILL build the best editable draft estimate you can from the contradiction, BOQ/spec context, execution implications, standards, and market logic. Use source=CUSTOM_ANALYSIS, lower confidence, and clearly mark what is source-backed versus AI inference. Ask clarifying questions only when a missing physical or measurable parameter can materially change the amount.
         6. EVIDENCE: Separate verified source evidence from AI inference. If anything is missing, describe only what affects the final amount or final approval, not what is needed to recognize the contradiction itself.
-        7. QUANTITY LOGIC:
+        7. USER FRICTION: Do not ask the user about approvals, meeting protocols, or budget authorizations as clarifying questions unless the amount itself cannot be computed without them. Put those items in needed_documents instead.
+        8. QUANTITY LOGIC:
            - Prefer strongest quantity source: explicit quantity > derived quantity > estimated quantity.
            - For m2 work, use explicit area first. If no explicit area but reliable length and width exist, derive area. If neither exists, mark quantity as estimated and ask only the minimum question needed.
            - For linear work, use explicit or clearly confirmed line length. Do not silently trust 1 meter as final quantity.
            - For count-based work, use explicit or clearly confirmed count. Do not silently trust 1 item as final quantity.
            - Use quantity_basis: EXPLICIT, DERIVED, ESTIMATED, or LUMP_SUM.
-        8. ANCILLARY WORKS:
+        9. ANCILLARY WORKS:
            - Supporting works may be suggested, but do not automatically bake them into the final amount unless they are clearly documented or inseparable from the core work.
            - If supporting works are only likely or context-based, mark them as suggestion/review, not as confirmed scope.
            - Use ancillary_scope: NONE, SUGGEST_ONLY, REVIEW_ONLY, or BLOCKED_AUTO_INCLUDE.
-        9. LANGUAGE: All output text (Rationale, Description, Notes) MUST be in professional Hebrew.
+        10. LANGUAGE: All output text (Rationale, Description, Notes) MUST be in professional Hebrew.
 
         OUTPUT FORMAT (JSON ONLY):
         {
@@ -289,7 +310,7 @@ export async function POST(req: Request) {
         evaluation.suggested_unit_price_excl_vat = normalizePositiveMoney(evaluation.suggested_unit_price_excl_vat, 0);
         evaluation.suggested_quantity = normalizePositiveQuantity(evaluation.suggested_quantity, 1);
         evaluation.needed_documents = normalizeNonEmptyStrings(evaluation.needed_documents, 4);
-        evaluation.questions = normalizeNonEmptyStrings(evaluation.questions, 3);
+        evaluation.questions = filterPricingQuestions(evaluation.questions, 3);
         evaluation.ancillary_notes = normalizeNonEmptyStrings(evaluation.ancillary_notes, 4);
         evaluation.quantity_basis = normalizeEnumValue(
             evaluation.quantity_basis,
@@ -321,7 +342,7 @@ export async function POST(req: Request) {
             evaluation.quantity_basis = 'ESTIMATED';
         }
 
-        if (!hasSourceMatches && evaluation.match_quality !== 'PARTIAL') {
+        if (!hasSourceMatches) {
             const draftPrice = normalizePositiveMoney(evaluation.suggested_unit_price_excl_vat, 0);
             const hasDraftPrice = draftPrice > 0;
 
