@@ -27,7 +27,7 @@ export function KPIStrip({ projectId }: { projectId: string | null }) {
             // 2. Загружаем ВСЕ строки pricing_ledger для расчёта KPI
             const { data: ledgerData } = await supabase
                 .from('pricing_ledger')
-                .select('type, quantity, unit_price_excl_vat, total_price_excl_vat, ai_rationale, governing_notes')
+                .select('type, source, quantity, unit_price_excl_vat, total_price_excl_vat, ai_rationale, governing_notes')
                 .eq('project_id', projectId);
 
             if (ledgerData) {

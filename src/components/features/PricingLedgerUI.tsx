@@ -11,6 +11,7 @@ import PricingStatusBar from '@/components/pricing/PricingStatusBar';
 import LetterGeneratorModal from '@/components/pricing/LetterGeneratorModal';
 import { VAT_RATE } from '@/utils/constants';
 import { LedgerItem, QueueItem, PricingLedgerProps, EstimationData, ContradictionItem } from '@/types';
+import { getPreferredProjectAmount } from '@/utils/project-financials';
 
 /** Данные для сохранения в pricing_ledger при одобрении VO */
 export interface ApproveEstimationPayload extends EstimationData {
@@ -54,6 +55,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const [isGeneratingLetter, setIsGeneratingLetter] = useState(false);
     const [scanningItems, setScanningItems] = useState<string[]>([]);
     const [isFocusedPricingDismissed, setIsFocusedPricingDismissed] = useState(false);
+    const [projectBudget, setProjectBudget] = useState(0);
 
     const routedEstimateId = initialParams?.estimateId || initialParams?.contradictionId || searchParams.get('estimate_id');
     const isFocusedPricingFlow = Boolean(routedEstimateId) && !isFocusedPricingDismissed;
@@ -86,14 +88,23 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const fetchLedgerItems = async () => {
         setIsLoading(true);
         try {
-            const { data, error } = await supabase
-                .from('pricing_ledger')
-                .select('*')
-                .eq('project_id', projectId)
-                .order('created_at', { ascending: true });
+            const [{ data, error }, { data: projectData, error: projectError }] = await Promise.all([
+                supabase
+                    .from('pricing_ledger')
+                    .select('*')
+                    .eq('project_id', projectId)
+                    .order('created_at', { ascending: true }),
+                supabase
+                    .from('projects')
+                    .select('budget')
+                    .eq('id', projectId)
+                    .single()
+            ]);
 
             if (error) throw error;
+            if (projectError) throw projectError;
             setLedgerItems(data || []);
+            setProjectBudget(Number(projectData?.budget || 0));
         } catch (err) {
             console.error('Error fetching ledger items:', err);
         } finally {
@@ -399,7 +410,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
 
     // ─── Computed Values ─────────────────────────────────
 
-    const totalBaseExclVat = ledgerItems.filter(i => i.type === 'BASE_CONTRACT').reduce((sum, i) => sum + Number(i.total_price_excl_vat || 0), 0);
+    const totalBaseExclVat = getPreferredProjectAmount(projectBudget, ledgerItems);
     const totalVOExclVat = ledgerItems.filter(i => i.type !== 'BASE_CONTRACT').reduce((sum, i) => sum + Number(i.total_price_excl_vat || 0), 0);
     const grandTotalExclVat = totalBaseExclVat + totalVOExclVat;
     const grandTotalVat = grandTotalExclVat * VAT_RATE;

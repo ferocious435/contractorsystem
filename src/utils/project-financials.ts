@@ -1,11 +1,21 @@
 type LedgerLikeRow = {
     type?: string | null;
+    source?: string | null;
     quantity?: number | null;
     unit_price_excl_vat?: number | null;
     total_price_excl_vat?: number | null;
 };
 
 const normalizeAmount = (value: number | null | undefined) => Number(value || 0);
+
+function isTrustedBaseContractRow(row: LedgerLikeRow): boolean {
+    if (row.type !== "BASE_CONTRACT") {
+        return false;
+    }
+
+    // A contract base must come from a real contract / BOQ source, not from a synthetic AI draft.
+    return row.source !== "CUSTOM_ANALYSIS";
+}
 
 export function getLedgerRowAmount(row: LedgerLikeRow): number {
     const directTotal = normalizeAmount(row.total_price_excl_vat);
@@ -22,7 +32,7 @@ export function getBaseContractAmount(rows: LedgerLikeRow[] | null | undefined):
     }
 
     return rows
-        .filter((row) => row.type === "BASE_CONTRACT")
+        .filter(isTrustedBaseContractRow)
         .reduce((sum, row) => sum + getLedgerRowAmount(row), 0);
 }
 

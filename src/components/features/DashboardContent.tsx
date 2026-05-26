@@ -86,7 +86,7 @@ export default function DashboardContent() {
                 const projectIds = projectsList.map((project) => project.id);
                 const { data: ledgerRows, error: ledgerError } = await supabase
                     .from('pricing_ledger')
-                    .select('project_id, type, quantity, unit_price_excl_vat, total_price_excl_vat')
+                    .select('project_id, type, source, quantity, unit_price_excl_vat, total_price_excl_vat')
                     .in('project_id', projectIds);
 
                 if (ledgerError) {

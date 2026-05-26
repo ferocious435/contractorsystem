@@ -47,7 +47,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
             // 2. Ledger Data
             const { data: ledger } = await supabase
                 .from('pricing_ledger')
-                .select('type, total_price_excl_vat, quantity, unit_price_excl_vat, ai_rationale, governing_notes')
+                .select('type, source, total_price_excl_vat, quantity, unit_price_excl_vat, ai_rationale, governing_notes')
                 .eq('project_id', projectId);
 
             // 3. Contradictions
