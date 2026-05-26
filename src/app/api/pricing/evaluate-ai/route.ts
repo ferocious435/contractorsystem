@@ -11,6 +11,35 @@ function parseGeminiJsonObject(text: string): any {
     return JSON.parse(objectMatch[0]);
 }
 
+function normalizeConfidence(value: unknown, fallback = 0.35) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue) || numericValue <= 0) return fallback;
+    if (numericValue <= 1) return numericValue;
+    if (numericValue <= 100) return numericValue / 100;
+    return 1;
+}
+
+function normalizeNonEmptyStrings(value: unknown, limit = 4) {
+    if (!Array.isArray(value)) return [];
+
+    return value
+        .map(item => String(item || '').trim())
+        .filter(Boolean)
+        .slice(0, limit);
+}
+
+function normalizePositiveMoney(value: unknown, fallback = 0) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue) || numericValue < 0) return fallback;
+    return Math.round(numericValue * 100) / 100;
+}
+
+function normalizePositiveQuantity(value: unknown, fallback = 1) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue) || numericValue <= 0) return fallback;
+    return numericValue;
+}
+
 export async function POST(req: Request) {
     const supabase = await createClient();
     
@@ -190,8 +219,8 @@ export async function POST(req: Request) {
            - [CONTRACT ITEM]: Use if direct match exists.
            - [DEKEL]: Use "מחירון דקל" as the industry standard for claims.
            - [CUSTOM]: Synthesize only if no matches found.
-        5. ZERO MATCH: If no direct source item exists in the provided context, do not invent a confident source. Return match_found=false, source=CUSTOM_ANALYSIS, item_code="NEW", price 0 unless you can clearly justify a pre-VAT analysis as editable draft only.
-        6. EVIDENCE: Separate verified source evidence from AI inference. If evidence is missing, say exactly what must be checked.
+        5. ZERO MATCH: If no direct source item exists in the provided context, you should STILL build the best editable draft estimate you can from the contradiction, BOQ/spec context, execution implications, standards, and market logic. Use source=CUSTOM_ANALYSIS, lower confidence, and clearly mark what is source-backed versus AI inference. Ask clarifying questions only when a missing parameter can materially change the amount.
+        6. EVIDENCE: Separate verified source evidence from AI inference. If anything is missing, describe only what affects the final amount or final approval, not what is needed to recognize the contradiction itself.
         7. LANGUAGE: All output text (Rationale, Description, Notes) MUST be in professional Hebrew.
 
         OUTPUT FORMAT (JSON ONLY):
@@ -207,9 +236,9 @@ export async function POST(req: Request) {
             "ai_rationale": "Deep Hebrew justification including contractual basis",
             "suggested_description": "Professional Hebrew description for the invoice/letter",
             "governing_notes": ["Hebrew strings regarding measurements, inclusions, or risks"],
-            "needed_documents": ["Hebrew strings naming documents or approvals needed before saving as confirmed claim"],
+            "needed_documents": ["Hebrew strings naming only documents or approvals that materially affect the final amount or final approval"],
             "zero_match_reason": "Hebrew explanation when match_quality is ZERO_MATCH",
-            "questions": ["Clarifying questions to maximize claim value"]
+            "questions": ["Targeted Hebrew questions only when a missing parameter truly changes the amount"]
         }
         `;
 
@@ -228,21 +257,41 @@ export async function POST(req: Request) {
             pricelist: pricelistMatches.filter(m => m.item_type === 'ITEM').slice(0, 10),
             notes: pricelistMatches.filter(m => m.item_type === 'NOTE').slice(0, 10)
         };
+        evaluation.confidence = normalizeConfidence(evaluation.confidence);
+        evaluation.suggested_unit_price_excl_vat = normalizePositiveMoney(evaluation.suggested_unit_price_excl_vat, 0);
+        evaluation.suggested_quantity = normalizePositiveQuantity(evaluation.suggested_quantity, 1);
+        evaluation.needed_documents = normalizeNonEmptyStrings(evaluation.needed_documents, 4);
+        evaluation.questions = normalizeNonEmptyStrings(evaluation.questions, 3);
 
         if (!hasSourceMatches && evaluation.match_quality !== 'PARTIAL') {
+            const draftPrice = normalizePositiveMoney(evaluation.suggested_unit_price_excl_vat, 0);
+            const hasDraftPrice = draftPrice > 0;
+
             evaluation.match_found = false;
             evaluation.source = 'CUSTOM_ANALYSIS';
             evaluation.item_code = evaluation.item_code || 'NEW';
             evaluation.match_quality = 'ZERO_MATCH';
-            evaluation.confidence = Math.min(Number(evaluation.confidence) || 0.35, 0.45);
-            evaluation.suggested_unit_price_excl_vat = 0;
-            evaluation.zero_match_reason = evaluation.zero_match_reason || 'לא נמצאה התאמה ישירה בחוזה, בדקל או במחירון הקבלן לפי הנתונים הזמינים. נדרש ניתוח מחיר ידני לפני שמירה כדרישה מאומתת.';
+            evaluation.confidence = hasDraftPrice
+                ? Math.min(Math.max(evaluation.confidence || 0.42, 0.25), 0.6)
+                : Math.min(Math.max(evaluation.confidence || 0.3, 0.15), 0.45);
+            evaluation.suggested_unit_price_excl_vat = draftPrice;
+            evaluation.zero_match_reason = evaluation.zero_match_reason || (
+                hasDraftPrice
+                    ? 'לא נמצא סעיף ישיר בחוזה או במחירונים, אך נבנתה טיוטת תמחור על בסיס הסתירה, המפרטים וההקשר הביצועי. יש לבדוק רק פרטים שמשנים מהותית את הסכום.'
+                    : 'לא נמצא סעיף ישיר וגם לא ניתן היה לבנות טיוטת תמחור אמינה מהחומר הקיים. נדרשים רק הנתונים שחסרים לחישוב הסכום.'
+            );
             evaluation.needed_documents = evaluation.needed_documents?.length
                 ? evaluation.needed_documents
-                : ['אישור מפקח או יומן עבודה', 'צילום/תיעוד שטח', 'סעיף חוזי או כתב כמויות רלוונטי', 'הצעת מחיר או מחירון להשוואה'];
+                : [];
             evaluation.questions = evaluation.questions?.length
                 ? evaluation.questions
-                : ['מה הכמות המדויקת שבוצעה בפועל?', 'האם קיימת הוראה כתובה או אישור מפקח לעבודה?', 'איזה ציוד, כוח אדם וחומרים נדרשו בפועל?'];
+                : (hasDraftPrice
+                    ? []
+                    : [
+                        'מה הכמות או השטח שבוצעו בפועל?',
+                        'מה סוג החומר, הגמר או הרכיב שנדרש בפועל?',
+                        'האם יש פירוק, פינוי או עבודות נלוות שמשפיעות על המחיר?'
+                    ]);
         }
 
         // 5. Engineering Expert Mode (Deep Technical Strategy)
@@ -281,6 +330,7 @@ export async function POST(req: Request) {
                 source_trace: evaluation.source_trace,
                 matched_items: evaluation.matched_items,
                 needed_documents: evaluation.needed_documents || [],
+                questions: evaluation.questions || [],
                 zero_match_reason: evaluation.zero_match_reason || null
             },
             ...(expertStrategy ? { expert_strategy: expertStrategy } : {})

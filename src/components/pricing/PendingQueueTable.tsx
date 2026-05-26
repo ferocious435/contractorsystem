@@ -161,6 +161,9 @@ export default function PendingQueueTable({
                                     const isScanning = scanningItems.includes(item.id);
                                     const isSelected = selectedIds.includes(item.id);
                                     const evidenceSummary = getEvidenceSummary(item.evidence_data);
+                                    const evidenceDetail = item.evidence_data?.pricing_evaluation?.match_quality === 'ZERO_MATCH'
+                                        ? 'לא נמצא סעיף ישיר, אבל המערכת יכולה לבנות טיוטת תמחור לפי ההקשר. בודקים רק פרטים שמשנים את הסכום.'
+                                        : evidenceSummary.detail;
                                     
                                     return (
                                         <motion.tr 
@@ -253,7 +256,7 @@ export default function PendingQueueTable({
                                                                     <Shield className="w-3 h-3 text-blue-400" />
                                                                 </div>
                                                                 <p className="text-[10px] text-gray-400 leading-relaxed text-right">
-                                                                    {evidenceSummary.detail}
+                                                                    {evidenceDetail}
                                                                     <br />
                                                                     <span className="text-blue-300 font-bold">{evidenceSummary.verified ? 'מוכן לתמחור עם סימוכין.' : 'לא להציג כדרישה ודאית לפני בדיקה.'}</span>
                                                                 </p>

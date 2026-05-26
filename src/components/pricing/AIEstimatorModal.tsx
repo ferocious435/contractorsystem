@@ -98,7 +98,7 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                 ...(estimateData?.governing_notes || []),
                 ...(estimateData?.match_quality === 'ZERO_MATCH' ? [
                     estimateData.zero_match_reason,
-                    ...(estimateData.needed_documents || []).map((doc: string) => `נדרש לאימות: ${doc}`)
+                    ...(estimateData.needed_documents || []).map((doc: string) => `לדיוק סופי כדאי לבדוק: ${doc}`)
                 ].filter(Boolean) : [])
             ];
             const linkedEvidence = {
@@ -110,6 +110,7 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                     match_quality: estimateData?.match_quality,
                     source_trace: estimateData?.source_trace,
                     needed_documents: estimateData?.needed_documents || [],
+                    questions: estimateData?.questions || [],
                     zero_match_reason: estimateData?.zero_match_reason || null
                 }
             };

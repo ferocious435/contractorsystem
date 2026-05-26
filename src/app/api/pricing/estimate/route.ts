@@ -26,9 +26,9 @@ RULES:
 1. All prices must be EXCLUDING VAT (Pre-VAT).
 2. ${priorityText}
 3. If there is a direct match, output a unit, a price, and match_found = true.
-4. If there is no clear match, return match_found = false, 0 for price, and provide a list of 2 clarifying questions (questions array) to build a "Zero-Match" (Custom Analysis) from scratch.
+4. If there is no clear match, still build the best editable draft estimate you can from the description and standard construction logic. Use source = CUSTOM_ANALYSIS, lower confidence, and ask only targeted questions that materially change the amount.
 5. If match_found is true, provide a brief reasoning in Hebrew in "ai_rationale".
-6. If match_found is false, put "לא נמצאה התאמה ישירה במחירונים הקיימים. נדרש לבנות ניתוח מחיר ידני ולאמת מול מסמכי הפרויקט." in ai_rationale.
+6. If match_found is false, explain in Hebrew that no direct item was found, but a draft estimate may still be built from the available description.
 7. Never invent a confident price without a clear source.
 8. You must ONLY output a valid JSON object.
 
@@ -41,7 +41,7 @@ JSON STRUCTURE:
   "suggested_unit": "String ('מ\"ר', 'קומפ', 'שעות', etc.)",
   "suggested_quantity": number,
   "suggested_unit_price_excl_vat": number,
-  "questions": ["String (Hebrew questions if match_found is false)"],
+  "questions": ["String (Hebrew targeted questions only if a missing parameter truly changes the amount)"],
   "ai_rationale": "String (Hebrew explanation)"
 }
 `;
