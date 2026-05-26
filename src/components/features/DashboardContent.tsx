@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getPreferredProjectAmount } from "@/utils/project-financials";
+import { syncProjectContractBases } from "@/utils/project-contract-base-client";
 
 import { Sidebar } from "../layout/Sidebar";
 import { TopBar } from "../layout/TopBar";
@@ -84,6 +85,19 @@ export default function DashboardContent() {
             if (error) console.error("Error fetching projects:", error);
             if (projectsList?.length) {
                 const projectIds = projectsList.map((project) => project.id);
+                let syncedContractAmounts = new Map<string, number>();
+
+                try {
+                    const syncResults = await syncProjectContractBases(projectIds);
+                    syncedContractAmounts = new Map(
+                        syncResults
+                            .filter((item) => Number(item.amount || 0) > 0)
+                            .map((item) => [item.projectId, Number(item.amount)])
+                    );
+                } catch (syncError) {
+                    console.error("Error syncing contract amounts:", syncError);
+                }
+
                 const { data: ledgerRows, error: ledgerError } = await supabase
                     .from('pricing_ledger')
                     .select('project_id, type, source, quantity, unit_price_excl_vat, total_price_excl_vat')
@@ -104,7 +118,7 @@ export default function DashboardContent() {
                     projectsList.map((project) => ({
                         ...project,
                         displayAmount: getPreferredProjectAmount(
-                            project.budget,
+                            syncedContractAmounts.get(project.id) ?? project.budget,
                             ledgerByProject.get(project.id)
                         ),
                     }))

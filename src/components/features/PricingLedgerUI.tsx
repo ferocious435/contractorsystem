@@ -12,6 +12,7 @@ import LetterGeneratorModal from '@/components/pricing/LetterGeneratorModal';
 import { VAT_RATE } from '@/utils/constants';
 import { LedgerItem, QueueItem, PricingLedgerProps, EstimationData, ContradictionItem } from '@/types';
 import { getPreferredProjectAmount } from '@/utils/project-financials';
+import { syncSingleProjectContractBase } from '@/utils/project-contract-base-client';
 
 /** Данные для сохранения в pricing_ledger при одобрении VO */
 export interface ApproveEstimationPayload extends EstimationData {
@@ -88,6 +89,14 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const fetchLedgerItems = async () => {
         setIsLoading(true);
         try {
+            let resolvedBudget: number | null = null;
+            try {
+                const synced = await syncSingleProjectContractBase(projectId);
+                resolvedBudget = synced?.amount ?? null;
+            } catch (syncError) {
+                console.error('Error syncing project contract amount:', syncError);
+            }
+
             const [{ data, error }, { data: projectData, error: projectError }] = await Promise.all([
                 supabase
                     .from('pricing_ledger')
@@ -104,7 +113,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
             if (error) throw error;
             if (projectError) throw projectError;
             setLedgerItems(data || []);
-            setProjectBudget(Number(projectData?.budget || 0));
+            setProjectBudget(Number((resolvedBudget ?? projectData?.budget) || 0));
         } catch (err) {
             console.error('Error fetching ledger items:', err);
         } finally {

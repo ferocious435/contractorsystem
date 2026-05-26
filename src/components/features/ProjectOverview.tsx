@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { VAT_RATE, AI_MODEL_BRANDING } from "@/utils/constants";
 import { getLedgerRowAmount, getPreferredProjectAmount } from "@/utils/project-financials";
+import { syncSingleProjectContractBase } from "@/utils/project-contract-base-client";
 
 interface ProjectOverviewProps {
     projectId: string;
@@ -37,6 +38,14 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
     const fetchProjectStats = async () => {
         setIsLoading(true);
         try {
+            let resolvedBudget: number | null = null;
+            try {
+                const synced = await syncSingleProjectContractBase(projectId);
+                resolvedBudget = synced?.amount ?? null;
+            } catch (syncError) {
+                console.error("Error syncing project contract amount:", syncError);
+            }
+
             // 1. Project Info
             const { data: project } = await supabase
                 .from('projects')
@@ -77,7 +86,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                 const criticalItems = contradictions?.filter(c => c.status === 'OPEN' && c.category === 'CONTRADICTION').length || 0;
 
                 setStats({
-                    originalBudget: getPreferredProjectAmount(project?.budget, ledger),
+                    originalBudget: getPreferredProjectAmount(resolvedBudget ?? project?.budget, ledger),
                     approvedVO: approved,
                     pendingVO: pending,
                     criticalCount: criticalItems,

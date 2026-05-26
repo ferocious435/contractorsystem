@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
+import { syncProjectContractBase } from "@/utils/project-contract-base-server";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -23,7 +24,7 @@ export async function POST(req: NextRequest) {
         // 1. Получить документ из БД
         const { data: doc, error: docError } = await supabase
             .from("documents")
-            .select("id, title, file_url, extracted_text, content_hash, extracted_text_hash")
+            .select("id, project_id, title, file_url, extracted_text, content_hash, extracted_text_hash")
             .eq("id", documentId)
             .single();
 
@@ -117,6 +118,14 @@ export async function POST(req: NextRequest) {
                 { error: "Failed to save extracted text" },
                 { status: 500 }
             );
+        }
+
+        if (doc.project_id) {
+            try {
+                await syncProjectContractBase(supabase as any, doc.project_id);
+            } catch (syncError) {
+                console.error("[extract-text] Contract base sync error:", syncError);
+            }
         }
 
         return NextResponse.json({
