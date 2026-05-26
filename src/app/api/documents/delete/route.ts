@@ -65,7 +65,12 @@ export async function DELETE(req: NextRequest) {
         await supabase
             .from('document_scan_state')
             .delete()
-            .or(`work_doc_id.eq.${documentId},contract_doc_ids.cs.{${documentId}}`);
+            .eq('work_doc_id', documentId);
+
+        await supabase
+            .from('document_scan_state')
+            .delete()
+            .contains('contract_doc_ids', [documentId]);
 
         // 4. Delete from database
         console.log(`[delete] Attempting to delete doc ${documentId} from DB...`);
