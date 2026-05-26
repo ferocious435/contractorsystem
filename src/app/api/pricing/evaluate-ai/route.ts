@@ -134,9 +134,10 @@ export async function POST(req: Request) {
         
         const { data: ledgerMatches } = await supabase
             .from('pricing_ledger')
-            .select('item_code, description, unit, unit_price_excl_vat')
+            .select('item_code, description, unit, unit_price_excl_vat, source')
             .eq('project_id', projectId)
             .eq('type', 'BASE_CONTRACT')
+            .neq('source', 'CUSTOM_ANALYSIS')
             .or(ledgerOrConditions)
             .limit(30);
 

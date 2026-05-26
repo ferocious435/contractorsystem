@@ -64,7 +64,8 @@ export async function POST(req: Request) {
         // Determine correct ID to use (queue_id is legacy, contradiction_id is preferred in AIEstimatorModal)
         const activeContradictionId = contradiction_id || queue_id;
         const safeSource = ALLOWED_SOURCES.has(source) ? source : 'CUSTOM_ANALYSIS';
-        const safeType = ALLOWED_TYPES.has(type) ? type : 'PENDING_VO';
+        const requestedType = ALLOWED_TYPES.has(type) ? type : 'PENDING_VO';
+        const safeType = requestedType === 'BASE_CONTRACT' ? 'PENDING_VO' : requestedType;
         const safeQuantity = toNumber(quantity, 1);
         const legacyAmount = user_final_amount ?? ai_estimated_amount;
         const safeUnitPrice = roundMoney(toNumber(unit_price_excl_vat ?? legacyAmount, 0));

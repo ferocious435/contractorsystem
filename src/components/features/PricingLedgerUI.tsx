@@ -11,7 +11,7 @@ import PricingStatusBar from '@/components/pricing/PricingStatusBar';
 import LetterGeneratorModal from '@/components/pricing/LetterGeneratorModal';
 import { VAT_RATE } from '@/utils/constants';
 import { LedgerItem, QueueItem, PricingLedgerProps, EstimationData, ContradictionItem } from '@/types';
-import { getPreferredProjectAmount } from '@/utils/project-financials';
+import { getPreferredProjectAmount, getVariationOrderAmount, isVisibleLedgerRow } from '@/utils/project-financials';
 import { syncSingleProjectContractBase } from '@/utils/project-contract-base-client';
 
 /** Данные для сохранения в pricing_ledger при одобрении VO */
@@ -42,7 +42,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const [queueItems, setQueueItems] = useState<ContradictionItem[]>([]);
     const [selectedContradiction, setSelectedContradiction] = useState<ContradictionItem | null>(null);
     const [newItemForm, setNewItemForm] = useState<EstimationData>({
-        type: 'BASE_CONTRACT',
+        type: 'PENDING_VO',
         source: 'CUSTOM_ANALYSIS',
         item_code: '',
         description: '',
@@ -288,10 +288,12 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     };
 
     const handleSelectAllLedger = () => {
-        if (selectedLedgerIds.length === ledgerItems.length) {
+        const visibleIds = visibleLedgerItems.map(item => item.id);
+
+        if (selectedLedgerIds.length === visibleIds.length) {
             setSelectedLedgerIds([]);
         } else {
-            setSelectedLedgerIds(ledgerItems.map(item => item.id));
+            setSelectedLedgerIds(visibleIds);
         }
     };
 
@@ -351,7 +353,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
             setLedgerItems([...ledgerItems, data]);
             setIsAddingNew(false);
             setNewItemForm({
-                type: 'BASE_CONTRACT',
+                type: 'PENDING_VO',
                 source: 'CUSTOM_ANALYSIS',
                 item_code: '',
                 description: '',
@@ -419,8 +421,9 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
 
     // ─── Computed Values ─────────────────────────────────
 
+    const visibleLedgerItems = ledgerItems.filter(isVisibleLedgerRow);
     const totalBaseExclVat = getPreferredProjectAmount(projectBudget, ledgerItems);
-    const totalVOExclVat = ledgerItems.filter(i => i.type !== 'BASE_CONTRACT').reduce((sum, i) => sum + Number(i.total_price_excl_vat || 0), 0);
+    const totalVOExclVat = getVariationOrderAmount(visibleLedgerItems);
     const grandTotalExclVat = totalBaseExclVat + totalVOExclVat;
     const grandTotalVat = grandTotalExclVat * VAT_RATE;
     const grandTotalInclVat = grandTotalExclVat + grandTotalVat;
@@ -561,7 +564,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                     />
 
                     <PricingLedgerTable
-                        ledgerItems={ledgerItems}
+                        ledgerItems={visibleLedgerItems}
                         isLoading={isLoading}
                         isAddingNew={isAddingNew}
                         isEditing={isEditing}
