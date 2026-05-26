@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
+import { getLedgerRowAmount, getPreferredProjectAmount } from "@/utils/project-financials";
 
 export function KPIStrip({ projectId }: { projectId: string | null }) {
     const [originalBudget, setOriginalBudget] = useState(0);
@@ -31,21 +32,18 @@ export function KPIStrip({ projectId }: { projectId: string | null }) {
 
             if (ledgerData) {
                 // Оригинальный бюджет: BASE_CONTRACT строки
-                const baseBudget = ledgerData
-                    .filter(r => r.type === 'BASE_CONTRACT')
-                    .reduce((acc, row) => acc + (row.total_price_excl_vat || (row.quantity || 0) * (row.unit_price_excl_vat || 0)), 0);
 
                 // Утверждённые VO
                 const approvedVO = ledgerData
                     .filter(r => r.type === 'APPROVED_VO')
-                    .reduce((acc, row) => acc + (row.total_price_excl_vat || (row.quantity || 0) * (row.unit_price_excl_vat || 0)), 0);
+                    .reduce((acc, row) => acc + getLedgerRowAmount(row), 0);
 
                 // Открытые (ожидающие) VO
                 const pendingVO = ledgerData
                     .filter(r => r.type === 'PENDING_VO')
-                    .reduce((acc, row) => acc + (row.total_price_excl_vat || (row.quantity || 0) * (row.unit_price_excl_vat || 0)), 0);
+                    .reduce((acc, row) => acc + getLedgerRowAmount(row), 0);
 
-                setOriginalBudget(projectData?.budget || baseBudget);
+                setOriginalBudget(getPreferredProjectAmount(projectData?.budget, ledgerData));
                 setApprovedExceptions(approvedVO);
                 setOpenExceptions(pendingVO);
 

@@ -9,6 +9,7 @@ import {
     User, Briefcase, ChevronRight, Sparkles, Building2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { getPreferredProjectAmount } from "@/utils/project-financials";
 
 import { Sidebar } from "../layout/Sidebar";
 import { TopBar } from "../layout/TopBar";
@@ -81,7 +82,36 @@ export default function DashboardContent() {
                 .order('created_at', { ascending: false });
 
             if (error) console.error("Error fetching projects:", error);
-            if (projectsList) setProjects(projectsList || []);
+            if (projectsList?.length) {
+                const projectIds = projectsList.map((project) => project.id);
+                const { data: ledgerRows, error: ledgerError } = await supabase
+                    .from('pricing_ledger')
+                    .select('project_id, type, quantity, unit_price_excl_vat, total_price_excl_vat')
+                    .in('project_id', projectIds);
+
+                if (ledgerError) {
+                    console.error("Error fetching project contract totals:", ledgerError);
+                }
+
+                const ledgerByProject = new Map<string, any[]>();
+                for (const row of ledgerRows || []) {
+                    const currentRows = ledgerByProject.get(row.project_id) || [];
+                    currentRows.push(row);
+                    ledgerByProject.set(row.project_id, currentRows);
+                }
+
+                setProjects(
+                    projectsList.map((project) => ({
+                        ...project,
+                        displayAmount: getPreferredProjectAmount(
+                            project.budget,
+                            ledgerByProject.get(project.id)
+                        ),
+                    }))
+                );
+            } else {
+                setProjects(projectsList || []);
+            }
         } catch (error) {
             console.error("Error in fetchProjects:", error);
         } finally {
@@ -103,7 +133,7 @@ export default function DashboardContent() {
         }).select().single();
 
         if (error) return;
-        if (newProject) setProjects([newProject, ...projects]);
+        if (newProject) setProjects([{ ...newProject, displayAmount: 0 }, ...projects]);
     };
 
     const handleDeleteProject = async (id: string, e: React.MouseEvent) => {
@@ -140,7 +170,11 @@ export default function DashboardContent() {
                 .eq('id', editingProject.id);
 
             if (!error) {
-                setProjects(projects.map(p => p.id === editingProject.id ? { ...p, ...editForm } : p));
+                setProjects(projects.map(p => p.id === editingProject.id ? {
+                    ...p,
+                    ...editForm,
+                    displayAmount: p.displayAmount,
+                } : p));
                 setEditingProject(null);
             }
         } finally {
@@ -274,7 +308,7 @@ export default function DashboardContent() {
                                             <div className="grid grid-cols-2 gap-4 mt-2">
                                                 <div className="flex flex-col items-end">
                                                     <span className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">תקציב</span>
-                                                    <span className="text-sm font-black text-emerald-500 font-mono">₪{proj.budget?.toLocaleString() || '0.00'}</span>
+                                                    <span className="text-sm font-black text-emerald-500 font-mono">₪{(proj.displayAmount || 0).toLocaleString()}</span>
                                                 </div>
                                                 <div className="flex flex-col items-start">
                                                     <span className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">סטטוס בדיקה</span>

@@ -9,6 +9,7 @@ import {
     ShieldAlert, ChevronRight, Zap, Sparkles, Building2, FileText
 } from "lucide-react";
 import { VAT_RATE, AI_MODEL_BRANDING } from "@/utils/constants";
+import { getLedgerRowAmount, getPreferredProjectAmount } from "@/utils/project-financials";
 
 interface ProjectOverviewProps {
     projectId: string;
@@ -62,17 +63,13 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                 .eq('project_id', projectId);
 
             if (ledger) {
-                const baseBudget = ledger
-                    .filter(r => r.type === 'BASE_CONTRACT')
-                    .reduce((acc, r) => acc + (r.total_price_excl_vat || (r.quantity || 0) * (r.unit_price_excl_vat || 0)), 0);
-                
                 const approved = ledger
                     .filter(r => r.type === 'APPROVED_VO' || r.type === 'SENT_VO')
-                    .reduce((acc, r) => acc + (r.total_price_excl_vat || (r.quantity || 0) * (r.unit_price_excl_vat || 0)), 0);
+                    .reduce((acc, r) => acc + getLedgerRowAmount(r), 0);
 
                 const pending = ledger
                     .filter(r => r.type === 'PENDING_VO')
-                    .reduce((acc, r) => acc + (r.total_price_excl_vat || (r.quantity || 0) * (r.unit_price_excl_vat || 0)), 0);
+                    .reduce((acc, r) => acc + getLedgerRowAmount(r), 0);
 
                 const withEvidence = ledger.filter(r => r.ai_rationale || r.governing_notes).length;
                 const coverage = ledger.length > 0 ? Math.round((withEvidence / ledger.length) * 100) : 0;
@@ -80,7 +77,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                 const criticalItems = contradictions?.filter(c => c.status === 'OPEN' && c.category === 'CONTRADICTION').length || 0;
 
                 setStats({
-                    originalBudget: project?.budget || baseBudget,
+                    originalBudget: getPreferredProjectAmount(project?.budget, ledger),
                     approvedVO: approved,
                     pendingVO: pending,
                     criticalCount: criticalItems,
