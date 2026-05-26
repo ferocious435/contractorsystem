@@ -248,6 +248,25 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                     </div>
                 </div>
 
+                <div className="px-12 py-6 border-b border-white/5 bg-emerald-500/[0.04] relative z-10">
+                    <div className="flex flex-col gap-3">
+                        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold w-fit">
+                            <Briefcase className="w-4 h-4" />
+                            אתה מתמחר עכשיו סתירה ספציפית
+                        </div>
+                        <h3 className="text-2xl font-black text-white">{contradiction.title}</h3>
+                        <p className="text-sm text-gray-300 leading-7 max-w-5xl">{contradiction.description}</p>
+                        <div className="flex flex-col md:flex-row gap-3 md:gap-6 text-sm text-gray-400">
+                            {contradiction.target_doc?.title && (
+                                <span>מסמך חוזה: {contradiction.target_doc.title}</span>
+                            )}
+                            {contradiction.source_doc?.title && (
+                                <span>מסמך ביצוע: {contradiction.source_doc.title}</span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
                 <div className="flex-1 overflow-hidden flex relative z-10">
                     {/* Left Panel: Intelligence & Rationale */}
                     <div className="w-[55%] border-l border-white/5 p-12 bg-black/20 flex flex-col gap-10 overflow-y-auto custom-scrollbar">

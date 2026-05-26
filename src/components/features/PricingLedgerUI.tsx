@@ -2,6 +2,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 import { motion } from 'framer-motion';
+import { ArrowRight, FileSearch, Zap } from 'lucide-react';
 import PendingQueueTable from '@/components/pricing/PendingQueueTable';
 import AIEstimatorModal from '@/components/pricing/AIEstimatorModal';
 import PricingLedgerHeader from '@/components/pricing/PricingLedgerHeader';
@@ -52,6 +53,10 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const [selectedQueueIds, setSelectedQueueIds] = useState<string[]>([]);
     const [isGeneratingLetter, setIsGeneratingLetter] = useState(false);
     const [scanningItems, setScanningItems] = useState<string[]>([]);
+    const [isFocusedPricingDismissed, setIsFocusedPricingDismissed] = useState(false);
+
+    const routedEstimateId = initialParams?.estimateId || initialParams?.contradictionId || searchParams.get('estimate_id');
+    const isFocusedPricingFlow = Boolean(routedEstimateId) && !isFocusedPricingDismissed;
 
     const normalizeMarkupPercentage = (value?: number | null) => {
         const numericValue = Number(value || 0);
@@ -64,20 +69,17 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     }, [projectId]);
 
     useEffect(() => {
-        const estimateId = initialParams?.estimateId || initialParams?.contradictionId || searchParams.get('estimate_id');
+        const estimateId = routedEstimateId;
         if (estimateId && queueItems.length > 0) {
             const item = queueItems.find(q => q.id === estimateId);
-            if (item) {
+            if (item && selectedContradiction?.id !== item.id) {
                 setSelectedContradiction(item);
-                if (onNavigate) {
-                    onNavigate('pricing', undefined);
-                }
                 if (searchParams.get('estimate_id')) {
                     window.history.replaceState({}, '', window.location.pathname);
                 }
             }
         }
-    }, [searchParams, queueItems, initialParams]);
+    }, [searchParams, queueItems, routedEstimateId, selectedContradiction?.id]);
 
     // ─── Data Fetching ───────────────────────────────────
 
@@ -250,6 +252,9 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
             );
             setQueueItems(prev => prev.filter(q => q.id !== ledgerData.contradiction_id));
             setSelectedContradiction(null);
+            if (isFocusedPricingFlow) {
+                setIsFocusedPricingDismissed(true);
+            }
         } catch (err) {
             console.error('Error approving estimation:', err);
             alert('׳©׳’׳™׳׳” ׳‘׳©׳׳™׳¨׳× ׳”׳¢׳¨׳›׳”');
@@ -399,6 +404,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const grandTotalExclVat = totalBaseExclVat + totalVOExclVat;
     const grandTotalVat = grandTotalExclVat * VAT_RATE;
     const grandTotalInclVat = grandTotalExclVat + grandTotalVat;
+    const focusedQueueItem = queueItems.find(item => item.id === routedEstimateId) || selectedContradiction || null;
 
     const formatCurrency = (val: number) => {
         return new Intl.NumberFormat('he-IL', { 
@@ -406,6 +412,17 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
             currency: 'ILS', 
             maximumFractionDigits: 0 
         }).format(val);
+    };
+
+    const focusedContradictionTitle = focusedQueueItem?.title || initialParams?.contradictionTitle || 'הסתירה שנבחרה';
+    const focusedContradictionSummary = focusedQueueItem?.description || initialParams?.contradictionSummary || 'המערכת פתחה עבורך מסלול תמחור ישיר לפי הסתירה שנבחרה.';
+    const focusedSourceDocTitle = focusedQueueItem?.source_doc?.title || initialParams?.sourceDocTitle || '';
+    const focusedTargetDocTitle = focusedQueueItem?.target_doc?.title || initialParams?.targetDocTitle || '';
+
+    const handleBackToSource = () => {
+        if (onNavigate) {
+            onNavigate(initialParams?.returnTo || 'radar');
+        }
     };
 
     // ─── Render ──────────────────────────────────────────
@@ -416,8 +433,69 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
             animate={{ opacity: 1 }}
             className="flex flex-col h-full bg-[#0B0F14]"
         >
-            <div className="flex gap-8 flex-1 overflow-hidden p-8 pb-0">
-                {/* Left Sidebar - Pending Queue (25%) */}
+            {isFocusedPricingFlow && (
+                <div className="px-8 pt-8">
+                    <div className="bg-[#151C24]/70 border border-emerald-500/20 rounded-[2rem] p-6 md:p-8 shadow-2xl">
+                        <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-6">
+                            <div className="space-y-4 max-w-4xl">
+                                <div className="flex items-center gap-3">
+                                    <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold">
+                                        <Zap className="w-4 h-4" />
+                                        הגעת לתמחור מתוך סתירה
+                                    </span>
+                                </div>
+                                <div className="space-y-2">
+                                    <h2 className="text-2xl md:text-3xl font-black text-white">עכשיו מתמחרים את הסעיף הזה</h2>
+                                    <p className="text-lg text-emerald-300 font-bold">{focusedContradictionTitle}</p>
+                                    <p className="text-sm md:text-base text-gray-300 leading-7">{focusedContradictionSummary}</p>
+                                </div>
+                                {(focusedSourceDocTitle || focusedTargetDocTitle) && (
+                                    <div className="flex flex-col md:flex-row gap-3 md:gap-6 text-sm text-gray-400">
+                                        {focusedSourceDocTitle && (
+                                            <div className="flex items-center gap-2">
+                                                <FileSearch className="w-4 h-4 text-blue-400" />
+                                                <span>מסמך ביצוע: {focusedSourceDocTitle}</span>
+                                            </div>
+                                        )}
+                                        {focusedTargetDocTitle && (
+                                            <div className="flex items-center gap-2">
+                                                <FileSearch className="w-4 h-4 text-emerald-400" />
+                                                <span>מסמך חוזה: {focusedTargetDocTitle}</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="flex flex-col sm:flex-row gap-3 xl:min-w-[360px]">
+                                <button
+                                    onClick={() => focusedQueueItem && setSelectedContradiction(focusedQueueItem)}
+                                    disabled={!focusedQueueItem}
+                                    className="px-5 py-3 bg-emerald-500 text-black rounded-xl font-bold hover:bg-emerald-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    פתח תמחור מונחה
+                                </button>
+                                <button
+                                    onClick={handleBackToSource}
+                                    className="px-5 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2"
+                                >
+                                    <ArrowRight className="w-4 h-4" />
+                                    חזרה לסתירות
+                                </button>
+                                <button
+                                    onClick={() => setIsFocusedPricingDismissed(true)}
+                                    className="px-5 py-3 bg-transparent border border-white/10 text-gray-400 rounded-xl font-bold hover:text-white hover:border-white/20 transition-all"
+                                >
+                                    למסך התמחור המלא
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div className={`flex gap-8 flex-1 overflow-hidden p-8 ${isFocusedPricingFlow ? 'pt-6' : 'pb-0'}`}>
+                {!isFocusedPricingFlow && (
                 <div className="w-1/4 min-w-[320px] h-full flex flex-col shrink-0 space-y-4">
                     <div className="bg-[#151C24]/60 border border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden group">
                         <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 blur-[60px] group-hover:bg-orange-500/10 transition-all" />
@@ -447,6 +525,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                         />
                     </div>
                 </div>
+                )}
 
                 {/* Right Side - Ledger (75%) */}
                 <div className="flex-1 min-w-0 flex flex-col gap-8">
@@ -485,7 +564,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                 </div>
             </div>
 
-            <PricingStatusBar projectId={projectId} />
+            {!isFocusedPricingFlow && <PricingStatusBar projectId={projectId} />}
 
             {selectedContradiction && (
                 <AIEstimatorModal

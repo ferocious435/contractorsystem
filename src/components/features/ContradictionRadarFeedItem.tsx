@@ -262,7 +262,17 @@ export default function ContradictionRadarFeedItem({
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         onUpdateStatus(c.id, 'MOVED_TO_PRICING', c);
-                                        if (onNavigate) onNavigate('pricing', { estimateId: c.id });
+                                        if (onNavigate) {
+                                            onNavigate('pricing', {
+                                                estimateId: c.id,
+                                                entryPoint: 'contradiction-radar',
+                                                returnTo: 'radar',
+                                                contradictionTitle: cleanDisplayText(c.title),
+                                                contradictionSummary: cleanDisplayText(c.description),
+                                                sourceDocTitle: c.source_doc?.title || '',
+                                                targetDocTitle: c.target_doc?.title || '',
+                                            });
+                                        }
                                     }}
                                     className="flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-sm font-bold text-emerald-400 hover:bg-emerald-500/20 transition-all"
                                 >
