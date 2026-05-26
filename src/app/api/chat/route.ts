@@ -4,6 +4,8 @@ import { geminiModelText } from "@/lib/gemini";
 
 const isVerifiedEvidence = (evidenceData: any) => {
     if (Array.isArray(evidenceData)) return evidenceData.length > 0;
+    const comparisonType = String(evidenceData?.comparison_type || '').toLowerCase();
+    if (comparisonType.includes('missing_data')) return false;
     return evidenceData?.evidence_status === 'VERIFIED' || Boolean(evidenceData?.contract_quote && evidenceData?.work_quote);
 };
 

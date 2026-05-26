@@ -53,7 +53,9 @@ export default function PendingQueueTable({
         const missingCount = Array.isArray(evidenceData?.missing_evidence) ? evidenceData.missing_evidence.length : 0;
         const pricingEvaluation = evidenceData?.pricing_evaluation;
         const hasPricingTrace = Boolean(pricingEvaluation?.match_quality || pricingEvaluation?.source);
-        const isVerified = evidenceData?.evidence_status === 'VERIFIED' || Boolean(evidenceData?.contract_quote && evidenceData?.work_quote);
+        const comparisonType = String(evidenceData?.comparison_type || '').toLowerCase();
+        const isVerified = !comparisonType.includes('missing_data')
+            && (evidenceData?.evidence_status === 'VERIFIED' || Boolean(evidenceData?.contract_quote && evidenceData?.work_quote));
 
         return {
             hasEvidence: hasQuoteEvidence || missingCount > 0 || hasPricingTrace || Boolean(evidenceData?.linked_ids?.length),

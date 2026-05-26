@@ -4,6 +4,23 @@ import { NextResponse } from "next/server";
 
 const model = genAI.getGenerativeModel({ model: GEMINI_CONFIG.STABLE_FLASH });
 
+function isVerifiedEvidence(evidenceData: any) {
+    if (Array.isArray(evidenceData)) {
+        return evidenceData.length > 0;
+    }
+
+    if (!evidenceData || typeof evidenceData !== "object") {
+        return false;
+    }
+
+    const comparisonType = String(evidenceData.comparison_type || "").toLowerCase();
+    if (comparisonType.includes("missing_data")) {
+        return false;
+    }
+
+    return evidenceData.evidence_status === "VERIFIED" || Boolean(evidenceData.contract_quote && evidenceData.work_quote);
+}
+
 function formatEvidenceForLetter(evidenceData: any) {
     if (Array.isArray(evidenceData) && evidenceData.length > 0) {
         return evidenceData
@@ -16,7 +33,7 @@ function formatEvidenceForLetter(evidenceData: any) {
     }
 
     const lines: string[] = [];
-    const evidenceStatus = evidenceData.evidence_status || (evidenceData.contract_quote && evidenceData.work_quote ? "VERIFIED" : "REQUIRES_VERIFICATION");
+            const evidenceStatus = isVerifiedEvidence(evidenceData) ? "VERIFIED" : "REQUIRES_VERIFICATION";
     lines.push(`- סטטוס ראיות: ${evidenceStatus}`);
 
     if (evidenceData.contract_title || evidenceData.contract_quote) {
@@ -66,7 +83,7 @@ export async function POST(req: Request) {
         const hasUnverifiedItems = items.some((item: any) => {
             const evidenceData = item.evidence_data;
             if (Array.isArray(evidenceData)) return evidenceData.length === 0;
-            return !evidenceData || evidenceData.evidence_status !== "VERIFIED";
+            return !isVerifiedEvidence(evidenceData);
         });
 
         if (letterType === "official_vo" && hasUnverifiedItems) {

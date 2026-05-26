@@ -37,6 +37,13 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
     const [viewerDoc, setViewerDoc] = useState<any | null>(null);
     const [isViewerOpen, setIsViewerOpen] = useState(false);
     const supabase = createClient();
+    const normalizeConfidence = (value: unknown) => {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue) || numericValue <= 0) return 0;
+        if (numericValue <= 1) return numericValue;
+        if (numericValue <= 100) return numericValue / 100;
+        return 1;
+    };
 
     const runEstimation = async (withExpert: boolean = false) => {
         setIsLoading(true);
@@ -157,7 +164,7 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
     const totalExclVat = formState.quantity * formState.unitPrice * (1 + (formState.markup / 100));
     const vatAmount = totalExclVat * VAT_RATE;
     const totalInclVat = totalExclVat + vatAmount;
-    const confidencePct = Math.round((Number(estimateData?.confidence) || 0) * 100);
+    const confidencePct = Math.round(normalizeConfidence(estimateData?.confidence) * 100);
     const isZeroMatch = estimateData?.match_quality === 'ZERO_MATCH' || estimateData?.match_found === false;
     const expert = estimateData?.expert_strategy;
     const expertTechnical = expert?.technical_foundation || expert?.ripple_effect?.technical_analysis;

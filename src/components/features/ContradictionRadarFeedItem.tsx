@@ -36,6 +36,14 @@ export default function ContradictionRadarFeedItem({
     onNavigate,
     onRadarOpenDocument
 }: ContradictionRadarFeedItemProps) {
+    const normalizeConfidence = (value: unknown) => {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue) || numericValue <= 0) return null;
+        if (numericValue <= 1) return numericValue;
+        if (numericValue <= 100) return numericValue / 100;
+        return 1;
+    };
+
     const getCategoryStyles = (category: string, severity: string) => {
         const cat = category || '';
         
@@ -70,8 +78,16 @@ export default function ContradictionRadarFeedItem({
     };
 
     const styles = getCategoryStyles(c.category, c.severity);
-    const evidenceStatus = c.evidence_data?.evidence_status || (c.evidence_data?.contract_quote && c.evidence_data?.work_quote ? 'VERIFIED' : 'REQUIRES_VERIFICATION');
+    const evidenceStatus = (() => {
+        const comparisonType = String(c.evidence_data?.comparison_type || '').toLowerCase();
+        const category = String(c.category || '');
+        const hasQuotes = Boolean(c.evidence_data?.contract_quote && c.evidence_data?.work_quote);
+        if (!hasQuotes) return 'REQUIRES_VERIFICATION';
+        if (comparisonType.includes('missing_data') || category.includes('חוסר נתונים')) return 'REQUIRES_VERIFICATION';
+        return c.evidence_data?.evidence_status || 'VERIFIED';
+    })();
     const missingEvidence = Array.isArray(c.evidence_data?.missing_evidence) ? c.evidence_data.missing_evidence : [];
+    const confidenceRatio = normalizeConfidence(c.evidence_data?.confidence);
 
     return (
         <motion.div 
@@ -276,7 +292,7 @@ export default function ContradictionRadarFeedItem({
                                     <div className="md:col-span-2 bg-amber-500/5 p-5 rounded-2xl border border-amber-500/10 space-y-2">
                                         <div className="flex flex-wrap gap-2 text-[10px] font-black uppercase tracking-widest">
                                             {c.evidence_data?.comparison_type && <span className="px-2 py-1 bg-black/20 rounded-lg text-amber-300">{c.evidence_data.comparison_type}</span>}
-                                            {typeof c.evidence_data?.confidence === 'number' && <span className="px-2 py-1 bg-black/20 rounded-lg text-gray-300">Confidence: {Math.round(c.evidence_data.confidence * 100)}%</span>}
+                                            {confidenceRatio !== null && <span className="px-2 py-1 bg-black/20 rounded-lg text-gray-300">Confidence: {Math.round(confidenceRatio * 100)}%</span>}
                                         </div>
                                         {c.evidence_data?.risk_reason && (
                                             <p className="text-sm text-amber-100/80 leading-relaxed">{c.evidence_data.risk_reason}</p>

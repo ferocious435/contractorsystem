@@ -133,8 +133,28 @@ function cleanAiText(text: string) {
     return text?.replace(/\s*Powered by[^\.\n]*/gi, "").replace(/\s*מופעל על ידי[^\.\n]*/gi, "").trim() || text;
 }
 
+function normalizeConfidence(value: unknown) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue) || numericValue <= 0) return null;
+    if (numericValue <= 1) return numericValue;
+    if (numericValue <= 100) return numericValue / 100;
+    return 1;
+}
+
 function normalizeEvidenceStatus(item: any) {
-    return item.contract_quote && item.work_quote ? "VERIFIED" : "REQUIRES_VERIFICATION";
+    const category = String(item.category || "").toLowerCase();
+    const comparisonType = String(item.comparison_type || "").toLowerCase();
+    const hasQuotes = Boolean(item.contract_quote && item.work_quote);
+
+    if (!hasQuotes) {
+        return "REQUIRES_VERIFICATION";
+    }
+
+    if (category.includes("חוסר נתונים") || comparisonType.includes("missing_data")) {
+        return "REQUIRES_VERIFICATION";
+    }
+
+    return "VERIFIED";
 }
 
 function mapSeverity(category: string) {
@@ -405,7 +425,7 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
                         work_url: workDoc.file_url || null,
                         comparison_type: p.comparison_type || null,
                         risk_reason: p.risk_reason || null,
-                        confidence: typeof p.confidence === "number" ? p.confidence : null,
+                        confidence: normalizeConfidence(p.confidence),
                         next_check: p.next_check || null,
                         document_pair: {
                             contract_doc_id: matchedContractDoc?.id || null,
