@@ -389,7 +389,7 @@ const filesToScanForInlineTotals = [
   "src/app/api/chat/route.ts",
   "src/components/features/AIPanel.tsx",
   "src/components/features/LedgerTable.tsx",
-  "src/components/features/PricingLedgerUI.tsx",
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
   "src/components/features/SmartLetterGenerator.tsx",
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
   "src/components/pricing/GenerateVOLetterModal.tsx",
@@ -556,27 +556,27 @@ assertNotIncludes(
 );
 
 assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
-  "const isSelectableVariationOrder = (item: LedgerItem)",
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
+  "function isSelectableVariationOrder(item: Pick<PricingLedgerItem, 'type'>): boolean",
   "pricing ledger UI must define a strict selectable VO predicate"
 );
 assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
   "item.type === 'PENDING_VO' || item.type === 'APPROVED_VO'",
   "letter selection must be restricted to pending or approved VO rows"
 );
 assertIncludes(
   "src/components/features/PricingLedgerUI.tsx",
-  "initialSelectedItems={selectedVOIds}",
+  "initialSelectedItems={derived.selectedVOIds}",
   "letter modal must receive only VO row ids"
 );
 assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
+  "src/components/features/pricing-ledger/api/pricingLedgerApi.ts",
   "fetch('/api/pricing/save-ledger'",
   "pricing ledger UI must save ledger rows through the server API"
 );
 assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
+  "src/components/features/pricing-ledger/api/pricingLedgerApi.ts",
   "fetch('/api/pricing/update-status'",
   "pricing ledger UI must update status through the server API"
 );
