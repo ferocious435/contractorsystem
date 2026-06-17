@@ -14,6 +14,20 @@ export type PricingQueueStatus = 'PENDING' | 'PRICED' | 'MOVED_TO_PRICING' | str
 
 export type ContradictionSeverity = 'HIGH' | 'MEDIUM' | 'LOW';
 
+export type AiConfidenceScore = number;
+
+export interface PricingAiContradictionMetadata {
+    confidence_score?: AiConfidenceScore | null;
+    confidence_reason?: string | null;
+    match_quality?: string | null;
+    comparison_type?: string | null;
+    evidence_status?: string | null;
+    source?: string | null;
+    linked_ids?: string[];
+    missing_evidence?: string[];
+    [key: string]: unknown;
+}
+
 export interface EvidenceDocumentRef {
     title: string;
     file_url?: string;
@@ -55,6 +69,8 @@ export interface PricingQueueItem {
     source_execution_doc?: EvidenceDocumentRef;
     target_contract_doc?: EvidenceDocumentRef;
     evidence_data?: Record<string, unknown> | unknown[] | null;
+    confidence_score?: AiConfidenceScore | null;
+    ai_metadata?: PricingAiContradictionMetadata | null;
     [key: string]: unknown;
 }
 
@@ -188,4 +204,19 @@ export interface PricingLedgerDerivedState {
     visibleLedgerRows: PricingLedgerItem[];
     selectedVOIds: string[];
     focusedQueueItem: PricingContradictionItem | null;
+    highConfidenceQueueIds: string[];
+    selectedHighConfidenceQueueIds: string[];
+    queueConfidenceStats: {
+        averageScore: number | null;
+        highConfidenceCount: number;
+        totalWithConfidence: number;
+    };
+}
+
+export interface BulkApprovePreviewResult {
+    success?: boolean;
+    approvedIds: string[];
+    skippedIds: string[];
+    threshold: number;
+    error?: string;
 }

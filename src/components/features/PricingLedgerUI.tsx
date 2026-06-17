@@ -136,12 +136,17 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                         items={state.pendingQueue}
                         selectedIds={state.selectedQueueIds}
                         scanningItems={state.scanningItems}
+                        confidence={{
+                            queueConfidenceStats: derived.queueConfidenceStats,
+                            selectedHighConfidenceQueueIds: derived.selectedHighConfidenceQueueIds,
+                        }}
                         onToggleSelection={actions.handleToggleQueueSelection}
                         onSelectAll={actions.handleSelectAllQueue}
                         onSelectForEstimation={actions.handleSelectForEstimation}
                         onRescan={actions.handleRescan}
                         onBulkRescan={actions.handleBulkRescan}
                         onBulkDelete={actions.handleBulkDeleteQueue}
+                        onBulkApprove={actions.handleBulkApprove}
                     />
                 )}
 

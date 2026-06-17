@@ -23,6 +23,7 @@ interface PendingQueueTableProps {
     onBulkRescan?: (ids: string[]) => Promise<void>;
     onBulkDelete?: (ids: string[]) => Promise<void>;
     scanningItems?: string[];
+    getConfidencePercent?: (item: ContradictionItem) => string | null;
 }
 
 export default function PendingQueueTable({ 
@@ -34,7 +35,8 @@ export default function PendingQueueTable({
     onRescan, 
     onBulkRescan,
     onBulkDelete,
-    scanningItems = [] 
+    scanningItems = [],
+    getConfidencePercent,
 }: PendingQueueTableProps) {
     const [collapsedGroups, setCollapsedGroups] = React.useState<string[]>([]);
     const allSelected = items.length > 0 && selectedIds.length === items.length;
@@ -160,6 +162,7 @@ export default function PendingQueueTable({
                                 {!collapsedGroups.includes(sourceTitle) && groupItems.map((item, itemIdx) => {
                                     const isScanning = scanningItems.includes(item.id);
                                     const isSelected = selectedIds.includes(item.id);
+                                    const confidencePercent = getConfidencePercent?.(item);
                                     const evidenceSummary = getEvidenceSummary(item.evidence_data);
                                     const evidenceDetail = item.evidence_data?.pricing_evaluation?.match_quality === 'ZERO_MATCH'
                                         ? 'לא נמצא סעיף ישיר, אבל המערכת יכולה לבנות טיוטת תמחור לפי ההקשר. בודקים רק פרטים שמשנים את הסכום.'
@@ -213,6 +216,14 @@ export default function PendingQueueTable({
                                                         <div className="flex items-center gap-2 px-2 py-1 bg-blue-500/5 border border-white/5 rounded-lg w-fit">
                                                             <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
                                                             <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest font-mono">תיעוד סטנדרטי</span>
+                                                        </div>
+                                                    )}
+                                                    {confidencePercent && (
+                                                        <div className="flex items-center gap-2 px-2 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-lg w-fit">
+                                                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+                                                            <span className="text-[9px] font-black text-emerald-300 uppercase tracking-widest font-mono">
+                                                                AI {confidencePercent}
+                                                            </span>
                                                         </div>
                                                     )}
                                                 </div>

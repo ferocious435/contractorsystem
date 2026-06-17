@@ -10,14 +10,17 @@ import {
     isVisibleLedgerRow,
 } from '@/utils/project-financials';
 import {
+    AI_BULK_APPROVE_CONFIDENCE_THRESHOLD,
     DEFAULT_NEW_LEDGER_ITEM,
 } from '../constants';
+import { getQueueItemConfidenceScore } from '../utils/aiConfidence';
 import {
     archivePendingQueueItems,
     deleteLedgerRow,
     fetchLedgerRows,
     fetchPendingQueue,
     normalizePricingLedgerError,
+    previewHighConfidenceQueueItems,
     rescanQueueItem,
     saveLedgerRow,
     syncBoqAndContract,
@@ -25,6 +28,7 @@ import {
 } from '../api/pricingLedgerApi';
 import type {
     ApprovePricingEstimationPayload,
+    BulkApprovePreviewResult,
     PricingContradictionItem,
     PricingEstimationData,
     PricingLedgerActiveTab,
@@ -188,6 +192,41 @@ export function usePricingLedgerState(
         ),
         [routedEstimateId, pendingQueue, selectedContradiction]
     );
+
+    const highConfidenceQueueIds = useMemo(
+        () => pendingQueue
+            .filter((item) => {
+                const score = getQueueItemConfidenceScore(item);
+                return score !== null && score > AI_BULK_APPROVE_CONFIDENCE_THRESHOLD;
+            })
+            .map((item) => item.id),
+        [pendingQueue]
+    );
+
+    const selectedHighConfidenceQueueIds = useMemo(
+        () => selectedQueueIds.filter((id) => highConfidenceQueueIds.includes(id)),
+        [highConfidenceQueueIds, selectedQueueIds]
+    );
+
+    const queueConfidenceStats = useMemo(() => {
+        const scores = pendingQueue
+            .map(getQueueItemConfidenceScore)
+            .filter((score): score is number => score !== null);
+
+        if (!scores.length) {
+            return {
+                averageScore: null,
+                highConfidenceCount: 0,
+                totalWithConfidence: 0,
+            };
+        }
+
+        return {
+            averageScore: scores.reduce((sum, score) => sum + score, 0) / scores.length,
+            highConfidenceCount: highConfidenceQueueIds.length,
+            totalWithConfidence: scores.length,
+        };
+    }, [highConfidenceQueueIds.length, pendingQueue]);
 
     const handleSync = useCallback(async () => {
         setIsSyncing(true);
@@ -403,6 +442,39 @@ export function usePricingLedgerState(
         setSelectedQueueIds([]);
     }, []);
 
+    const handleBulkApprove = useCallback(async (ids: string[] = selectedQueueIds): Promise<BulkApprovePreviewResult> => {
+        const clientEligibleIds = ids.filter((id) => highConfidenceQueueIds.includes(id));
+        const clientSkippedIds = ids.filter((id) => !highConfidenceQueueIds.includes(id));
+
+        if (!clientEligibleIds.length) {
+            setSelectedQueueIds([]);
+
+            return {
+                success: true,
+                approvedIds: [],
+                skippedIds: clientSkippedIds,
+                threshold: AI_BULK_APPROVE_CONFIDENCE_THRESHOLD,
+            };
+        }
+
+        const result = await previewHighConfidenceQueueItems(projectId, clientEligibleIds);
+        const approvedIds = result.approvedIds || [];
+        const skippedIds = [
+            ...clientSkippedIds,
+            ...(result.skippedIds || []),
+        ];
+
+        setSelectedQueueIds(approvedIds);
+
+        return {
+            ...result,
+            success: true,
+            approvedIds,
+            skippedIds,
+            threshold: result.threshold ?? AI_BULK_APPROVE_CONFIDENCE_THRESHOLD,
+        };
+    }, [highConfidenceQueueIds, projectId, selectedQueueIds]);
+
     const handleEditClick = useCallback((item: PricingLedgerItem) => {
         setIsEditing(item.id);
         setEditForm({ ...item });
@@ -487,7 +559,17 @@ export function usePricingLedgerState(
         visibleLedgerRows,
         selectedVOIds,
         focusedQueueItem,
-    }), [focusedQueueItem, selectedVOIds, visibleLedgerRows]);
+        highConfidenceQueueIds,
+        selectedHighConfidenceQueueIds,
+        queueConfidenceStats,
+    }), [
+        focusedQueueItem,
+        highConfidenceQueueIds,
+        queueConfidenceStats,
+        selectedHighConfidenceQueueIds,
+        selectedVOIds,
+        visibleLedgerRows,
+    ]);
 
     const setters = useMemo(() => ({
         setActiveTab,
@@ -506,6 +588,7 @@ export function usePricingLedgerState(
         handleCancelEdit,
         handleAddNew,
         handleApproveEstimation,
+        handleBulkApprove,
         handleBulkDeleteQueue,
         handleBulkRescan,
         handleCloseLetterModal,
@@ -530,6 +613,7 @@ export function usePricingLedgerState(
         approveVO,
         handleAddNew,
         handleApproveEstimation,
+        handleBulkApprove,
         handleBulkDeleteQueue,
         handleBulkRescan,
         handleCancelEdit,

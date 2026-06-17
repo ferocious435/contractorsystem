@@ -30,6 +30,18 @@ function assertRegex(file, regex, message) {
   assert(regex.test(text), `${file}: ${message}`);
 }
 
+function assertSectionNotIncludes(file, startNeedle, endNeedle, forbiddenNeedle, message) {
+  const text = read(file);
+  const startIndex = text.indexOf(startNeedle);
+  assert(startIndex !== -1, `${file}: section start not found: ${startNeedle}`);
+
+  const endIndex = text.indexOf(endNeedle, startIndex);
+  assert(endIndex !== -1, `${file}: section end not found: ${endNeedle}`);
+
+  const section = text.slice(startIndex, endIndex);
+  assert(!section.includes(forbiddenNeedle), `${file}: ${message}`);
+}
+
 function installTypeScriptRequireHook() {
   const ts = require("typescript");
 
@@ -383,6 +395,24 @@ function verifyProjectContractBaseBehavior() {
   assert(agreementResolution.amount === 100.3, "contract resolver must round cumulative agreement totals to two decimals");
 }
 
+function verifyPricingLedgerAiAutomationBehavior() {
+  installTypeScriptRequireHook();
+  const {
+    normalizeConfidenceScore,
+    getQueueItemConfidenceScore,
+    formatConfidencePercent,
+  } = require(path.join(root, "src/components/features/pricing-ledger/utils/aiConfidence.ts"));
+
+  assert(normalizeConfidenceScore(0.91) === 0.91, "confidence helper must accept normalized 0..1 values");
+  assert(normalizeConfidenceScore(92) === 0.92, "confidence helper must normalize percent-like values");
+  assert(normalizeConfidenceScore(-1) === null, "confidence helper must reject negative values");
+  assert(formatConfidencePercent(0.925) === "93%", "confidence helper must format display percentages");
+  assert(
+    getQueueItemConfidenceScore({ evidence_data: { pricing_evaluation: { confidence_score: 94 } } }) === 0.94,
+    "queue confidence helper must read AI pricing metadata from evidence_data"
+  );
+}
+
 const filesToScanForInlineTotals = [
   "src/app/api/generate-letter/route.ts",
   "src/app/api/export/route.ts",
@@ -620,6 +650,26 @@ assertIncludes(
   "BASE_CONTRACT rows must be read-only in the ledger table"
 );
 assertIncludes(
+  "src/components/pricing/PricingLedgerTable.tsx",
+  "const VIRTUALIZATION_THRESHOLD = 500",
+  "pricing ledger table must enable windowing for massive BOQ tables"
+);
+assertIncludes(
+  "src/components/pricing/PricingLedgerTable.tsx",
+  "const virtualWindow = React.useMemo",
+  "pricing ledger table must memoize the visible row window"
+);
+assertIncludes(
+  "src/components/pricing/PricingLedgerTable.tsx",
+  "requestAnimationFrame",
+  "pricing ledger table scrolling must throttle virtual window updates"
+);
+assertIncludes(
+  "src/components/pricing/PricingLedgerTable.tsx",
+  "Math.min(rowIndex, 10) * 0.02",
+  "pricing ledger row animation delay must be capped for large BOQs"
+);
+assertIncludes(
   "src/components/pricing/LedgerTable.tsx",
   "const selectableItems = visibleItems.filter(isSelectableVariationOrder)",
   "legacy ledger table must allow selecting only pending or approved VO rows"
@@ -648,6 +698,102 @@ assertIncludes(
   "src/components/features/smart-letter/api/smartLetterApi.ts",
   '.in("type", ["PENDING_VO", "APPROVED_VO"])',
   "letter generator must fetch only VO rows"
+);
+assertIncludes(
+  "src/components/features/pricing-ledger/types.ts",
+  "confidence_score?: AiConfidenceScore | null",
+  "pricing ledger queue types must model AI confidence explicitly"
+);
+assertIncludes(
+  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
+  "getQueueItemConfidenceScore",
+  "pricing queue UI must render per-row AI confidence through shared helpers"
+);
+assertIncludes(
+  "src/components/pricing/PendingQueueTable.tsx",
+  "getConfidencePercent?:",
+  "pending queue table must support optional per-row confidence rendering"
+);
+assertIncludes(
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
+  "score !== null && score > AI_BULK_APPROVE_CONFIDENCE_THRESHOLD",
+  "smart bulk selection must only pass high-confidence queue items"
+);
+assertIncludes(
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
+  "previewHighConfidenceQueueItems(projectId, clientEligibleIds)",
+  "smart bulk selection must be verified by the server before staging items"
+);
+assertIncludes(
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
+  "setSelectedQueueIds(approvedIds)",
+  "smart bulk selection must stage server-approved high-confidence queue items instead of silently writing financial state"
+);
+assertSectionNotIncludes(
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
+  "const handleBulkApprove = useCallback",
+  "const handleEditClick = useCallback",
+  "saveLedgerRow",
+  "smart bulk approve must not create ledger rows without explicit pricing data"
+);
+assertSectionNotIncludes(
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
+  "const handleBulkApprove = useCallback",
+  "const handleEditClick = useCallback",
+  "archivePendingQueueItems",
+  "smart bulk approve must not archive queue items before ledger pricing exists"
+);
+assertSectionNotIncludes(
+  "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
+  "const handleBulkApprove = useCallback",
+  "const handleEditClick = useCallback",
+  "updateLedgerRowStatus",
+  "smart bulk approve must not mutate ledger row status directly"
+);
+assertIncludes(
+  "src/components/features/pricing-ledger/api/pricingLedgerApi.ts",
+  "fetch('/api/pricing/bulk-confidence-preview'",
+  "pricing ledger API client must route smart bulk confidence checks through the server"
+);
+assertIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  "auth.getUser()",
+  "bulk confidence preview must authenticate the user"
+);
+assertIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  ".eq('contractor_id', user.id)",
+  "bulk confidence preview must verify project ownership"
+);
+assertIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  "return score !== null && score > CONFIDENCE_THRESHOLD",
+  "bulk confidence preview must enforce the server-side confidence threshold"
+);
+assertIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  ".select('id, evidence_data')",
+  "bulk confidence preview must rely on existing contradiction evidence_data columns"
+);
+assertNotIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  ".select('id, evidence_data, confidence_score, ai_metadata')",
+  "bulk confidence preview must not select non-migrated confidence columns"
+);
+assertNotIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  ".update(",
+  "bulk confidence preview must not mutate contradictions"
+);
+assertNotIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  ".insert(",
+  "bulk confidence preview must not create ledger or queue rows"
+);
+assertNotIncludes(
+  "src/app/api/pricing/bulk-confidence-preview/route.ts",
+  ".delete(",
+  "bulk confidence preview must not delete queue rows"
 );
 assertIncludes(
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
@@ -1073,5 +1219,6 @@ assertIncludes(
 await verifyContractBoqLedgerSyncBehavior();
 verifyProjectFinancialHelperBehavior();
 verifyProjectContractBaseBehavior();
+verifyPricingLedgerAiAutomationBehavior();
 
 console.log("Financial invariants verified.");

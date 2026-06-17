@@ -40,8 +40,14 @@ interface PricingLedgerTableProps {
 const EDITABLE_TYPES: Array<{ value: LedgerItem['type']; label: string }> = [
     { value: 'PENDING_VO', label: 'חריג לבדיקה' },
     { value: 'APPROVED_VO', label: 'חריג מאושר' },
-    { value: 'SENT_VO', label: 'נשלח לדרישה' },
 ];
+
+const VIRTUALIZATION_THRESHOLD = 500;
+const VIRTUAL_ROW_HEIGHT = 80;
+const VIRTUAL_OVERSCAN = 8;
+
+const isSelectableVariationOrder = (item: LedgerItem) =>
+    item.type === 'PENDING_VO' || item.type === 'APPROVED_VO';
 
 function TypeBadge({ type }: { type: LedgerItem['type'] }) {
     if (type === 'BASE_CONTRACT') {
@@ -98,6 +104,48 @@ function TypeSelect({
     );
 }
 
+interface LedgerRowShellProps {
+    item: LedgerItem;
+    itemId: string;
+    rowIndex: number;
+    isSelected: boolean;
+    isEditingRow: boolean;
+    children: React.ReactNode;
+}
+
+const LedgerRowShell = React.memo(function LedgerRowShell({
+    itemId,
+    rowIndex,
+    isSelected,
+    isEditingRow,
+    children,
+}: LedgerRowShellProps) {
+    return (
+        <motion.tr
+            key={itemId}
+            layout
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.2, delay: Math.min(rowIndex, 10) * 0.02 }}
+            className={`hover:bg-white/[0.02] transition-colors group border-b border-white/5 last:border-0 min-h-16 ${
+                isSelected ? 'bg-blue-500/5' : ''
+            }`}
+        >
+            {children}
+        </motion.tr>
+    );
+}, (prev, next) => {
+    if (prev.isEditingRow || next.isEditingRow) {
+        return false;
+    }
+
+    return prev.item === next.item
+        && prev.itemId === next.itemId
+        && prev.rowIndex === next.rowIndex
+        && prev.isSelected === next.isSelected;
+});
+
 export default function PricingLedgerTable({
     ledgerItems,
     isLoading,
@@ -119,19 +167,96 @@ export default function PricingLedgerTable({
     handleDelete,
     formatCurrency,
 }: PricingLedgerTableProps) {
+    const scrollContainerRef = React.useRef<HTMLDivElement | null>(null);
+    const scrollFrameRef = React.useRef<number | null>(null);
+    const [scrollTop, setScrollTop] = React.useState(0);
+    const [viewportHeight, setViewportHeight] = React.useState(0);
+
+    const selectableItems = ledgerItems.filter(isSelectableVariationOrder);
+    const allSelectableSelected = selectableItems.length > 0
+        && selectableItems.every(item => selectedLedgerIds.includes(item.id));
+    const shouldVirtualize = ledgerItems.length > VIRTUALIZATION_THRESHOLD;
+
+    React.useEffect(() => {
+        const container = scrollContainerRef.current;
+
+        if (!container) {
+            return;
+        }
+
+        const updateViewportHeight = () => {
+            setViewportHeight(container.clientHeight || VIRTUAL_ROW_HEIGHT * 12);
+        };
+
+        updateViewportHeight();
+
+        const resizeObserver = typeof ResizeObserver === 'undefined'
+            ? null
+            : new ResizeObserver(updateViewportHeight);
+        resizeObserver?.observe(container);
+
+        return () => {
+            resizeObserver?.disconnect();
+            if (scrollFrameRef.current !== null) {
+                cancelAnimationFrame(scrollFrameRef.current);
+            }
+        };
+    }, []);
+
+    const handleScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
+        const nextScrollTop = event.currentTarget.scrollTop;
+
+        if (scrollFrameRef.current !== null) {
+            cancelAnimationFrame(scrollFrameRef.current);
+        }
+
+        scrollFrameRef.current = requestAnimationFrame(() => {
+            setScrollTop(nextScrollTop);
+            scrollFrameRef.current = null;
+        });
+    }, []);
+
+    const virtualWindow = React.useMemo(() => {
+        if (!shouldVirtualize) {
+            return {
+                visibleRows: ledgerItems.map((item, index) => ({ item, index })),
+                topPadding: 0,
+                bottomPadding: 0,
+            };
+        }
+
+        const effectiveViewportHeight = viewportHeight || VIRTUAL_ROW_HEIGHT * 12;
+        const startIndex = Math.max(0, Math.floor(scrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN);
+        const visibleCount = Math.ceil(effectiveViewportHeight / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2;
+        const endIndex = Math.min(ledgerItems.length, startIndex + visibleCount);
+
+        return {
+            visibleRows: ledgerItems
+                .slice(startIndex, endIndex)
+                .map((item, index) => ({ item, index: startIndex + index })),
+            topPadding: startIndex * VIRTUAL_ROW_HEIGHT,
+            bottomPadding: Math.max(0, (ledgerItems.length - endIndex) * VIRTUAL_ROW_HEIGHT),
+        };
+    }, [ledgerItems, scrollTop, shouldVirtualize, viewportHeight]);
+
     return (
         <div className="flex-1 bg-[#151C24]/40 border border-white/5 rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl relative">
             <div className="absolute top-0 right-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500/20 to-transparent" />
 
-            <div className="flex-1 overflow-auto custom-scrollbar">
+            <div
+                ref={scrollContainerRef}
+                onScroll={shouldVirtualize ? handleScroll : undefined}
+                className="flex-1 overflow-auto custom-scrollbar"
+            >
                 <table className="w-full text-right border-collapse" dir="rtl">
                     <thead className="sticky top-0 bg-[#1A222C] z-30 border-b border-white/5">
                         <tr className="h-16">
                             <th className="px-6 py-4 text-center w-16">
                                 <input
                                     type="checkbox"
-                                    checked={ledgerItems.length > 0 && selectedLedgerIds.length === ledgerItems.length}
+                                    checked={allSelectableSelected}
                                     onChange={toggleSelectAll}
+                                    disabled={selectableItems.length === 0}
                                     className="w-4 h-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500 cursor-pointer"
                                 />
                             </th>
@@ -198,7 +323,7 @@ export default function PricingLedgerTable({
                                     />
                                 </td>
                                 <td className="px-4 py-3 text-left text-sm font-bold text-emerald-300">
-                                    {formatCurrency((Number(newItemForm.quantity) || 0) * (Number(newItemForm.unit_price_excl_vat) || 0))}
+                                    {formatCurrency(getLedgerRowAmount(newItemForm))}
                                 </td>
                                 <td className="px-4 py-3 text-center">
                                     <div className="flex justify-center gap-2">
@@ -249,27 +374,34 @@ export default function PricingLedgerTable({
                             </tr>
                         ) : (
                             <AnimatePresence mode="popLayout">
-                                {ledgerItems.map((item, idx) => {
+                                {shouldVirtualize && virtualWindow.topPadding > 0 && (
+                                    <tr key="virtual-top-spacer" aria-hidden="true">
+                                        <td colSpan={9} style={{ height: virtualWindow.topPadding, padding: 0 }} />
+                                    </tr>
+                                )}
+
+                                {virtualWindow.visibleRows.map(({ item, index }, visibleIndex) => {
                                     const rowTotal = getLedgerRowAmount(item);
+                                    const isSelectable = isSelectableVariationOrder(item);
+                                    const isBaseContract = item.type === 'BASE_CONTRACT';
 
                                     return (
-                                        <motion.tr
+                                        <LedgerRowShell
                                             key={item.id}
-                                            layout
-                                            initial={{ opacity: 0, y: 10 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            exit={{ opacity: 0, scale: 0.95 }}
-                                            transition={{ duration: 0.2, delay: idx * 0.02 }}
-                                            className={`hover:bg-white/[0.02] transition-colors group border-b border-white/5 last:border-0 min-h-16 ${
-                                                selectedLedgerIds.includes(item.id) ? 'bg-blue-500/5' : ''
-                                            }`}
+                                            item={item}
+                                            itemId={item.id}
+                                            rowIndex={shouldVirtualize ? visibleIndex : index}
+                                            isEditingRow={isEditing === item.id}
+                                            isSelected={selectedLedgerIds.includes(item.id)}
                                         >
                                             <td className="px-6 py-4 text-center">
                                                 <input
                                                     type="checkbox"
                                                     checked={selectedLedgerIds.includes(item.id)}
-                                                    onChange={() => toggleSelectItem(item.id)}
-                                                    className="w-4 h-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500 cursor-pointer"
+                                                    onChange={() => isSelectable && toggleSelectItem(item.id)}
+                                                    disabled={!isSelectable}
+                                                    title={isSelectable ? undefined : 'חוזה בסיס אינו נכנס לדרישת חריג'}
+                                                    className="w-4 h-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
                                                 />
                                             </td>
 
@@ -324,7 +456,7 @@ export default function PricingLedgerTable({
                                                         />
                                                     </td>
                                                     <td className="px-4 py-3 text-left text-sm font-bold text-gray-300">
-                                                        {formatCurrency((Number(editForm.quantity) || 0) * (Number(editForm.unit_price_excl_vat) || 0))}
+                                                        {formatCurrency(getLedgerRowAmount(editForm))}
                                                     </td>
                                                     <td className="px-4 py-3 text-center">
                                                         <div className="flex justify-center gap-2">
@@ -415,15 +547,17 @@ export default function PricingLedgerTable({
                                                                 </button>
                                                             )}
                                                             <button
-                                                                onClick={() => handleEditClick(item)}
-                                                                className="p-2 text-gray-500 hover:text-white hover:bg-white/5 rounded-xl transition-all border border-transparent hover:border-white/10"
+                                                                onClick={() => !isBaseContract && handleEditClick(item)}
+                                                                disabled={isBaseContract}
+                                                                className="p-2 text-gray-500 hover:text-white hover:bg-white/5 rounded-xl transition-all border border-transparent hover:border-white/10 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-gray-500 disabled:hover:bg-transparent"
                                                                 title="ערוך"
                                                             >
                                                                 <Edit2 size={16} />
                                                             </button>
                                                             <button
-                                                                onClick={() => handleDelete(item.id)}
-                                                                className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-xl transition-all border border-transparent hover:border-red-500/20"
+                                                                onClick={() => !isBaseContract && handleDelete(item.id)}
+                                                                disabled={isBaseContract}
+                                                                className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-xl transition-all border border-transparent hover:border-red-500/20 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-gray-500 disabled:hover:bg-transparent"
                                                                 title="מחק"
                                                             >
                                                                 <Trash2 size={16} />
@@ -432,9 +566,15 @@ export default function PricingLedgerTable({
                                                     </td>
                                                 </>
                                             )}
-                                        </motion.tr>
+                                        </LedgerRowShell>
                                     );
                                 })}
+
+                                {shouldVirtualize && virtualWindow.bottomPadding > 0 && (
+                                    <tr key="virtual-bottom-spacer" aria-hidden="true">
+                                        <td colSpan={9} style={{ height: virtualWindow.bottomPadding, padding: 0 }} />
+                                    </tr>
+                                )}
                             </AnimatePresence>
                         )}
                     </tbody>

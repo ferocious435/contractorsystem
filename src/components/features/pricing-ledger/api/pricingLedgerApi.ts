@@ -1,5 +1,6 @@
 import { createClient } from '@/utils/supabase/client';
 import type {
+    BulkApprovePreviewResult,
     FetchLedgerRowsResult,
     PricingContradictionItem,
     PricingLedgerApiResult,
@@ -152,6 +153,19 @@ export async function archivePendingQueueItems(ids: string[]): Promise<void> {
     if (error) {
         throw error;
     }
+}
+
+export async function previewHighConfidenceQueueItems(
+    projectId: string,
+    ids: string[]
+): Promise<BulkApprovePreviewResult> {
+    const response = await fetch('/api/pricing/bulk-confidence-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, ids }),
+    });
+
+    return parseJsonResponse<BulkApprovePreviewResult>(response);
 }
 
 export async function rescanQueueItem(

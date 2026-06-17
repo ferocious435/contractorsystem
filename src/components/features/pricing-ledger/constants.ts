@@ -9,6 +9,8 @@ import type {
 
 export const PRICING_LEDGER_VAT_RATE = VAT_RATE;
 
+export const AI_BULK_APPROVE_CONFIDENCE_THRESHOLD = 0.9;
+
 export const SELECTABLE_VARIATION_ORDER_TYPES = ['PENDING_VO', 'APPROVED_VO'] as const satisfies readonly PricingLedgerRowType[];
 
 export const EDITABLE_LEDGER_TYPES = [

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import PricingLedgerTable from '@/components/pricing/PricingLedgerTable';
 import type { LedgerItem } from '@/types';
 import type { PricingEstimationData, PricingLedgerItem } from '../types';
@@ -23,6 +23,7 @@ interface LedgerTableProps {
     handleEditClick: (item: PricingLedgerItem) => void;
     handleDelete: (id: string) => Promise<unknown>;
 }
+
 function formatCurrency(value: number) {
     return new Intl.NumberFormat('he-IL', {
         style: 'currency',
@@ -31,7 +32,7 @@ function formatCurrency(value: number) {
     }).format(value);
 }
 
-export default function LedgerTable({
+function LedgerTable({
     rows,
     isLoading,
     isAddingNew,
@@ -51,13 +52,33 @@ export default function LedgerTable({
     handleEditClick,
     handleDelete,
 }: LedgerTableProps) {
-    const handleDeleteWithConfirm = async (id: string) => {
+    const handleDeleteWithConfirm = useCallback(async (id: string) => {
         if (!confirm('האם אתה בטוח שברצונך למחוק שורה זו?')) {
             return;
         }
 
         await handleDelete(id);
-    };
+    }, [handleDelete]);
+
+    const handleAddNewClick = useCallback(() => {
+        void handleAddNew();
+    }, [handleAddNew]);
+
+    const handleSaveEditClick = useCallback(() => {
+        void handleSaveEdit();
+    }, [handleSaveEdit]);
+
+    const handleApproveVO = useCallback((id: string) => {
+        void approveVO(id);
+    }, [approveVO]);
+
+    const handleEditRow = useCallback((item: LedgerItem) => {
+        handleEditClick(item as unknown as PricingLedgerItem);
+    }, [handleEditClick]);
+
+    const handleDeleteRow = useCallback((id: string) => {
+        void handleDeleteWithConfirm(id);
+    }, [handleDeleteWithConfirm]);
 
     return (
         <PricingLedgerTable
@@ -72,14 +93,16 @@ export default function LedgerTable({
             selectedLedgerIds={selectedLedgerIds}
             toggleSelectItem={toggleSelectItem}
             toggleSelectAll={toggleSelectAll}
-            handleAddNew={() => { void handleAddNew(); }}
+            handleAddNew={handleAddNewClick}
             setIsAddingNew={setIsAddingNew}
-            handleSaveEdit={() => { void handleSaveEdit(); }}
+            handleSaveEdit={handleSaveEditClick}
             handleCancelEdit={handleCancelEdit}
-            approveVO={(id) => { void approveVO(id); }}
-            handleEditClick={(item) => handleEditClick(item as unknown as PricingLedgerItem)}
-            handleDelete={(id) => { void handleDeleteWithConfirm(id); }}
+            approveVO={handleApproveVO}
+            handleEditClick={handleEditRow}
+            handleDelete={handleDeleteRow}
             formatCurrency={formatCurrency}
         />
     );
 }
+
+export default React.memo(LedgerTable);
