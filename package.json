@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "verify:financials": "node scripts/verify-financial-invariants.mjs",
+    "verify:remote-financials": "node scripts/verify-remote-financial-state.mjs",
     "lint": "eslint",
     "worker": "nodemon",
     "clean:worker": "powershell -Command \"Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }\"",
