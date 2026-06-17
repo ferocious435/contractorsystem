@@ -1,274 +1,74 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { createClient } from '@/utils/supabase/client';
 import { 
-    FileText, Send, Copy, Check, Loader2, ChevronDown, 
-    Download, Brain, Info, X, Shield, Terminal, Zap, 
-    Gavel, History, Trash2, Printer, Share2, Eye, 
-    Edit3, Layout, ChevronLeft, Plus, DollarSign, Activity, ShieldAlert,
+    FileText, Copy, Check, Loader2,
+    Brain, Shield, Terminal, Zap,
+    History, Trash2, Printer, Share2,
+    Edit3, Layout, DollarSign, Activity, ShieldAlert,
     Cpu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { HEBREW_FONT_BASE64 } from '@/utils/fonts/hebrewFont';
 import { VAT_RATE, AI_MODEL_BRANDING } from '@/utils/constants';
 import { PrintableLetter } from '@/components/pricing/PrintableLetter';
+import { getLedgerRowAmount } from '@/utils/project-financials';
+import { LETTER_TYPES, TONE_OPTIONS } from './smart-letter/constants';
+import { useSmartLetterState } from './smart-letter/hooks/useSmartLetterState';
+import type { SmartLetterGeneratorProps } from './smart-letter/types';
+import type { LedgerItem } from '@/components/pricing/LedgerTable';
 
-
-interface SmartLetterGeneratorProps {
-    projectId: string;
-    initialSelectedItems?: string[];
-    onClose?: () => void;
-}
 
 /**
  * מחולל מכתבים חכם
  * מייצר מכתבים ודרישות תשלום על בסיס נתוני פרויקט וניתוח בינה מלאכותית.
  */
 
-const LETTER_TYPES = [
-    { value: 'claim', label: 'תביעה / דרישה', icon: Gavel, desc: 'מודול תביעות', color: 'red' },
-    { value: 'notice', label: 'הודעה רשמית', icon: Shield, desc: 'פרוטוקול הודעות', color: 'blue' },
-    { value: 'vo_request', label: 'בקשת חריג', icon: Zap, desc: 'ועדת חריגים', color: 'amber' },
-    { value: 'response', label: 'תשובה למזמין', icon: Terminal, desc: 'מענה למזמין', color: 'emerald' },
-    { value: 'general', label: 'מכתב כללי', icon: FileText, desc: 'מכתב כללי', color: 'gray' }
-];
-
-const TONE_OPTIONS = [
-    { value: 'professional', label: 'מקצועי' },
-    { value: 'formal', label: 'פורמלי' },
-    { value: 'firm', label: 'תקיף' },
-    { value: 'aggressive', label: 'אגרסיבי' },
-    { value: 'friendly', label: 'נעים' },
-    { value: 'skeleton', label: 'שלד / מבנה בלבד' }
-];
 
 export default function SmartLetterGenerator({ projectId, initialSelectedItems, onClose }: SmartLetterGeneratorProps) {
-    const [letterType, setLetterType] = useState('');
-    const [recipient, setRecipient] = useState('');
-    const [subject, setSubject] = useState('');
-    const [keyPoints, setKeyPoints] = useState('');
-    const [tone, setTone] = useState('professional');
-    const [generatedLetter, setGeneratedLetter] = useState('');
-    const [isGenerating, setIsGenerating] = useState(false);
-    const [isCopied, setIsCopied] = useState(false);
-    const [isSaving, setIsSaving] = useState(false);
-    const [saveSuccess, setSaveSuccess] = useState(false);
-    const [ledgerItems, setLedgerItems] = useState<any[]>([]);
-    const [selectedLedgerItems, setSelectedLedgerItems] = useState<string[]>([]);
-    const [viewMode, setViewMode] = useState<'edit' | 'history'>('edit');
-    const [savedLetters, setSavedLetters] = useState<any[]>([]);
-    const [isDeleting, setIsDeleting] = useState<string | null>(null);
-    const [showPrintPreview, setShowPrintPreview] = useState(false);
-    const [projectName, setProjectName] = useState('');
-
-    const supabase = createClient();
-
-    useEffect(() => {
-        if (initialSelectedItems && initialSelectedItems.length > 0) {
-            // בדיקת סוג הפריטים הנבחרים
-            const firstId = initialSelectedItems[0];
-            fetchContextDetails(initialSelectedItems);
-        }
-    }, [initialSelectedItems]);
-
-    const fetchContextDetails = async (ids: string[]) => {
-        // חיפוש בטבלת סתירות
-        const { data: contradictions } = await supabase
-            .from('contradictions')
-            .select('*')
-            .in('id', ids);
-
-        if (contradictions && contradictions.length > 0) {
-            const c = contradictions[0];
-            setSubject(`הודעה על סתירה/אי-התאמה: ${c.title}`);
-            setKeyPoints(`נמצאה סתירה בין מסמכי החוזה לביצוע:\n${c.description}\n\nנדרשת הנחיה ברורה ותמחור חריג בהתאם לתנאי החוזה.`);
-            setLetterType('claim');
-        }
-    };
-
-    useEffect(() => {
-        if (projectId) {
-            fetchLedgerItems();
-            fetchSavedLetters();
-        }
-    }, [projectId]);
-
-    const fetchLedgerItems = async () => {
-        try {
-            const { data, error } = await supabase
-                .from('pricing_ledger')
-                .select('*')
-                .eq('project_id', projectId)
-                .in('type', ['PENDING_VO', 'APPROVED_VO']);
-            
-            if (error) throw error;
-            setLedgerItems(data || []);
-        } catch (err) {
-            console.error('[LEDGER_FETCH_ERROR]:', err);
-        }
-    };
-
-    const fetchSavedLetters = async () => {
-        try {
-            const { data: projectData } = await supabase
-                .from('projects')
-                .select('name')
-                .eq('id', projectId)
-                .single();
-            if (projectData) setProjectName(projectData.name);
-
-            const { data, error } = await supabase
-                .from('vo_letters')
-                .select('*')
-                .eq('project_id', projectId)
-                .order('created_at', { ascending: false });
-            
-            if (error) throw error;
-            setSavedLetters(data || []);
-        } catch (err) {
-            console.error('[HISTORY_FETCH_ERROR]:', err);
-        }
-    };
-
-    const handleGenerate = async () => {
-        if (!letterType) return;
-        setIsGenerating(true);
-        setGeneratedLetter('');
-
-        try {
-            const selectedItemsData = ledgerItems.filter(item => selectedLedgerItems.includes(item.id));
-            const items = selectedItemsData.map(i => ({
-                description: i.description,
-                code: i.item_code,
-                quantity: i.quantity,
-                unit: i.unit,
-                price: i.unit_price_excl_vat,
-                total: i.total_price_excl_vat,
-                ai_rationale: i.ai_rationale,
-                governing_notes: i.governing_notes,
-                evidence_data: i.evidence_data
-            }));
-
-            const response = await fetch('/api/generate-letter', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    projectId, 
-                    letterType, 
-                    recipient, 
-                    subject, 
-                    keyPoints, 
-                    tone,
-                    items 
-                })
-            });
-
-            const data = await response.json();
-            if (data.success) {
-                setGeneratedLetter(data.letter);
-            } else {
-                setGeneratedLetter(`שגיאה ביצירת המכתב: ${data.error || 'תקלה לא ידועה'}`);
-            }
-        } catch (err) {
-            console.error('[GENERATE_ERROR]:', err);
-            setGeneratedLetter('שגיאה בחיבור - אנא בדוק את החיבור ל-Gemini ונסה שנית.');
-        } finally {
-            setIsGenerating(false);
-        }
-    };
-
-    const handleCopy = () => {
-        if (!generatedLetter) return;
-        navigator.clipboard.writeText(generatedLetter);
-        setIsCopied(true);
-        setTimeout(() => setIsCopied(false), 2000);
-    };
-
-    const handleSave = async () => {
-        if (!generatedLetter || !projectId) return;
-        setIsSaving(true);
-
-        try {
-            const selectedItemsData = ledgerItems.filter(item => selectedLedgerItems.includes(item.id));
-            const totalExclVat = selectedItemsData.reduce((sum, item) => sum + (Number(item.total_price_excl_vat) || 0), 0);
-            const vatAmount = totalExclVat * VAT_RATE;
-            const totalInclVat = totalExclVat + vatAmount;
-
-            const { data: letterData, error: letterError } = await supabase
-                .from('vo_letters')
-                .insert({
-                    project_id: projectId,
-                    subject: subject || `דרישת תשלום ${new Date().getTime()}`,
-                    recipient_name: recipient,
-                    content: generatedLetter,
-                    status: 'DRAFT',
-                    total_amount_excl_vat: totalExclVat,
-                    vat_amount: vatAmount,
-                    total_amount_incl_vat: totalInclVat,
-                    letter_number: `VO-${Math.floor(1000 + Math.random() * 9000)}`
-                })
-                .select()
-                .single();
-
-            if (letterError) throw letterError;
-
-            const letterItemsLinks = selectedLedgerItems.map((id, index) => ({
-                letter_id: letterData.id,
-                ledger_item_id: id,
-                sort_order: index
-            }));
-
-            const { error: itemsError } = await supabase
-                .from('vo_letter_items')
-                .insert(letterItemsLinks);
-
-            if (itemsError) throw itemsError;
-
-            // עדכון סטטוס פריטים ביומן התמחור
-            const { error: updateError } = await supabase
-                .from('pricing_ledger')
-                .update({ type: 'SENT_VO' })
-                .in('id', selectedLedgerItems);
-
-            if (updateError) throw updateError;
-
-            setSaveSuccess(true);
-            fetchSavedLetters();
-            fetchLedgerItems();
-            setTimeout(() => setSaveSuccess(false), 3000);
-        } catch (err) {
-            console.error('[SAVE_ERROR]:', err);
-        } finally {
-            setIsSaving(false);
-        }
-    };
-
-    const handleDeleteLetter = async (e: React.MouseEvent, id: string) => {
-        e.stopPropagation();
-        if (!confirm('בטל מחיקת המסמך מהארכיון המוגן. האם אתה בטוח?')) return;
-        
-        setIsDeleting(id);
-        try {
-            const { error } = await supabase
-                .from('vo_letters')
-                .delete()
-                .eq('id', id);
-            
-            if (error) throw error;
-            fetchSavedLetters();
-        } catch (err) {
-            console.error('[DELETE_ERROR]:', err);
-        } finally {
-            setIsDeleting(null);
-        }
-    };
-
-    const handleOpenPrintPreview = () => {
-        if (!generatedLetter) return;
-        setShowPrintPreview(true);
-    };
-
+    const { state, setters, actions, derived } = useSmartLetterState({ projectId, initialSelectedItems });
+    const {
+        letterType,
+        recipient,
+        subject,
+        keyPoints,
+        tone,
+        generatedLetter,
+        isGenerating,
+        isCopied,
+        isSaving,
+        saveSuccess,
+        ledgerItems,
+        selectedLedgerItems,
+        viewMode,
+        savedLetters,
+        isDeleting,
+        showPrintPreview,
+        projectName,
+    } = state;
+    const {
+        setLetterType,
+        setRecipient,
+        setSubject,
+        setKeyPoints,
+        setTone,
+        setGeneratedLetter,
+        setViewMode,
+    } = setters;
+    const printableItems: LedgerItem[] = derived.selectedItems.map((item) => ({
+        id: item.id,
+        item_code: item.item_code || '',
+        description: item.description || '',
+        unit: item.unit || '',
+        quantity: Number(item.quantity ?? 0),
+        unit_price_excl_vat: Number(item.unit_price_excl_vat ?? item.unit_price ?? 0),
+        total_price_excl_vat: getLedgerRowAmount(item),
+        source: item.source || undefined,
+        project_id: item.project_id,
+        item_type: 'ITEM',
+        type: typeof item.type === 'string' ? (item.type as LedgerItem['type']) : undefined,
+        ai_rationale: item.ai_rationale || undefined,
+        governing_notes: item.governing_notes,
+        evidence_data: item.evidence_data,
+    }));
 
     return (
         <div className="flex flex-col gap-8 animate-in fade-in slide-in-from-bottom-4 duration-1000" dir="rtl">
@@ -398,7 +198,7 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                     </label>
                                     <div className="flex items-center gap-3 mr-4">
                                         <span className="text-[10px] font-mono font-black text-emerald-500/80 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">
-                                            ₪ {(ledgerItems.filter(item => selectedLedgerItems.includes(item.id)).reduce((sum, item) => sum + (Number(item.total_price_excl_vat) || 0), 0) * (1 + VAT_RATE)).toLocaleString('he-IL')}
+                                            ₪ {derived.totalInclVat.toLocaleString('he-IL')}
                                         </span>
                                     </div>
                                 </div>
@@ -408,10 +208,7 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                             <motion.div 
                                                 key={item.id} 
                                                 whileHover={{ x: -5 }}
-                                                onClick={() => {
-                                                    if (selectedLedgerItems.includes(item.id)) setSelectedLedgerItems(prev => prev.filter(id => id !== item.id));
-                                                    else setSelectedLedgerItems(prev => [...prev, item.id]);
-                                                }}
+                                                onClick={() => actions.toggleLedgerItem(item.id)}
                                                 className={`group flex items-center gap-4 p-4 rounded-2xl cursor-pointer transition-all border ${
                                                     selectedLedgerItems.includes(item.id) 
                                                     ? 'bg-blue-500/10 border-blue-500/30' 
@@ -437,7 +234,7 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                                         </div>
                                                         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-500/5 border border-blue-500/10">
                                                             <DollarSign className="w-3 h-3 text-blue-500/60" />
-                                                            <span className="text-[10px] text-blue-400 font-black">₪ {(item.total_price_excl_vat || 0).toLocaleString('he-IL')}</span>
+                                                            <span className="text-[10px] text-blue-400 font-black">₪ {getLedgerRowAmount(item).toLocaleString('he-IL')}</span>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -485,8 +282,8 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                         <motion.button
                             whileHover={{ scale: 1.02, y: -5 }}
                             whileTap={{ scale: 0.98 }}
-                            onClick={handleGenerate}
-                            disabled={!letterType || isGenerating}
+                            onClick={actions.generateLetter}
+                            disabled={!derived.canGenerate || isGenerating}
                             className={`group w-full relative flex items-center justify-center gap-6 py-8 rounded-[2rem] text-sm font-black uppercase tracking-[0.5em] transition-all overflow-hidden shadow-2xl ${
                                 isGenerating 
                                 ? 'bg-white/5 text-gray-600 cursor-not-allowed border border-white/5' 
@@ -529,8 +326,8 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                         className="flex items-center gap-3"
                                     >
                                         <button
-                                            onClick={handleSave}
-                                            disabled={isSaving || saveSuccess}
+                                            onClick={actions.saveLetter}
+                                            disabled={!derived.canSave || isSaving || saveSuccess}
                                             className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-tight border transition-all duration-500 ${
                                                 saveSuccess 
                                                 ? 'bg-emerald-500 text-black border-emerald-500' 
@@ -541,14 +338,14 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                             {saveSuccess ? 'נשמר בארכיון' : 'שמור בארכיון'}
                                         </button>
                                         <button
-                                            onClick={handleOpenPrintPreview}
+                                            onClick={actions.openPrintPreview}
                                             className="flex items-center gap-3 px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-tight bg-white/5 text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all"
                                         >
                                             <Printer className="w-4 h-4" />
                                             תצוגת הדפסה
                                         </button>
                                         <button
-                                            onClick={handleCopy}
+                                            onClick={actions.copyLetter}
                                             className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-tight border transition-all duration-500 ${
                                                 isCopied 
                                                 ? 'bg-white text-black border-white' 
@@ -587,16 +384,14 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                                         layout
                                                         whileHover={{ scale: 1.02 }}
                                                         className="group relative bg-[#151C24]/50 border border-white/10 rounded-[2.5rem] p-8 hover:border-blue-500/50 transition-all cursor-pointer shadow-xl overflow-hidden"
-                                                        onClick={() => {
-                                                            setGeneratedLetter(letter.content);
-                                                            setSubject(letter.subject);
-                                                            setRecipient(letter.recipient_name);
-                                                            setViewMode('edit');
-                                                        }}
+                                                        onClick={() => actions.selectSavedLetter(letter)}
                                                     >
                                                         <div className="absolute top-0 right-0 w-full h-1 bg-gradient-to-l from-blue-500/30 to-transparent" />
                                                         <button 
-                                                            onClick={(e) => handleDeleteLetter(e, letter.id)}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                void actions.deleteLetter(letter.id);
+                                                            }}
                                                             className="absolute top-6 left-6 p-2 rounded-xl bg-red-500/10 text-red-500 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500/20 border border-red-500/20"
                                                         >
                                                             {isDeleting === letter.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
@@ -758,14 +553,8 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                             recipient={recipient}
                             subject={subject}
                             legalText={generatedLetter}
-                            onClose={() => setShowPrintPreview(false)}
-                            items={ledgerItems
-                                .filter(item => selectedLedgerItems.includes(item.id))
-                                .map(item => ({
-                                    ...item,
-                                    item_type: 'ITEM'
-                                }))
-                            }
+                            onClose={actions.closePrintPreview}
+                            items={printableItems}
                         />
                     </motion.div>
                 )}
