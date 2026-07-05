@@ -14,8 +14,29 @@ const MAX_CHARS_PER_CONTRACT_DOC = 35_000;
 const MIN_USEFUL_TEXT_LENGTH = 1000;
 const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER", "PRICELIST"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
+const ACTIVE_SCAN_STALE_MS = 6 * 60 * 1000;
+const SCAN_STATE_COLUMNS = `
+    id,
+    project_id,
+    contract_doc_ids,
+    work_doc_id,
+    contract_signature,
+    work_signature,
+    scan_signature,
+    status,
+    findings_count,
+    scanned_at,
+    total_work_docs,
+    processed_work_docs,
+    current_step,
+    error_message,
+    started_at,
+    updated_at,
+    completed_at
+`;
 
 type ScanRole = "CONTRACT_BASE" | "WORK_EVIDENCE" | "UNKNOWN";
+type ScanStateStatus = "IN_PROGRESS" | "COMPLETED" | "ERROR";
 
 type ScanDocument = Record<string, unknown> & {
     id: string;
@@ -58,6 +79,25 @@ type ScanDocumentWithRole = ScanDocument & { __scanRole: ScanRole };
 
 type ScanResult = Record<string, unknown> & { __cached?: boolean };
 type ScanResults = ScanResult[] & { __analysisFailures?: string[] };
+type DocumentScanStateRow = {
+    id?: string;
+    project_id: string;
+    contract_doc_ids?: string[] | null;
+    work_doc_id: string;
+    contract_signature?: string | null;
+    work_signature?: string | null;
+    scan_signature: string;
+    status?: string | null;
+    findings_count?: number | null;
+    scanned_at?: string | null;
+    total_work_docs?: number | null;
+    processed_work_docs?: number | null;
+    current_step?: string | null;
+    error_message?: string | null;
+    started_at?: string | null;
+    updated_at?: string | null;
+    completed_at?: string | null;
+};
 
 function extractFirstJsonArray(text: string) {
     const cleanText = text.replace(/```json|```/g, "").trim();
@@ -134,6 +174,100 @@ function buildContractSignature(contractDocs: ScanDocument[]) {
 
 function buildScanSignature(projectId: string, contractSignature: string, workSignature: string) {
     return sha256(`${projectId}:${contractSignature}:${workSignature}`);
+}
+
+function nowIso() {
+    return new Date().toISOString();
+}
+
+function isFreshInProgressScan(row: DocumentScanStateRow) {
+    if (row.status !== "IN_PROGRESS" || !row.updated_at) return false;
+    return Date.now() - new Date(row.updated_at).getTime() < ACTIVE_SCAN_STALE_MS;
+}
+
+function summarizeScanState(rows: DocumentScanStateRow[]) {
+    const activeRow = rows.find(isFreshInProgressScan);
+    const latestRow = activeRow || rows[0] || null;
+    const explicitTotal = Math.max(
+        latestRow?.total_work_docs || 0,
+        ...rows.map((row) => row.total_work_docs || 0)
+    );
+    const relevantRows = explicitTotal > 0
+        ? rows.filter((row) => row.total_work_docs === explicitTotal || row.status === "IN_PROGRESS")
+        : rows;
+    const total = explicitTotal || relevantRows.length;
+    const processedFallback = relevantRows.filter(
+        (row) => row.status === "COMPLETED" || row.status === "ERROR"
+    );
+    const processed = Math.min(
+        total,
+        Math.max(
+            latestRow?.processed_work_docs || 0,
+            processedFallback.length
+        )
+    );
+    const staleInProgressRow = rows.find((row) => row.status === "IN_PROGRESS" && !isFreshInProgressScan(row));
+    const isPaused = !activeRow && total > 0 && (processed < total || Boolean(staleInProgressRow));
+    const status = activeRow
+        ? "IN_PROGRESS"
+        : isPaused
+            ? "PAUSED"
+            : latestRow?.status || "IDLE";
+    const progress = total > 0 ? Math.round((processed / total) * 100) : 0;
+
+    return {
+        active: Boolean(activeRow),
+        status,
+        progress: Math.min(100, Math.max(0, progress)),
+        processed,
+        total,
+        currentStep: activeRow?.current_step || staleInProgressRow?.current_step || latestRow?.current_step || null,
+        errorMessage: latestRow?.status === "ERROR" ? latestRow.error_message || null : null,
+        updatedAt: latestRow?.updated_at || null,
+        completedAt: latestRow?.completed_at || null,
+        found: relevantRows
+            .filter((row) => row.status === "COMPLETED")
+            .reduce((sum, row) => sum + (row.findings_count || 0), 0),
+    };
+}
+
+async function loadProjectScanState(supabase: SupabaseClient, projectId: string, workDocId?: string | null) {
+    let query = supabase
+        .from("document_scan_state")
+        .select(SCAN_STATE_COLUMNS)
+        .eq("project_id", projectId)
+        .order("updated_at", { ascending: false })
+        .limit(200);
+
+    if (workDocId) {
+        query = query.eq("work_doc_id", workDocId);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+        throw error;
+    }
+
+    return summarizeScanState((data || []) as DocumentScanStateRow[]);
+}
+
+async function saveScanState(
+    supabase: SupabaseClient,
+    state: DocumentScanStateRow & {
+        status: ScanStateStatus;
+        contract_doc_ids: string[];
+        contract_signature: string;
+        work_signature: string;
+    }
+) {
+    const { error } = await supabase
+        .from("document_scan_state")
+        .upsert(state, { onConflict: "scan_signature" });
+
+    if (error) {
+        throw error;
+    }
 }
 
 function getDocumentRole(doc: ScanDocument): ScanRole {
@@ -374,6 +508,36 @@ Return JSON array with this exact object shape:
 ]`;
 }
 
+export async function GET(req: NextRequest) {
+    try {
+        const { searchParams } = new URL(req.url);
+        const projectId = searchParams.get("projectId");
+        const workDocId = searchParams.get("workDocId");
+
+        if (!projectId) {
+            return NextResponse.json({ error: "projectId is required" }, { status: 400 });
+        }
+
+        const supabase = await createClient();
+        const ownership = await requireOwnedProject(supabase, projectId);
+
+        if (!ownership.ok) {
+            return ownership.response;
+        }
+
+        const scanStatus = await loadProjectScanState(supabase, projectId, workDocId);
+
+        return NextResponse.json({
+            success: true,
+            ...scanStatus,
+        });
+    } catch (error: unknown) {
+        console.error("[scan] Status API Error:", error);
+        const message = error instanceof Error ? error.message : "Failed to load scan status";
+        return NextResponse.json({ success: false, error: message }, { status: 500 });
+    }
+}
+
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
@@ -513,6 +677,7 @@ export async function POST(req: NextRequest) {
         const foundContradictions = await analyzeDirectly(supabase, projectId, contractDocs, workDocs, force);
         const analysisFailures = foundContradictions.__analysisFailures || [];
         const warnings = [...textPreparationFailures, ...analysisFailures];
+        const scanStatus = await loadProjectScanState(supabase, projectId, workDocId);
 
         return NextResponse.json({
             success: warnings.length === 0,
@@ -521,7 +686,8 @@ export async function POST(req: NextRequest) {
             contradictions: foundContradictions,
             cached: foundContradictions.length > 0 && foundContradictions.every((item) => item.__cached === true),
             skippedUnvalidatedDocuments: unvalidatedDocumentsCount,
-            warnings
+            warnings,
+            scanStatus
         });
 
     } catch (error: unknown) {
@@ -548,19 +714,31 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
         throw new Error("Contract documents exist, but no extracted text is available for comparison.");
     }
 
-    for (const workDoc of workDocs) {
-        if (!workDoc.extracted_text) continue;
+    const scannableWorkDocs = workDocs.filter((doc) => Boolean(doc.extracted_text));
+    let processedWorkDocs = 0;
+
+    for (const workDoc of scannableWorkDocs) {
         const workText = String(workDoc.extracted_text || "").slice(0, MAX_WORK_CONTEXT_CHARS);
         const workSignature = getDocumentSignature(workDoc);
         const scanSignature = buildScanSignature(projectId, contractSignature, workSignature);
+        const stateBase = {
+            project_id: projectId,
+            contract_doc_ids: contractDocIds,
+            work_doc_id: workDoc.id,
+            contract_signature: contractSignature,
+            work_signature: workSignature,
+            scan_signature: scanSignature,
+            total_work_docs: scannableWorkDocs.length,
+        };
 
         try {
             if (!force) {
-                const { data: scanState } = await supabase
+                const { data: scanStateRow } = await supabase
                     .from("document_scan_state")
-                    .select("*")
+                    .select(SCAN_STATE_COLUMNS)
                     .eq("scan_signature", scanSignature)
                     .maybeSingle();
+                const scanState = scanStateRow as DocumentScanStateRow | null;
 
                 if (scanState?.status === "COMPLETED") {
                     const { data: cachedContradictions } = await supabase
@@ -572,6 +750,34 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
 
                     if (cachedContradictions?.length) {
                         cachedContradictions.forEach((item) => results.push({ ...item, __cached: true }));
+                        await saveScanState(supabase, {
+                            ...stateBase,
+                            status: "COMPLETED",
+                            findings_count: scanState.findings_count ?? cachedContradictions.length,
+                            processed_work_docs: processedWorkDocs + 1,
+                            current_step: `הושלם: ${workDoc.title || "מסמך ביצוע"}`,
+                            error_message: null,
+                            scanned_at: scanState.scanned_at || nowIso(),
+                            updated_at: nowIso(),
+                            completed_at: scanState.completed_at || nowIso(),
+                        });
+                        processedWorkDocs += 1;
+                        continue;
+                    }
+
+                    if ((scanState.findings_count || 0) === 0) {
+                        await saveScanState(supabase, {
+                            ...stateBase,
+                            status: "COMPLETED",
+                            findings_count: 0,
+                            processed_work_docs: processedWorkDocs + 1,
+                            current_step: `הושלם ללא ממצאים: ${workDoc.title || "מסמך ביצוע"}`,
+                            error_message: null,
+                            scanned_at: scanState.scanned_at || nowIso(),
+                            updated_at: nowIso(),
+                            completed_at: scanState.completed_at || nowIso(),
+                        });
+                        processedWorkDocs += 1;
                         continue;
                     }
 
@@ -601,6 +807,18 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                     );
                 }
             }
+
+            await saveScanState(supabase, {
+                ...stateBase,
+                status: "IN_PROGRESS",
+                findings_count: 0,
+                processed_work_docs: processedWorkDocs,
+                current_step: `בודק ${processedWorkDocs + 1}/${scannableWorkDocs.length}: ${workDoc.title || "מסמך ביצוע"}`,
+                error_message: null,
+                started_at: nowIso(),
+                updated_at: nowIso(),
+                completed_at: null,
+            });
 
             const prompt = buildScanPrompt({ contractContext, workDoc, workText, contractContextBundle });
             const result = await withRetry(() => geminiModel.generateContent(prompt));
@@ -670,44 +888,41 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                 if (data) results.push(data);
             }
 
-            const { error: scanStateError } = await supabase
-                .from("document_scan_state")
-                .upsert({
-                    project_id: projectId,
-                    contract_doc_ids: contractDocIds,
-                    work_doc_id: workDoc.id,
-                    contract_signature: contractSignature,
-                    work_signature: workSignature,
-                    scan_signature: scanSignature,
-                    status: "COMPLETED",
-                    findings_count: points.length,
-                    scanned_at: new Date().toISOString()
-                }, { onConflict: "scan_signature" });
-
-            if (scanStateError) {
-                throw new Error(`Failed to save scan state for "${workDoc.title}": ${scanStateError.message}`);
-            }
+            const completedAt = nowIso();
+            await saveScanState(supabase, {
+                ...stateBase,
+                status: "COMPLETED",
+                findings_count: points.length,
+                processed_work_docs: processedWorkDocs + 1,
+                current_step: `הושלם: ${workDoc.title || "מסמך ביצוע"}`,
+                error_message: null,
+                scanned_at: completedAt,
+                updated_at: completedAt,
+                completed_at: completedAt,
+            });
+            processedWorkDocs += 1;
         } catch (err) {
             console.error(`[scan] Analysis error for ${workDoc.title}:`, err);
             const message = err instanceof Error ? err.message : String(err);
             analysisFailures.push(`${workDoc.title}: ${message}`);
-            const { error: errorStateError } = await supabase
-                .from("document_scan_state")
-                .upsert({
-                    project_id: projectId,
-                    contract_doc_ids: contractDocIds,
-                    work_doc_id: workDoc.id,
-                    contract_signature: contractSignature,
-                    work_signature: workSignature,
-                    scan_signature: scanSignature,
+            const failedAt = nowIso();
+
+            try {
+                await saveScanState(supabase, {
+                    ...stateBase,
                     status: "ERROR",
                     findings_count: 0,
-                    scanned_at: new Date().toISOString()
-                }, { onConflict: "scan_signature" });
-
-            if (errorStateError) {
+                    processed_work_docs: processedWorkDocs + 1,
+                    current_step: `שגיאה: ${workDoc.title || "מסמך ביצוע"}`,
+                    error_message: message,
+                    scanned_at: failedAt,
+                    updated_at: failedAt,
+                    completed_at: failedAt,
+                });
+            } catch (errorStateError) {
                 console.error(`[scan] Failed to save error state for ${workDoc.title}:`, errorStateError);
             }
+            processedWorkDocs += 1;
         }
     }
 

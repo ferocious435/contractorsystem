@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import { isLocalProjectId } from '@/utils/local-projects';
 import { generateContradictionPDF } from '@/utils/contradictionPdfGenerator';
@@ -10,8 +10,10 @@ import {
     fetchRadarContradictions,
     fetchRadarDocuments,
     fetchRadarProjectName,
+    fetchRadarScanStatus,
     rescanRadarItem,
     scanRadarProject,
+    type RadarScanProgress,
     type RadarProjectDocument,
     updateContradictionStatus,
 } from '../api/contradictionRadarApi';
@@ -29,13 +31,7 @@ interface UseContradictionRadarStateOptions {
 
 const DEFAULT_PROJECT_NAME = 'פרויקט';
 const RADAR_ITEM_MOTION_THRESHOLD = 200;
-
-const SCAN_PROGRESS_STEPS = [
-    { msg: 'מתחיל בדיקה', p: 10 },
-    { msg: 'טוען מסמכי חוזה וביצוע', p: 25 },
-    { msg: 'משווה בין המסמכים', p: 60 },
-    { msg: 'מארגן ממצאים לתצוגה', p: 90 },
-];
+const SCAN_STATUS_POLL_MS = 3000;
 
 type ScanStepStatus = 'success' | 'error' | null;
 
@@ -55,6 +51,8 @@ export function useContradictionRadarState({
     const [projectDocuments, setProjectDocuments] = useState<RadarProjectDocument[]>([]);
     const [resolvedProjectName, setResolvedProjectName] = useState<string>(projectName || DEFAULT_PROJECT_NAME);
     const [activeFilter, setActiveFilter] = useState<RadarFindingFilter>('ALL');
+    const scanWasActiveRef = useRef(false);
+    const scanResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const fetchContradictions = useCallback(async () => {
         setIsLoading(true);
@@ -81,6 +79,76 @@ export function useContradictionRadarState({
             console.error('Error fetching docs:', err);
         }
     }, [projectId, projectName]);
+
+    const scheduleScanBannerReset = useCallback(() => {
+        if (scanResetTimerRef.current) {
+            clearTimeout(scanResetTimerRef.current);
+        }
+
+        scanResetTimerRef.current = setTimeout(() => {
+            setProgress(0);
+            setCurrentStep(null);
+            setCurrentStepStatus(null);
+        }, 5000);
+    }, []);
+
+    const applyScanProgress = useCallback(async (
+        scanStatus: RadarScanProgress,
+        options: { showFinished?: boolean } = {}
+    ) => {
+        if (scanStatus.active) {
+            scanWasActiveRef.current = true;
+            if (scanResetTimerRef.current) {
+                clearTimeout(scanResetTimerRef.current);
+                scanResetTimerRef.current = null;
+            }
+
+            setIsScanning(true);
+            setCurrentStepStatus(null);
+            setProgress(scanStatus.progress);
+            setCurrentStep(
+                scanStatus.currentStep ||
+                `הבדיקה מתקדמת: ${scanStatus.processed}/${scanStatus.total} מסמכים`
+            );
+            return;
+        }
+
+        const shouldShowFinished = scanWasActiveRef.current || options.showFinished || scanStatus.status === 'PAUSED';
+        scanWasActiveRef.current = false;
+        setIsScanning(false);
+
+        if (!shouldShowFinished) {
+            return;
+        }
+
+        await fetchDocuments();
+        await fetchContradictions();
+
+        if (scanStatus.status === 'ERROR') {
+            setProgress(scanStatus.progress);
+            setCurrentStep(scanStatus.errorMessage || 'הבדיקה נעצרה בגלל שגיאה. אפשר להמשיך מהנקודה האחרונה.');
+            setCurrentStepStatus('error');
+        } else if (scanStatus.status === 'PAUSED') {
+            setProgress(scanStatus.progress);
+            setCurrentStep(`הבדיקה נעצרה אחרי ${scanStatus.processed}/${scanStatus.total} מסמכים. לחיצה נוספת תמשיך מאותה נקודה.`);
+            setCurrentStepStatus('error');
+        } else {
+            setProgress(scanStatus.total > 0 ? 100 : scanStatus.progress);
+            setCurrentStep(`הבדיקה הושלמה: נמצאו ${scanStatus.found || 0} ממצאים`);
+            setCurrentStepStatus('success');
+        }
+
+        scheduleScanBannerReset();
+    }, [fetchContradictions, fetchDocuments, scheduleScanBannerReset]);
+
+    const refreshScanProgress = useCallback(async (options: { showFinished?: boolean } = {}) => {
+        if (isLocalProject) return null;
+
+        const scanStatus = await fetchRadarScanStatus(projectId);
+        await applyScanProgress(scanStatus, options);
+
+        return scanStatus;
+    }, [applyScanProgress, isLocalProject, projectId]);
 
     useEffect(() => {
         if (projectName) {
@@ -120,6 +188,50 @@ export function useContradictionRadarState({
         };
     }, [fetchContradictions, fetchDocuments, isLocalProject, projectId, projectName]);
 
+    useEffect(() => {
+        if (isLocalProject) return;
+
+        let cancelled = false;
+
+        const checkStatus = async () => {
+            try {
+                if (!cancelled) {
+                    await refreshScanProgress();
+                }
+            } catch (err) {
+                console.error('Error fetching scan progress:', err);
+            }
+        };
+
+        void checkStatus();
+
+        const intervalId = window.setInterval(checkStatus, SCAN_STATUS_POLL_MS);
+        const onFocus = () => void checkStatus();
+        const onVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                void checkStatus();
+            }
+        };
+
+        window.addEventListener('focus', onFocus);
+        document.addEventListener('visibilitychange', onVisibilityChange);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(intervalId);
+            window.removeEventListener('focus', onFocus);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+        };
+    }, [isLocalProject, refreshScanProgress]);
+
+    useEffect(() => {
+        return () => {
+            if (scanResetTimerRef.current) {
+                clearTimeout(scanResetTimerRef.current);
+            }
+        };
+    }, []);
+
     const radarOpenDocument = useCallback(async (documentId?: string | null, page?: number | string | null) => {
         if (!documentId) return;
 
@@ -147,43 +259,58 @@ export function useContradictionRadarState({
         setIsScanning(true);
         setProgress(0);
         setCurrentStepStatus(null);
-
-        let stepIdx = 0;
-        const progressInterval = setInterval(() => {
-            if (stepIdx < SCAN_PROGRESS_STEPS.length) {
-                const step = SCAN_PROGRESS_STEPS[stepIdx];
-                setCurrentStep(step.msg);
-                setProgress(step.p);
-                stepIdx++;
-            }
-        }, 1000);
+        setCurrentStep('מתחיל בדיקה ושומר התקדמות במערכת');
+        scanWasActiveRef.current = true;
 
         try {
             const data = await scanRadarProject(projectId, force);
-            clearInterval(progressInterval);
+            const latestStatus = data.scanStatus || await refreshScanProgress({ showFinished: true });
 
-            if (data.success) {
+            if (data.success || data.partial) {
                 await fetchDocuments();
                 await fetchContradictions();
                 setCurrentStep(`הבדיקה הושלמה: נמצאו ${data.found || 0} ממצאים`);
                 setCurrentStepStatus('success');
                 setProgress(100);
+                setIsScanning(false);
+                scanWasActiveRef.current = false;
+                scheduleScanBannerReset();
+            } else if (latestStatus?.active) {
+                await applyScanProgress(latestStatus);
             } else {
                 setCurrentStep(data.message || 'אירעה שגיאה במהלך הבדיקה');
+                setCurrentStepStatus('error');
+                setIsScanning(false);
+                scanWasActiveRef.current = false;
+                scheduleScanBannerReset();
             }
         } catch (err) {
-            clearInterval(progressInterval);
             console.error('Scan error:', err);
-            setCurrentStep('אירעה שגיאת תקשורת');
-        } finally {
-            setIsScanning(false);
-            setTimeout(() => {
-                setProgress(0);
-                setCurrentStep(null);
-                setCurrentStepStatus(null);
-            }, 5000);
+            try {
+                const latestStatus = await refreshScanProgress({ showFinished: true });
+                if (!latestStatus?.active) {
+                    setCurrentStep('אירעה שגיאת תקשורת. אם הבדיקה נעצרה, לחיצה נוספת תמשיך מהנקודה האחרונה.');
+                    setCurrentStepStatus('error');
+                    setIsScanning(false);
+                    scanWasActiveRef.current = false;
+                    scheduleScanBannerReset();
+                }
+            } catch {
+                setCurrentStep('אירעה שגיאת תקשורת. אם הבדיקה נעצרה, לחיצה נוספת תמשיך מהנקודה האחרונה.');
+                setCurrentStepStatus('error');
+                setIsScanning(false);
+                scanWasActiveRef.current = false;
+                scheduleScanBannerReset();
+            }
         }
-    }, [fetchContradictions, fetchDocuments, projectId]);
+    }, [
+        applyScanProgress,
+        fetchContradictions,
+        fetchDocuments,
+        projectId,
+        refreshScanProgress,
+        scheduleScanBannerReset,
+    ]);
 
     const rescanItem = useCallback(async (id: string, workDocId?: string) => {
         setRescanningIds((prev) => new Set(prev).add(id));

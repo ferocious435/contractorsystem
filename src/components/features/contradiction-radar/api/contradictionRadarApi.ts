@@ -19,10 +19,27 @@ interface ContradictionMutationResult {
     };
 }
 
-interface RadarScanResult {
+export interface RadarScanProgress {
     success: boolean;
+    active: boolean;
+    status: string;
+    progress: number;
+    processed: number;
+    total: number;
+    currentStep?: string | null;
+    errorMessage?: string | null;
+    updatedAt?: string | null;
+    completedAt?: string | null;
+    found?: number;
+}
+
+export interface RadarScanResult {
+    success: boolean;
+    partial?: boolean;
     found?: number;
     message?: string;
+    warnings?: string[];
+    scanStatus?: RadarScanProgress;
 }
 
 async function parseContradictionMutationResponse(response: Response): Promise<ContradictionMutationResult> {
@@ -46,6 +63,16 @@ async function parseRadarScanResponse(response: Response): Promise<RadarScanResu
     }
 
     return payload as RadarScanResult;
+}
+
+async function parseRadarScanStatusResponse(response: Response): Promise<RadarScanProgress> {
+    const payload = await response.json();
+
+    if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || 'Failed to load scan status');
+    }
+
+    return payload as RadarScanProgress;
 }
 
 export async function fetchRadarProjectName(projectId: string): Promise<string | null> {
@@ -124,6 +151,29 @@ export async function fetchRadarContradictions(projectId: string): Promise<Contr
     }
 
     return (data || []) as ContradictionItem[];
+}
+
+export async function fetchRadarScanStatus(projectId: string, workDocId?: string): Promise<RadarScanProgress> {
+    if (isLocalProjectId(projectId)) {
+        return {
+            success: true,
+            active: false,
+            status: 'IDLE',
+            progress: 0,
+            processed: 0,
+            total: 0,
+            found: isDemoProjectId(projectId) ? 1 : 0,
+        };
+    }
+
+    const params = new URLSearchParams({ projectId });
+    if (workDocId) {
+        params.set('workDocId', workDocId);
+    }
+
+    const response = await fetch(`/api/scan?${params.toString()}`);
+
+    return parseRadarScanStatusResponse(response);
 }
 
 export async function scanRadarProject(

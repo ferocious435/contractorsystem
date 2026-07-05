@@ -27,6 +27,7 @@ const authUtils = read('src/app/api/_utils/auth.ts');
 const scanClearRoute = read('src/app/api/scan/clear/route.ts');
 const contradictionsRoute = read('src/app/api/contradictions/route.ts');
 const scanRoute = read('src/app/api/scan/route.ts');
+const radarApi = read('src/components/features/contradiction-radar/api/contradictionRadarApi.ts');
 const documentDeleteRoute = read('src/app/api/documents/delete/route.ts');
 const contradictionArchiveUtil = read('src/utils/contradiction-archive.ts');
 
@@ -108,6 +109,12 @@ expect('Manual contradiction removal archives findings instead of deleting them'
 expect('Document delete archives linked findings without replacing evidence inline', documentDeleteRoute.includes('archiveContradictionRows') && documentDeleteRoute.includes("select('id, evidence_data')") && !documentDeleteRoute.includes(".from('contradictions')\n            .update({\n                status: 'ARCHIVED',\n                evidence_data: {"));
 expect('Scan cache is invalidated when completed cache has no active findings', scanRoute.includes('cachedContradictions?.length') && scanRoute.includes('.delete()\n                        .eq("scan_signature", scanSignature)'));
 expect('Rescan archives findings through shared evidence-preserving helper', scanRoute.includes('archiveContradictionRows') && scanRoute.includes('current_scan_signature: scanSignature'));
+expect('Scan route exposes durable progress status', scanRoute.includes('export async function GET') && scanRoute.includes('loadProjectScanState') && scanRoute.includes('requireOwnedProject(supabase, projectId)'));
+expect('Scan route persists in-progress checkpoints', scanRoute.includes('status: "IN_PROGRESS"') && scanRoute.includes('processed_work_docs') && scanRoute.includes('total_work_docs'));
+expect('Scan route preserves zero-finding completed cache', scanRoute.includes('(scanState.findings_count || 0) === 0') && scanRoute.includes('הושלם ללא ממצאים'));
+expect('Radar API can fetch persisted scan progress', radarApi.includes('fetchRadarScanStatus') && radarApi.includes('/api/scan?') && radarApi.includes('RadarScanProgress'));
+expect('Radar UI polls persisted scan progress', radarState.includes('refreshScanProgress') && radarState.includes('visibilitychange') && radarState.includes('fetchRadarScanStatus'));
+expect('Radar UI no longer relies on fake scan progress steps', !radarState.includes('SCAN_PROGRESS_STEPS') && radarState.includes('שומר התקדמות במערכת'));
 
 const failed = checks.filter((check) => !check.ok);
 for (const check of checks) {
