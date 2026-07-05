@@ -94,7 +94,7 @@ export function buildPricingPrompt({ contradiction, boqContext, boqRawContext, p
         OUTPUT FORMAT (JSON ONLY):
         {
             "match_found": boolean,
-            "source": "BOQ" | "DEKEL" | "CONTRACTOR" | "CUSTOM_ANALYSIS",
+            "source": "BOQ" | "HOUSING_MINISTRY" | "DEKEL" | "CONTRACTOR" | "CUSTOM_ANALYSIS",
             "confidence": number,
             "match_quality": "DIRECT" | "PARTIAL" | "ZERO_MATCH",
             "suggested_unit_price_excl_vat": number,

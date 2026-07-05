@@ -61,6 +61,7 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
     const [isDragging, setIsDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState<{ current: number, total: number, step: string } | null>(null);
+    const [uploadNotice, setUploadNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
     // View Items State
     const [selectedPricelist, setSelectedPricelist] = useState<PricelistRecord | null>(null);
@@ -200,11 +201,14 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
         const isPDF = file.type === 'application/pdf';
 
         if (!isSpreadsheet && !isImage && !isPDF) {
+            const message = 'אנא העלה קובץ אקסל, PDF או תמונה.';
+            setUploadNotice({ type: 'error', message });
             alert('אנא העלה קובץ אקסל, PDF או תמונה.');
             return;
         }
 
         setIsUploading(true);
+        setUploadNotice(null);
         setUploadProgress({ current: 0, total: 0, step: 'קורא קובץ...' });
 
         try {
@@ -313,10 +317,13 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
 
                     setUploadProgress(null);
                     setIsUploading(false);
+                    setUploadNotice({ type: 'success', message: `המחירון נשמר: ${insertedCount.toLocaleString()} סעיפים.` });
                     fetchPricelists();
                 } catch (err) {
                     console.error(err);
-                    alert("שגיאה בתהליך עיבוד המחירון");
+                    const message = err instanceof Error ? err.message : 'שגיאה בתהליך עיבוד המחירון';
+                    setUploadNotice({ type: 'error', message });
+                    alert(message);
                     setIsUploading(false);
                     setUploadProgress(null);
                 }
@@ -327,7 +334,7 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('projectId', projectId);
-                formData.append('name', file.name.split('.')[0]);
+                formData.append('name', file.name.replace(/\.[^.]+$/i, ''));
 
                 const response = await fetch('/api/pricing/upload-universal', {
                     method: 'POST',
@@ -342,11 +349,18 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
 
                 setUploadProgress(null);
                 setIsUploading(false);
+                setUploadNotice({
+                    type: 'success',
+                    message: `המחירון נשמר: ${Number(result.itemCount || 0).toLocaleString()} סעיפים.`
+                });
                 fetchPricelists();
             }
 
         } catch (err) {
             console.error("Upload error:", err);
+            const message = err instanceof Error ? err.message : 'שגיאה בהעלאת המחירון';
+            setUploadNotice({ type: 'error', message });
+            alert(message);
             setIsUploading(false);
             setUploadProgress(null);
         }
@@ -409,6 +423,18 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                     </>
                 )}
             </div>
+
+            {uploadNotice && (
+                <div
+                    className={`rounded-xl border px-4 py-3 text-sm font-bold ${
+                        uploadNotice.type === 'success'
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                            : 'border-red-500/30 bg-red-500/10 text-red-300'
+                    }`}
+                >
+                    {uploadNotice.message}
+                </div>
+            )}
 
             <div className="bg-[#11161D] border border-white/10 rounded-xl overflow-hidden flex-1 flex flex-col">
                 <div className="px-6 py-4 border-b border-white/10 bg-[#151C24] flex justify-between items-center">

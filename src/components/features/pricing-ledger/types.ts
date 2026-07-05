@@ -4,7 +4,7 @@ export type EditablePricingLedgerRowType = Extract<PricingLedgerRowType, 'APPROV
 
 export type PricingLedgerStatusUpdate = Exclude<PricingLedgerRowType, 'BASE_CONTRACT'>;
 
-export type PricingLedgerSource = 'BOQ' | 'DEKEL' | 'CONTRACTOR' | 'CUSTOM_ANALYSIS';
+export type PricingLedgerSource = 'BOQ' | 'HOUSING_MINISTRY' | 'DEKEL' | 'CONTRACTOR' | 'CUSTOM_ANALYSIS';
 
 export type PricingLedgerItemType = 'ITEM' | 'CHAPTER' | 'SUBCHAPTER' | 'NOTE';
 

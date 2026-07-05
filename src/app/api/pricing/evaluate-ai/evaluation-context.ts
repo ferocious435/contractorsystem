@@ -1,5 +1,29 @@
 type AnyRecord = Record<string, unknown>;
 
+function getPricelistSourceLabel(pricelistName: unknown, description: unknown) {
+    const searchableText = `${pricelistName || ''} ${description || ''}`.toLowerCase();
+
+    if (
+        searchableText.includes('משהב') ||
+        searchableText.includes('משבה') ||
+        searchableText.includes('משרד הבינוי') ||
+        searchableText.includes('שיכון') ||
+        searchableText.includes('housing ministry')
+    ) {
+        return 'HOUSING_MINISTRY';
+    }
+
+    if (searchableText.includes('דקל') || searchableText.includes('dekel')) {
+        return 'DEKEL';
+    }
+
+    if (searchableText.includes('הצעת מחיר') || searchableText.includes('quote')) {
+        return 'CONTRACTOR';
+    }
+
+    return 'CUSTOM_ANALYSIS';
+}
+
 function asRecord(value: unknown): AnyRecord {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
         ? value as AnyRecord
@@ -66,7 +90,8 @@ export function buildPricelistContext(pricelistMatches: AnyRecord[]) {
         .filter(m => m.item_type === 'ITEM')
         .map(m => {
             const pricelist = firstRecord(m.pricelists);
-            return `[EXTERNAL ITEM] [${pricelist.name || 'Unknown'}] Code: ${m.item_code}, Desc: ${m.description}, Price: ${m.rate}, Unit: ${m.unit}`;
+            const sourceLabel = getPricelistSourceLabel(pricelist.name, pricelist.description);
+            return `[${sourceLabel}] [${pricelist.name || 'Unknown'}] Code: ${m.item_code}, Desc: ${m.description}, Price: ${m.rate}, Unit: ${m.unit}`;
         })
         .join('\n');
 

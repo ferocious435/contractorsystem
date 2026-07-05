@@ -4115,8 +4115,53 @@ assertIncludes(
 );
 assertIncludes(
   "src/app/api/pricing/upload-universal/route.ts",
-  "if (shouldSyncContractBoq)",
-  "universal upload must fail project BOQ uploads when item insert fails before ledger sync"
+  "parseMinistryHousingPricelistPdf",
+  "universal upload must parse Ministry of Housing PDF pricelists deterministically before falling back to AI"
+);
+assertIncludes(
+  "src/app/api/pricing/upload-universal/route.ts",
+  "No pricelist items were extracted from this file",
+  "universal upload must reject empty parses instead of creating invisible empty pricelists"
+);
+assertIncludes(
+  "src/components/pricelists/PricelistsPageClient.tsx",
+  "uploadNotice",
+  "pricelist upload UI must show success or failure instead of silently returning to the list"
+);
+assertIncludes(
+  "src/app/api/pricing/upload-universal/route.ts",
+  "await insertPricelistItemsInBatches",
+  "universal upload must fail any pricelist upload when item insert fails before ledger sync or success response"
+);
+assertIncludes(
+  "src/utils/ministry-housing-pricelist-parser.ts",
+  "PDFParse",
+  "Ministry of Housing PDF parser must extract text from the uploaded PDF"
+);
+assertIncludes(
+  "src/utils/ministry-housing-pricelist-parser.ts",
+  "HOUSING_MINISTRY",
+  "Ministry of Housing PDF parser must mark parsed rows with the contract pricing source"
+);
+assertIncludes(
+  "src/app/api/pricing/evaluate-ai/evaluation-pricelists.ts",
+  "getPricelistSourcePriority",
+  "external pricelist matches must be sorted by the contract source hierarchy"
+);
+assertIncludes(
+  "src/app/api/pricing/evaluate-ai/evaluation-prompts.ts",
+  "\"HOUSING_MINISTRY\"",
+  "AI pricing prompt must allow Ministry of Housing as a first-class pricing source"
+);
+assertIncludes(
+  "src/app/api/pricing/save-ledger/ledger-input.ts",
+  "'HOUSING_MINISTRY'",
+  "ledger save validation must preserve Ministry of Housing source rows"
+);
+assertIncludes(
+  "supabase/migrations/20260705150000_add_housing_ministry_pricing_source.sql",
+  "ADD VALUE IF NOT EXISTS 'HOUSING_MINISTRY'",
+  "database enum must accept Ministry of Housing pricing source rows"
 );
 assertIncludes(
   "supabase/migrations/0014_add_pricelist_item_note.sql",

@@ -2,7 +2,7 @@ import { VAT_RATE } from '../../../../utils/constants';
 import { normalizeLedgerEvidenceData } from './ledger-evidence';
 import { buildLedgerMutationPayload } from './ledger-mutation-payload';
 
-const ALLOWED_SOURCES = new Set(['BOQ', 'DEKEL', 'CONTRACTOR', 'CUSTOM_ANALYSIS']);
+const ALLOWED_SOURCES = new Set(['BOQ', 'HOUSING_MINISTRY', 'DEKEL', 'CONTRACTOR', 'CUSTOM_ANALYSIS']);
 const ALLOWED_TYPES = new Set(['BASE_CONTRACT', 'APPROVED_VO', 'PENDING_VO']);
 
 interface NormalizeSaveLedgerInputResult {

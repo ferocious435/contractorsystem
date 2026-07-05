@@ -15,7 +15,7 @@ function firstRecord(value: unknown): AnyRecord {
     return asRecord(value);
 }
 
-function getPricelistMetadata(record: AnyRecord) {
+export function getPricelistMetadata(record: AnyRecord) {
     const pricelist = firstRecord(record.pricelists);
 
     return {
@@ -27,13 +27,54 @@ function getPricelistMetadata(record: AnyRecord) {
     };
 }
 
+export function getPricelistSourcePriority(record: AnyRecord) {
+    const metadata = getPricelistMetadata(record);
+    const searchableText = `${metadata.name || ''} ${metadata.description || ''}`.toLowerCase();
+
+    if (
+        searchableText.includes('משהב') ||
+        searchableText.includes('משבה') ||
+        searchableText.includes('משרד הבינוי') ||
+        searchableText.includes('שיכון') ||
+        searchableText.includes('housing ministry')
+    ) {
+        return { source: 'HOUSING_MINISTRY', rank: 2 };
+    }
+
+    if (searchableText.includes('דקל') || searchableText.includes('dekel')) {
+        return { source: 'DEKEL', rank: 3 };
+    }
+
+    if (searchableText.includes('הצעת מחיר') || searchableText.includes('quote')) {
+        return { source: 'CONTRACTOR', rank: 4 };
+    }
+
+    return { source: 'CUSTOM_ANALYSIS', rank: 5 };
+}
+
+export function sortExternalPricingReferences<T extends AnyRecord>(records: T[]) {
+    return [...records].sort((a, b) => {
+        const priorityDiff = getPricelistSourcePriority(a).rank - getPricelistSourcePriority(b).rank;
+        if (priorityDiff !== 0) {
+            return priorityDiff;
+        }
+
+        const itemTypeDiff = (a.item_type === 'ITEM' ? 0 : 1) - (b.item_type === 'ITEM' ? 0 : 1);
+        if (itemTypeDiff !== 0) {
+            return itemTypeDiff;
+        }
+
+        return String(a.item_code || '').localeCompare(String(b.item_code || ''));
+    });
+}
+
 export function isExternalPricingReference(record: AnyRecord) {
     const pricelist = firstRecord(record.pricelists);
     return Boolean(pricelist.is_global || !isLikelyContractBoqPricelist(getPricelistMetadata(record)));
 }
 
 export function filterExternalPricingReferences<T extends AnyRecord>(records: T[] | null | undefined): T[] {
-    return (records || []).filter(isExternalPricingReference);
+    return sortExternalPricingReferences((records || []).filter(isExternalPricingReference));
 }
 
 export function buildParentItemCodePrefixes(itemMatches: AnyRecord[]) {
@@ -62,4 +103,6 @@ export function appendUniqueParentNotes<T extends AnyRecord>(pricelistMatches: T
             pricelistMatches.push(note);
         }
     });
+
+    pricelistMatches.sort((a, b) => getPricelistSourcePriority(a).rank - getPricelistSourcePriority(b).rank);
 }

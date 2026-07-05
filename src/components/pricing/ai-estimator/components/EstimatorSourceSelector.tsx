@@ -16,6 +16,7 @@ const SOURCE_STEPS = [
 
 const SOURCE_LABELS: Record<string, string> = {
     BOQ: 'נמצא סעיף בכתב הכמויות',
+    HOUSING_MINISTRY: 'נמצא במחירון משרד הבינוי והשיכון',
     DEKEL: 'נמצא בסיס במחירון דקל / מחירון רשמי',
     CONTRACTOR: 'מבוסס על הצעת מחיר או מקור קבלני',
     CUSTOM_ANALYSIS: 'טיוטת תמחור לעריכה לפי מסמכי הפרויקט',
@@ -28,11 +29,13 @@ function EstimatorSourceSelector({
 }: EstimatorSourceSelectorProps) {
     const activeIndex = source === 'BOQ'
         ? 0
-        : source === 'DEKEL'
-            ? 2
-            : source === 'CONTRACTOR'
-                ? 3
-                : -1;
+        : source === 'HOUSING_MINISTRY'
+            ? 1
+            : source === 'DEKEL'
+                ? 2
+                : source === 'CONTRACTOR'
+                    ? 3
+                    : -1;
     const currentSourceLabel = !hasPricingDraft && source === 'CUSTOM_ANALYSIS'
         ? 'לא נבנתה טיוטת מחיר - חסר מחיר לחישוב'
         : (SOURCE_LABELS[source] || SOURCE_LABELS.CUSTOM_ANALYSIS);
