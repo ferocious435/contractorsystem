@@ -95,13 +95,16 @@ export async function saveVoLetter(
 }
 
 export async function deleteVoLetter(
-  supabase: SupabaseClient,
   id: string,
 ): Promise<void> {
-  const { error } = await supabase
-    .from("vo_letters")
-    .delete()
-    .eq("id", id);
+  const deleteRes = await fetch("/api/pricing/vo-letters", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ letterId: id }),
+  });
 
-  if (error) throw error;
+  if (!deleteRes.ok) {
+    const data = await deleteRes.json();
+    throw new Error(data.error || "שגיאה במחיקת המכתב.");
+  }
 }

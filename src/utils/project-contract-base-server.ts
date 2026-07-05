@@ -1,18 +1,8 @@
 import { resolveProjectContractBase } from "@/utils/project-contract-base";
-
-interface SupabaseLikeClient {
-    from: (table: string) => {
-        select: (columns: string) => {
-            eq: (column: string, value: string) => Promise<{ data: any[] | null; error: any }>;
-        };
-        update: (values: Record<string, unknown>) => {
-            eq: (column: string, value: string) => Promise<{ error: any }>;
-        };
-    };
-}
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export async function syncProjectContractBase(
-    supabase: SupabaseLikeClient,
+    supabase: SupabaseClient,
     projectId: string
 ) {
     const { data: documents, error: documentsError } = await supabase

@@ -9,7 +9,7 @@ interface ActionBarProps {
     onAddNew: () => void;
     onSync: () => void;
 }
-export default function ActionBar({
+function ActionBar({
     selectedCount,
     isSyncing,
     onGenerateLetter,
@@ -74,3 +74,5 @@ export default function ActionBar({
         </div>
     );
 }
+
+export default React.memo(ActionBar);

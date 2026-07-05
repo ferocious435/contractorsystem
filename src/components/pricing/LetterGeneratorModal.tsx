@@ -11,7 +11,7 @@ interface LetterGeneratorModalProps {
     onClose: () => void;
 }
 
-export default function LetterGeneratorModal({ 
+function LetterGeneratorModal({
     projectId, 
     initialSelectedItems, 
     onClose 
@@ -52,3 +52,5 @@ export default function LetterGeneratorModal({
         </div>
     );
 }
+
+export default React.memo(LetterGeneratorModal);

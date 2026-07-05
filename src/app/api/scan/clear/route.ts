@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+import { requireOwnedProject } from "@/app/api/_utils/auth";
+import { archiveContradictionRows, type ContradictionArchiveRow } from "@/utils/contradiction-archive";
+import { createClient } from "@/utils/supabase/server";
 
 export async function DELETE(req: NextRequest) {
     try {
@@ -13,24 +12,40 @@ export async function DELETE(req: NextRequest) {
             return NextResponse.json({ error: "projectId is required" }, { status: 400 });
         }
 
-        const supabase = createClient(supabaseUrl, supabaseKey);
+        const supabase = await createClient();
+        const ownership = await requireOwnedProject(supabase, projectId);
 
-        const { error } = await supabase
+        if (!ownership.ok) {
+            return ownership.response;
+        }
+
+        const { data: rowsToArchive, error: selectError } = await supabase
             .from('contradictions')
-            .delete()
-            .eq('project_id', projectId);
+            .select('id, evidence_data')
+            .eq('project_id', projectId)
+            .neq('status', 'ARCHIVED');
 
-        if (error) {
-            console.error("Error clearing contradictions:", error);
+        if (selectError) {
+            console.error("Error loading contradictions for archive:", selectError);
             return NextResponse.json({ error: "Failed to clear contradictions" }, { status: 500 });
         }
 
-        return NextResponse.json({ success: true, message: "Contradictions cleared successfully" });
+        const archived = await archiveContradictionRows(
+            supabase,
+            (rowsToArchive || []) as ContradictionArchiveRow[],
+            {
+                archive_reason: "Findings were cleared from the active radar view. Historical records are retained.",
+                archived_at: new Date().toISOString(),
+            }
+        );
 
-    } catch (error: any) {
+        return NextResponse.json({ success: true, archived, message: "Contradictions archived successfully" });
+
+    } catch (error: unknown) {
         console.error("Clear contradictions error:", error);
+        const message = error instanceof Error ? error.message : "Failed to clear contradictions";
         return NextResponse.json(
-            { error: error.message || "Failed to clear contradictions" },
+            { error: message },
             { status: 500 }
         );
     }

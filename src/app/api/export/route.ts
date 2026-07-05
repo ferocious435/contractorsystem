@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { VAT_RATE } from '@/utils/constants';
+import { syncProjectContractBase } from '@/utils/project-contract-base-server';
+import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
 import {
+    getAmountVat,
     getLedgerRowAmount,
     getLedgerRowTotalInclVat,
     getLedgerRowVatAmount,
+    getMoneySum,
     getPreferredProjectAmount,
     getVariationOrderAmount,
     isVisibleLedgerRow,
@@ -31,6 +35,25 @@ export async function GET(request: Request) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
+        const { data: ownedProject, error: ownershipError } = await supabase
+            .from('projects')
+            .select('id')
+            .eq('id', projectId)
+            .eq('contractor_id', user.id)
+            .maybeSingle();
+
+        if (ownershipError) {
+            console.error('Export project error:', ownershipError);
+            return NextResponse.json({ error: 'Failed to fetch project data' }, { status: 500 });
+        }
+
+        if (!ownedProject) {
+            return NextResponse.json({ error: 'Project not found or forbidden' }, { status: 403 });
+        }
+
+        await syncProjectContractBase(supabase, projectId);
+        await syncContractBoqToLedger(supabase, projectId, { contractorId: user.id });
+
         const [{ data, error }, { data: project, error: projectError }] = await Promise.all([
             supabase
                 .from('pricing_ledger')
@@ -41,7 +64,8 @@ export async function GET(request: Request) {
                 .from('projects')
                 .select('budget')
                 .eq('id', projectId)
-                .single(),
+                .eq('contractor_id', user.id)
+                .maybeSingle(),
         ]);
 
         if (error) {
@@ -49,7 +73,7 @@ export async function GET(request: Request) {
             return NextResponse.json({ error: 'Failed to fetch ledger data' }, { status: 500 });
         }
 
-        if (projectError) {
+        if (projectError || !project) {
             console.error('Export project error:', projectError);
             return NextResponse.json({ error: 'Failed to fetch project data' }, { status: 500 });
         }
@@ -103,13 +127,13 @@ export async function GET(request: Request) {
 
         const totalBaseExclVat = getPreferredProjectAmount(project?.budget, data);
         const totalVOExclVat = getVariationOrderAmount(visibleRows);
-        const grandTotalExclVat = totalBaseExclVat + totalVOExclVat;
-        const totalBaseVat = totalBaseExclVat * VAT_RATE;
+        const grandTotalExclVat = getMoneySum([totalBaseExclVat, totalVOExclVat]);
+        const totalBaseVat = getAmountVat(totalBaseExclVat, VAT_RATE);
         const totalVoVat = visibleRows
             .filter((item) => item.type !== 'BASE_CONTRACT')
-            .reduce((sum, item) => sum + getLedgerRowVatAmount(item, VAT_RATE), 0);
-        const grandTotalVat = totalBaseVat + totalVoVat;
-        const grandTotalInclVat = grandTotalExclVat + grandTotalVat;
+            .reduce((sum, item) => getMoneySum([sum, getLedgerRowVatAmount(item, VAT_RATE)]), 0);
+        const grandTotalVat = getMoneySum([totalBaseVat, totalVoVat]);
+        const grandTotalInclVat = getMoneySum([grandTotalExclVat, grandTotalVat]);
 
         rows.push(['', '', '', '', '', '', '', '', '', '']);
         rows.push(['סה"כ חוזה בסיס ללא מע"מ', '', '', '', '', '', totalBaseExclVat, '', '', '']);
@@ -131,8 +155,9 @@ export async function GET(request: Request) {
                 'Content-Disposition': `attachment; filename="ledger_${projectId}.csv"`,
             },
         });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error('Export API error:', err);
-        return NextResponse.json({ error: err.message }, { status: 500 });
+        const message = err instanceof Error ? err.message : 'Export failed';
+        return NextResponse.json({ error: message }, { status: 500 });
     }
 }

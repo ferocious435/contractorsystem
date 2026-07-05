@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/utils/supabase/client";
 
-export default function DocumentUpload({ projectId, onUploadSuccess, docType = 'contract' }: { projectId: string; onUploadSuccess?: (doc: any) => void; docType?: string }) {
+interface UploadedDocument extends Record<string, unknown> {
+    id?: string;
+}
+
+export default function DocumentUpload({ projectId, onUploadSuccess, docType = 'contract' }: { projectId: string; onUploadSuccess?: (doc: UploadedDocument) => void; docType?: string }) {
     const [isUploading, setIsUploading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const supabase = createClient();
 
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -16,50 +18,30 @@ export default function DocumentUpload({ projectId, onUploadSuccess, docType = '
         setError(null);
 
         try {
-            // 1. Upload file to Supabase Storage
-            const fileExt = file.name.split('.').pop();
-            const fileName = `${projectId}/${Math.random().toString(36).substring(2)}_${Date.now()}.${fileExt}`;
-
-            const { data: storageData, error: storageError } = await supabase
-                .storage
-                .from('documents')
-                .upload(fileName, file);
-
-            if (storageError) throw storageError;
-
-            // 2. Get Public URL
-            const { data: urlData } = supabase
-                .storage
-                .from('documents')
-                .getPublicUrl(fileName);
-
-            const fileUrl = urlData.publicUrl;
-
-            // 3. Создание записи в таблице 'documents'
-            // Категория определяется секцией загрузки, а НЕ захардкожена
             const dbCategory = docType === 'contract' ? 'CONTRACT' : 'EXECUTION';
-            const { data: docData, error: docError } = await supabase
-                .from('documents')
-                .insert({
-                    project_id: projectId,
-                    title: file.name,
-                    category: dbCategory,
-                    doc_type: docType,
-                    file_url: fileUrl,
-                    ai_status: 'PENDING'
-                })
-                .select()
-                .single();
+            const formData = new FormData();
+            formData.set("projectId", projectId);
+            formData.set("category", dbCategory);
+            formData.set("file", file);
 
-            if (docError) throw docError;
+            const uploadRes = await fetch("/api/documents", {
+                method: "POST",
+                body: formData,
+            });
+            const uploadData = await uploadRes.json();
 
-            if (onUploadSuccess) {
-                onUploadSuccess(docData);
+            if (!uploadRes.ok || !uploadData.success) {
+                throw new Error(uploadData.error || "Failed to upload document");
             }
 
-        } catch (err: any) {
+            if (onUploadSuccess) {
+                onUploadSuccess(uploadData.document);
+            }
+
+        } catch (err) {
             console.error("Upload error:", err);
-            setError(err.message || "שגיאה בהעלאת המסמך.");
+            const message = err instanceof Error ? err.message : "שגיאה בהעלאת המסמך.";
+            setError(message);
         } finally {
             setIsUploading(false);
             // Reset input

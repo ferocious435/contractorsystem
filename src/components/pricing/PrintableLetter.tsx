@@ -1,8 +1,9 @@
 'use client';
 
 import React from 'react';
-import { LedgerItem } from './LedgerTable';
+import type { LedgerItem } from '@/types';
 import { VAT_RATE, AI_MODEL_BRANDING } from '@/utils/constants';
+import { getAmountVat, getLedgerRowAmount, getMoneySum } from '@/utils/project-financials';
 
 interface PrintableLetterProps {
     projectName: string;
@@ -14,6 +15,26 @@ interface PrintableLetterProps {
     onClose?: () => void;
 }
 
+function toReactText(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function getDisplayNotes(value: LedgerItem['governing_notes']): string[] {
+    if (Array.isArray(value)) {
+        return value.map(toReactText).filter(Boolean);
+    }
+
+    const singleNote = toReactText(value);
+    return singleNote ? [singleNote] : [];
+}
 /**
  * Component for generating professional, printable Variation Order letters.
  * Optimized for Hebrew (RTL) and browser-based printing.
@@ -31,10 +52,11 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
         return new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS' }).format(val);
     };
 
-    const calculationItems = items.filter(i => !i.item_type || i.item_type === 'ITEM');
-    const totalExclVat = calculationItems.reduce((sum, i) => sum + (i.quantity * i.unit_price_excl_vat), 0);
-    const totalVat = totalExclVat * vatRate;
-    const totalInclVat = totalExclVat + totalVat;
+    const letterItems = items.filter((item) => item.type !== 'BASE_CONTRACT');
+    const calculationItems = letterItems.filter(i => !i.item_type || i.item_type === 'ITEM');
+    const totalExclVat = calculationItems.reduce((sum, i) => getMoneySum([sum, getLedgerRowAmount(i)]), 0);
+    const totalVat = getAmountVat(totalExclVat, vatRate);
+    const totalInclVat = getMoneySum([totalExclVat, totalVat]);
 
     return (
         <div className="fixed inset-0 z-[9999] bg-white overflow-y-auto print:static print:bg-transparent" dir="rtl">
@@ -108,14 +130,16 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                             <tr>
                                 <th className="px-4 py-4 border-l border-slate-700">#</th>
                                 <th className="px-4 py-4 border-l border-slate-700">קוד/תיאור</th>
-                                <th className="px-4 py-4 border-l border-slate-700 text-center">יח"מ</th>
+                                <th className="px-4 py-4 border-l border-slate-700 text-center">יח&quot;מ</th>
                                 <th className="px-4 py-4 border-l border-slate-700 text-center">כמות</th>
                                 <th className="px-4 py-4 border-l border-slate-700 text-left">מחיר יחידה</th>
-                                <th className="px-4 py-4 text-left">סה"כ</th>
+                                <th className="px-4 py-4 text-left">סה&quot;כ</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-200">
-                            {items.map((item, idx) => {
+                            {letterItems.map((item, idx) => {
+                                const governingNotes = getDisplayNotes(item.governing_notes);
+
                                 if (item.item_type === 'CHAPTER') {
                                     return (
                                         <tr key={idx} className="bg-slate-100 font-black text-slate-800">
@@ -133,7 +157,7 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                                 if (item.item_type === 'NOTE') {
                                     return (
                                         <tr key={idx} className="bg-white italic text-slate-500 italic">
-                                            <td colSpan={6} className="px-4 py-2 pr-12 text-xs">ⓘ {item.description}</td>
+                                            <td colSpan={6} className="px-4 py-2 pr-12 text-xs">הערה: {item.description}</td>
                                         </tr>
                                     );
                                 }
@@ -150,18 +174,14 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                                             <td className="px-4 py-4 text-center font-bold text-slate-900">{item.quantity}</td>
                                             <td className="px-4 py-4 text-left text-slate-600 font-mono">{formatCurrency(item.unit_price_excl_vat)}</td>
                                             <td className="px-4 py-4 text-left font-black text-slate-900 font-mono">
-                                                {formatCurrency(item.quantity * item.unit_price_excl_vat)}
+                                                {formatCurrency(getLedgerRowAmount(item))}
                                             </td>
                                         </tr>
-                                        {item.governing_notes && (
+                                        {governingNotes.length > 0 && (
                                             <tr className="bg-emerald-50/30 print:bg-transparent">
                                                 <td colSpan={6} className="px-4 py-2 pr-12 text-[11px] font-bold text-emerald-700 border-r-2 border-emerald-500">
-                                                    <span className="ml-1 opacity-70">סימוכין חוזי:</span> 
-                                                    {Array.isArray(item.governing_notes) 
-                                                        ? item.governing_notes.join(', ') 
-                                                        : typeof item.governing_notes === 'string' 
-                                                            ? item.governing_notes 
-                                                            : 'ראו נספח הוכחות'}
+                                                    <span className="ml-1 opacity-70">סימוכין חוזי:</span>
+                                                    {governingNotes.join(', ')}
                                                 </td>
                                             </tr>
                                         )}
@@ -183,15 +203,15 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                 <div className="flex justify-end mb-16">
                     <div className="w-1/2 space-y-3 bg-slate-900 text-white p-8 rounded-2xl shadow-xl">
                         <div className="flex justify-between text-sm opacity-80 border-b border-slate-700 pb-2">
-                            <span>סה"כ לפני מע"מ:</span>
+                            <span>סה&quot;כ לפני מע&quot;מ:</span>
                             <span className="font-mono">{formatCurrency(totalExclVat)}</span>
                         </div>
                         <div className="flex justify-between text-sm opacity-80 border-b border-slate-700 pb-2">
-                            <span>מע"מ ({(vatRate * 100).toFixed(0)}%):</span>
+                            <span>מע&quot;מ ({(vatRate * 100).toFixed(0)}%):</span>
                             <span className="font-mono">{formatCurrency(totalVat)}</span>
                         </div>
                         <div className="flex justify-between text-xl font-black pt-2">
-                            <span>סה"כ לתשלום:</span>
+                            <span>סה&quot;כ לתשלום:</span>
                             <span className="font-mono text-2xl tracking-tight underline decoration-blue-500 underline-offset-8">
                                 {formatCurrency(totalInclVat)}
                             </span>
@@ -214,12 +234,15 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                 {/* Evidence Appendix (New Page/Section) */}
                 <div className="break-before-page pt-12 border-t-4 border-slate-900">
                     <div className="flex items-center gap-4 mb-8">
-                        <div className="bg-blue-600 text-white px-4 py-2 rounded-lg font-black text-xl">נספח א'</div>
+                        <div className="bg-blue-600 text-white px-4 py-2 rounded-lg font-black text-xl">נספח א&apos;</div>
                         <h2 className="text-2xl font-black text-slate-900">נספח הוכחות וסימוכין (Evidence Appendix)</h2>
                     </div>
 
                     <div className="space-y-8">
-                        {items.filter(i => i.governing_notes || i.ai_rationale).map((item, idx) => (
+                        {letterItems.filter(i => getDisplayNotes(i.governing_notes).length > 0 || i.ai_rationale).map((item, idx) => {
+                            const governingNotes = getDisplayNotes(item.governing_notes);
+
+                            return (
                             <div key={idx} className="bg-slate-50 p-6 rounded-2xl border border-slate-200">
                                 <div className="flex justify-between items-start mb-4 border-b border-slate-200 pb-3">
                                     <div className="font-black text-slate-800">
@@ -235,14 +258,14 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                                     <div className="space-y-3">
                                         <h4 className="text-[10px] font-black uppercase text-emerald-600 tracking-widest">מקורות חוזיים / טכניים</h4>
                                         <div className="text-sm text-slate-600 leading-relaxed">
-                                            {Array.isArray(item.governing_notes) ? (
+                                            {governingNotes.length > 0 ? (
                                                 <ul className="list-disc pr-5 space-y-1">
-                                                    {item.governing_notes.map((note, i) => (
+                                                    {governingNotes.map((note, i) => (
                                                         <li key={i}>{note}</li>
                                                     ))}
                                                 </ul>
                                             ) : (
-                                                <p>{item.governing_notes || 'לא צוינו מקורות ספציפיים'}</p>
+                                                <p>לא צוינו מקורות ספציפיים</p>
                                             )}
                                         </div>
                                     </div>
@@ -254,9 +277,10 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                                     </div>
                                 </div>
                             </div>
-                        ))}
+                        );
+                        })}
                         
-                        {items.every(i => !i.governing_notes && !i.ai_rationale) && (
+                        {letterItems.every(i => getDisplayNotes(i.governing_notes).length === 0 && !i.ai_rationale) && (
                             <div className="text-center py-20 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
                                 <p className="text-slate-400 font-medium">לא נמצאו סימוכין מפורטים עבור פריטים אלו.</p>
                             </div>
@@ -271,7 +295,7 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                 </div>
 
                 <div className="mt-20 text-center text-[10px] text-slate-400 font-medium tracking-widest uppercase">
-                    Generated by {AI_MODEL_BRANDING} • Internal Document Verification Required
+                    Generated by {AI_MODEL_BRANDING} - Internal Document Verification Required
                 </div>
             </div>
         </div>

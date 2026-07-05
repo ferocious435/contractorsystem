@@ -1,4 +1,4 @@
-export interface ContractDocumentLike {
+﻿export interface ContractDocumentLike {
     title?: string | null;
     extracted_text?: string | null;
     parsed_json?: {
@@ -12,12 +12,16 @@ export interface ContractBaseResolution {
     strategy: "BOQ_MAX_TOTAL" | "CONTRACT_SUM" | "FALLBACK_MAX_TOTAL" | "NONE";
 }
 
+function roundMoney(value: number): number {
+    return Math.round(value * 100) / 100;
+}
+
 function normalizeText(value: string | null | undefined): string {
-    return (value || "").replace(/[^\dA-Za-z\u0590-\u05FF.]+/g, "");
+    return (value || "").replace(/[^\dA-Za-z\u0590-\u05FF.]+/g, "").toLowerCase();
 }
 
 function normalizeTitle(value: string | null | undefined): string {
-    return (value || "").toLowerCase().replace(/[^\dA-Za-z\u0590-\u05FF]+/g, "");
+    return normalizeText(value);
 }
 
 function parseAmount(value: string | null | undefined): number | null {
@@ -26,25 +30,42 @@ function parseAmount(value: string | null | undefined): number | null {
     }
 
     const parsed = Number(value.replace(/,/g, ""));
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    return Number.isFinite(parsed) && parsed > 0 ? roundMoney(parsed) : null;
 }
 
 export function extractGeneralTotalFromText(text: string | null | undefined): number | null {
     const normalized = normalizeText(text);
-    const matches = [...normalized.matchAll(/סךהכל(\d+(?:\.\d{2})?)סהככללי/g)];
-    const lastMatch = matches.at(-1);
-    return parseAmount(lastMatch?.[1] || null);
+    const patterns = [
+        /סךהכל(\d+(?:\.\d{1,2})?)סהככללי/g,
+        /סהכ(\d+(?:\.\d{1,2})?)סהככללי/g,
+        /סהכ(\d+(?:\.\d{1,2})?)כללי/g,
+    ];
+
+    for (const pattern of patterns) {
+        const matches = [...normalized.matchAll(pattern)];
+        const amount = parseAmount(matches.at(-1)?.[1] || null);
+        if (amount !== null) {
+            return amount;
+        }
+    }
+
+    return null;
 }
 
 function isLikelyBoqDocument(doc: ContractDocumentLike): boolean {
     const normalizedTitle = normalizeTitle(doc.title);
     const normalizedText = normalizeText(doc.extracted_text);
+    const parsedType = normalizeTitle(doc.parsed_json?.type);
 
     if (normalizedText.includes("כתבכמויות") || normalizedText.includes("כמויותומחירים")) {
         return true;
     }
 
     if (normalizedTitle.includes("כמויות") || normalizedTitle.includes("boq")) {
+        return true;
+    }
+
+    if (parsedType.includes("כתבכמויות") || parsedType.includes("כמויות") || parsedType.includes("boq")) {
         return true;
     }
 
@@ -56,12 +77,19 @@ function isLikelyAgreementDocument(doc: ContractDocumentLike): boolean {
     const normalizedTitle = normalizeTitle(doc.title);
     const parsedType = normalizeTitle(doc.parsed_json?.type);
 
-    return (
+    if (
         normalizedTitle.includes("הסכם") ||
         normalizedTitle.includes("חוזה") ||
         parsedType.includes("הסכם") ||
         parsedType.includes("חוזה")
-    );
+    ) {
+        return true;
+    }
+
+    return Boolean(parsedType) &&
+        !parsedType.includes("boq") &&
+        !parsedType.includes("כתבכמויות") &&
+        !parsedType.includes("כמויות");
 }
 
 export function resolveProjectContractBase(docs: ContractDocumentLike[]): ContractBaseResolution {
@@ -98,7 +126,7 @@ export function resolveProjectContractBase(docs: ContractDocumentLike[]): Contra
     const agreementCandidates = candidates.filter((doc) => doc.isAgreement);
     if (agreementCandidates.length) {
         return {
-            amount: agreementCandidates.reduce((sum, doc) => sum + (doc.total || 0), 0),
+            amount: agreementCandidates.reduce((sum, doc) => roundMoney(sum + (doc.total || 0)), 0),
             sourceTitle: agreementCandidates.map((doc) => doc.title).filter(Boolean).join(", "),
             strategy: "CONTRACT_SUM",
         };

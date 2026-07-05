@@ -1,15 +1,63 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { requireOwnedProject } from "@/app/api/_utils/auth";
+import { archiveContradictionRows, type ContradictionArchiveRow } from "@/utils/contradiction-archive";
+import { downloadDocumentBuffer, isPdfDocument as isStoredPdfDocument } from "@/utils/document-storage";
 import { geminiModel, withRetry } from "@/lib/gemini";
+import { createClient } from "@/utils/supabase/server";
 import { createHash } from "crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+export const maxDuration = 300;
 const MAX_CONTRACT_CONTEXT_CHARS = 180_000;
 const MAX_WORK_CONTEXT_CHARS = 80_000;
 const MAX_CHARS_PER_CONTRACT_DOC = 35_000;
+const MIN_USEFUL_TEXT_LENGTH = 1000;
 const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER", "PRICELIST"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
+
+type ScanRole = "CONTRACT_BASE" | "WORK_EVIDENCE" | "UNKNOWN";
+
+type ScanDocument = Record<string, unknown> & {
+    id: string;
+    title?: string | null;
+    category?: string | null;
+    extracted_text?: string | null;
+    extracted_text_hash?: string | null;
+    content_hash?: string | null;
+    updated_at?: string | null;
+    processed_at?: string | null;
+    created_at?: string | null;
+    ai_status?: string | null;
+    ocr_status?: string | null;
+    parsed_json?: { category?: unknown; type?: unknown } | null;
+    __scanRole?: ScanRole;
+};
+
+type ScanFinding = Record<string, unknown> & {
+    title?: string;
+    description?: string;
+    category?: string;
+    advice?: string;
+    clause_reference?: unknown;
+    contract_page?: unknown;
+    work_page?: unknown;
+    original_instruction?: unknown;
+    new_requirement?: unknown;
+    contract_quote?: unknown;
+    work_quote?: unknown;
+    contract_document_id?: unknown;
+    comparison_type?: unknown;
+    risk_reason?: unknown;
+    confidence?: unknown;
+    next_check?: unknown;
+    missing_evidence?: unknown;
+    expert_strategy?: unknown;
+};
+
+type ScanDocumentWithRole = ScanDocument & { __scanRole: ScanRole };
+
+type ScanResult = Record<string, unknown> & { __cached?: boolean };
+type ScanResults = ScanResult[] & { __analysisFailures?: string[] };
 
 function extractFirstJsonArray(text: string) {
     const cleanText = text.replace(/```json|```/g, "").trim();
@@ -51,7 +99,7 @@ function extractFirstJsonArray(text: string) {
     return null;
 }
 
-function parseGeminiJsonArray(text: string): any[] {
+function parseGeminiJsonArray(text: string): ScanFinding[] {
     const jsonArray = extractFirstJsonArray(text);
     if (!jsonArray) {
         throw new Error("Gemini did not return a JSON array");
@@ -63,12 +111,24 @@ function sha256(input: string) {
     return createHash("sha256").update(input).digest("hex");
 }
 
-function getDocumentSignature(doc: any) {
+function sha256Buffer(input: Buffer) {
+    return createHash("sha256").update(input).digest("hex");
+}
+
+function hasUsefulText(doc: ScanDocument) {
+    return String(doc.extracted_text || "").trim().length >= MIN_USEFUL_TEXT_LENGTH;
+}
+
+function isPdfDocument(doc: ScanDocument) {
+    return isStoredPdfDocument(doc);
+}
+
+function getDocumentSignature(doc: ScanDocument) {
     const textHash = doc.extracted_text_hash || sha256(String(doc.extracted_text || ""));
     return `${doc.id}:${doc.content_hash || "no-file-hash"}:${textHash}:${doc.updated_at || doc.processed_at || doc.created_at || ""}`;
 }
 
-function buildContractSignature(contractDocs: any[]) {
+function buildContractSignature(contractDocs: ScanDocument[]) {
     return sha256(contractDocs.map(getDocumentSignature).sort().join("|"));
 }
 
@@ -76,7 +136,7 @@ function buildScanSignature(projectId: string, contractSignature: string, workSi
     return sha256(`${projectId}:${contractSignature}:${workSignature}`);
 }
 
-function getDocumentRole(doc: any): "CONTRACT_BASE" | "WORK_EVIDENCE" | "UNKNOWN" {
+function getDocumentRole(doc: ScanDocument): ScanRole {
     const rawCategory = String(doc.category || doc.parsed_json?.category || "").toUpperCase();
     const title = String(doc.title || "").toLowerCase();
     const parsedType = String(doc.parsed_json?.type || "").toLowerCase();
@@ -99,9 +159,9 @@ function getDocumentRole(doc: any): "CONTRACT_BASE" | "WORK_EVIDENCE" | "UNKNOWN
     return "UNKNOWN";
 }
 
-function buildBoundedDocumentContext(docs: any[], maxTotalChars: number, maxPerDoc: number) {
+function buildBoundedDocumentContext(docs: ScanDocument[], maxTotalChars: number, maxPerDoc: number) {
     let usedChars = 0;
-    const includedDocs: any[] = [];
+    const includedDocs: ScanDocument[] = [];
     const sections: string[] = [];
 
     for (const doc of docs) {
@@ -129,8 +189,79 @@ ${textSlice}`);
     };
 }
 
-function cleanAiText(text: string) {
-    return text?.replace(/\s*Powered by[^\.\n]*/gi, "").replace(/\s*מופעל על ידי[^\.\n]*/gi, "").trim() || text;
+async function extractPdfTextForScan<T extends ScanDocument>(supabase: SupabaseClient, doc: T): Promise<T> {
+    if (!isPdfDocument(doc)) {
+        return doc;
+    }
+
+    const pdfBuffer = await downloadDocumentBuffer(supabase, doc);
+    const contentHash = sha256Buffer(pdfBuffer);
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { PDFParse } = require("pdf-parse");
+    const parser = new PDFParse({ data: pdfBuffer });
+    const pdfData = await parser.getText();
+    await parser.destroy();
+
+    const extractedText = pdfData.text || "";
+    const extractedTextHash = sha256(extractedText);
+    const nextAiStatus = doc.ai_status === "VALIDATED"
+        ? "VALIDATED"
+        : extractedText.length >= MIN_USEFUL_TEXT_LENGTH ? "SCANNED" : doc.ai_status;
+
+    const { error } = await supabase
+        .from("documents")
+        .update({
+            extracted_text: extractedText,
+            ocr_status: extractedText.length >= MIN_USEFUL_TEXT_LENGTH ? "COMPLETED" : "REQUIRES_REVIEW",
+            ai_status: nextAiStatus,
+            content_hash: contentHash,
+            extracted_text_hash: extractedTextHash,
+            processed_at: new Date().toISOString()
+        })
+        .eq("id", doc.id);
+
+    if (error) {
+        throw new Error(`Failed to save extracted text for "${doc.title}": ${error.message}`);
+    }
+
+    return {
+        ...doc,
+        extracted_text: extractedText,
+        ocr_status: extractedText.length >= MIN_USEFUL_TEXT_LENGTH ? "COMPLETED" : "REQUIRES_REVIEW",
+        ai_status: nextAiStatus,
+        content_hash: contentHash,
+        extracted_text_hash: extractedTextHash,
+        processed_at: new Date().toISOString()
+    } as T;
+}
+
+async function ensureScanTextForDocuments<T extends ScanDocument>(supabase: SupabaseClient, documents: T[]) {
+    const prepared: T[] = [];
+    const failures: string[] = [];
+
+    for (const doc of documents) {
+        if (hasUsefulText(doc)) {
+            prepared.push(doc);
+            continue;
+        }
+
+        try {
+            prepared.push(await extractPdfTextForScan(supabase, doc));
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[scan] Text preparation failed for ${doc.title}:`, error);
+            failures.push(`${doc.title}: ${message}`);
+            prepared.push(doc);
+        }
+    }
+
+    return { prepared, failures };
+}
+
+function cleanAiText(text: unknown) {
+    if (typeof text !== "string") return text;
+    return text.replace(/\s*Powered by[^\.\n]*/gi, "").replace(/\s*מופעל על ידי[^\.\n]*/gi, "").trim() || text;
 }
 
 function normalizeConfidence(value: unknown) {
@@ -141,7 +272,7 @@ function normalizeConfidence(value: unknown) {
     return 1;
 }
 
-function normalizeEvidenceStatus(item: any) {
+function normalizeEvidenceStatus(item: ScanFinding) {
     const category = String(item.category || "").toLowerCase();
     const comparisonType = String(item.comparison_type || "").toLowerCase();
     const hasQuotes = Boolean(item.contract_quote && item.work_quote);
@@ -165,7 +296,7 @@ function mapSeverity(category: string) {
 
 function buildScanPrompt(params: {
     contractContext: string;
-    workDoc: any;
+    workDoc: ScanDocument;
     workText: string;
     contractContextBundle: ReturnType<typeof buildBoundedDocumentContext>;
 }) {
@@ -252,40 +383,80 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "projectId is required" }, { status: 400 });
         }
 
-        const supabase = createClient(supabaseUrl, supabaseKey);
+        const supabase = await createClient();
+        const ownership = await requireOwnedProject(supabase, projectId);
+
+        if (!ownership.ok) {
+            return ownership.response;
+        }
 
         if (force) {
-            await supabase.from("contradictions").update({
-                status: "ARCHIVED",
-                evidence_data: {
+            const { data: rowsToArchive, error: archiveSelectError } = await supabase
+                .from("contradictions")
+                .select("id, evidence_data")
+                .eq("project_id", projectId)
+                .neq("status", "ARCHIVED");
+
+            if (archiveSelectError) {
+                throw archiveSelectError;
+            }
+
+            await archiveContradictionRows(
+                supabase,
+                (rowsToArchive || []) as ContradictionArchiveRow[],
+                {
                     archive_reason: "Project was rescanned. Previous findings are kept only as historical evidence.",
-                    archived_at: new Date().toISOString()
+                    archived_at: new Date().toISOString(),
                 }
-            }).eq("project_id", projectId);
+            );
             await supabase.from("document_scan_state").delete().eq("project_id", projectId);
         } else if (workDocId) {
-            await supabase.from("contradictions").update({
-                status: "ARCHIVED",
-                evidence_data: {
+            const { data: rowsToArchive, error: archiveSelectError } = await supabase
+                .from("contradictions")
+                .select("id, evidence_data")
+                .eq("project_id", projectId)
+                .eq("source_execution_doc_id", workDocId)
+                .neq("status", "ARCHIVED");
+
+            if (archiveSelectError) {
+                throw archiveSelectError;
+            }
+
+            await archiveContradictionRows(
+                supabase,
+                (rowsToArchive || []) as ContradictionArchiveRow[],
+                {
                     archive_reason: "Work document was rescanned. Previous findings are kept only as historical evidence.",
                     archived_at: new Date().toISOString(),
-                    rescanned_work_doc_id: workDocId
+                    rescanned_work_doc_id: workDocId,
                 }
-            }).eq("project_id", projectId).eq("source_execution_doc_id", workDocId);
+            );
             await supabase.from("document_scan_state").delete().eq("project_id", projectId).eq("work_doc_id", workDocId);
         }
 
-        const { data: documents } = await supabase.from("documents").select("*").eq("project_id", projectId);
-        if (!documents || documents.length === 0) {
+        const { data: documentRows } = await supabase.from("documents").select("*").eq("project_id", projectId);
+        const documents = (documentRows || []) as ScanDocument[];
+        if (documents.length === 0) {
             return NextResponse.json({ success: true, found: 0, message: "אין מסמכים לסריקה" });
         }
 
-        const documentsWithRoles = documents.map((doc: any) => ({ ...doc, __scanRole: getDocumentRole(doc) }));
-        const contractDocs = documentsWithRoles.filter((d: any) => d.__scanRole === "CONTRACT_BASE");
-        let workDocs = documentsWithRoles.filter((d: any) => d.__scanRole === "WORK_EVIDENCE");
+        const unvalidatedDocumentsCount = documents.filter((doc) => doc.ai_status !== "VALIDATED").length;
+        const validatedDocuments = documents.filter((doc) => doc.ai_status === "VALIDATED");
+
+        if (validatedDocuments.length === 0) {
+            return NextResponse.json({
+                success: false,
+                error: "Validate contract and execution documents before scanning for contradictions.",
+                unvalidatedDocumentsCount
+            }, { status: 400 });
+        }
+
+        let documentsWithRoles: ScanDocumentWithRole[] = validatedDocuments.map((doc): ScanDocumentWithRole => ({ ...doc, __scanRole: getDocumentRole(doc) }));
+        let contractDocs = documentsWithRoles.filter((d) => d.__scanRole === "CONTRACT_BASE");
+        let workDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
 
         if (workDocId) {
-            workDocs = workDocs.filter((d: any) => d.id === workDocId);
+            workDocs = workDocs.filter((d) => d.id === workDocId);
         }
 
         if (contractDocs.length === 0) {
@@ -302,13 +473,55 @@ export async function POST(req: NextRequest) {
             }, { status: 400 });
         }
 
+        const docsForTextPreparation = [...contractDocs, ...workDocs];
+        const missingUsefulTextCount = docsForTextPreparation.filter((doc) => !hasUsefulText(doc)).length;
+
+        let textPreparationFailures: string[] = [];
+
+        if (missingUsefulTextCount > 0) {
+            const { prepared, failures } = await ensureScanTextForDocuments(supabase, docsForTextPreparation);
+            textPreparationFailures = failures;
+            const preparedById = new Map(prepared.map((doc) => [doc.id, doc]));
+
+            documentsWithRoles = documentsWithRoles.map((doc) => preparedById.get(doc.id) || doc);
+            contractDocs = documentsWithRoles.filter((d) => d.__scanRole === "CONTRACT_BASE");
+            workDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
+
+            if (workDocId) {
+                workDocs = workDocs.filter((d) => d.id === workDocId);
+            }
+
+            if (failures.length > 0) {
+                console.warn(`[scan] Text preparation completed with ${failures.length} failures`);
+            }
+        }
+
+        if (!contractDocs.some((doc) => hasUsefulText(doc))) {
+            return NextResponse.json({
+                success: false,
+                error: "Contract documents exist, but no readable text could be extracted for comparison. Open the contract documents page and run document scan on at least one contract/BOQ PDF."
+            }, { status: 400 });
+        }
+
+        if (!workDocs.some((doc) => hasUsefulText(doc))) {
+            return NextResponse.json({
+                success: false,
+                error: "Execution documents exist, but no readable text could be extracted for comparison. Open the execution documents page and run document scan on at least one execution PDF."
+            }, { status: 400 });
+        }
+
         const foundContradictions = await analyzeDirectly(supabase, projectId, contractDocs, workDocs, force);
+        const analysisFailures = foundContradictions.__analysisFailures || [];
+        const warnings = [...textPreparationFailures, ...analysisFailures];
 
         return NextResponse.json({
-            success: true,
+            success: warnings.length === 0,
+            partial: warnings.length > 0,
             found: foundContradictions.length,
             contradictions: foundContradictions,
-            cached: foundContradictions.length > 0 && foundContradictions.every((item: any) => item.__cached === true)
+            cached: foundContradictions.length > 0 && foundContradictions.every((item) => item.__cached === true),
+            skippedUnvalidatedDocuments: unvalidatedDocumentsCount,
+            warnings
         });
 
     } catch (error: unknown) {
@@ -318,10 +531,11 @@ export async function POST(req: NextRequest) {
     }
 }
 
-async function analyzeDirectly(supabase: any, projectId: string, contractDocs: any[], workDocs: any[], force = false): Promise<any[]> {
-    const results: any[] = [];
+async function analyzeDirectly(supabase: SupabaseClient, projectId: string, contractDocs: ScanDocument[], workDocs: ScanDocument[], force = false): Promise<ScanResults> {
+    const results: ScanResults = [] as ScanResults;
+    const analysisFailures: string[] = [];
     const contractSignature = buildContractSignature(contractDocs);
-    const contractDocIds = contractDocs.map((doc: any) => String(doc.id)).sort();
+    const contractDocIds = contractDocs.map((doc) => String(doc.id)).sort();
 
     const contractContextBundle = buildBoundedDocumentContext(
         contractDocs.filter(d => d.extracted_text),
@@ -357,32 +571,34 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
                         .neq("status", "ARCHIVED");
 
                     if (cachedContradictions?.length) {
-                        cachedContradictions.forEach((item: any) => results.push({ ...item, __cached: true }));
+                        cachedContradictions.forEach((item) => results.push({ ...item, __cached: true }));
+                        continue;
                     }
-                    continue;
+
+                    await supabase
+                        .from("document_scan_state")
+                        .delete()
+                        .eq("scan_signature", scanSignature);
                 }
 
                 const { data: oldFindings } = await supabase
                     .from("contradictions")
-                    .select("id, scan_signature")
+                    .select("id, evidence_data")
                     .eq("project_id", projectId)
                     .eq("source_execution_doc_id", workDoc.id)
-                    .neq("status", "ARCHIVED");
+                    .neq("status", "ARCHIVED")
+                    .or(`scan_signature.is.null,scan_signature.neq.${scanSignature}`);
 
                 if (oldFindings?.length) {
-                    await supabase
-                        .from("contradictions")
-                        .update({
-                            status: "ARCHIVED",
-                            evidence_data: {
-                                archive_reason: "Finding was created before the current scan cache signature or documents changed.",
-                                archived_at: new Date().toISOString(),
-                                current_scan_signature: scanSignature
-                            }
-                        })
-                        .eq("project_id", projectId)
-                        .eq("source_execution_doc_id", workDoc.id)
-                        .or(`scan_signature.is.null,scan_signature.neq.${scanSignature}`);
+                    await archiveContradictionRows(
+                        supabase,
+                        oldFindings as ContradictionArchiveRow[],
+                        {
+                            archive_reason: "Finding was created before the current scan cache signature or documents changed.",
+                            archived_at: new Date().toISOString(),
+                            current_scan_signature: scanSignature,
+                        }
+                    );
                 }
             }
 
@@ -393,10 +609,14 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
 
             for (const p of points) {
                 const category = String(p.category || "");
-                const matchedContractDoc =
-                    contractDocs.find((doc: any) => doc.id === p.contract_document_id) ||
-                    contractContextBundle.includedDocs[0] ||
-                    contractDocs[0];
+                const matchedContractDoc = p.contract_document_id
+                    ? contractDocs.find((doc) => doc.id === p.contract_document_id)
+                    : null;
+                const missingEvidence = Array.isArray(p.missing_evidence) ? [...p.missing_evidence] : [];
+
+                if (!matchedContractDoc) {
+                    missingEvidence.push("contract_document_id was not matched to a validated contract document");
+                }
 
                 const { data, error } = await supabase.from("contradictions").insert({
                     project_id: projectId,
@@ -410,8 +630,8 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
                     status: "OPEN",
                     scan_signature: scanSignature,
                     evidence_data: {
-                        evidence_status: normalizeEvidenceStatus(p),
-                        missing_evidence: p.missing_evidence || [],
+                        evidence_status: matchedContractDoc ? normalizeEvidenceStatus(p) : "REQUIRES_VERIFICATION",
+                        missing_evidence: missingEvidence,
                         clause_reference: p.clause_reference,
                         contract_page: p.contract_page || null,
                         work_page: p.work_page || null,
@@ -419,10 +639,10 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
                         new_requirement: p.new_requirement,
                         contract_quote: p.contract_quote,
                         work_quote: p.work_quote,
-                        contract_title: matchedContractDoc?.title || "חוזה",
+                        contract_title: matchedContractDoc?.title || null,
                         work_title: workDoc.title,
-                        contract_url: matchedContractDoc?.file_url || null,
-                        work_url: workDoc.file_url || null,
+                        contract_url: null,
+                        work_url: null,
                         comparison_type: p.comparison_type || null,
                         risk_reason: p.risk_reason || null,
                         confidence: normalizeConfidence(p.confidence),
@@ -443,10 +663,14 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
                     }
                 }).select().single();
 
-                if (!error && data) results.push(data);
+                if (error) {
+                    throw new Error(`Failed to save scan finding for "${workDoc.title}": ${error.message}`);
+                }
+
+                if (data) results.push(data);
             }
 
-            await supabase
+            const { error: scanStateError } = await supabase
                 .from("document_scan_state")
                 .upsert({
                     project_id: projectId,
@@ -459,9 +683,15 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
                     findings_count: points.length,
                     scanned_at: new Date().toISOString()
                 }, { onConflict: "scan_signature" });
+
+            if (scanStateError) {
+                throw new Error(`Failed to save scan state for "${workDoc.title}": ${scanStateError.message}`);
+            }
         } catch (err) {
             console.error(`[scan] Analysis error for ${workDoc.title}:`, err);
-            await supabase
+            const message = err instanceof Error ? err.message : String(err);
+            analysisFailures.push(`${workDoc.title}: ${message}`);
+            const { error: errorStateError } = await supabase
                 .from("document_scan_state")
                 .upsert({
                     project_id: projectId,
@@ -474,8 +704,13 @@ async function analyzeDirectly(supabase: any, projectId: string, contractDocs: a
                     findings_count: 0,
                     scanned_at: new Date().toISOString()
                 }, { onConflict: "scan_signature" });
+
+            if (errorStateError) {
+                console.error(`[scan] Failed to save error state for ${workDoc.title}:`, errorStateError);
+            }
         }
     }
 
+    results.__analysisFailures = analysisFailures;
     return results;
 }

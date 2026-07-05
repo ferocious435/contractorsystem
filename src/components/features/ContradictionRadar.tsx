@@ -1,224 +1,54 @@
-import React, { useEffect, useState } from 'react';
-import { createClient } from '@/utils/supabase/client';
-import { Activity, Shield, Zap, ArrowRight } from 'lucide-react';
+﻿import { Activity, Shield, Zap, ArrowRight } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
-import { generateContradictionPDF } from '@/utils/contradictionPdfGenerator';
 import ContradictionRadarHeader from './ContradictionRadarHeader';
 import ContradictionRadarFeedItem from './ContradictionRadarFeedItem';
-import { ContradictionItem } from '@/types';
+import { useContradictionRadarState } from './contradiction-radar/hooks/useContradictionRadarState';
 
 interface ContradictionRadarProps {
     projectId: string;
     projectName?: string;
-    onNavigate?: (view: string, params?: any) => void;
+    onNavigate?: (view: string, params?: Record<string, unknown>) => void;
 }
 
 export default function ContradictionRadar({ projectId, projectName, onNavigate }: ContradictionRadarProps) {
-    const supabase = createClient();
-    const [contradictions, setContradictions] = useState<ContradictionItem[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [expandedId, setExpandedId] = useState<string | null>(null);
-    const [isScanning, setIsScanning] = useState(false);
-    const [progress, setProgress] = useState(0);
-    const [rescanningIds, setRescanningIds] = useState<Set<string>>(new Set());
-    const [currentStep, setCurrentStep] = useState<string | null>(null);
-    const [projectDocuments, setProjectDocuments] = useState<any[]>([]);
-    const [resolvedProjectName, setResolvedProjectName] = useState<string>(projectName || 'פרויקט');
+    const { state, actions, derived } = useContradictionRadarState({ projectId, projectName });
+    const {
+        currentStep,
+        currentStepStatus,
+        expandedId,
+        isLoading,
+        isScanning,
+        progress,
+        rescanningIds,
+        resolvedProjectName,
+        activeFilter,
+    } = state;
+    const {
+        deleteContradiction,
+        handleExportPDF,
+        handleFilterChange,
+        radarOpenDocument,
+        rescanItem,
+        scanProject,
+        toggleExpanded,
+        updateStatus,
+    } = actions;
 
-    const radarOpenDocument = (url?: string | null, page?: number | string | null) => {
-        if (!url) return;
-        const anchor = page ? `#page=${page}` : '';
-        window.open(`${url}${anchor}`, '_blank');
-    };
-
-    useEffect(() => {
-        fetchContradictions();
-        fetchDocuments();
-
-        if (!projectName) {
-            supabase.from('projects').select('name').eq('id', projectId).single().then(({ data }) => {
-                if (data?.name) setResolvedProjectName(data.name);
-            });
-        }
-
-        const channel = supabase
-            .channel(`public:contradictions:project_id=eq.${projectId}`)
-            .on('postgres_changes', {
-                event: 'INSERT',
-                schema: 'public',
-                table: 'contradictions',
-                filter: `project_id=eq.${projectId}`,
-            }, () => {
-                fetchContradictions();
-            })
-            .subscribe();
-
-        return () => {
-            supabase.removeChannel(channel);
+    const getFilterButtonClass = (tone: string, isActive: boolean) => {
+        const activeToneClasses: Record<string, string> = {
+            red: 'bg-red-500/15 border-red-500/35 text-red-300 shadow-[0_0_20px_rgba(239,68,68,0.12)]',
+            blue: 'bg-blue-500/15 border-blue-500/35 text-blue-300 shadow-[0_0_20px_rgba(59,130,246,0.12)]',
+            emerald: 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.12)]',
+            amber: 'bg-amber-500/15 border-amber-500/35 text-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.12)]',
+            slate: 'bg-slate-500/15 border-slate-500/35 text-slate-200',
+            neutral: 'bg-white/10 border-white/20 text-white',
         };
-    }, [projectId]);
 
-    const fetchDocuments = async () => {
-        try {
-            const { data, error } = await supabase
-                .from('documents')
-                .select('id, title, category, ai_status')
-                .eq('project_id', projectId);
-
-            if (!error && data) {
-                setProjectDocuments(data);
-                const contract = data.find(d => d.category === 'CONTRACT');
-                if (contract?.title && !projectName) {
-                    setResolvedProjectName(contract.title.replace(/\.pdf$/i, ''));
-                }
-            }
-        } catch (err) {
-            console.error('Error fetching docs:', err);
+        if (isActive) {
+            return activeToneClasses[tone] || activeToneClasses.neutral;
         }
-    };
 
-    const fetchContradictions = async () => {
-        setIsLoading(true);
-        try {
-            const { data, error } = await supabase
-                .from('contradictions')
-                .select(`
-                    *,
-                    source_doc: documents!contradictions_source_execution_doc_id_fkey(title, file_url),
-                    target_doc: documents!contradictions_target_contract_doc_id_fkey(title, file_url)
-                `)
-                .eq('project_id', projectId)
-                .order('severity', { ascending: false })
-                .order('created_at', { ascending: false });
-
-            if (error) throw error;
-            setContradictions(data || []);
-        } catch (err) {
-            console.error('Error fetching contradictions:', err);
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const scanProject = async (force = false) => {
-        setIsScanning(true);
-        setProgress(0);
-
-        const baseSteps = [
-            { msg: 'מתחיל בדיקה', p: 10 },
-            { msg: 'טוען מסמכי חוזה וביצוע', p: 25 },
-            { msg: 'משווה בין המסמכים', p: 60 },
-            { msg: 'מארגן ממצאים לתצוגה', p: 90 },
-        ];
-
-        let stepIdx = 0;
-        const progressInterval = setInterval(() => {
-            if (stepIdx < baseSteps.length) {
-                const step = baseSteps[stepIdx];
-                setCurrentStep(step.msg);
-                setProgress(step.p);
-                stepIdx++;
-            }
-        }, 1000);
-
-        try {
-            const response = await fetch('/api/scan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId, force }),
-            });
-
-            const data = await response.json();
-            clearInterval(progressInterval);
-
-            if (data.success) {
-                await fetchDocuments();
-                await fetchContradictions();
-                setCurrentStep(`הבדיקה הושלמה: נמצאו ${data.found || 0} ממצאים`);
-                setProgress(100);
-            } else {
-                setCurrentStep(data.message || 'אירעה שגיאה במהלך הבדיקה');
-            }
-        } catch (err) {
-            clearInterval(progressInterval);
-            console.error('Scan error:', err);
-            setCurrentStep('אירעה שגיאת תקשורת');
-        } finally {
-            setIsScanning(false);
-            setTimeout(() => {
-                setProgress(0);
-                setCurrentStep(null);
-            }, 5000);
-        }
-    };
-
-    const rescanItem = async (id: string, workDocId?: string) => {
-        setRescanningIds(prev => new Set(prev).add(id));
-        try {
-            const response = await fetch('/api/scan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    projectId,
-                    force: false,
-                    workDocId,
-                }),
-            });
-
-            const data = await response.json();
-            if (data.success) {
-                await fetchContradictions();
-            }
-        } catch (err) {
-            console.error('Rescan error:', err);
-        } finally {
-            setRescanningIds(prev => {
-                const next = new Set(prev);
-                next.delete(id);
-                return next;
-            });
-        }
-    };
-
-    const updateStatus = async (id: string, newStatus: string, contradiction?: ContradictionItem) => {
-        try {
-            const { error } = await supabase
-                .from('contradictions')
-                .update({ status: newStatus })
-                .eq('id', id);
-
-            if (error) throw error;
-
-            if (newStatus === 'MOVED_TO_PRICING' && contradiction) {
-                console.log('[Radar] Finding moved to pricing queue:', id);
-            }
-
-            setContradictions(prev => prev.map(item => item.id === id ? { ...item, status: newStatus } : item));
-        } catch (err) {
-            console.error('[Radar] updateStatus error:', err);
-        }
-    };
-
-    const deleteContradiction = async (id: string) => {
-        if (!confirm('האם למחוק את הממצא הזה?')) return;
-
-        try {
-            const { error } = await supabase
-                .from('contradictions')
-                .delete()
-                .eq('id', id);
-
-            if (error) throw error;
-            setContradictions(prev => prev.filter(item => item.id !== id));
-        } catch (err) {
-            console.error('Error deleting contradiction:', err);
-        }
-    };
-
-    const handleExportPDF = () => {
-        if (contradictions.length > 0) {
-            generateContradictionPDF({ contradictions, projectName: resolvedProjectName });
-        }
+        return 'bg-white/[0.03] border-white/10 text-gray-400 hover:bg-white/[0.07] hover:text-white';
     };
 
     return (
@@ -239,9 +69,10 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                 isScanning={isScanning}
                 progress={progress}
                 currentStep={currentStep}
-                contractDocsCount={projectDocuments.filter(d => d.category === 'CONTRACT').length}
-                executionDocsCount={projectDocuments.filter(d => d.category === 'EXECUTION').length}
-                hasContradictions={contradictions.length > 0}
+                currentStepStatus={currentStepStatus}
+                contractDocsCount={derived.contractDocsCount}
+                executionDocsCount={derived.executionDocsCount}
+                hasContradictions={derived.hasContradictions}
                 projectName={resolvedProjectName}
                 scanProject={scanProject}
                 onExportPDF={handleExportPDF}
@@ -250,13 +81,18 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
             <div className="flex flex-col gap-6">
                 <div className="flex items-center justify-between flex-wrap gap-4">
                     <h3 className="text-2xl font-black text-white">ממצאים מול מסמכי הביצוע</h3>
-                    <div className="flex items-center gap-3">
-                        <div className="px-3 py-1 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400 font-bold">
-                            {contradictions.filter(c => c.category?.includes('סתירה') || c.severity === 'HIGH').length} סתירות
-                        </div>
-                        <div className="px-3 py-1 bg-white/5 border border-white/10 rounded-lg text-xs text-gray-400 font-bold">
-                            סה"כ {contradictions.length} ממצאים
-                        </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {derived.filterOptions.map((option) => (
+                            <button
+                                key={option.id}
+                                type="button"
+                                onClick={() => handleFilterChange(option.id)}
+                                className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-all active:scale-95 ${getFilterButtonClass(option.tone, activeFilter === option.id)}`}
+                                aria-pressed={activeFilter === option.id}
+                            >
+                                {option.count} {option.label}
+                            </button>
+                        ))}
                     </div>
                 </div>
 
@@ -267,7 +103,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                         </div>
                         <span className="text-sm text-gray-500 font-bold">טוען ממצאים מהמערכת...</span>
                     </div>
-                ) : contradictions.length === 0 ? (
+                ) : !derived.hasContradictions ? (
                     <div className="bg-[#151C24]/30 border border-dashed border-white/5 rounded-[2.5rem] py-24 flex flex-col items-center gap-5">
                         <div className="p-8 bg-white/[0.02] rounded-full">
                             <Shield className="w-12 h-12 text-gray-700" />
@@ -277,18 +113,35 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                             <span className="text-sm text-gray-500 max-w-xl">אם נוספו מסמכים חדשים, כדאי להריץ שוב בדיקה כדי לראות אם עלו פערים חדשים בין החוזה לביצוע.</span>
                         </div>
                     </div>
+                ) : !derived.hasFilteredFindings ? (
+                    <div className="bg-[#151C24]/30 border border-dashed border-white/5 rounded-[2.5rem] py-20 flex flex-col items-center gap-4">
+                        <div className="p-6 bg-white/[0.02] rounded-full">
+                            <Shield className="w-10 h-10 text-gray-700" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2 text-center px-6">
+                            <span className="text-lg font-black text-gray-300">אין ממצאים בסינון הזה</span>
+                            <button
+                                type="button"
+                                onClick={() => handleFilterChange('ALL')}
+                                className="mt-2 px-4 py-2 bg-white/[0.05] border border-white/10 rounded-xl text-sm font-bold text-gray-300 hover:text-white hover:bg-white/10 transition-all"
+                            >
+                                הצג את כל הממצאים
+                            </button>
+                        </div>
+                    </div>
                 ) : (
                     <div className="grid grid-cols-1 gap-4">
                         <AnimatePresence mode="popLayout">
-                            {contradictions.map((c, idx) => (
+                            {derived.filteredFindings.map((finding, idx) => (
                                 <ContradictionRadarFeedItem
-                                    key={c.id}
-                                    item={c}
+                                    key={finding.id}
+                                    item={finding}
                                     idx={idx}
-                                    isExpanded={expandedId === c.id}
-                                    isItemRescanning={rescanningIds.has(c.id)}
+                                    isExpanded={expandedId === finding.id}
+                                    isItemRescanning={rescanningIds.has(finding.id)}
                                     isScanning={isScanning}
-                                    onToggleExpand={(id) => setExpandedId(prev => prev === id ? null : id)}
+                                    shouldAnimate={derived.shouldAnimateItems}
+                                    onToggleExpand={toggleExpanded}
                                     onRescanItem={rescanItem}
                                     onUpdateStatus={updateStatus}
                                     onDelete={deleteContradiction}

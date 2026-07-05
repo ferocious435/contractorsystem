@@ -1,75 +1,29 @@
 import { genAI, GEMINI_CONFIG } from "@/lib/gemini";
 import { createClient } from "@/utils/supabase/server";
+import { VAT_RATE } from "@/utils/constants";
+import { getAmountVat, getLedgerRowAmount, getMoneySum } from "@/utils/project-financials";
+import { formatEvidenceForLetter } from "@/utils/letter-evidence";
+import { buildServerBackedLetterEvidence, getOfficialLetterEvidenceBlockers, type ServerLetterContradiction } from "@/utils/server-letter-evidence";
 import { NextResponse } from "next/server";
 
 const model = genAI.getGenerativeModel({ model: GEMINI_CONFIG.STABLE_FLASH });
 
-function isVerifiedEvidence(evidenceData: any) {
-    if (Array.isArray(evidenceData)) {
-        return evidenceData.length > 0;
-    }
+type LetterLedgerItem = {
+    id: string;
+    contradiction_id?: string | null;
+    evidence_data?: unknown;
+    [key: string]: unknown;
+};
 
-    if (!evidenceData || typeof evidenceData !== "object") {
-        return false;
-    }
-
-    const comparisonType = String(evidenceData.comparison_type || "").toLowerCase();
-    if (comparisonType.includes("missing_data")) {
-        return false;
-    }
-
-    return evidenceData.evidence_status === "VERIFIED" || Boolean(evidenceData.contract_quote && evidenceData.work_quote);
+function isOfficialLetterType(value: unknown) {
+    return String(value || "").toLowerCase() === "official_vo";
 }
 
-function formatEvidenceForLetter(evidenceData: any) {
-    if (Array.isArray(evidenceData) && evidenceData.length > 0) {
-        return evidenceData
-            .map((ev: any) => `- ${ev.document_title || "מסמך"} (עמ' ${ev.page || "?"})`)
-            .join("\n");
-    }
-
-    if (!evidenceData || typeof evidenceData !== "object") {
-        return "- אין הוכחות מתועדות. יש לנסח כטיוטה הדורשת אימות.";
-    }
-
-    const lines: string[] = [];
-            const evidenceStatus = isVerifiedEvidence(evidenceData) ? "VERIFIED" : "REQUIRES_VERIFICATION";
-    lines.push(`- סטטוס ראיות: ${evidenceStatus}`);
-
-    if (evidenceData.contract_title || evidenceData.contract_quote) {
-        lines.push(`- חוזה/BOQ: ${evidenceData.contract_title || "מסמך חוזי"}${evidenceData.contract_page ? `, עמ' ${evidenceData.contract_page}` : ""}`);
-        if (evidenceData.contract_quote) lines.push(`  ציטוט חוזי: "${evidenceData.contract_quote}"`);
-    }
-
-    if (evidenceData.work_title || evidenceData.work_quote) {
-        lines.push(`- ביצוע/שטח: ${evidenceData.work_title || "מסמך ביצוע"}${evidenceData.work_page ? `, עמ' ${evidenceData.work_page}` : ""}`);
-        if (evidenceData.work_quote) lines.push(`  ציטוט ביצוע: "${evidenceData.work_quote}"`);
-    }
-
-    if (evidenceData.pricing_evaluation) {
-        lines.push(`- תמחור: ${evidenceData.pricing_evaluation.match_quality || "לא ידוע"} / מקור: ${evidenceData.pricing_evaluation.source || "לא ידוע"}`);
-        if (evidenceData.pricing_evaluation.quantity_basis) {
-            lines.push(`- בסיס כמות: ${evidenceData.pricing_evaluation.quantity_basis}`);
-        }
-        if (evidenceData.pricing_evaluation.quantity_review_required) {
-            lines.push(`- כמות לתמחור: דורשת אימות סופי לפני אישור מלא`);
-        }
-        if (evidenceData.pricing_evaluation.ancillary_scope && evidenceData.pricing_evaluation.ancillary_scope !== "NONE") {
-            lines.push(`- עבודות נלוות: ${evidenceData.pricing_evaluation.ancillary_scope}`);
-        }
-    }
-
-    if (Array.isArray(evidenceData.missing_evidence) && evidenceData.missing_evidence.length > 0) {
-        lines.push(`- חסר לאימות: ${evidenceData.missing_evidence.join(", ")}`);
-    }
-
-    return lines.join("\n");
-}
-
-function formatMoney(value: any) {
+function formatMoney(value: unknown) {
     const numeric = Number(value || 0);
     return new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(numeric);
 }
+
 
 export async function POST(req: Request) {
     try {
@@ -79,52 +33,113 @@ export async function POST(req: Request) {
             return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
         }
 
-        const { projectId, letterType, recipient, subject, keyPoints, tone, items } = await req.json();
+        const { projectId, letterType, recipient, subject, keyPoints, tone, itemIds } = await req.json();
 
         if (!process.env.GEMINI_API_KEY) {
             return NextResponse.json({ success: false, error: "API Key missing" }, { status: 500 });
         }
 
-        if (!projectId || !Array.isArray(items)) {
-            return NextResponse.json({ success: false, error: "projectId and items are required" }, { status: 400 });
-        }
+        const requestedItemIds = Array.isArray(itemIds)
+            ? Array.from(new Set(itemIds.filter((id: unknown) => typeof id === "string" && id.trim())))
+            : [];
 
-        const hasUnverifiedItems = items.some((item: any) => {
-            const evidenceData = item.evidence_data;
-            if (Array.isArray(evidenceData)) return evidenceData.length === 0;
-            return !isVerifiedEvidence(evidenceData);
-        });
-
-        if (letterType === "official_vo" && hasUnverifiedItems) {
-            return NextResponse.json({
-                success: false,
-                error: "Official VO requires verified evidence for every selected item"
-            }, { status: 400 });
+        if (!projectId || !requestedItemIds.length) {
+            return NextResponse.json({ success: false, error: "projectId and itemIds are required" }, { status: 400 });
         }
 
         const { data: project, error: projectError } = await supabase
             .from("projects")
             .select("id, name, client_name, contractor_id")
             .eq("id", projectId)
-            .single();
+            .eq("contractor_id", user.id)
+            .maybeSingle();
 
         if (projectError || !project) {
             return NextResponse.json({ success: false, error: "Project not found or not accessible" }, { status: 404 });
         }
 
-        const itemsContext = items.map((item: any) => {
-            const unitPrice = item.price ?? item.unit_price_excl_vat;
-            const total = item.total ?? item.total_price_excl_vat;
+        const { data: ledgerItems, error: ledgerItemsError } = await supabase
+            .from("pricing_ledger")
+            .select("id, type, item_code, description, unit, quantity, unit_price_excl_vat, total_price_excl_vat, ai_rationale, governing_notes, evidence_data, contradiction_id")
+            .eq("project_id", projectId)
+            .in("id", requestedItemIds)
+            .in("type", ["PENDING_VO", "APPROVED_VO"]);
+
+        if (ledgerItemsError) throw ledgerItemsError;
+
+        const safeLedgerItems = (ledgerItems || []) as LetterLedgerItem[];
+
+        if (safeLedgerItems.length !== requestedItemIds.length) {
+            return NextResponse.json({
+                success: false,
+                error: "Letters can include only pending or approved variation items"
+            }, { status: 400 });
+        }
+
+        const contradictionIds = Array.from(new Set(
+            safeLedgerItems
+                .map((item) => item.contradiction_id)
+                .filter((id): id is string => typeof id === "string" && id.length > 0)
+        ));
+        const contradictionsById = new Map<string, ServerLetterContradiction>();
+
+        if (contradictionIds.length > 0) {
+            const { data: contradictions, error: contradictionsError } = await supabase
+                .from("contradictions")
+                .select("id, status, source_execution_doc_id, target_contract_doc_id, evidence_data")
+                .eq("project_id", projectId)
+                .in("id", contradictionIds);
+
+            if (contradictionsError) throw contradictionsError;
+            ((contradictions || []) as ServerLetterContradiction[]).forEach((contradiction) => {
+                if (typeof contradiction.id === "string") {
+                    contradictionsById.set(contradiction.id, contradiction);
+                }
+            });
+        }
+
+        const officialEvidenceFailures = isOfficialLetterType(letterType)
+            ? safeLedgerItems.flatMap((item) => {
+                const contradiction = item.contradiction_id ? contradictionsById.get(item.contradiction_id) : null;
+                return getOfficialLetterEvidenceBlockers(item, contradiction).map((reason) => ({ itemId: item.id, reason }));
+            })
+            : [];
+
+        if (officialEvidenceFailures.length > 0) {
+            return NextResponse.json({
+                success: false,
+                error: "Official VO requires server-verified document evidence for every selected item",
+                evidenceFailures: officialEvidenceFailures,
+            }, { status: 400 });
+        }
+
+        const letterEvidenceByItemId = new Map(
+            safeLedgerItems.map((item) => [
+                item.id,
+                buildServerBackedLetterEvidence(
+                    item,
+                    item.contradiction_id ? contradictionsById.get(item.contradiction_id) : null,
+                ),
+            ])
+        );
+
+        const totalExclVat = safeLedgerItems.reduce((sum: number, item) => getMoneySum([sum, getLedgerRowAmount(item)]), 0);
+        const vatAmount = getAmountVat(totalExclVat, VAT_RATE);
+        const totalInclVat = getMoneySum([totalExclVat, vatAmount]);
+
+        const itemsContext = safeLedgerItems.map((item) => {
+            const unitPrice = item.unit_price_excl_vat;
+            const total = getLedgerRowAmount(item);
             return `
 - פריט: ${item.description}
-- קוד: ${item.code || item.item_code || "NEW"}
+- קוד: ${item.item_code || "NEW"}
 - כמות: ${item.quantity} ${item.unit}
 - מחיר יחידה לפני מע"מ: ${formatMoney(unitPrice)}
 - סה"כ לפני מע"מ: ${formatMoney(total)}
 - נימוק: ${item.ai_rationale || "לא צוין"}
 - הערות: ${JSON.stringify(item.governing_notes || [])}
 - הוכחות:
-${formatEvidenceForLetter(item.evidence_data)}
+${formatEvidenceForLetter(letterEvidenceByItemId.get(item.id))}
 `;
         }).join("\n");
 
@@ -150,10 +165,16 @@ ${formatEvidenceForLetter(item.evidence_data)}
 פריטים:
 ${itemsContext}
 
+סיכום כספי מחייב לפי נתוני השרת:
+- סה"כ לפני מע"מ: ${formatMoney(totalExclVat)}
+- מע"מ ${(VAT_RATE * 100).toFixed(0)}%: ${formatMoney(vatAmount)}
+- סה"כ כולל מע"מ: ${formatMoney(totalInclVat)}
+
 חוקי חובה:
 - אל תציג טענה כוודאית אם סטטוס הראיות הוא REQUIRES_VERIFICATION.
 - במקרה של ראיות חסרות, כתוב שהדרישה היא טיוטה/דורשת אימות והוסף מה חסר.
-- כל סכום יוצג לפני מע"מ. מע"מ 18% יוצג בנפרד בלבד.
+- השתמש רק בסיכום הכספי המחייב שמופיע למעלה. אל תחשב סכומים מחדש ואל תשנה מע"מ.
+- כל סכום יוצג לפני מע"מ. מע"מ ${(VAT_RATE * 100).toFixed(0)}% יוצג בנפרד בלבד.
 - הפרד בין עובדה ממסמך, מסקנת AI, ומה צריך לבדוק עכשיו.
 - אל תכניס טקסט טכני על המערכת.
 
@@ -172,8 +193,9 @@ ${itemsContext}
         const text = result.response.text();
 
         return NextResponse.json({ success: true, letter: text });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("API Error:", error);
-        return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+        const message = error instanceof Error ? error.message : "Letter generation failed";
+        return NextResponse.json({ success: false, error: message }, { status: 500 });
     }
 }

@@ -3,6 +3,13 @@ export interface SyncedProjectContractBase {
     amount: number | null;
     sourceTitle: string | null;
     strategy: string;
+    ledgerSync?: {
+        eligiblePricelists: number;
+        candidateItems: number;
+        inserted: number;
+        updated: number;
+        skipped: number;
+    };
 }
 
 export async function syncProjectContractBases(projectIds: string[]): Promise<SyncedProjectContractBase[]> {

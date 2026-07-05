@@ -1,23 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { VAT_RATE } from '@/utils/constants';
-
-const ALLOWED_SOURCES = new Set(['BOQ', 'DEKEL', 'CONTRACTOR', 'CUSTOM_ANALYSIS']);
-const ALLOWED_TYPES = new Set(['BASE_CONTRACT', 'APPROVED_VO', 'PENDING_VO', 'SENT_VO']);
-
-function toNumber(value: unknown, fallback = 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function roundMoney(value: number) {
-    return Math.round(value * 100) / 100;
-}
-
-function normalizeMarkupPercentage(value: unknown) {
-    const parsed = toNumber(value, 0);
-    return parsed > 1 ? parsed / 100 : parsed;
-}
+import {
+    deleteLedgerItem,
+    saveLedgerItem,
+} from './save-ledger-service';
 
 export async function POST(req: Request) {
     try {
@@ -33,140 +19,34 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
-        const {
-            queue_id,
-            contradiction_id,
-            project_id,
-            item_name,
-            ai_estimated_amount,
-            user_final_amount,
-            ai_explanation,
-            user_notes,
-            item_code,
-            description,
-            unit,
-            quantity,
-            unit_price_excl_vat,
-            markup_percentage,
-            ai_rationale,
-            governing_notes,
-            expert_strategy,
-            evidence_data,
-            source = 'CUSTOM_ANALYSIS',
-            type = 'PENDING_VO',
-            vat_rate = VAT_RATE, // Using global constant
-        } = data;
+        const result = await saveLedgerItem(supabase, user.id, data);
 
-        if (!project_id) {
-            return NextResponse.json({ error: 'project_id is required' }, { status: 400 });
-        }
-
-        // Determine correct ID to use (queue_id is legacy, contradiction_id is preferred in AIEstimatorModal)
-        const activeContradictionId = contradiction_id || queue_id;
-        const safeSource = ALLOWED_SOURCES.has(source) ? source : 'CUSTOM_ANALYSIS';
-        const requestedType = ALLOWED_TYPES.has(type) ? type : 'PENDING_VO';
-        const safeType = requestedType === 'BASE_CONTRACT' ? 'PENDING_VO' : requestedType;
-        const safeQuantity = toNumber(quantity, 1);
-        const legacyAmount = user_final_amount ?? ai_estimated_amount;
-        const safeUnitPrice = roundMoney(toNumber(unit_price_excl_vat ?? legacyAmount, 0));
-        const safeVatRate = toNumber(vat_rate, VAT_RATE) === VAT_RATE ? VAT_RATE : VAT_RATE;
-        const rationale = ai_rationale || ai_explanation || '';
-        const notes = governing_notes || (user_notes ? [user_notes] : []);
-        const safeDescription = description || item_name || user_notes || ai_explanation;
-
-        if (!safeDescription || String(safeDescription).trim().length < 3) {
-            return NextResponse.json({ error: 'description is required before saving a ledger item' }, { status: 400 });
-        }
-
-        if (activeContradictionId) {
-            const { data: existingLedgerItem, error: existingError } = await supabase
-                .from('pricing_ledger')
-                .select('id')
-                .eq('project_id', project_id)
-                .eq('contradiction_id', activeContradictionId)
-                .maybeSingle();
-
-            if (existingError) throw existingError;
-
-            if (existingLedgerItem?.id) {
-                const { data: updatedLedgerItem, error: updateError } = await supabase
-                    .from('pricing_ledger')
-                    .update({
-                        type: safeType,
-                        source: safeSource,
-                        item_code: item_code || null,
-                        description: safeDescription,
-                        unit: unit || 'יח',
-                        quantity: safeQuantity,
-                        unit_price_excl_vat: safeUnitPrice,
-                        markup_percentage: normalizeMarkupPercentage(markup_percentage),
-                        ai_rationale: rationale,
-                        governing_notes: notes,
-                        expert_strategy,
-                        evidence_data: evidence_data || {},
-                        vat_rate: safeVatRate
-                    })
-                    .eq('id', existingLedgerItem.id)
-                    .select(`
-                        *,
-                        projects ( id, name )
-                    `)
-                    .single();
-
-                if (updateError) throw updateError;
-
-                await supabase
-                    .from('contradictions')
-                    .update({ pricing_status: 'PRICED', status: 'MOVED_TO_PRICING' })
-                    .eq('id', activeContradictionId);
-
-                return NextResponse.json({ success: true, item: updatedLedgerItem });
-            }
-        }
-
-        // Start by saving to ledger
-        const { data: newLedgerItem, error: insertError } = await supabase
-            .from('pricing_ledger')
-            .insert({
-                project_id,
-                contradiction_id: activeContradictionId,
-                type: safeType,
-                source: safeSource,
-                item_code: item_code || null,
-                description: safeDescription,
-                unit: unit || 'יח',
-                quantity: safeQuantity,
-                unit_price_excl_vat: safeUnitPrice,
-                markup_percentage: normalizeMarkupPercentage(markup_percentage),
-                ai_rationale: rationale,
-                governing_notes: notes,
-                expert_strategy,
-                evidence_data: evidence_data || {},
-                vat_rate: safeVatRate
-            })
-            .select(`
-                *,
-                projects ( id, name )
-            `)
-            .single();
-
-        if (insertError) throw insertError;
-
-        // Update the queue status in contradictions
-        let updateError = null;
-        if (activeContradictionId) {
-            const result = await supabase
-                .from('contradictions')
-                .update({ pricing_status: 'PRICED', status: 'MOVED_TO_PRICING' })
-                .eq('id', activeContradictionId);
-            updateError = result.error;
-        }
-
-        if (updateError) throw updateError;
-
-        return NextResponse.json({ success: true, item: newLedgerItem });
+        return NextResponse.json(result.body, { status: result.status });
     } catch (error: unknown) {
         console.error('Error saving ledger:', error);
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return NextResponse.json({ error: message }, { status: 500 });
+    }
+}
+
+export async function DELETE(req: Request) {
+    try {
+        const supabase = await createClient();
+        const data = await req.json();
+
+        const {
+            data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
+        const result = await deleteLedgerItem(supabase, user.id, data);
+
+        return NextResponse.json(result.body, { status: result.status });
+    } catch (error: unknown) {
+        console.error('Error deleting ledger:', error);
         const message = error instanceof Error ? error.message : 'Unknown error';
         return NextResponse.json({ error: message }, { status: 500 });
     }

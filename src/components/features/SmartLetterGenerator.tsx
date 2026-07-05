@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from 'react';
 import { 
     FileText, Copy, Check, Loader2,
     Brain, Shield, Terminal, Zap,
@@ -14,7 +15,7 @@ import { getLedgerRowAmount } from '@/utils/project-financials';
 import { LETTER_TYPES, TONE_OPTIONS } from './smart-letter/constants';
 import { useSmartLetterState } from './smart-letter/hooks/useSmartLetterState';
 import type { SmartLetterGeneratorProps } from './smart-letter/types';
-import type { LedgerItem } from '@/components/pricing/LedgerTable';
+import type { LedgerItem } from '@/types';
 
 
 /**
@@ -23,7 +24,7 @@ import type { LedgerItem } from '@/components/pricing/LedgerTable';
  */
 
 
-export default function SmartLetterGenerator({ projectId, initialSelectedItems, onClose }: SmartLetterGeneratorProps) {
+export default function SmartLetterGenerator({ projectId, initialSelectedItems }: SmartLetterGeneratorProps) {
     const { state, setters, actions, derived } = useSmartLetterState({ projectId, initialSelectedItems });
     const {
         letterType,
@@ -53,6 +54,8 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
         setGeneratedLetter,
         setViewMode,
     } = setters;
+    const letterReference = useId().replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
     const printableItems: LedgerItem[] = derived.selectedItems.map((item) => ({
         id: item.id,
         item_code: item.item_code || '',
@@ -285,7 +288,7 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                             onClick={actions.generateLetter}
                             disabled={!derived.canGenerate || isGenerating}
                             className={`group w-full relative flex items-center justify-center gap-6 py-8 rounded-[2rem] text-sm font-black uppercase tracking-[0.5em] transition-all overflow-hidden shadow-2xl ${
-                                isGenerating 
+                                isGenerating || !derived.canGenerate
                                 ? 'bg-white/5 text-gray-600 cursor-not-allowed border border-white/5' 
                                 : 'bg-blue-600 text-white shadow-[0_30px_60px_-15px_rgba(59,130,246,0.3)]'
                             }`}
@@ -453,13 +456,13 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                                     קי
                                                 </div>
                                                 <div>
-                                                    <h1 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">קבלני ישראל בע"מ</h1>
+                                                    <h1 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">קבלני ישראל בע&quot;מ</h1>
                                                     <p className="text-xs text-gray-500 font-sans tracking-widest mt-1">פתרונות בנייה מתקדמים</p>
                                                 </div>
                                             </div>
                                             <div className="text-left font-mono">
                                                 <div className="text-[10px] text-gray-400 mb-1 uppercase tracking-widest">אישור תנועה</div>
-                                                <div className="text-xs text-gray-900 font-bold">סימוכין: {Math.random().toString(36).substring(7).toUpperCase()}</div>
+                                                <div className="text-xs text-gray-900 font-bold">סימוכין: {letterReference}</div>
                                                 <div className="text-xs text-gray-400 mt-1">{new Date().toLocaleDateString('he-IL')}</div>
                                             </div>
                                         </div>
@@ -517,7 +520,7 @@ export default function SmartLetterGenerator({ projectId, initialSelectedItems, 
                                 <span className="text-[10px] font-mono font-black text-amber-500 uppercase tracking-[0.4em]">ייעוץ משפטי חכם</span>
                             </div>
                             <p className="text-sm text-amber-100/70 leading-relaxed font-bold" dir="rtl">
-                                המערכת משתמשת בבינה מלאכותית לניסוח המכתב. המכתב כולל חישוב מע"מ אוטומטי של <span className="text-amber-500">{(VAT_RATE * 100).toFixed(0)}%</span> בהתאם לתקנות המס בישראל. מומלץ לוודא את הנתונים הכספיים במודל ה-Edit לפני Commit סופי למערכת.
+                                המערכת משתמשת בבינה מלאכותית לניסוח המכתב. המכתב כולל חישוב מע&quot;מ אוטומטי של <span className="text-amber-500">{(VAT_RATE * 100).toFixed(0)}%</span> בהתאם לתקנות המס בישראל. מומלץ לוודא את הנתונים הכספיים במודל ה-Edit לפני Commit סופי למערכת.
                             </p>
                         </div>
                     </div>

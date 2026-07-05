@@ -49,6 +49,8 @@ export interface PricingLedgerItem {
     governing_notes?: string[];
     expert_strategy?: Record<string, unknown> | null;
     evidence_data?: unknown;
+    confidence_score?: AiConfidenceScore | null;
+    ai_metadata?: PricingAiContradictionMetadata | null;
     contradiction_id?: string;
     source_execution_doc_id?: string;
     source_execution_doc?: string;
@@ -124,6 +126,13 @@ export interface DeletePricingLedgerPayload {
 export interface UpdatePricingLedgerStatusPayload {
     itemId: string;
     status: PricingLedgerStatusUpdate;
+}
+
+export interface ArchivePricingQueueResult {
+    success: boolean;
+    archivedIds: string[];
+    skippedIds: string[];
+    error?: string;
 }
 
 export interface PricingLedgerApiResult<TItem = PricingLedgerItem> {
@@ -204,6 +213,8 @@ export interface PricingLedgerDerivedState {
     visibleLedgerRows: PricingLedgerItem[];
     selectedVOIds: string[];
     focusedQueueItem: PricingContradictionItem | null;
+    queueConfidenceScoreById: Map<string, number | null>;
+    queueConfidencePercentById: Map<string, string | null>;
     highConfidenceQueueIds: string[];
     selectedHighConfidenceQueueIds: string[];
     queueConfidenceStats: {
@@ -215,6 +226,16 @@ export interface PricingLedgerDerivedState {
 
 export interface BulkApprovePreviewResult {
     success?: boolean;
+    superseded?: boolean;
+    /**
+     * Preferred semantic ids staged in the UI after server-side confidence preview.
+     * These are not ledger mutations and must not be treated as persisted approvals.
+     */
+    stagedIds?: string[];
+    /**
+     * Legacy wire alias kept for backward compatibility with existing server responses.
+     * Treat these as staged preview ids, not persisted approvals.
+     */
     approvedIds: string[];
     skippedIds: string[];
     threshold: number;

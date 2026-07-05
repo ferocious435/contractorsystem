@@ -1,23 +1,31 @@
 "use client";
 
-import { useActionState, useState } from 'react'
-import { login, signup } from './actions'
+import { useActionState } from 'react'
+import { login } from './actions'
 import { SubmitButton } from './SubmitButton'
 
+const REAL_LOGIN_EMAIL = 'rotem435@gmail.com';
+
 export function LoginForm() {
-    const [mode, setMode] = useState<'login' | 'signup'>('login');
-    const [state, formAction] = useActionState(
-        mode === 'login' ? login : signup,
-        null
-    );
+    const [state, formAction] = useActionState(login, null);
 
     return (
-        <form action={formAction} className="flex flex-col gap-5">
+        <form action={formAction} className="flex flex-col gap-5" dir="rtl" autoComplete="on">
             {state?.error && (
                 <div className="p-3 bg-critical/20 border border-critical/40 text-critical text-sm rounded-lg text-center font-medium">
                     {state.error}
                 </div>
             )}
+            {state?.notice && (
+                <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 text-emerald-200 text-sm rounded-lg text-center font-medium">
+                    {state.notice}
+                </div>
+            )}
+
+            <div className="rounded-xl border border-primary/20 bg-primary/10 px-4 py-3 text-right">
+                <div className="text-sm font-bold text-white">כניסה לפרויקטים האמיתיים</div>
+                <div className="mt-1 text-xs text-gray-400">המערכת תשמור אותך במכשיר הזה אחרי הכניסה הראשונה.</div>
+            </div>
 
             <div className="flex flex-col gap-2">
                 <label className="text-sm font-medium text-gray-300" htmlFor="email">דוא״ל</label>
@@ -26,7 +34,8 @@ export function LoginForm() {
                     id="email"
                     name="email"
                     type="email"
-                    placeholder="example@contractor.com"
+                    autoComplete="username"
+                    defaultValue={REAL_LOGIN_EMAIL}
                     required
                 />
             </div>
@@ -38,50 +47,24 @@ export function LoginForm() {
                     id="password"
                     name="password"
                     type="password"
+                    autoComplete="current-password"
                     required
                 />
             </div>
 
-            {mode === 'signup' && (
-                <div className="flex flex-col gap-2 border-t border-border-subtle pt-5 mt-2 animate-in fade-in slide-in-from-top-2">
-                    <p className="text-xs text-gray-500 mb-2">שדות להרשמה חדשה בלבד:</p>
-                    <label className="text-sm font-medium text-gray-300" htmlFor="full_name">שם מלא</label>
-                    <input
-                        className="bg-workspace border border-border-subtle rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-primary transition-colors hover:bg-[#1a232e]"
-                        id="full_name"
-                        name="full_name"
-                        type="text"
-                        placeholder="ישראל ישראלי"
-                        required={mode === 'signup'}
-                    />
+            <label className="flex items-center justify-end gap-3 text-sm text-gray-300 select-none">
+                <span>זכור אותי במכשיר הזה</span>
+                <input
+                    type="checkbox"
+                    name="remember_device"
+                    defaultChecked
+                    className="h-4 w-4 accent-blue-500"
+                />
+            </label>
 
-                    <label className="text-sm font-medium text-gray-300 mt-2" htmlFor="company_name">שם חברה</label>
-                    <input
-                        className="bg-workspace border border-border-subtle rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-primary transition-colors hover:bg-[#1a232e]"
-                        id="company_name"
-                        name="company_name"
-                        type="text"
-                        placeholder="ישראלי בע״מ"
-                        required={mode === 'signup'}
-                    />
-                </div>
-            )}
-
-            <div className="flex flex-col gap-3 mt-4">
-                <SubmitButton
-                    className="w-full bg-primary hover:bg-primary/80 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-[0_0_15px_rgba(59,130,246,0.5)] transform hover:-translate-y-0.5"
-                >
-                    {mode === 'login' ? 'התחבר' : 'צור חשבון חדש'}
-                </SubmitButton>
-                
-                <button
-                    type="button"
-                    onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
-                    className="text-xs text-gray-500 hover:text-primary transition-colors text-center"
-                >
-                    {mode === 'login' ? 'עדיין אין לך חשבון? הירשם כאן' : 'כבר יש לך חשבון? התחבר כאן'}
-                </button>
-            </div>
+            <SubmitButton className="w-full bg-primary hover:bg-primary/80 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-[0_0_15px_rgba(59,130,246,0.5)] transform hover:-translate-y-0.5">
+                כניסה
+            </SubmitButton>
         </form>
     )
 }

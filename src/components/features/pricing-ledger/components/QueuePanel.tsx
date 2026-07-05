@@ -2,7 +2,7 @@ import React from 'react';
 import PendingQueueTable from '@/components/pricing/PendingQueueTable';
 import type { ContradictionItem } from '@/types';
 import { AI_BULK_APPROVE_CONFIDENCE_THRESHOLD } from '../constants';
-import { formatConfidencePercent, getQueueItemConfidenceScore } from '../utils/aiConfidence';
+import { formatConfidencePercent } from '../utils/aiConfidence';
 import type {
     BulkApprovePreviewResult,
     PricingContradictionItem,
@@ -13,7 +13,7 @@ interface QueuePanelProps {
     items: PricingContradictionItem[];
     selectedIds: string[];
     scanningItems: string[];
-    confidence: Pick<PricingLedgerDerivedState, 'queueConfidenceStats' | 'selectedHighConfidenceQueueIds'>;
+    confidence: Pick<PricingLedgerDerivedState, 'queueConfidencePercentById' | 'queueConfidenceStats' | 'selectedHighConfidenceQueueIds'>;
     onToggleSelection: (id: string) => void;
     onSelectAll: (ids: string[]) => void;
     onSelectForEstimation: (item: PricingContradictionItem) => void;
@@ -23,7 +23,54 @@ interface QueuePanelProps {
     onBulkApprove: (ids?: string[]) => Promise<BulkApprovePreviewResult>;
 }
 
-export default function QueuePanel({
+type BulkApproveFeedbackTone = 'success' | 'warning' | 'error';
+
+interface BulkApproveFeedback {
+    tone: BulkApproveFeedbackTone;
+    message: string;
+    stagedCount: number;
+    skippedCount: number;
+}
+
+const BULK_APPROVE_FEEDBACK_STYLES: Record<BulkApproveFeedbackTone, string> = {
+    success: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200',
+    warning: 'border-amber-500/20 bg-amber-500/10 text-amber-200',
+    error: 'border-red-500/20 bg-red-500/10 text-red-200',
+};
+
+function buildBulkApproveFeedback(
+    result: BulkApprovePreviewResult,
+    thresholdPercent: string
+): BulkApproveFeedback {
+    const stagedIds = result.stagedIds || result.approvedIds;
+
+    if (stagedIds.length === 0) {
+        return {
+            tone: 'warning',
+            message: `No selected items passed Confidence > ${thresholdPercent}.`,
+            stagedCount: 0,
+            skippedCount: result.skippedIds.length,
+        };
+    }
+
+    return {
+        tone: 'success',
+        message: `${stagedIds.length} items staged after Confidence > ${thresholdPercent}. ${result.skippedIds.length} items skipped.`,
+        stagedCount: stagedIds.length,
+        skippedCount: result.skippedIds.length,
+    };
+}
+
+function buildBulkApproveErrorFeedback(message: string, skippedCount: number): BulkApproveFeedback {
+    return {
+        tone: 'error',
+        message: `Confidence check failed: ${message}`,
+        stagedCount: 0,
+        skippedCount,
+    };
+}
+
+function QueuePanel({
     items,
     selectedIds,
     scanningItems,
@@ -37,41 +84,67 @@ export default function QueuePanel({
     onBulkApprove,
 }: QueuePanelProps) {
     const [isBulkApproving, setIsBulkApproving] = React.useState(false);
-    const { queueConfidenceStats, selectedHighConfidenceQueueIds } = confidence;
-    const thresholdPercent = formatConfidencePercent(AI_BULK_APPROVE_CONFIDENCE_THRESHOLD);
-    const averageConfidence = formatConfidencePercent(queueConfidenceStats.averageScore);
+    const [bulkApproveFeedback, setBulkApproveFeedback] = React.useState<BulkApproveFeedback | null>(null);
+    const bulkApproveInFlightRef = React.useRef(false);
+    const { queueConfidencePercentById, queueConfidenceStats, selectedHighConfidenceQueueIds } = confidence;
+    const thresholdPercent = React.useMemo(
+        () => formatConfidencePercent(AI_BULK_APPROVE_CONFIDENCE_THRESHOLD),
+        []
+    );
+    const averageConfidence = React.useMemo(
+        () => formatConfidencePercent(queueConfidenceStats.averageScore),
+        [queueConfidenceStats.averageScore]
+    );
 
-    const handleBulkDelete = async (ids: string[]) => {
+    const handleBulkDelete = React.useCallback(async (ids: string[]) => {
         if (!confirm(`האם למחוק ${ids.length} פריטים מהתור?`)) {
             return;
         }
 
         await onBulkDelete(ids);
-    };
+    }, [onBulkDelete]);
 
-    const handleSmartBulkApprove = async () => {
+    const handleSmartBulkApprove = React.useCallback(async () => {
+        if (bulkApproveInFlightRef.current) {
+            return;
+        }
+
+        bulkApproveInFlightRef.current = true;
         setIsBulkApproving(true);
+        setBulkApproveFeedback(null);
 
         try {
             const result = await onBulkApprove(selectedIds);
 
-            if (result.approvedIds.length === 0) {
-                alert(`לא נמצאו פריטים עם Confidence מעל ${thresholdPercent}.`);
+            if (result.superseded) {
                 return;
             }
 
-            alert(`נבחרו ${result.approvedIds.length} פריטים עם Confidence מעל ${thresholdPercent}. דולגו ${result.skippedIds.length} פריטים.`);
+            setBulkApproveFeedback(buildBulkApproveFeedback(result, thresholdPercent));
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Server confidence check failed';
-            alert(`בדיקת Confidence נכשלה: ${message}`);
+            setBulkApproveFeedback(buildBulkApproveErrorFeedback(message, selectedIds.length));
         } finally {
+            bulkApproveInFlightRef.current = false;
             setIsBulkApproving(false);
         }
-    };
+    }, [onBulkApprove, selectedIds, thresholdPercent]);
+
+    const handleSelectForEstimation = React.useCallback((item: ContradictionItem) => {
+        onSelectForEstimation(item as unknown as PricingContradictionItem);
+    }, [onSelectForEstimation]);
+
+    const handleRescan = React.useCallback((item: ContradictionItem) => (
+        onRescan(item as unknown as PricingContradictionItem)
+    ), [onRescan]);
+
+    const getConfidencePercent = React.useCallback((item: ContradictionItem) => {
+        return queueConfidencePercentById.get(item.id) ?? null;
+    }, [queueConfidencePercentById]);
 
     return (
-        <div className="w-1/4 min-w-[320px] h-full flex flex-col shrink-0 space-y-4">
-            <div className="bg-[#151C24]/60 border border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden group">
+        <div className="w-full lg:w-1/4 lg:min-w-[320px] max-h-[42dvh] lg:max-h-none lg:h-full flex flex-col shrink-0 space-y-4">
+            <div className="bg-[#151C24]/60 border border-white/5 rounded-3xl p-4 sm:p-6 shadow-2xl relative overflow-hidden group">
                 <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 blur-[60px] group-hover:bg-orange-500/10 transition-all" />
                 <div className="flex items-start justify-between gap-4 relative z-10">
                     <div className="flex flex-col gap-1" dir="rtl">
@@ -113,6 +186,21 @@ export default function QueuePanel({
                 >
                     {isBulkApproving ? 'בודק Confidence בשרת...' : 'אישור חכם לפי Confidence'}
                 </button>
+
+                {bulkApproveFeedback && (
+                    <div
+                        role="status"
+                        aria-live="polite"
+                        className={`relative z-10 mt-3 rounded-2xl border p-3 text-left text-xs leading-5 ${BULK_APPROVE_FEEDBACK_STYLES[bulkApproveFeedback.tone]}`}
+                        dir="ltr"
+                    >
+                        <div className="font-bold">{bulkApproveFeedback.message}</div>
+                        <div className="mt-1 flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-[0.15em] opacity-80">
+                            <span>{`Staged: ${bulkApproveFeedback.stagedCount}`}</span>
+                            <span>{`Skipped: ${bulkApproveFeedback.skippedCount}`}</span>
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className="flex-1 min-h-0 overflow-hidden rounded-[2.5rem] border border-white/5 bg-[#0B0F14]/30 backdrop-blur-xl">
@@ -121,17 +209,16 @@ export default function QueuePanel({
                     selectedIds={selectedIds}
                     onToggleSelection={onToggleSelection}
                     onSelectAll={onSelectAll}
-                    onSelectForEstimation={(item) => onSelectForEstimation(item as unknown as PricingContradictionItem)}
-                    onRescan={(item) => onRescan(item as unknown as PricingContradictionItem)}
+                    onSelectForEstimation={handleSelectForEstimation}
+                    onRescan={handleRescan}
                     onBulkRescan={onBulkRescan}
                     onBulkDelete={handleBulkDelete}
                     scanningItems={scanningItems}
-                    getConfidencePercent={(item) => {
-                        const score = getQueueItemConfidenceScore(item as unknown as PricingContradictionItem);
-                        return score === null ? null : formatConfidencePercent(score);
-                    }}
+                    getConfidencePercent={getConfidencePercent}
                 />
             </div>
         </div>
     );
 }
+
+export default React.memo(QueuePanel);

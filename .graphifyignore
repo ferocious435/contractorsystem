@@ -1,1 +1,13 @@
 global_archive_backup/
+.agent/
+.agents/
+.antigravity/
+.gemini/
+skills
+*.log
+server_log.txt
+server_error_log.txt
+node_modules/
+.next/
+codex-skill-dispatcher/
+engineering-auto-router/

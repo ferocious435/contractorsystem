@@ -1,16 +1,42 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { geminiFlashModel, BOQ_PARSING_PROMPT } from '@/lib/gemini';
+import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
+
+const ALLOWED_PRICELIST_ITEM_TYPES = new Set(['CHAPTER', 'SUBCHAPTER', 'ITEM', 'NOTE']);
+
+function toNumber(value: unknown, fallback = 0) {
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/,/g, ''));
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizePricelistItemType(value: unknown) {
+  const itemType = String(value || 'ITEM').toUpperCase();
+  return ALLOWED_PRICELIST_ITEM_TYPES.has(itemType) ? itemType : 'ITEM';
+}
+
+function hasContractPricedQuantities(items: Array<Record<string, unknown>> | undefined) {
+  return (items || []).some((item) => {
+    const quantity = toNumber(item.quantity, 0);
+    const unitPrice = toNumber(item.unit_price_excl_vat ?? item.rate, 0);
+    return Number.isFinite(quantity) && Number.isFinite(unitPrice) && quantity > 0 && unitPrice > 0;
+  });
+}
 
 export async function POST(req: Request) {
   const supabase = await createClient();
-  
+
   try {
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const projectId = formData.get('projectId') as string;
     const pricelistName = formData.get('name') as string || file.name;
-    const isGlobal = formData.get('isGlobal') === 'true';
+    const requestedGlobal = formData.get('isGlobal') === 'true';
 
     if (!file) {
       return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
@@ -20,6 +46,36 @@ export async function POST(req: Request) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (profileError) throw profileError;
+
+    const canCreateGlobal = profile?.role === 'admin' || profile?.role === 'super_admin';
+    if (requestedGlobal && !canCreateGlobal) {
+      return NextResponse.json({ error: 'Only admins can create global pricelists' }, { status: 403 });
+    }
+
+    const isGlobal = requestedGlobal && canCreateGlobal;
+
+    if (projectId) {
+      const { data: ownedProject, error: projectError } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('id', projectId)
+        .eq('contractor_id', user.id)
+        .maybeSingle();
+
+      if (projectError) throw projectError;
+
+      if (!ownedProject) {
+        return NextResponse.json({ error: 'Project not found or forbidden' }, { status: 403 });
+      }
     }
 
     // 2. Подготовка файла для Gemini
@@ -41,10 +97,10 @@ export async function POST(req: Request) {
     const responseText = result.response.text();
     const cleanJson = responseText.replace(/```json|```/g, '').trim();
     let parsedData;
-    
+
     try {
       parsedData = JSON.parse(cleanJson);
-    } catch (e) {
+    } catch {
       console.error('Failed to parse Gemini JSON:', cleanJson);
       return NextResponse.json({ error: 'AI failed to generate valid JSON structure', raw: responseText }, { status: 500 });
     }
@@ -65,15 +121,17 @@ export async function POST(req: Request) {
     if (pError) throw pError;
 
     // 5. Массовая вставка элементов (pricelist_items)
+    const shouldSyncContractBoq = Boolean(projectId && !isGlobal && hasContractPricedQuantities(parsedData.items));
+
     if (parsedData.items && parsedData.items.length > 0) {
-      const itemsToInsert = parsedData.items.map((item: any) => ({
+      const itemsToInsert = parsedData.items.map((item: Record<string, unknown>) => ({
         pricelist_id: pricelist.id,
         item_code: item.item_code || '',
         description: item.description || '',
         unit: item.unit || '',
-        rate: item.unit_price_excl_vat || 0,
-        quantity: item.quantity || 0,
-        item_type: item.type || 'ITEM' // Используем тип от AI (CHAPTER, SUBCHAPTER, NOTE, ITEM)
+        rate: toNumber(item.unit_price_excl_vat ?? item.rate, 0),
+        quantity: toNumber(item.quantity, 0),
+        item_type: normalizePricelistItemType(item.type)
       }));
 
       const { error: itemsError } = await supabase
@@ -82,26 +140,35 @@ export async function POST(req: Request) {
 
       if (itemsError) {
         console.error('Error inserting items:', itemsError);
-        // Не прерываем, так как прайс-лист уже создан
+        if (shouldSyncContractBoq) {
+          throw itemsError;
+        }
       }
     }
 
+    const ledgerSync = shouldSyncContractBoq
+      ? await syncContractBoqToLedger(supabase, projectId, {
+          pricelistIds: [pricelist.id],
+          forceContractBoq: true,
+          contractorId: user.id
+        })
+      : null;
+
     // 6. Сохраняем сам файл в документы для истории
     const fileName = `${Date.now()}_${file.name}`;
-    const { data: storageData, error: storageError } = await supabase.storage
+    const storagePath = `${user.id}/${fileName}`;
+    const { error: storageError } = await supabase.storage
       .from('documents')
-      .upload(`${user.id}/${fileName}`, file);
+      .upload(storagePath, file);
 
-    if (!storageError) {
-      const { data: publicUrl } = supabase.storage
-        .from('documents')
-        .getPublicUrl(`${user.id}/${fileName}`);
-
+    if (!storageError && projectId) {
       await supabase.from('documents').insert({
-        project_id: projectId || null,
+        project_id: projectId,
         title: pricelistName,
         category: 'PRICELIST',
-        file_url: publicUrl.publicUrl,
+        file_url: null,
+        storage_bucket: 'documents',
+        storage_path: storagePath,
         ai_status: 'SCANNED',
         parsed_json: parsedData
       });
@@ -110,15 +177,17 @@ export async function POST(req: Request) {
     return NextResponse.json({
       success: true,
       pricelistId: pricelist.id,
+      ledgerSync,
       itemCount: parsedData.items?.length || 0,
       projectName: parsedData.project_name
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Universal Upload Error:', error);
-    return NextResponse.json({ 
-      error: 'Failed to process file', 
-      details: error.message 
+    const details = error instanceof Error ? error.message : 'Unknown upload error';
+    return NextResponse.json({
+      error: 'Failed to process file',
+      details
     }, { status: 500 });
   }
 }

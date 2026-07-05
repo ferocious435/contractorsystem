@@ -1,4 +1,5 @@
 import { VAT_RATE } from '@/utils/constants';
+import { AI_BULK_APPROVE_CONFIDENCE_THRESHOLD as SHARED_AI_BULK_APPROVE_CONFIDENCE_THRESHOLD } from '@/utils/pricing-confidence';
 import type {
     EditablePricingLedgerRowType,
     PricingEstimationData,
@@ -9,7 +10,9 @@ import type {
 
 export const PRICING_LEDGER_VAT_RATE = VAT_RATE;
 
-export const AI_BULK_APPROVE_CONFIDENCE_THRESHOLD = 0.9;
+export const AI_BULK_APPROVE_CONFIDENCE_THRESHOLD = SHARED_AI_BULK_APPROVE_CONFIDENCE_THRESHOLD;
+
+export const BULK_RESCAN_CONCURRENCY = 4;
 
 export const SELECTABLE_VARIATION_ORDER_TYPES = ['PENDING_VO', 'APPROVED_VO'] as const satisfies readonly PricingLedgerRowType[];
 
@@ -38,7 +41,7 @@ export const LEDGER_SOURCES = [
     'CUSTOM_ANALYSIS',
 ] as const satisfies readonly PricingLedgerSource[];
 
-export const PENDING_QUEUE_STATUSES = ['OPEN', 'MOVED_TO_PRICING', 'PENDING'] as const;
+export const PENDING_QUEUE_STATUSES = ['OPEN', 'MOVED_TO_PRICING'] as const;
 
 export const DEFAULT_LEDGER_SOURCE = 'CUSTOM_ANALYSIS' satisfies PricingLedgerSource;
 

@@ -1,4 +1,6 @@
-import React, { Suspense, useCallback } from 'react';
+"use client";
+
+import React, { Suspense, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { ArrowRight, FileSearch, Zap } from 'lucide-react';
@@ -14,9 +16,9 @@ import {
 } from '@/components/features/pricing-ledger';
 import type {
     ApprovePricingEstimationPayload,
-    PricingContradictionItem,
     PricingLedgerProps,
 } from '@/components/features/pricing-ledger';
+import type { ContradictionItem } from '@/types';
 
 export type ApproveEstimationPayload = ApprovePricingEstimationPayload;
 
@@ -47,6 +49,15 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
         routedEstimateId,
         onClearRoutedEstimate: clearSearchEstimate,
     });
+    const {
+        handleApproveEstimation: approveEstimation,
+        handleExportCSV: exportCSV,
+        handleSync: syncLedger,
+    } = actions;
+    const {
+        setIsAddingNew,
+        setIsGeneratingLetter,
+    } = setters;
 
     const isFocusedPricingFlow = Boolean(routedEstimateId) && !state.isFocusedPricingDismissed;
     const focusedQueueItem = derived.focusedQueueItem;
@@ -55,13 +66,35 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     const focusedSourceDocTitle = focusedQueueItem?.source_doc?.title || initialParams?.sourceDocTitle || '';
     const focusedTargetDocTitle = focusedQueueItem?.target_doc?.title || initialParams?.targetDocTitle || '';
 
-    const handleBackToSource = () => {
-        onNavigate?.(String(initialParams?.returnTo || 'radar'));
-    };
+    const queueConfidence = useMemo(() => ({
+        queueConfidencePercentById: derived.queueConfidencePercentById,
+        queueConfidenceStats: derived.queueConfidenceStats,
+        selectedHighConfidenceQueueIds: derived.selectedHighConfidenceQueueIds,
+    }), [derived.queueConfidencePercentById, derived.queueConfidenceStats, derived.selectedHighConfidenceQueueIds]);
 
-    const handleApproveEstimation = async (data: ApproveEstimationPayload) => {
-        await actions.handleApproveEstimation(data);
-    };
+    const handleBackToSource = useCallback(() => {
+        onNavigate?.(String(initialParams?.returnTo || 'radar'));
+    }, [initialParams?.returnTo, onNavigate]);
+
+    const handleApproveEstimation = useCallback(async (data: ApproveEstimationPayload) => {
+        await approveEstimation(data);
+    }, [approveEstimation]);
+
+    const handleGenerateLetter = useCallback(() => {
+        setIsGeneratingLetter(true);
+    }, [setIsGeneratingLetter]);
+
+    const handleExportCSV = useCallback(() => {
+        void exportCSV();
+    }, [exportCSV]);
+
+    const handleAddNew = useCallback(() => {
+        setIsAddingNew(true);
+    }, [setIsAddingNew]);
+
+    const handleSync = useCallback(() => {
+        void syncLedger();
+    }, [syncLedger]);
 
     return (
         <motion.div
@@ -70,7 +103,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
             className="flex flex-col h-full bg-[#0B0F14]"
         >
             {isFocusedPricingFlow && (
-                <div className="px-8 pt-8">
+                <div className="px-0 sm:px-4 lg:px-8 pt-4 lg:pt-8">
                     <div className="bg-[#151C24]/70 border border-emerald-500/20 rounded-[2rem] p-6 md:p-8 shadow-2xl">
                         <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-6">
                             <div className="space-y-4 max-w-4xl">
@@ -129,17 +162,13 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                     </div>
                 </div>
             )}
-
-            <div className={`flex gap-8 flex-1 overflow-hidden p-8 ${isFocusedPricingFlow ? 'pt-6' : 'pb-0'}`}>
+            <div className={`flex flex-col lg:flex-row gap-4 lg:gap-8 flex-1 min-h-0 overflow-hidden p-0 sm:p-4 lg:p-8 ${isFocusedPricingFlow ? 'pt-4 lg:pt-6' : 'pb-0'}`}>
                 {!isFocusedPricingFlow && (
                     <QueuePanel
                         items={state.pendingQueue}
                         selectedIds={state.selectedQueueIds}
                         scanningItems={state.scanningItems}
-                        confidence={{
-                            queueConfidenceStats: derived.queueConfidenceStats,
-                            selectedHighConfidenceQueueIds: derived.selectedHighConfidenceQueueIds,
-                        }}
+                        confidence={queueConfidence}
                         onToggleSelection={actions.handleToggleQueueSelection}
                         onSelectAll={actions.handleSelectAllQueue}
                         onSelectForEstimation={actions.handleSelectForEstimation}
@@ -150,14 +179,14 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
                     />
                 )}
 
-                <div className="flex-1 min-w-0 flex flex-col gap-8">
+                <div className="flex-1 min-w-0 min-h-0 flex flex-col gap-4 lg:gap-8">
                     <ActionBar
                         selectedCount={derived.selectedVOIds.length}
                         isSyncing={state.isSyncing}
-                        onGenerateLetter={() => setters.setIsGeneratingLetter(true)}
-                        onExportCSV={() => { void actions.handleExportCSV(); }}
-                        onAddNew={() => setters.setIsAddingNew(true)}
-                        onSync={() => { void actions.handleSync(); }}
+                        onGenerateLetter={handleGenerateLetter}
+                        onExportCSV={handleExportCSV}
+                        onAddNew={handleAddNew}
+                        onSync={handleSync}
                     />
 
                     <TotalsSummary totals={totals} />
@@ -195,7 +224,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
 
             {state.selectedContradiction && (
                 <AIEstimatorModal
-                    contradiction={state.selectedContradiction as unknown as PricingContradictionItem}
+                    contradiction={state.selectedContradiction as unknown as ContradictionItem}
                     onClose={() => setters.setSelectedContradiction(null)}
                     onApprove={handleApproveEstimation}
                 />

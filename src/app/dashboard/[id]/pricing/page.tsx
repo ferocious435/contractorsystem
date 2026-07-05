@@ -1,6 +1,5 @@
 import { createClient } from '@/utils/supabase/server';
-import PricingClient from '@/components/pricing/PricingClient';
-import { Calculator } from 'lucide-react';
+import PricingLedgerUI from '@/components/features/PricingLedgerUI';
 import { redirect } from 'next/navigation';
 
 export default async function PricingPage({ params }: { params: Promise<{ id: string }> }) {
@@ -11,24 +10,14 @@ export default async function PricingPage({ params }: { params: Promise<{ id: st
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) redirect('/login');
 
-    // Fetch initial Queue (Pending Contradictions)
-    const { data: queueData } = await supabase
-        .from('contradictions')
-        .select(`
-            *,
-            source_execution_doc:source_execution_doc_id(id, title),
-            target_contract_doc:target_contract_doc_id(id, title)
-        `)
-        .eq('project_id', id)
-        .eq('pricing_status', 'PENDING')
-        .order('created_at', { ascending: false });
+    const { data: project } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('id', id)
+        .eq('contractor_id', user.id)
+        .maybeSingle();
 
-    // Fetch initial Ledger (Priced items)
-    const { data: ledgerData } = await supabase
-        .from('pricing_ledger')
-        .select('*')
-        .eq('project_id', id)
-        .order('created_at', { ascending: true });
+    if (!project) redirect('/login');
 
     return (
         <div className="p-8 pb-0 pt-6 flex-1 flex flex-col max-w-[1600px] w-full mx-auto relative overflow-hidden" dir="rtl">
@@ -48,7 +37,7 @@ export default async function PricingPage({ params }: { params: Promise<{ id: st
                     <p className="text-gray-400 text-sm mt-3 max-w-3xl leading-relaxed">
                         מערכת אימות פיננסית מבוססת <span className="text-emerald-500/80 font-mono">Gemini 3.5 Flash</span>. 
                         כאן מתבצע ניתוח הנדסי של סתירות חוזיות ותרגומן לערך כספי (V.O). 
-                        <span className="block mt-1 text-[11px] text-gray-500 uppercase font-mono tracking-wider">הערה: כל הסכומים אינם כוללים מע"מ (18%)</span>
+                        <span className="block mt-1 text-[11px] text-gray-500 uppercase font-mono tracking-wider">הערה: כל הסכומים אינם כוללים מע&quot;מ (18%)</span>
                     </p>
                 </div>
                 
@@ -65,11 +54,7 @@ export default async function PricingPage({ params }: { params: Promise<{ id: st
 
             {/* Client App Container */}
             <div className="flex-1 min-h-0 relative z-10">
-                <PricingClient
-                    projectId={id}
-                    initialQueue={queueData || []}
-                    initialLedger={ledgerData || []}
-                />
+                <PricingLedgerUI projectId={id} />
             </div>
         </div>
 

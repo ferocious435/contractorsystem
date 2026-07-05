@@ -9,16 +9,33 @@ if (!apiKey) {
 
 export const genAI = new GoogleGenerativeAI(apiKey || "");
 
+export function requireGeminiApiKey() {
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is missing");
+  }
+  return apiKey;
+}
+
 /**
- * Helper to retry Gemini calls on transient errors (503)
+ * Helper to retry Gemini calls on transient errors and short rate-limit bursts.
  */
 export async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1500): Promise<T> {
   try {
     return await fn();
-  } catch (error: any) {
-    const is503 = error.status === 503 || error.message?.includes('503') || error.message?.includes('Service Unavailable');
-    if (retries > 0 && is503) {
-      console.warn(`Gemini 503 error detected. Retrying in ${delay}ms... (${retries} retries left)`);
+  } catch (error: unknown) {
+    const errorInfo = error as { status?: number; message?: string };
+    const errorMessage = typeof errorInfo.message === 'string' ? errorInfo.message : '';
+    const isRetryable =
+      errorInfo.status === 503 ||
+      errorInfo.status === 429 ||
+      errorMessage.includes('503') ||
+      errorMessage.includes('Service Unavailable') ||
+      errorMessage.includes('429') ||
+      errorMessage.includes('Too Many Requests') ||
+      errorMessage.includes('RESOURCE_EXHAUSTED');
+
+    if (retries > 0 && isRetryable) {
+      console.warn(`Gemini temporary error detected. Retrying in ${delay}ms... (${retries} retries left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return withRetry(fn, retries - 1, delay * 2);
     }

@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/output/playwright/
 
 # next.js
 /.next/
@@ -42,3 +43,17 @@ next-env.d.ts
 
 # local data and sessions
 /data
+.runtime-cookie*
+
+# local agent and cleanup artifacts
+/.agent/
+/.agents/
+/.antigravity/
+/.gemini/
+/skills
+/global_archive_backup/
+
+# local server logs
+*.log
+server_log.txt
+server_error_log.txt

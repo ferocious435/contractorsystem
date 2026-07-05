@@ -11,7 +11,7 @@ function formatCurrency(value: number) {
     return new Intl.NumberFormat('he-IL', CURRENCY_FORMAT_OPTIONS).format(value);
 }
 
-export default function TotalsSummary({ totals }: TotalsSummaryProps) {
+function TotalsSummary({ totals }: TotalsSummaryProps) {
     return (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 shrink-0" dir="rtl">
             {PRICING_LEDGER_STAT_CARDS.map((stat, index) => (
@@ -48,3 +48,5 @@ export default function TotalsSummary({ totals }: TotalsSummaryProps) {
         </div>
     );
 }
+
+export default React.memo(TotalsSummary);

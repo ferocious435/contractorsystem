@@ -7,32 +7,32 @@ const app = express();
 const port = process.env.WORKER_PORT || 3001;
 
 const server = app.listen(port, () => {
-  console.log(`🚀 Worker started on port ${port}`);
-  console.log('🤖 Waiting for document processing tasks...');
+  console.log(`Worker started on port ${port}`);
+  console.log('Waiting for document processing tasks...');
 });
 
-server.on('error', (e: any) => {
+server.on('error', (e: NodeJS.ErrnoException) => {
   if (e.code === 'EADDRINUSE') {
-    console.error(`❌ Port ${port} is already in use. Kill the process manually.`);
+    console.error(`Port ${port} is already in use. Kill the process manually.`);
     process.exit(1);
   } else {
-    console.error('❌ Worker server error:', e);
+    console.error('Worker server error:', e);
     process.exit(1);
   }
 });
 
 process.once('SIGINT', () => {
-  console.log('🛑 SIGINT received. Shutting down worker...');
+  console.log('SIGINT received. Shutting down worker...');
   server.close(() => {
-    console.log('✅ Worker stopped successfully.');
+    console.log('Worker stopped successfully.');
     process.exit(0);
   });
 });
 
 process.once('SIGTERM', () => {
-  console.log('🛑 SIGTERM received. Shutting down worker...');
+  console.log('SIGTERM received. Shutting down worker...');
   server.close(() => {
-    console.log('✅ Worker stopped successfully.');
+    console.log('Worker stopped successfully.');
     process.exit(0);
   });
 });

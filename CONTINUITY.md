@@ -2,7 +2,7 @@
 
 ## Current Operating Mode
 
-ContractorSystem is now maintained from Codex in this repository folder. AntiGravity files are treated as historical context unless they conflict with `GEMINI.md`, `AGENTS.md`, or the PRD files in `docs/specs/`.
+ContractorSystem is now maintained from Codex in this repository folder. Old AntiGravity files are not an active source of project rules.
 
 ## Active Product Standard
 
@@ -21,5 +21,5 @@ ContractorSystem is now maintained from Codex in this repository folder. AntiGra
 
 ## Known Transition Notes
 
-- `.antigravity/CONTINUITY.md` still mentions `gemini-2.5-flash`; that is historical and superseded by `GEMINI.md`.
-- The root `skills` reparse-point file cannot be indexed by Git on this Windows workspace and should be handled separately if a future task cleans AntiGravity artifacts.
+- Old AntiGravity artifacts and the root `skills` reparse point are not part of the active project rules.
+- Active agent guidance is kept in `AGENTS.md`; active product standards are kept in `GEMINI.md` and `docs/specs/`.

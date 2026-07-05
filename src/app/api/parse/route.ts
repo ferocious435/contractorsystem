@@ -1,32 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireOwnedDocument } from "@/app/api/_utils/auth";
 import { geminiModel, BOQ_PARSING_PROMPT } from "@/lib/gemini";
+import { downloadDocumentBuffer } from "@/utils/document-storage";
 import { createClient } from "@/utils/supabase/server";
 
 export async function POST(req: NextRequest) {
     try {
         const supabase = await createClient();
-        const { data: { session } } = await supabase.auth.getSession();
-
-        // Protective guard: only authenticated users can parse documents
-        if (!session) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
-
         const body = await req.json();
-        const { fileUrl, mimeType } = body;
+        const { documentId, mimeType } = body;
 
-        if (!fileUrl) {
-            return NextResponse.json({ error: "fileUrl is required" }, { status: 400 });
+        if (!documentId) {
+            return NextResponse.json({ error: "documentId is required" }, { status: 400 });
         }
 
-        // 1. Fetch the file securely from the provided URL (assuming it's a signed URL or public URL from Supabase)
-        const fileResponse = await fetch(fileUrl);
-        if (!fileResponse.ok) {
-            throw new Error("Failed to fetch the file from storage.");
+        const ownership = await requireOwnedDocument(
+            supabase,
+            documentId,
+            "id, title, file_url, storage_bucket, storage_path"
+        );
+
+        if (!ownership.ok) {
+            return ownership.response;
         }
 
-        const arrayBuffer = await fileResponse.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
+        const buffer = await downloadDocumentBuffer(supabase, ownership.document);
         const base64Data = buffer.toString("base64");
 
         // 2. Prepare the payload for Gemini
@@ -49,15 +47,16 @@ export async function POST(req: NextRequest) {
         let parsedData = [];
         try {
             parsedData = JSON.parse(responseText);
-        } catch (e) {
+        } catch {
             console.error("Failed to parse Gemini JSON output:", responseText);
             throw new Error("Gemini returned invalid JSON structure.");
         }
 
         return NextResponse.json({ success: true, data: parsedData });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error in /api/parse:", error);
-        return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+        const message = error instanceof Error ? error.message : "Internal Server Error";
+        return NextResponse.json({ error: message }, { status: 500 });
     }
 }

@@ -225,7 +225,7 @@ export function useSmartLetterState({
 
       setIsDeleting(id);
       try {
-        await apiDeleteVoLetter(supabase, id);
+        await apiDeleteVoLetter(id);
         void fetchSavedLetters();
       } catch (err) {
         console.error("[DELETE_ERROR]:", err);
@@ -233,7 +233,7 @@ export function useSmartLetterState({
         setIsDeleting(null);
       }
     },
-    [fetchSavedLetters, supabase],
+    [fetchSavedLetters],
   );
 
   const openPrintPreview = useCallback(() => {
@@ -308,8 +308,8 @@ export function useSmartLetterState({
       subtotal,
       vat,
       totalInclVat,
-      canGenerate: Boolean(letterType),
-      canSave: Boolean(generatedLetter && projectId),
+      canGenerate: Boolean(letterType && selectedItems.length),
+      canSave: Boolean(generatedLetter && projectId && selectedLedgerItems.length),
     },
   };
 }

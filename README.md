@@ -20,6 +20,43 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Runtime Verification
+
+Use the local guards before treating pricing changes as ready:
+
+```bash
+npm run verify:boq-scale
+npm run verify:financials
+npx tsc --noEmit
+npm run build
+```
+
+For the authenticated Pricing UI check, first run the app locally on port 3000, then provide session evidence through environment variables. Do not commit real cookies or passwords.
+
+Option A, login-based verification:
+
+```powershell
+$env:VERIFY_RUNTIME_LOGIN_EMAIL="<contractor email>"
+$env:VERIFY_RUNTIME_LOGIN_PASSWORD="<contractor password>"
+npm run verify:runtime-pricing
+```
+
+With login-based verification, the script discovers one project owned by the logged-in contractor. To force a specific project, also set:
+
+```powershell
+$env:VERIFY_RUNTIME_PRICING_PROJECT_ID="<project id>"
+```
+
+Option B, cookie-based verification:
+
+```powershell
+$env:VERIFY_RUNTIME_COOKIE_FILE=".runtime-cookie-local"
+$env:VERIFY_RUNTIME_PRICING_PROJECT_ID="<project id>"
+npm run verify:runtime-pricing
+```
+
+Files matching `.runtime-cookie*` are ignored by Git. The strict pricing check fails closed when no session evidence is provided.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

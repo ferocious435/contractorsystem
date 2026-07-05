@@ -6,6 +6,7 @@ interface ContradictionRadarHeaderProps {
     isScanning: boolean;
     progress: number;
     currentStep: string | null;
+    currentStepStatus?: 'success' | 'error' | null;
     contractDocsCount: number;
     executionDocsCount: number;
     hasContradictions: boolean;
@@ -18,6 +19,7 @@ export default function ContradictionRadarHeader({
     isScanning,
     progress,
     currentStep,
+    currentStepStatus,
     contractDocsCount,
     executionDocsCount,
     hasContradictions,
@@ -25,6 +27,8 @@ export default function ContradictionRadarHeader({
     scanProject,
     onExportPDF,
 }: ContradictionRadarHeaderProps) {
+    const isResultSuccess = currentStepStatus === 'success';
+
     return (
         <div className="bg-[#151C24]/55 border border-white/5 rounded-[2.5rem] p-8 md:p-10 relative overflow-hidden" dir="rtl">
             <div className="absolute top-[-100px] left-[-100px] w-64 h-64 bg-blue-500/10 rounded-full blur-[100px] pointer-events-none" />
@@ -130,10 +134,14 @@ export default function ContradictionRadarHeader({
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0 }}
-                        className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 px-6 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-full"
+                        className={`absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 px-6 py-2 rounded-full ${
+                            isResultSuccess
+                                ? 'bg-emerald-500/10 border border-emerald-500/20'
+                                : 'bg-red-500/10 border border-red-500/20'
+                        }`}
                     >
-                        <Check size={12} className="text-emerald-400" />
-                        <span className="text-xs font-bold text-emerald-400">{currentStep}</span>
+                        <Check size={12} className={isResultSuccess ? 'text-emerald-400' : 'text-red-400'} />
+                        <span className={`text-xs font-bold ${isResultSuccess ? 'text-emerald-400' : 'text-red-400'}`}>{currentStep}</span>
                     </motion.div>
                 )}
             </AnimatePresence>

@@ -12,12 +12,11 @@ export default async function LoginPage({
     return (
         <div className="flex h-screen w-full bg-background items-center justify-center p-4">
             <div className="w-full max-w-md glass-panel p-8 rounded-2xl border border-border-subtle shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
-
-                <div className="mb-8 text-center">
+                <div className="mb-8 text-center" dir="rtl">
                     <h1 className="text-3xl font-bold tracking-wider text-primary mb-2 drop-shadow-md">
                         קבלן<span className="text-white">PRO</span>
                     </h1>
-                    <p className="text-gray-400 text-sm">התחבר או הירשם כדי לגשת למערכת</p>
+                    <p className="text-gray-400 text-sm">התחבר כדי לפתוח את רשימת הפרויקטים האמיתיים שלך</p>
                 </div>
 
                 {errorMessage && (
@@ -27,8 +26,6 @@ export default async function LoginPage({
                 )}
 
                 <LoginForm />
-
-
             </div>
         </div>
     )
