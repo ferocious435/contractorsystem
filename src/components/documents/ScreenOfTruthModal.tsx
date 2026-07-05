@@ -57,6 +57,106 @@ function safeStructuredText(value: unknown, fallback = '') {
     return text;
 }
 
+function getRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
+}
+
+function normalizeParsedJson(value: unknown): ParsedDocumentJson {
+    if (!value) return {};
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return getRecord(parsed) ? parsed as ParsedDocumentJson : {};
+        } catch {
+            return {};
+        }
+    }
+
+    return getRecord(value) ? value as ParsedDocumentJson : {};
+}
+
+function nestedValue(root: Record<string, unknown>, path: string) {
+    return path.split('.').reduce<unknown>((current, key) => {
+        const record = getRecord(current);
+        return record ? record[key] : undefined;
+    }, root);
+}
+
+function normalizeReadableText(value: unknown) {
+    const text = safeStructuredText(value, '')
+        .replace(/\u0000/g, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{4,}/g, '\n\n\n')
+        .trim();
+    return text;
+}
+
+function excerptText(value: string, limit: number) {
+    if (value.length <= limit) return value;
+    return `${value.slice(0, limit).trim()}...`;
+}
+
+function isPlaceholderSummary(value: string) {
+    return [
+        'סיווג לפי שם הקובץ',
+        'ניתוח AI מלא ממתין להרצה',
+        'מסמך שנקלט למערכת',
+    ].some((placeholder) => value.includes(placeholder));
+}
+
+function getReadableDocumentText(jsonData: ParsedDocumentJson, doc: ProjectDocument, limit = 16000) {
+    const candidates: unknown[] = [
+        doc.extracted_text,
+        jsonData.full_markdown,
+        jsonData.extracted_text,
+        jsonData.markdown,
+        jsonData.text,
+        nestedValue(jsonData, 'ocr.text'),
+        nestedValue(jsonData, 'analysis.text'),
+        nestedValue(jsonData, 'content.text'),
+    ];
+
+    for (const candidate of candidates) {
+        const text = normalizeReadableText(candidate);
+        if (text) return excerptText(text, limit);
+    }
+
+    return '';
+}
+
+function getUsefulSummary(jsonData: ParsedDocumentJson, doc: ProjectDocument) {
+    const summaryPaths = [
+        'summary',
+        'document_summary',
+        'short_summary',
+        'analysis_summary',
+        'overview',
+        'description',
+        'analysis.summary',
+        'classification.summary',
+        'result.summary',
+        'data.summary',
+    ];
+    const placeholderSummaries: string[] = [];
+
+    for (const path of summaryPaths) {
+        const text = normalizeReadableText(nestedValue(jsonData, path));
+        if (!text) continue;
+        if (!isPlaceholderSummary(text)) return text;
+        placeholderSummaries.push(text);
+    }
+
+    const extractedText = getReadableDocumentText(jsonData, doc, 700);
+    if (extractedText) {
+        return `הטקסט של המסמך שמור במערכת. התחלה מתוך הטקסט שנקרא: ${extractedText}`;
+    }
+
+    return placeholderSummaries[0] || '';
+}
+
 function getSystemErrorText(errors: ParsedSystemError[], fallback?: string | null) {
     const code = errors[0]?.code || fallback;
     const messages: Record<string, string> = {
@@ -91,9 +191,10 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
     const [previewMeta, setPreviewMeta] = useState<PreviewMetadata | null>(null);
     const [previewError, setPreviewError] = useState<string | null>(null);
 
-    const jsonData: ParsedDocumentJson = doc.parsed_json || {};
+    const jsonData: ParsedDocumentJson = normalizeParsedJson(doc.parsed_json);
     const documentType = safeStructuredText(jsonData.document_type || jsonData.type, inferDocumentType(doc.title, doc.category));
-    const summary = safeStructuredText(jsonData.summary, '');
+    const summary = getUsefulSummary(jsonData, doc);
+    const readablePreviewText = getReadableDocumentText(jsonData, doc);
     const systemErrors = Array.isArray(jsonData.system_errors) ? jsonData.system_errors : [];
     const hasSystemError = doc.ai_status === 'ERROR' || Boolean(jsonData.system_error || jsonData.analysis_status === 'AI_ERROR');
     const financialItems = Array.isArray(jsonData.financial_data?.items) ? jsonData.financial_data.items : [];
@@ -241,6 +342,27 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
                                 <img src={previewUrl} alt={cleanTitle(doc.title) || 'Document preview'} className="h-full w-full object-contain bg-black" />
                             ) : previewUrl && previewKind === 'text' ? (
                                 <iframe title="תצוגת טקסט" src={previewUrl} className="w-full h-full border-none bg-white" />
+                            ) : readablePreviewText ? (
+                                <div className="h-full w-full overflow-y-auto p-6 text-right" dir="rtl">
+                                    <div className="mb-4 flex items-center justify-between gap-3 border-b border-white/5 pb-3">
+                                        <div>
+                                            <div className="text-sm font-black text-gray-200">טקסט שמור מהמסמך</div>
+                                            <div className="mt-1 text-xs text-gray-500">מוצג מתוך הניתוח שנשמר במערכת.</div>
+                                        </div>
+                                        {sourceUrl ? (
+                                            <a
+                                                href={sourceUrl}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl bg-white px-4 py-2 text-xs font-black text-black transition-transform hover:scale-105 active:scale-95"
+                                            >
+                                                <ExternalLink className="w-4 h-4" />
+                                                פתח מקור
+                                            </a>
+                                        ) : null}
+                                    </div>
+                                    <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-gray-200">{readablePreviewText}</pre>
+                                </div>
                             ) : (
                                 <div className="flex flex-col items-center gap-4 text-center px-6 max-w-md">
                                     <div className="p-5 bg-white/[0.03] border border-white/5 rounded-2xl">
@@ -248,12 +370,14 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
                                     </div>
                                     <div>
                                         <div className="text-sm font-bold text-gray-300">
-                                            {previewKind === 'office' ? 'אין תצוגה ישירה למסמך Office' : 'אין תצוגה ישירה למסמך הזה'}
+                                            {previewError ? 'לא הצלחנו לפתוח תצוגה מקדימה' : previewKind === 'office' ? 'אין תצוגה ישירה למסמך Office' : 'אין תצוגה ישירה לסוג הקובץ הזה'}
                                         </div>
                                         <div className="mt-2 text-xs leading-6 text-gray-500" title={previewError || undefined}>
-                                            {previewKind === 'office'
+                                            {previewError
+                                                ? 'הקובץ עדיין יכול להיות שמור במערכת. נסה לפתוח את קובץ המקור.'
+                                                : previewKind === 'office'
                                                 ? 'המסמך שמור במערכת וניתן לפתוח אותו כקובץ מקור.'
-                                                : 'אם זה מסמך אמיתי, צריך לוודא שהקובץ עדיין קיים באחסון ושייך לפרויקט הזה.'}
+                                                : 'המסמך שמור, אך אין לו תצוגה ישירה בתוך הדפדפן.'}
                                         </div>
                                         {sourceUrl ? (
                                             <a

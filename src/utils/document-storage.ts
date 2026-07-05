@@ -48,6 +48,15 @@ const CONTENT_TYPES_BY_EXTENSION: Record<string, string> = {
     ".skn": "text/plain; charset=utf-8",
 };
 
+const OFFICE_CONTENT_TYPES_BY_ZIP_MARKER: Array<[string, string]> = [
+    ["word/document.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ["xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ["ppt/presentation.xml", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+    ["mimetypeapplication/vnd.oasis.opendocument.text", "application/vnd.oasis.opendocument.text"],
+    ["mimetypeapplication/vnd.oasis.opendocument.spreadsheet", "application/vnd.oasis.opendocument.spreadsheet"],
+    ["mimetypeapplication/vnd.oasis.opendocument.presentation", "application/vnd.oasis.opendocument.presentation"],
+];
+
 function cleanPath(value: string) {
     return decodeURIComponent(value.split("?")[0].replace(/^\/+/, ""));
 }
@@ -139,6 +148,18 @@ export function getDocumentContentType(doc: DocumentStorageRecord, buffer?: Buff
         return "image/gif";
     }
 
+    if (
+        buffer
+        && buffer.length >= 4
+        && buffer[0] === 0x50
+        && buffer[1] === 0x4b
+        && [0x03, 0x05, 0x07].includes(buffer[2])
+    ) {
+        const zipSample = buffer.subarray(0, Math.min(buffer.length, 2_000_000)).toString("latin1");
+        const officeMatch = OFFICE_CONTENT_TYPES_BY_ZIP_MARKER.find(([marker]) => zipSample.includes(marker));
+        if (officeMatch) return officeMatch[1];
+    }
+
     return (
         CONTENT_TYPES_BY_EXTENSION[getFileExtension(doc.title)]
         || CONTENT_TYPES_BY_EXTENSION[getFileExtension(getDocumentStoragePath(doc))]
@@ -154,7 +175,14 @@ export function getDocumentPreviewKind(doc: DocumentStorageRecord, contentType =
     if (normalizedContentType === "application/pdf" || extension === ".pdf") return "pdf";
     if (normalizedContentType.startsWith("image/") || [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(extension)) return "image";
     if (normalizedContentType.startsWith("text/") || ["application/json", "application/xml"].includes(normalizedContentType)) return "text";
-    if ([".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"].includes(extension)) return "office";
+    if (
+        normalizedContentType.includes("word")
+        || normalizedContentType.includes("excel")
+        || normalizedContentType.includes("spreadsheet")
+        || normalizedContentType.includes("presentation")
+        || normalizedContentType.includes("opendocument")
+        || [".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"].includes(extension)
+    ) return "office";
 
     return "unsupported";
 }

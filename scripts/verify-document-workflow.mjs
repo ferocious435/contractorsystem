@@ -72,8 +72,11 @@ expect('Document API document access relies on Supabase RLS', authUtils.includes
 expect('Preview signed URL is project-scoped', truthModal.includes('new URLSearchParams({ projectId, documentId: doc.id })'));
 expect('Radar document opening is project-scoped', radarState.includes('new URLSearchParams({ projectId, documentId })') && radarState.includes('}, [projectId])'));
 expect('Preview API returns inline metadata for UI routing', signedUrlRoute.includes('previewKind') && signedUrlRoute.includes('canPreviewInline') && signedUrlRoute.includes('inlineUrl'));
+expect('Preview API inspects stored file bytes when metadata is not enough', signedUrlRoute.includes('downloadDocumentBuffer') && signedUrlRoute.includes('contentType === "application/octet-stream"') && signedUrlRoute.includes('getDocumentContentType(ownership.document, fileBuffer)'));
 expect('Document file API serves files inline', documentFileRoute.includes('Content-Disposition') && documentFileRoute.includes('inline; filename=') && documentFileRoute.includes('downloadDocumentBuffer'));
 expect('Modal renders PDF/image/text differently and does not iframe Office files', truthModal.includes("previewKind === 'pdf'") && truthModal.includes("previewKind === 'image'") && truthModal.includes("previewKind === 'text'") && truthModal.includes("previewKind === 'office'"));
+expect('Modal falls back to saved extracted text when direct preview is unavailable', truthModal.includes('getReadableDocumentText') && truthModal.includes('readablePreviewText') && truthModal.includes('טקסט שמור מהמסמך'));
+expect('Modal summary uses saved text when AI summary is only a placeholder', truthModal.includes('getUsefulSummary') && truthModal.includes('isPlaceholderSummary') && truthModal.includes('התחלה מתוך הטקסט שנקרא'));
 expect('Modal hides mojibake structured fields', truthModal.includes('looksCorruptText') && truthModal.includes('safeStructuredText'));
 expect('Modal blocks validation on system error', truthModal.includes('!hasSystemError && isStructured'));
 expect('Modal hides financial fields unless financial data exists', truthModal.includes('shouldShowFinancial = hasFinancialItems || Boolean(totalAmount)'));
@@ -89,6 +92,7 @@ expect('Text extraction explains Google native pointer files', textExtraction.in
 expect('Text extraction keeps converter-needed engineering formats explicit', textExtraction.includes('".dwg"') && textExtraction.includes('".dwf"') && textExtraction.includes('".rvt"') && textExtraction.includes('".mpp"'));
 expect('Text extraction ignores trailing numeric date suffixes', textExtraction.includes('suffixTokens.every') && textExtraction.includes('/^\\.\\d{1,4}$/'));
 expect('Text extraction detects PDF/images from file bytes', textExtraction.includes('getSupportedGeminiMimeTypeFromBuffer') && textExtraction.includes('%PDF-') && textExtraction.includes('RIFF'));
+expect('Preview content type detects Office ZIP contents', read('src/utils/document-storage.ts').includes('OFFICE_CONTENT_TYPES_BY_ZIP_MARKER') && read('src/utils/document-storage.ts').includes('word/document.xml') && read('src/utils/document-storage.ts').includes('xl/workbook.xml') && read('src/utils/document-storage.ts').includes('ppt/presentation.xml'));
 expect('Text extraction avoids bundled PDF worker path resolution', textExtraction.includes('requireFromHere("pdf-parse")') && !textExtraction.includes('requireFromHere.resolve("pdf-parse")') && !textExtraction.includes('pdf.worker.mjs'));
 expect('PDF files prefer server-side text extraction before multimodal AI', textExtraction.includes('pdf_text_extraction') && textExtraction.includes('falling back to Gemini multimodal'));
 expect('Text extraction detects Office ZIP contents', textExtraction.includes('detectOfficeParserFileTypeFromBuffer') && textExtraction.includes('word/document.xml') && textExtraction.includes('xl/workbook.xml') && textExtraction.includes('ppt/presentation.xml'));

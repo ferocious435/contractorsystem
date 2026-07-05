@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireOwnedDocument, requireOwnedProject } from "@/app/api/_utils/auth";
-import { createDocumentSignedUrl, getDocumentContentType, getDocumentPreviewKind } from "@/utils/document-storage";
+import { createDocumentSignedUrl, downloadDocumentBuffer, getDocumentContentType, getDocumentPreviewKind } from "@/utils/document-storage";
 import { createClient } from "@/utils/supabase/server";
 
 type SignedUrlDocument = {
@@ -47,7 +47,15 @@ export async function GET(req: NextRequest) {
         }
 
         const signedUrl = await createDocumentSignedUrl(supabase, ownership.document);
-        const contentType = getDocumentContentType(ownership.document);
+        let contentType = getDocumentContentType(ownership.document);
+        if (contentType === "application/octet-stream") {
+            try {
+                const fileBuffer = await downloadDocumentBuffer(supabase, ownership.document);
+                contentType = getDocumentContentType(ownership.document, fileBuffer);
+            } catch (downloadError) {
+                console.warn("[documents/signed-url] Could not inspect document bytes for preview", downloadError);
+            }
+        }
         const previewKind = getDocumentPreviewKind(ownership.document, contentType);
         const canPreviewInline = ["pdf", "image", "text"].includes(previewKind);
         const inlineUrl = `/api/documents/file?${new URLSearchParams({ projectId, documentId }).toString()}`;

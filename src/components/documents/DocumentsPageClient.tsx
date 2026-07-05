@@ -328,20 +328,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         if (!status) return labelByStatus.PENDING;
         if (labelByStatus[status]) return labelByStatus[status];
 
-        switch (status) {
-            case 'VALIDATED':
-                return 'מאומת';
-            case 'SCANNED':
-                return 'נסרק ומוכן';
-            case 'PROCESSING':
-                return 'מנתח מסמך...';
-            case 'EXTRACTING':
-                return 'קורא את המסמך...';
-            case 'ERROR':
-                return 'נדרשת בדיקה';
-            default:
-                return 'ממתין לטיפול';
-        }
+        return 'ממתין לטיפול';
     };
 
     const getEvidenceConfidenceLabel = (doc: ProjectDocument) => {
@@ -349,7 +336,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         const confidence = typeof rawConfidence === 'number' ? rawConfidence : Number(rawConfidence);
 
         if (doc.parsed_json?.system_error || doc.parsed_json?.analysis_status === 'AI_ERROR') return 'AI לא עבד';
-        if (doc.ai_status === 'VALIDATED') return 'אושר ידנית';
+        if (doc.ai_status === 'VALIDATED') return 'מאושר כמקור';
         if (doc.ai_status === 'SCANNED') return 'צריך אישור';
         if (doc.extracted_text_hash || doc.ocr_status === 'COMPLETED') return 'טקסט נקרא';
 
@@ -358,7 +345,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             return `${Math.round(percent)}%`;
         }
 
-        if (doc.ai_status === 'VALIDATED') return 'אומת ידנית';
+        if (doc.ai_status === 'VALIDATED') return 'מאושר כמקור';
         if (doc.extracted_text_hash || doc.ocr_status === 'COMPLETED' || doc.ai_status === 'SCANNED') return 'נדרש אישור';
         return 'עדיין לא נותח';
     };
@@ -706,7 +693,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                         {doc.ai_status === 'VALIDATED' && (
                                             <div className="min-h-11 flex items-center gap-2 px-4 py-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 rounded-xl text-sm font-black">
                                                 <ShieldCheck size={12} />
-                                                מאומת
+                                                מאושר כמקור
                                             </div>
                                         )}
                                     </div>
