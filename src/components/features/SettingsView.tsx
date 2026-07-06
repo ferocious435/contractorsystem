@@ -1,15 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { 
-    Save, Check, Settings, DollarSign, Building2, 
-    FileText, Shield, Globe, Cpu, Zap, Loader2, 
+import {
+    Save, Check, Settings, DollarSign, Building2,
+    Shield, Globe, Cpu, Zap, Loader2,
     AlertCircle, Sparkles, Database, Lock, User
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
+import { AI_MODEL_BRANDING } from "@/utils/constants";
+
+interface SettingsProject {
+    name?: string | null;
+    client_name?: string | null;
+}
 
 interface SettingsViewProps {
-    project: any;
+    project: SettingsProject | null | undefined;
     projectId: string | null;
 }
 
@@ -34,7 +40,7 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
     };
 
     return (
-        <motion.div 
+        <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             className="max-w-5xl mx-auto w-full space-y-8 pb-20"
@@ -63,8 +69,8 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                     onClick={handleSave}
                     disabled={isSaving}
                     className={`relative group px-10 py-4 rounded-2xl font-black text-[11px] uppercase tracking-[0.2em] transition-all flex items-center gap-3 overflow-hidden ${
-                        savedMessage 
-                        ? 'bg-emerald-500 text-black shadow-[0_0_30px_rgba(16,185,129,0.3)]' 
+                        savedMessage
+                        ? 'bg-emerald-500 text-black shadow-[0_0_30px_rgba(16,185,129,0.3)]'
                         : 'bg-white text-black hover:bg-blue-500 hover:text-white shadow-[0_20px_40px_rgba(255,255,255,0.05)]'
                     }`}
                 >
@@ -129,7 +135,7 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                     {/* Financial Matrix */}
                     <section className="bg-[#151C24]/40 border border-white/5 rounded-[2.5rem] p-8 space-y-8 relative overflow-hidden group">
                         <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-[80px] group-hover:bg-emerald-500/10 transition-all" />
-                        
+
                         <div className="flex items-center gap-3 border-b border-white/5 pb-6">
                             <div className="p-2 bg-emerald-500/10 rounded-xl">
                                 <DollarSign size={18} className="text-emerald-400" />
@@ -140,7 +146,7 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                             <div className="space-y-4">
                                 <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1 flex items-center gap-2">
-                                    שיעור מע"מ [%] <Sparkles size={10} className="text-emerald-500" />
+                                    שיעור מע&quot;מ [%] <Sparkles size={10} className="text-emerald-500" />
                                 </label>
                                 <div className="relative group/input">
                                     <input
@@ -151,7 +157,7 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                                     />
                                     <div className="absolute left-6 top-1/2 -translate-y-1/2 text-emerald-500/50 font-mono text-sm font-black">אחוז</div>
                                 </div>
-                                <p className="text-[9px] font-mono text-gray-600 uppercase tracking-widest">מע"מ סטנדרטי: 18%</p>
+                                <p className="text-[9px] font-mono text-gray-600 uppercase tracking-widest">מע&quot;מ סטנדרטי: 18%</p>
                             </div>
                             <div className="space-y-4">
                                 <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">מטבע פעיל</label>
@@ -188,11 +194,11 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                                 <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">פורמט ייצוא ברירת מחדל</label>
                                 <div className="flex gap-2">
                                     {['PDF', 'CSV', 'XLSX'].map((protocol) => (
-                                        <button 
+                                        <button
                                             key={protocol}
                                             className={`flex-1 py-4 rounded-xl border font-mono text-[10px] font-black uppercase tracking-widest transition-all ${
-                                                protocol === 'PDF' 
-                                                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' 
+                                                protocol === 'PDF'
+                                                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
                                                 : 'bg-white/5 border-white/5 text-gray-600 hover:text-white hover:bg-white/10'
                                             }`}
                                         >
@@ -205,11 +211,11 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                                 <label className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest px-1">שפת ממשק</label>
                                 <div className="flex gap-2">
                                     {['HE', 'EN'].map((lang) => (
-                                        <button 
+                                        <button
                                             key={lang}
                                             className={`flex-1 py-4 rounded-xl border font-mono text-[10px] font-black uppercase tracking-widest transition-all ${
-                                                lang === 'HE' 
-                                                ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' 
+                                                lang === 'HE'
+                                                ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
                                                 : 'bg-white/5 border-white/5 text-gray-600 hover:text-white hover:bg-white/10'
                                             }`}
                                         >
@@ -253,7 +259,7 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                                     <Zap size={16} className="text-gray-500" />
                                     <span className="text-[10px] font-mono font-black text-gray-400 uppercase">מודל AI</span>
                                 </div>
-                                <span className="text-[10px] font-mono font-black text-blue-400 uppercase">G-3.0-F</span>
+                                <span className="text-[10px] font-mono font-black text-blue-400 uppercase">{AI_MODEL_BRANDING}</span>
                             </div>
                         </div>
 
@@ -263,7 +269,7 @@ export default function SettingsView({ project, projectId }: SettingsViewProps) 
                                 <span>82%</span>
                             </div>
                             <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                                <motion.div 
+                                <motion.div
                                     initial={{ width: 0 }}
                                     animate={{ width: '82%' }}
                                     className="h-full bg-blue-500 shadow-[0_0_10px_#3b82f6]"

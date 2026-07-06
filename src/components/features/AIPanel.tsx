@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { AlertTriangle, AlertCircle, TrendingUp, Zap, ArrowRight } from "lucide-react";
 import { AI_MODEL_BRANDING } from "@/utils/constants";
+import { getLedgerRowAmount } from "@/utils/project-financials";
 
 interface AIInsight {
     id: string;
@@ -18,18 +19,9 @@ interface AIInsight {
 export function AIPanel({ projectId }: { projectId: string | null }) {
     const [insights, setInsights] = useState<AIInsight[]>([]);
     const [isLoading, setIsLoading] = useState(true);
-    const supabase = createClient();
+    const supabase = useMemo(() => createClient(), []);
 
-    useEffect(() => {
-        if (!projectId) {
-            setInsights([]);
-            setIsLoading(false);
-            return;
-        }
-        fetchInsights();
-    }, [projectId]);
-
-    const fetchInsights = async () => {
+    const fetchInsights = useCallback(async () => {
         setIsLoading(true);
         try {
             // 1. Загружаем открытые противоречия
@@ -44,7 +36,7 @@ export function AIPanel({ projectId }: { projectId: string | null }) {
             // 2. Загружаем ожидающие VO (Variation Orders)
             const { data: pendingVOs } = await supabase
                 .from('pricing_ledger')
-                .select('id, description, total_price_excl_vat, type')
+                .select('id, description, total_price_excl_vat, quantity, unit_price_excl_vat, type')
                 .eq('project_id', projectId)
                 .eq('type', 'PENDING_VO')
                 .limit(3);
@@ -75,7 +67,7 @@ export function AIPanel({ projectId }: { projectId: string | null }) {
                         severity: 'MEDIUM',
                         title: `חריג בהמתנה: ${vo.description || 'ללא תיאור'}`,
                         description: `סכום משוער של חריג זה`,
-                        amount: Number(vo.total_price_excl_vat) || 0,
+                        amount: getLedgerRowAmount(vo),
                         actionLabel: 'בדוק חריג'
                     });
                 });
@@ -87,7 +79,16 @@ export function AIPanel({ projectId }: { projectId: string | null }) {
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [projectId, supabase]);
+
+    useEffect(() => {
+        if (!projectId) {
+            setInsights([]);
+            setIsLoading(false);
+            return;
+        }
+        void fetchInsights();
+    }, [fetchInsights, projectId]);
 
     const formatCurrency = (val: number) => {
         return new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(val);

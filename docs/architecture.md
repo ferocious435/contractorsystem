@@ -6,7 +6,7 @@
 - **Frontend / Client:** React 19, Next.js 16 (App Router), TailwindCSS v4, TypeScript.
 - **Backend / Database:** Supabase (BaaS: Auth, PostgreSQL, Storage, Row Level Security).
 - **Background Worker:** Node.js Express Server (работает автономно для тяжелых задач).
-- **AI / LLM:** Google Gemini API (`gemini-3-flash-preview`).
+- **AI / LLM:** Google Gemini API (`gemini-3.5-flash`).
 
 ## 2. Глобальная структура данных (Supabase)
 Ключевые таблицы и связи (RLS Policies настроены на изоляцию по `contractor_id`):

@@ -1,89 +1,201 @@
 import { genAI, GEMINI_CONFIG } from "@/lib/gemini";
+import { createClient } from "@/utils/supabase/server";
+import { VAT_RATE } from "@/utils/constants";
+import { getAmountVat, getLedgerRowAmount, getMoneySum } from "@/utils/project-financials";
+import { formatEvidenceForLetter } from "@/utils/letter-evidence";
+import { buildServerBackedLetterEvidence, getOfficialLetterEvidenceBlockers, type ServerLetterContradiction } from "@/utils/server-letter-evidence";
 import { NextResponse } from "next/server";
 
 const model = genAI.getGenerativeModel({ model: GEMINI_CONFIG.STABLE_FLASH });
 
+type LetterLedgerItem = {
+    id: string;
+    contradiction_id?: string | null;
+    evidence_data?: unknown;
+    [key: string]: unknown;
+};
+
+function isOfficialLetterType(value: unknown) {
+    return String(value || "").toLowerCase() === "official_vo";
+}
+
+function formatMoney(value: unknown) {
+    const numeric = Number(value || 0);
+    return new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(numeric);
+}
+
+
 export async function POST(req: Request) {
     try {
-        const { projectId, letterType, recipient, subject, keyPoints, tone, items } = await req.json();
+        const supabase = await createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+        }
+
+        const { projectId, letterType, recipient, subject, keyPoints, tone, itemIds } = await req.json();
 
         if (!process.env.GEMINI_API_KEY) {
             return NextResponse.json({ success: false, error: "API Key missing" }, { status: 500 });
         }
 
-        const itemsContext = items.map((item: any) => {
-            const evidenceStr = item.evidence_data && Array.isArray(item.evidence_data) 
-                ? item.evidence_data.map((ev: any) => `- ${ev.document_title || 'מסמך'} (עמ' ${ev.page || '?'})`).join('\n              ')
-                : 'אין הוכחות מתועדות';
+        const requestedItemIds = Array.isArray(itemIds)
+            ? Array.from(new Set(itemIds.filter((id: unknown) => typeof id === "string" && id.trim())))
+            : [];
 
+        if (!projectId || !requestedItemIds.length) {
+            return NextResponse.json({ success: false, error: "projectId and itemIds are required" }, { status: 400 });
+        }
+
+        const { data: project, error: projectError } = await supabase
+            .from("projects")
+            .select("id, name, client_name, contractor_id")
+            .eq("id", projectId)
+            .eq("contractor_id", user.id)
+            .maybeSingle();
+
+        if (projectError || !project) {
+            return NextResponse.json({ success: false, error: "Project not found or not accessible" }, { status: 404 });
+        }
+
+        const { data: ledgerItems, error: ledgerItemsError } = await supabase
+            .from("pricing_ledger")
+            .select("id, type, item_code, description, unit, quantity, unit_price_excl_vat, total_price_excl_vat, ai_rationale, governing_notes, evidence_data, contradiction_id")
+            .eq("project_id", projectId)
+            .in("id", requestedItemIds)
+            .in("type", ["PENDING_VO", "APPROVED_VO"]);
+
+        if (ledgerItemsError) throw ledgerItemsError;
+
+        const safeLedgerItems = (ledgerItems || []) as LetterLedgerItem[];
+
+        if (safeLedgerItems.length !== requestedItemIds.length) {
+            return NextResponse.json({
+                success: false,
+                error: "Letters can include only pending or approved variation items"
+            }, { status: 400 });
+        }
+
+        const contradictionIds = Array.from(new Set(
+            safeLedgerItems
+                .map((item) => item.contradiction_id)
+                .filter((id): id is string => typeof id === "string" && id.length > 0)
+        ));
+        const contradictionsById = new Map<string, ServerLetterContradiction>();
+
+        if (contradictionIds.length > 0) {
+            const { data: contradictions, error: contradictionsError } = await supabase
+                .from("contradictions")
+                .select("id, status, source_execution_doc_id, target_contract_doc_id, evidence_data")
+                .eq("project_id", projectId)
+                .in("id", contradictionIds);
+
+            if (contradictionsError) throw contradictionsError;
+            ((contradictions || []) as ServerLetterContradiction[]).forEach((contradiction) => {
+                if (typeof contradiction.id === "string") {
+                    contradictionsById.set(contradiction.id, contradiction);
+                }
+            });
+        }
+
+        const officialEvidenceFailures = isOfficialLetterType(letterType)
+            ? safeLedgerItems.flatMap((item) => {
+                const contradiction = item.contradiction_id ? contradictionsById.get(item.contradiction_id) : null;
+                return getOfficialLetterEvidenceBlockers(item, contradiction).map((reason) => ({ itemId: item.id, reason }));
+            })
+            : [];
+
+        if (officialEvidenceFailures.length > 0) {
+            return NextResponse.json({
+                success: false,
+                error: "Official VO requires server-verified document evidence for every selected item",
+                evidenceFailures: officialEvidenceFailures,
+            }, { status: 400 });
+        }
+
+        const letterEvidenceByItemId = new Map(
+            safeLedgerItems.map((item) => [
+                item.id,
+                buildServerBackedLetterEvidence(
+                    item,
+                    item.contradiction_id ? contradictionsById.get(item.contradiction_id) : null,
+                ),
+            ])
+        );
+
+        const totalExclVat = safeLedgerItems.reduce((sum: number, item) => getMoneySum([sum, getLedgerRowAmount(item)]), 0);
+        const vatAmount = getAmountVat(totalExclVat, VAT_RATE);
+        const totalInclVat = getMoneySum([totalExclVat, vatAmount]);
+
+        const itemsContext = safeLedgerItems.map((item) => {
+            const unitPrice = item.unit_price_excl_vat;
+            const total = getLedgerRowAmount(item);
             return `
-            - פריט: ${item.description}
-            - קוד: ${item.code}
-            - כמות: ${item.quantity} ${item.unit}
-            - מחיר יחידה: ${item.price} ₪
-            - סה"כ: ${item.total} ₪
-            - נימוק: ${item.ai_rationale || 'לא צוין'}
-            - הערות: ${JSON.stringify(item.governing_notes) || 'אין'}
-            - הוכחות (Evidence Links):
-              ${evidenceStr}
-            `;
-        }).join('\n');
+- פריט: ${item.description}
+- קוד: ${item.item_code || "NEW"}
+- כמות: ${item.quantity} ${item.unit}
+- מחיר יחידה לפני מע"מ: ${formatMoney(unitPrice)}
+- סה"כ לפני מע"מ: ${formatMoney(total)}
+- נימוק: ${item.ai_rationale || "לא צוין"}
+- הערות: ${JSON.stringify(item.governing_notes || [])}
+- הוכחות:
+${formatEvidenceForLetter(letterEvidenceByItemId.get(item.id))}
+`;
+        }).join("\n");
 
-        const typeSpecificInstructions = {
-            rfi: "זהו מכתב הבהרה (RFI). הטון צריך להיות שאלתי ומקצועי. התמקד בבקשת הנחיות לגבי סתירות או אי-בהירויות בתוכניות המונעות את המשך העבודה התקין.",
-            vo_request: "זוהי דרישת תשלום לחריגים (VO Request). הטון צריך להיות דורש אך מקצועי. הדגש כי העבודות המפורטות אינן חלק מההסכם המקורי ובוצעו/מבוצעות לבקשת המזמין.",
-            official_vo: "זוהי פקודת שינויים רשמית (Official VO). הטון צריך להיות סמכותי וסיכומי. המכתב מהווה תיעוד סופי של השינויים שאושרו והשפעתם על לוחות הזמנים והתקציב."
-        }[letterType as 'rfi' | 'vo_request' | 'official_vo'] || "";
-
-        const toneMap: Record<string, string> = {
-            professional: "מקצועי וענייני (Professional/Objective). התמקד בעובדות ובנתונים.",
-            formal: "פורמלי ורשמי מאוד. שימוש בשפה משפטית גבוהה.",
-            firm: "תקיף ודורש זכויות (Firm/Assertive). הדגש את חובות המזמין.",
-            aggressive: "אגרסיבי ולוחמני. השתמש במושגים של התראה לפני נקיטת צעדים, הפרת חוזה ודרישה חד משמעית לתיקון המצב.",
-            friendly: "נעים, משתף פעולה ומכיל. הדגש את הרצון להמשך עבודה תקינה ופתרון משותף של הסוגיות.",
-            skeleton: "שלד / מבנה בלבד (Skeleton). אל תכתוב את המכתב המלא. ספק רק את הכותרות, סדר הנושאים ונקודות המפתח. בכל מקום שנדרש תוכן, שים Placeholder בסגנון [כאן להוסיף את הטיעון האישי/הסבר על...]. זה נועד לאפשר למשתמש לכתוב את המכתב בעצמו על בסיס המבנה."
+        const typeInstructions: Record<string, string> = {
+            rfi: "זה מכתב הבהרה (RFI). הטון צריך להיות שאלתי, מקצועי וממוקד בהשלמת מידע חסר.",
+            vo_request: "זו דרישת תשלום לחריגים. הטון צריך להגן על זכויות הקבלן, אך להישאר מקצועי ומבוסס ראיות.",
+            official_vo: "זו פקודת שינויים רשמית. יש לנסח באופן סמכותי ומסכם, רק על בסיס מידע מאומת."
         };
-        const toneInstructions: string = toneMap[tone as string] || "מקצועי";
 
         const prompt = `
-            אתה מומחה בכיר לניהול פרויקטי בנייה ומשפט חוזי בישראל, המתמחה בניסוח מכתבים רשמיים עבור קבלנים.
-            המשימה שלך היא לכתוב ${tone === 'skeleton' ? 'שלד למכתב' : 'מכתב'} רשמי בעברית עבור קבלן בנייה המופנה ל${recipient || 'מזמין העבודה'}.
-            
-            הנחיה ספציפית לסוג המסמך (${letterType}):
-            ${typeSpecificInstructions}
- 
-            סגנון כתיבה (Tone) הנדרש:
-            ${toneInstructions}
+אתה מומחה בכיר לניהול פרויקטי בנייה בישראל ולניסוח דרישות קבלן.
+המערכת בנויה לטובת הקבלן: להגן על זכויותיו, לבסס חריגים, לשמור על רווחיות ולהציג דרישה מקצועית.
 
-            פרטי המכתב:
-            - נושא: ${subject || 'דרישה לתשלום עבור חריגים ושינויים'}
-            - דגשים נוספים מהמשתמש: ${keyPoints || 'אין'}
-            
-            הפריטים הרלוונטיים מהלג'ר (Pricing Ledger):
-            ${itemsContext}
-            
-            מבנה המכתב הנדרש:
-            1. פתיח: התייחסות רשמית לנמען, ציון הנושא וסימוכין רלוונטיים.
-            2. רקע: הסבר קצר על נסיבות העניין (סתירה בתוכניות, בקשת שינוי בשטח, וכו').
-            3. פירוט טכני-כספי: סקירה של הפריטים המופיעים ברשימה לעיל.
-               **חשוב מאוד**: השתמש ב"הוכחות (Evidence Links)" לכל פריט. ציין בתוך הטקסט את שם המסמך ומספר העמוד כהוכחה חותכת לזכאות הקבלן.
-            4. סיכום כספי: (במידה ורלוונטי) הצגת הסכום הכולל (לפני מע"מ) וציון מפורש שמע"מ בשיעור 18% יתווסף כחוק.
-            5. חתימה: סיומת מקצועית ומקום לחתימת מורשה חתימה.
- 
-            דגשים מקצועיים:
-            - השתמש במינוח מקצועי כגון: "סעיף חוזי", "כתב כמויות", "פקודת שינויים", "אישור מפקח בשטח", "סעיפי הצמדה".
-            ${tone === 'skeleton' ? '- צור מבנה ברור עם כותרות והערות בסוגריים עבור המשתמש.' : '- המכתב צריך להיות מוכן לחתימה, אך מותאם לסגנון שנבחר.'}
-            
-            פלט ה${tone === 'skeleton' ? 'שלד' : 'מכתב'} בלבד (ללא טקסט מקדים או הסברים):
-        `;
+כתוב ${tone === "skeleton" ? "שלד מכתב" : "מכתב"} בעברית בלבד.
+
+פרויקט: ${project.name || projectId}
+נמען: ${recipient || "מזמין העבודה"}
+סוג מכתב: ${letterType}
+הנחיה לסוג: ${typeInstructions[letterType] || "מכתב מקצועי"}
+נושא: ${subject || "דרישה לתשלום עבור חריגים ושינויים"}
+דגשים מהמשתמש: ${keyPoints || "אין"}
+
+פריטים:
+${itemsContext}
+
+סיכום כספי מחייב לפי נתוני השרת:
+- סה"כ לפני מע"מ: ${formatMoney(totalExclVat)}
+- מע"מ ${(VAT_RATE * 100).toFixed(0)}%: ${formatMoney(vatAmount)}
+- סה"כ כולל מע"מ: ${formatMoney(totalInclVat)}
+
+חוקי חובה:
+- אל תציג טענה כוודאית אם סטטוס הראיות הוא REQUIRES_VERIFICATION.
+- במקרה של ראיות חסרות, כתוב שהדרישה היא טיוטה/דורשת אימות והוסף מה חסר.
+- השתמש רק בסיכום הכספי המחייב שמופיע למעלה. אל תחשב סכומים מחדש ואל תשנה מע"מ.
+- כל סכום יוצג לפני מע"מ. מע"מ ${(VAT_RATE * 100).toFixed(0)}% יוצג בנפרד בלבד.
+- הפרד בין עובדה ממסמך, מסקנת AI, ומה צריך לבדוק עכשיו.
+- אל תכניס טקסט טכני על המערכת.
+
+מבנה:
+1. פתיחה רשמית.
+2. רקע קצר.
+3. פירוט החריגים והסימוכין.
+4. סיכום כספי לפני מע"מ + מע"מ 18% בנפרד אם רלוונטי.
+5. דרישה לפעולה/אישור/השלמת מידע.
+6. חתימה.
+
+החזר רק את נוסח המכתב.
+`;
 
         const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+        const text = result.response.text();
 
         return NextResponse.json({ success: true, letter: text });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("API Error:", error);
-        return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+        const message = error instanceof Error ? error.message : "Letter generation failed";
+        return NextResponse.json({ success: false, error: message }, { status: 500 });
     }
 }

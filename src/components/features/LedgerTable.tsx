@@ -1,48 +1,50 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { Download, FileText, Printer, FileSpreadsheet, Loader2 } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { VAT_RATE } from "@/utils/constants";
+import { getAmountVat, getLedgerRowAmount, getMoneySum, isVisibleLedgerRow } from "@/utils/project-financials";
+import type { LedgerItem } from "@/types";
 
 export function LedgerTable({ projectId }: { projectId: string | null }) {
-    const [rows, setRows] = useState<any[]>([]);
+    const [rows, setRows] = useState<LedgerItem[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
-    const tableRef = useRef<HTMLDivElement>(null);
 
-    const supabase = createClient();
+    const supabase = useMemo(() => createClient(), []);
 
     useEffect(() => {
         if (!projectId) return;
 
         const fetchLedger = async () => {
             setIsLoading(true);
-            const { data, error } = await supabase
+            const { data } = await supabase
                 .from('pricing_ledger')
                 .select('*')
                 .eq('project_id', projectId)
                 .order('created_at', { ascending: true });
 
             if (data) {
-                setRows(data);
+                setRows(data as LedgerItem[]);
             }
             setIsLoading(false);
         };
 
         fetchLedger();
-    }, [projectId]);
+    }, [projectId, supabase]);
+
+    const visibleRows = rows.filter(isVisibleLedgerRow);
 
     const calculateTotals = () => {
-        const subtotal = rows.reduce((acc, row) => {
-            const rowTotal = row.total_price_excl_vat || (row.quantity * row.unit_price_excl_vat);
-            return acc + (Number(rowTotal) || 0);
+        const subtotal = visibleRows.reduce((acc, row) => {
+            return getMoneySum([acc, getLedgerRowAmount(row)]);
         }, 0);
 
-        const vat = subtotal * VAT_RATE;
-        const total = subtotal + vat;
+        const vat = getAmountVat(subtotal, VAT_RATE);
+        const total = getMoneySum([subtotal, vat]);
 
         return { subtotal, vat, total };
     };
@@ -72,8 +74,8 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                         </tr>
                     </thead>
                     <tbody>
-                        ${rows.map((row, i) => {
-                const rowTotal = row.total_price_excl_vat || ((row.quantity || 0) * (row.unit_price_excl_vat || 0));
+                        ${visibleRows.map((row, i) => {
+                const rowTotal = getLedgerRowAmount(row);
                 return `<tr style="background:${i % 2 === 0 ? '#f9f9f9' : '#fff'};">
                                 <td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${row.item_code || ''}</td>
                                 <td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${row.description || ''}</td>
@@ -132,8 +134,8 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
             const headers = ['סעיף', 'תיאור', 'יחידה', 'כמות', 'מחיר יחידה', 'סה"כ'];
             const csvRows = [headers.join(',')];
 
-            rows.forEach(row => {
-                const total = row.total_price_excl_vat || (row.quantity * row.unit_price_excl_vat);
+            visibleRows.forEach(row => {
+                const total = getLedgerRowAmount(row);
                 const values = [
                     row.item_code || '',
                     `"${(row.description || '').replace(/"/g, '""')}"`,
@@ -177,14 +179,14 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                     </div>
                     <div>
                         <h2 className="text-xl font-bold text-white tracking-tight uppercase">Pricing_Ledger [כתב כמויות]</h2>
-                        <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mt-1">מצב ביקורת: פעיל // בסיס מס: {(VAT_RATE * 100).toFixed(0)}% מע"מ</p>
+                        <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mt-1">מצב ביקורת: פעיל // בסיס מס: {(VAT_RATE * 100).toFixed(0)}% מע&quot;מ</p>
                     </div>
                 </div>
 
                 <div className="flex gap-3">
                     <button
                         onClick={handleExportCSV}
-                        disabled={isExporting || rows.length === 0}
+                        disabled={isExporting || visibleRows.length === 0}
                         className="flex items-center gap-2 bg-transparent hover:bg-emerald-500/10 text-gray-400 hover:text-emerald-500 border border-white/10 hover:border-emerald-500/30 px-4 py-2 rounded-sm transition-all font-mono text-[10px] font-bold uppercase tracking-tighter disabled:opacity-30"
                     >
                         {isExporting ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
@@ -192,7 +194,7 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                     </button>
                     <button
                         onClick={handleExportPDF}
-                        disabled={isExporting || rows.length === 0}
+                        disabled={isExporting || visibleRows.length === 0}
                         className="flex items-center gap-2 bg-white text-black hover:bg-gray-200 border border-transparent px-4 py-2 rounded-sm transition-all font-mono text-[10px] font-black uppercase tracking-tighter disabled:opacity-30"
                     >
                         {isExporting ? <Loader2 size={12} className="animate-spin" /> : <Printer size={12} />}
@@ -211,7 +213,7 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                                 <th className="py-4 px-6 w-20 text-center">יחידה</th>
                                 <th className="py-4 px-6 w-28 text-left">כמות</th>
                                 <th className="py-4 px-6 w-36 text-left">מחיר יחידה</th>
-                                <th className="py-4 px-6 w-40 text-left">סה"כ</th>
+                                <th className="py-4 px-6 w-40 text-left">סה&quot;כ</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-white/[0.03]">
@@ -224,7 +226,7 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                                         </div>
                                     </td>
                                 </tr>
-                            ) : rows.length === 0 ? (
+                            ) : visibleRows.length === 0 ? (
                                 <tr>
                                     <td colSpan={6} className="text-center py-32">
                                         <div className="flex flex-col items-center gap-4 opacity-40">
@@ -234,7 +236,7 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                                     </td>
                                 </tr>
                             ) : (
-                                rows.map((row) => (
+                                visibleRows.map((row) => (
                                     <tr key={row.id} className="hover:bg-white/[0.02] transition-colors group">
                                         <td className="py-4 px-6 font-mono text-gray-500 text-[11px] text-left tracking-tighter">{row.item_code}</td>
                                         <td className="py-4 px-6 font-bold text-gray-300 group-hover:text-white transition-colors">{row.description}</td>
@@ -242,7 +244,7 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                                         <td className="py-4 px-6 font-mono text-white font-bold text-left text-sm tracking-tight">{row.quantity}</td>
                                         <td className="py-4 px-6 font-mono text-gray-400 text-left text-sm">₪ {(row.unit_price_excl_vat || 0).toLocaleString()}</td>
                                         <td className="py-4 px-6 font-mono text-emerald-500 text-left tracking-tight font-black text-sm">
-                                            ₪ {row.total_price_excl_vat ? row.total_price_excl_vat.toLocaleString() : ((row.quantity || 0) * (row.unit_price_excl_vat || 0)).toLocaleString()}
+                                            ₪ {getLedgerRowAmount(row).toLocaleString()}
                                         </td>
                                     </tr>
                                 ))
@@ -252,15 +254,15 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                 </div>
 
                 {/* Summaries Panel - Glass Fixed */}
-                {rows.length > 0 && (
+                {visibleRows.length > 0 && (
                     <div className="absolute bottom-0 inset-x-0 bg-black/60 backdrop-blur-xl border-t border-white/10 p-6 px-10 flex justify-between items-center">
                         <div className="flex gap-12">
                             <div className="flex flex-col">
-                                <span className="text-[9px] font-mono text-gray-500 uppercase tracking-widest mb-1">סיכום ביניים [לפני מע"מ]</span>
+                                <span className="text-[9px] font-mono text-gray-500 uppercase tracking-widest mb-1">סיכום ביניים [לפני מע&quot;מ]</span>
                                 <span className="text-sm font-bold text-gray-300 font-mono">₪ {subtotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
                             </div>
                             <div className="flex flex-col">
-                                <span className="text-[9px] font-mono text-gray-500 uppercase tracking-widest mb-1">מע"מ [{(VAT_RATE * 100).toFixed(0)}%]</span>
+                                <span className="text-[9px] font-mono text-gray-500 uppercase tracking-widest mb-1">מע&quot;מ [{(VAT_RATE * 100).toFixed(0)}%]</span>
                                 <span className="text-sm font-bold text-amber-500/80 font-mono">₪ {vat.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
                             </div>
                         </div>
@@ -268,7 +270,7 @@ export function LedgerTable({ projectId }: { projectId: string | null }) {
                         <div className="flex items-center gap-8">
                             <div className="h-10 w-[1px] bg-white/5"></div>
                             <div className="flex flex-col items-end">
-                                <span className="text-[10px] font-mono text-emerald-500/50 font-black uppercase tracking-[0.2em] mb-1">סה"כ לתשלום</span>
+                                <span className="text-[10px] font-mono text-emerald-500/50 font-black uppercase tracking-[0.2em] mb-1">סה&quot;כ לתשלום</span>
                                 <span className="text-2xl font-black text-emerald-500 font-mono tracking-tighter drop-shadow-[0_0_15px_rgba(16,185,129,0.3)]">
                                     ₪ {total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                                 </span>

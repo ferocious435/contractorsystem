@@ -6,6 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "verify:financials": "node scripts/verify-financial-invariants.mjs",
+    "verify:auth-login": "node scripts/verify-auth-login.mjs",
+    "verify:local-access": "node scripts/verify-local-access.mjs",
+    "verify:remote-financials": "node scripts/verify-remote-financial-state.mjs",
+    "verify:boq-scale": "node scripts/verify-enterprise-boq-scale.mjs",
+    "verify:documents": "node scripts/verify-document-workflow.mjs",
+    "verify:goal-readiness": "node scripts/verify-enterprise-goal-readiness.mjs",
+    "verify:runtime-smoke": "node scripts/verify-runtime-smoke.mjs",
+    "verify:runtime-pricing": "node scripts/verify-runtime-pricing.mjs",
     "lint": "eslint",
     "worker": "nodemon",
     "clean:worker": "powershell -Command \"Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }\"",
@@ -23,10 +32,12 @@
     "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.575.0",
     "next": "^15.0.0",
+    "officeparser": "^7.2.3",
     "pdf-parse": "^2.4.5",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "xlsx": "^0.18.5"
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "read-excel-file": "^9.2.0",
+    "word-extractor": "^1.0.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -40,5 +51,8 @@
     "tailwindcss": "^4",
     "ts-node": "^10.0.0",
     "typescript": "^5"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
   }
 }

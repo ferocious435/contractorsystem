@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type SVGProps } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { 
-    TrendingUp, TrendingDown, AlertTriangle, FileCheck, 
-    Clock, ArrowUpRight, DollarSign, Target, Activity,
-    ShieldAlert, ChevronRight, Zap, Sparkles, Building2, FileText
+    AlertTriangle, FileCheck, Clock, ArrowUpRight, Target, Activity,
+    ShieldAlert, Zap, Sparkles, Building2
 } from "lucide-react";
-import { VAT_RATE, AI_MODEL_BRANDING } from "@/utils/constants";
+import { VAT_RATE } from "@/utils/constants";
+import { getAmountInclVat, getAmountVat, getLedgerRowAmount, getMoneySum, getPreferredProjectAmount, isVisibleLedgerRow } from "@/utils/project-financials";
+import { isLocalProjectId } from "@/utils/local-projects";
+import { getLocalDemoProjectProfile } from "@/utils/local-demo-data";
 
 interface ProjectOverviewProps {
     projectId: string;
@@ -27,60 +29,68 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
         clientName: ""
     });
     const [isLoading, setIsLoading] = useState(true);
-    const supabase = createClient();
-
-    useEffect(() => {
-        fetchProjectStats();
-    }, [projectId]);
-
-    const fetchProjectStats = async () => {
+    const fetchProjectStats = useCallback(async () => {
         setIsLoading(true);
         try {
-            // 1. Project Info
-            const { data: project } = await supabase
-                .from('projects')
-                .select('budget, client_name')
-                .eq('id', projectId)
-                .single();
+            if (isLocalProjectId(projectId)) {
+                const demoProfile = getLocalDemoProjectProfile(projectId);
+                setStats({
+                    originalBudget: demoProfile.budget,
+                    approvedVO: demoProfile.approvedVO,
+                    pendingVO: demoProfile.pendingVO,
+                    criticalCount: demoProfile.criticalCount,
+                    totalDiscrepancies: demoProfile.totalDiscrepancies,
+                    documentCount: demoProfile.documentCount,
+                    evidenceCoverage: demoProfile.evidenceCoverage,
+                    clientName: demoProfile.clientName,
+                });
+                return;
+            }
 
-            // 2. Ledger Data
-            const { data: ledger } = await supabase
-                .from('pricing_ledger')
-                .select('type, total_price_excl_vat, quantity, unit_price_excl_vat, ai_rationale, governing_notes')
-                .eq('project_id', projectId);
-
-            // 3. Contradictions
-            const { data: contradictions } = await supabase
-                .from('contradictions')
-                .select('status, category')
-                .eq('project_id', projectId);
-
-            // 4. Documents
-            const { count: docCount } = await supabase
-                .from('documents')
-                .select('id', { count: 'exact', head: true })
-                .eq('project_id', projectId);
+            const supabase = createClient();
+            const [
+                { data: project },
+                { data: ledger },
+                { data: contradictions },
+                { count: docCount },
+            ] = await Promise.all([
+                supabase
+                    .from('projects')
+                    .select('budget, client_name')
+                    .eq('id', projectId)
+                    .single(),
+                supabase
+                    .from('pricing_ledger')
+                    .select('type, source, total_price_excl_vat, quantity, unit_price_excl_vat, ai_rationale, governing_notes, evidence_data')
+                    .eq('project_id', projectId),
+                supabase
+                    .from('contradictions')
+                    .select('status, category')
+                    .eq('project_id', projectId),
+                supabase
+                    .from('documents')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('project_id', projectId),
+            ]);
 
             if (ledger) {
-                const baseBudget = ledger
-                    .filter(r => r.type === 'BASE_CONTRACT')
-                    .reduce((acc, r) => acc + (r.total_price_excl_vat || (r.quantity || 0) * (r.unit_price_excl_vat || 0)), 0);
-                
-                const approved = ledger
+                const visibleLedgerRows = ledger.filter(isVisibleLedgerRow);
+
+                const approved = visibleLedgerRows
                     .filter(r => r.type === 'APPROVED_VO' || r.type === 'SENT_VO')
-                    .reduce((acc, r) => acc + (r.total_price_excl_vat || (r.quantity || 0) * (r.unit_price_excl_vat || 0)), 0);
+                    .reduce((acc, r) => getMoneySum([acc, getLedgerRowAmount(r)]), 0);
 
-                const pending = ledger
+                const pending = visibleLedgerRows
                     .filter(r => r.type === 'PENDING_VO')
-                    .reduce((acc, r) => acc + (r.total_price_excl_vat || (r.quantity || 0) * (r.unit_price_excl_vat || 0)), 0);
+                    .reduce((acc, r) => getMoneySum([acc, getLedgerRowAmount(r)]), 0);
 
-                const withEvidence = ledger.filter(r => r.ai_rationale || r.governing_notes).length;
-                const coverage = ledger.length > 0 ? Math.round((withEvidence / ledger.length) * 100) : 0;
+                const withEvidence = visibleLedgerRows.filter(r => r.ai_rationale || r.governing_notes).length;
+                const coverage = visibleLedgerRows.length > 0 ? Math.round((withEvidence / visibleLedgerRows.length) * 100) : 0;
 
                 const criticalItems = contradictions?.filter(c => c.status === 'OPEN' && c.category === 'CONTRADICTION').length || 0;
 
                 setStats({
-                    originalBudget: project?.budget || baseBudget,
+                    originalBudget: getPreferredProjectAmount(project?.budget, ledger),
                     approvedVO: approved,
                     pendingVO: pending,
                     criticalCount: criticalItems,
@@ -93,7 +103,11 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [projectId]);
+
+    useEffect(() => {
+        void fetchProjectStats();
+    }, [fetchProjectStats]);
 
     const formatILS = (val: number) => {
         return new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(val);
@@ -124,7 +138,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                         <Building2 className="w-4 h-4 text-blue-500" />
                         <span className="text-[10px] font-mono font-black text-gray-500 uppercase tracking-widest">{stats.clientName}</span>
                     </div>
-                    <h2 className="text-3xl font-black text-white font-mono tracking-tighter uppercase">לוח בקרה פרויקטלי</h2>
+                    <h2 className="text-2xl sm:text-3xl font-black text-white font-mono tracking-tighter uppercase">לוח בקרה פרויקטלי</h2>
                 </div>
             </div>
 
@@ -134,7 +148,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                 <motion.div 
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="lg:col-span-2 bg-[#151C24]/50 border border-white/5 rounded-[2.5rem] p-8 relative overflow-hidden group"
+                    className="lg:col-span-2 bg-[#151C24]/50 border border-white/5 rounded-[2rem] lg:rounded-[2.5rem] p-5 sm:p-8 relative overflow-hidden group"
                 >
                     <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 rounded-full blur-[80px] -translate-y-1/2 translate-x-1/2" />
                     
@@ -186,18 +200,18 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-6 pt-6 border-t border-white/5">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 pt-6 border-t border-white/5">
                             <div>
                                 <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">חריגים בהמתנה</p>
                                 <p className="text-lg font-black text-orange-500 font-mono">{formatILS(stats.pendingVO)}</p>
                             </div>
                             <div>
-                                <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">מע"מ ({(VAT_RATE * 100).toFixed(0)}%)</p>
-                                <p className="text-lg font-black text-gray-400 font-mono">{formatILS(totalProjected * VAT_RATE)}</p>
+                                <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">מע&quot;מ ({(VAT_RATE * 100).toFixed(0)}%)</p>
+                                <p className="text-lg font-black text-gray-400 font-mono">{formatILS(getAmountVat(totalProjected, VAT_RATE))}</p>
                             </div>
                             <div className="text-left">
-                                <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">סה"כ כולל מע"מ</p>
-                                <p className="text-lg font-black text-white font-mono">{formatILS(totalProjected * (1 + VAT_RATE))}</p>
+                                <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">סה&quot;כ כולל מע&quot;מ</p>
+                                <p className="text-lg font-black text-white font-mono">{formatILS(getAmountInclVat(totalProjected, VAT_RATE))}</p>
                             </div>
                         </div>
                     </div>
@@ -208,7 +222,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.1 }}
-                    className="bg-[#151C24]/50 border border-white/5 rounded-[2.5rem] p-8 flex flex-col justify-between group"
+                    className="bg-[#151C24]/50 border border-white/5 rounded-[2rem] lg:rounded-[2.5rem] p-5 sm:p-8 flex flex-col justify-between group"
                 >
                     <div className="space-y-6">
                         <div className="w-12 h-12 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 border border-red-500/20">
@@ -216,7 +230,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                         </div>
                         <h3 className="text-xl font-black text-white font-mono tracking-tighter uppercase">אבחון הנדסי (בינה מלאכותית)</h3>
                         <p className="text-sm text-gray-500 leading-relaxed">
-                            מערכת המכ"ם זיהתה <span className="text-red-500 font-bold">{stats.criticalCount}</span> סתירות מהותיות הדורשות בחינה הנדסית מיידית.
+                            מערכת המכ&quot;ם זיהתה <span className="text-red-500 font-bold">{stats.criticalCount}</span> סתירות מהותיות הדורשות בחינה הנדסית מיידית.
                         </p>
                     </div>
 
@@ -272,7 +286,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
     );
 }
 
-function LoaderIcon(props: any) {
+function LoaderIcon(props: SVGProps<SVGSVGElement>) {
     return (
         <svg
             {...props}

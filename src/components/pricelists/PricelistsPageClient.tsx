@@ -1,23 +1,71 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createClient } from '@/utils/supabase/client';
-import { Upload, FileText, CheckCircle, AlertTriangle, Eye, Loader2, Play, Trash2, Database, X, Search } from 'lucide-react';
-import * as xlsx from 'xlsx';
+import { AlertTriangle, Eye, Loader2, Play, Trash2, Database, X, Search } from 'lucide-react';
+import readExcelFile, { type Row } from 'read-excel-file/browser';
 
 interface PricelistsPageClientProps {
     projectId: string;
 }
 
+interface PricelistRecord {
+    id: string;
+    name: string;
+    is_global?: boolean | null;
+    created_at: string;
+    item_count?: number;
+    item_row_count?: number;
+    structural_row_count?: number;
+    pricelist_items?: Array<{ count?: number | null }>;
+}
+
+interface PricelistItemRecord {
+    id: string;
+    item_type?: string | null;
+    item_code: string;
+    description: string;
+    unit?: string | null;
+    rate: number;
+}
+
+type PricelistUploadItem = {
+    pricelist_id: string;
+    item_type: string;
+    item_code: string;
+    description: string;
+    unit: string | null;
+    quantity: number;
+    rate: number;
+    service_type: string;
+    activity_number: string | null;
+    notes?: string | null;
+};
+
+function toCellText(value: Row[number]) {
+    return value === null || value === undefined ? '' : String(value).trim();
+}
+
+function toCellNumber(value: Row[number]) {
+    if (typeof value === 'number') return value;
+    const parsed = parseFloat(String(value || '').replace(/,/g, ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getPricelistCount(pricelist: PricelistRecord) {
+    return pricelist.item_count ?? pricelist.pricelist_items?.[0]?.count ?? 0;
+}
+
 export default function PricelistsPageClient({ projectId }: PricelistsPageClientProps) {
-    const [pricelists, setPricelists] = useState<any[]>([]);
+    const [pricelists, setPricelists] = useState<PricelistRecord[]>([]);
     const [isDragging, setIsDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState<{ current: number, total: number, step: string } | null>(null);
-    
+    const [uploadNotice, setUploadNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
     // View Items State
-    const [selectedPricelist, setSelectedPricelist] = useState<any>(null);
-    const [items, setItems] = useState<any[]>([]);
+    const [selectedPricelist, setSelectedPricelist] = useState<PricelistRecord | null>(null);
+    const [items, setItems] = useState<PricelistItemRecord[]>([]);
     const [isLoadingItems, setIsLoadingItems] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [page, setPage] = useState(0);
@@ -25,29 +73,56 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
     const [totalItems, setTotalItems] = useState(0);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const supabase = createClient();
+    const pageRef = useRef(page);
+    const supabase = useMemo(() => createClient(), []);
 
-    useEffect(() => {
-        fetchPricelists();
-    }, [projectId, supabase]);
-
-    const fetchPricelists = async () => {
+    const fetchPricelists = useCallback(async () => {
         const { data, error } = await supabase
             .from('pricelists')
-            .select('*, pricelist_items(count)')
+            .select('id, name, is_global, created_at')
             .or(`project_id.eq.${projectId},is_global.eq.true`)
             .order('created_at', { ascending: false });
-        
-        if (data) {
-            setPricelists(data);
-        }
-    };
 
-    const fetchItems = async (pricelistId: string, reset = false, search = '') => {
+        if (error || !data) {
+            if (error) console.error('Failed to load pricelists:', error);
+            return;
+        }
+
+        const enrichedPricelists = await Promise.all(
+            data.map(async (pl) => {
+                const [allRows, itemRows] = await Promise.all([
+                    supabase
+                        .from('pricelist_items')
+                        .select('id', { count: 'exact', head: true })
+                        .eq('pricelist_id', pl.id),
+                    supabase
+                        .from('pricelist_items')
+                        .select('id', { count: 'exact', head: true })
+                        .eq('pricelist_id', pl.id)
+                        .eq('item_type', 'ITEM')
+                ]);
+
+                const itemCount = allRows.count ?? 0;
+                const itemRowCount = itemRows.count ?? 0;
+
+                return {
+                    ...pl,
+                    item_count: itemCount,
+                    item_row_count: itemRowCount,
+                    structural_row_count: Math.max(itemCount - itemRowCount, 0),
+                    pricelist_items: [{ count: itemCount }]
+                } satisfies PricelistRecord;
+            })
+        );
+
+        setPricelists(enrichedPricelists);
+    }, [projectId, supabase]);
+
+    const fetchItems = useCallback(async (pricelistId: string, reset = false, search = '') => {
         setIsLoadingItems(true);
-        const currentPage = reset ? 0 : page;
-        const PAGE_SIZE = 100;
-        
+        const currentPage = reset ? 0 : pageRef.current;
+        const PAGE_SIZE = 500;
+
         let query = supabase
             .from('pricelist_items')
             .select('*', { count: 'exact' })
@@ -56,45 +131,44 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
             .range(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE - 1);
 
         if (search) {
-            // При поиске мы хотим видеть не только совпадения, но и все примечания (NOTE) этого прайс-листа
-            // чтобы не терять контекст правил.
             query = query.or(`description.ilike.%${search}%,item_code.ilike.%${search}%,item_type.eq.NOTE`);
         }
-        
-        const { data, count, error } = await query;
-        
+
+        const { data, count } = await query;
+
         if (data) {
-            // Если мы в режиме поиска, нужно отфильтровать пустые главы/подглавы, 
-            // но оставить NOTES и совпадения.
-            // (В текущей реализации query.or уже это делает)
-            
             if (reset) {
-                setItems(data);
+                setItems(data as PricelistItemRecord[]);
                 setPage(1);
+                pageRef.current = 1;
             } else {
-                setItems(prev => [...prev, ...data]);
-                setPage(currentPage + 1);
+                const nextPage = currentPage + 1;
+                setItems(prev => [...prev, ...(data as PricelistItemRecord[])]);
+                setPage(nextPage);
+                pageRef.current = nextPage;
             }
             setHasMore(data.length === PAGE_SIZE);
             if (count !== null) setTotalItems(count);
         }
         setIsLoadingItems(false);
-    };
+    }, [supabase]);
 
-    const handleSearch = (val: string) => {
-        setSearchTerm(val);
-        // Debounce or just trigger on enter/button? Let's do a small delay
-    };
+    useEffect(() => {
+        pageRef.current = page;
+    }, [page]);
+
+    useEffect(() => {
+        void fetchPricelists();
+    }, [fetchPricelists]);
 
     useEffect(() => {
         const timer = setTimeout(() => {
             if (selectedPricelist) {
-                fetchItems(selectedPricelist.id, true, searchTerm);
+                void fetchItems(selectedPricelist.id, true, searchTerm);
             }
         }, 500);
         return () => clearTimeout(timer);
-    }, [searchTerm]);
-
+    }, [fetchItems, searchTerm, selectedPricelist]);
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
         setIsDragging(true);
@@ -120,119 +194,147 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
         const file = files[0];
         if (!file) return;
 
-        const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+        const lowerFileName = file.name.toLowerCase();
+        const isXlsx = lowerFileName.endsWith('.xlsx');
+        const isSpreadsheet = isXlsx || lowerFileName.endsWith('.xls');
         const isImage = file.type.startsWith('image/');
         const isPDF = file.type === 'application/pdf';
 
-        if (!isExcel && !isImage && !isPDF) {
+        if (!isSpreadsheet && !isImage && !isPDF) {
+            const message = 'אנא העלה קובץ אקסל, PDF או תמונה.';
+            setUploadNotice({ type: 'error', message });
             alert('אנא העלה קובץ אקסל, PDF או תמונה.');
             return;
         }
 
         setIsUploading(true);
+        setUploadNotice(null);
         setUploadProgress({ current: 0, total: 0, step: 'קורא קובץ...' });
 
         try {
-            if (isExcel) {
-                // Legacy Excel Client-side parsing
-                const reader = new FileReader();
-                reader.onload = async (e) => {
-                    try {
-                        const data = e.target?.result;
-                        setUploadProgress({ current: 0, total: 0, step: 'מפענח נתונים (Parsing)...' });
-                        
-                        const workbook = xlsx.read(data, { type: 'binary' });
-                        const sheetName = workbook.SheetNames[0];
-                        const sheet = workbook.Sheets[sheetName];
-                        const rows: any[][] = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) {
+                throw new Error('Unauthorized');
+            }
 
-                        setUploadProgress({ current: 0, total: rows.length, step: 'מכין נתונים לשמירה...' });
+            if (isXlsx) {
+                try {
+                    setUploadProgress({ current: 0, total: 0, step: 'מפענח נתונים (Parsing)...' });
 
-                        const { data: pricelist, error: plError } = await supabase
-                            .from('pricelists')
-                            .insert({
-                                project_id: projectId,
-                                name: file.name.replace('.xlsx', '').replace('.xls', ''),
-                                description: 'הועלה ידנית מהמערכת',
-                                is_global: false
-                            })
-                            .select()
-                            .single();
+                    const sheets = await readExcelFile(file);
+                    const rows = sheets.flatMap(({ sheet, data }) =>
+                        data.slice(1).map((row) => ({ sheet, row }))
+                    );
 
-                        if (plError) throw plError;
+                    setUploadProgress({ current: 0, total: rows.length, step: 'מכין נתונים לשמירה...' });
 
-                        const itemsToInsert = [];
-                        for (let i = 1; i < rows.length; i++) {
-                            const row = rows[i];
-                            if (!row || row.length < 2) continue;
-                            
-                            const service_type = row[0] ? String(row[0]) : '';
-                            const item_code = row[1] ? String(row[1]) : '';
-                            const description = row[2] ? String(row[2]) : '';
-                            const activity_number = row[3] ? String(row[3]) : '';
-                            const quantity = parseFloat(row[4]) || 0;
-                            const unit = row[5] ? String(row[5]).trim() : '';
-                            const rate = parseFloat(row[6]) || 0;
+                    const { data: pricelist, error: plError } = await supabase
+                        .from('pricelists')
+                        .insert({
+                            project_id: projectId,
+                            contractor_id: user.id,
+                            name: file.name.replace(/\.(xlsx|xls)$/i, ''),
+                            description: 'הועלה ידנית מהמערכת',
+                            is_global: false
+                        })
+                        .select()
+                        .single();
 
-                            let item_type = 'ITEM';
-                            const keywords = ['הערה', 'הערות', 'הנחיות', 'כללי', 'תנאים', 'אופן המדידה', 'המחיר כולל', 'כולל חפירה', 'כולל הובלה', 'לרבות', 'בכפוף'];
-                            const isNote = 
-                                keywords.some(k => description.includes(k)) || 
-                                ((!rate || rate === 0) && !unit && description.length > 15);
+                    if (plError) throw plError;
 
-                            if (item_code.endsWith('...')) {
-                                item_type = 'CHAPTER';
-                            } else if (item_code.endsWith('..') || item_code.endsWith('.')) {
-                                // Если это подглава, но по смыслу это примечание (часто в Декель)
-                                item_type = isNote ? 'NOTE' : 'SUBCHAPTER';
-                            } else if (isNote || ((!rate || rate === 0) && !unit && item_code)) {
-                                // В Декель коды типа 95.01.00.0001 часто являются примечаниями, если нет цены
-                                item_type = 'NOTE';
-                            }
+                    const itemsToInsert: PricelistUploadItem[] = [];
+                    for (const { sheet, row } of rows) {
+                        if (!row || row.length < 2) continue;
 
-                            itemsToInsert.push({
-                                pricelist_id: pricelist.id,
-                                item_type,
-                                item_code,
-                                description,
-                                unit: unit || null,
-                                quantity,
-                                rate,
-                                service_type,
-                                activity_number: activity_number || null
-                            });
+                        const service_type = toCellText(row[0]);
+                        const item_code = toCellText(row[1]);
+                        const description = toCellText(row[2]);
+                        const activity_number = toCellText(row[3]);
+                        const quantity = toCellNumber(row[4]);
+                        const unit = toCellText(row[5]);
+                        const rate = toCellNumber(row[6]);
+
+                        let item_type = 'ITEM';
+                        const keywords = ['הערה', 'הערות', 'הנחיות', 'כללי', 'תנאים', 'אופן המדידה', 'המחיר כולל', 'כולל חפירה', 'כולל הובלה', 'לרבות', 'בכפוף'];
+                        const isNote =
+                            keywords.some(k => description.includes(k)) ||
+                            ((!rate || rate === 0) && !unit && description.length > 15);
+
+                        if (item_code.endsWith('...')) {
+                            item_type = 'CHAPTER';
+                        } else if (item_code.endsWith('..') || item_code.endsWith('.')) {
+                            // Если это подглава, но по смыслу это примечание (часто в Декель)
+                            item_type = isNote ? 'NOTE' : 'SUBCHAPTER';
+                        } else if (isNote || ((!rate || rate === 0) && !unit && item_code)) {
+                            // В Декель коды типа 95.01.00.0001 часто являются примечаниями, если нет цены
+                            item_type = 'NOTE';
                         }
 
-                        const BATCH_SIZE = 500;
-                        let insertedCount = 0;
-                        for (let i = 0; i < itemsToInsert.length; i += BATCH_SIZE) {
-                            const batch = itemsToInsert.slice(i, i + BATCH_SIZE);
-                            setUploadProgress({ current: insertedCount, total: itemsToInsert.length, step: 'שומר נתונים...' });
-                            
-                            const { error } = await supabase.from('pricelist_items').insert(batch);
-                            if (error) throw error;
-                            insertedCount += batch.length;
-                        }
-
-                        setUploadProgress(null);
-                        setIsUploading(false);
-                        fetchPricelists();
-                    } catch (err) {
-                        console.error(err);
-                        alert("שגיאה בתהליך עיבוד המחירון");
-                        setIsUploading(false);
-                        setUploadProgress(null);
+                        itemsToInsert.push({
+                            pricelist_id: pricelist.id,
+                            item_type,
+                            item_code,
+                            description,
+                            unit: unit || null,
+                            quantity,
+                            rate,
+                            service_type,
+                            activity_number: activity_number || null,
+                            notes: sheet ? `Sheet: ${sheet}` : null
+                        });
                     }
-                };
-                reader.readAsBinaryString(file);
+
+                    const BATCH_SIZE = 500;
+                    let insertedCount = 0;
+                    for (let i = 0; i < itemsToInsert.length; i += BATCH_SIZE) {
+                        const batch = itemsToInsert.slice(i, i + BATCH_SIZE);
+                        setUploadProgress({ current: insertedCount, total: itemsToInsert.length, step: 'שומר נתונים...' });
+
+                        const { error } = await supabase.from('pricelist_items').insert(batch);
+                        if (error) throw error;
+                        insertedCount += batch.length;
+                    }
+
+                    const hasContractPricedQuantities = itemsToInsert.some((item) =>
+                        Number(item.quantity || 0) > 0 && Number(item.rate || 0) > 0
+                    );
+
+                    if (hasContractPricedQuantities) {
+                        const syncResponse = await fetch('/api/projects/sync-contract-base', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                projectId,
+                                pricelistIds: [pricelist.id],
+                                forceContractBoq: true
+                            })
+                        });
+
+                        if (!syncResponse.ok) {
+                            throw new Error('Contract BOQ sync failed');
+                        }
+                    }
+
+                    setUploadProgress(null);
+                    setIsUploading(false);
+                    setUploadNotice({ type: 'success', message: `המחירון נשמר: ${insertedCount.toLocaleString()} סעיפים.` });
+                    fetchPricelists();
+                } catch (err) {
+                    console.error(err);
+                    const message = err instanceof Error ? err.message : 'שגיאה בתהליך עיבוד המחירון';
+                    setUploadNotice({ type: 'error', message });
+                    alert(message);
+                    setIsUploading(false);
+                    setUploadProgress(null);
+                }
             } else {
                 // NEW: Universal AI Server-side parsing
                 setUploadProgress({ current: 0, total: 1, step: 'מנתח קובץ באמצעות AI (Gemini)...' });
-                
+
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('projectId', projectId);
-                formData.append('name', file.name.split('.')[0]);
+                formData.append('name', file.name.replace(/\.[^.]+$/i, ''));
 
                 const response = await fetch('/api/pricing/upload-universal', {
                     method: 'POST',
@@ -247,11 +349,18 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
 
                 setUploadProgress(null);
                 setIsUploading(false);
+                setUploadNotice({
+                    type: 'success',
+                    message: `המחירון נשמר: ${Number(result.itemCount || 0).toLocaleString()} סעיפים.`
+                });
                 fetchPricelists();
             }
-            
+
         } catch (err) {
             console.error("Upload error:", err);
+            const message = err instanceof Error ? err.message : 'שגיאה בהעלאת המחירון';
+            setUploadNotice({ type: 'error', message });
+            alert(message);
             setIsUploading(false);
             setUploadProgress(null);
         }
@@ -275,7 +384,7 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
     return (
         <div className="flex-1 flex flex-col gap-6 rtl" dir="rtl">
             <div
-                className={`w-full border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center transition-all duration-200 cursor-pointer 
+                className={`w-full border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center transition-all duration-200 cursor-pointer
                 ${isDragging ? 'border-primary bg-primary/10' : 'border-white/10 hover:border-white/30 bg-[#11161D]'}`}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -283,7 +392,7 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                 onClick={() => !isUploading && fileInputRef.current?.click()}
             >
                 <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileInput} accept=".xls,.xlsx,.pdf,image/*" disabled={isUploading} />
-                
+
                 {isUploading ? (
                     <div className="flex flex-col items-center">
                         <Loader2 className="w-10 h-10 animate-spin text-primary mb-4" />
@@ -291,8 +400,8 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                         {uploadProgress && uploadProgress.total > 0 && (
                             <div className="w-64">
                                 <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                                    <div 
-                                        className="h-full bg-primary transition-all duration-300" 
+                                    <div
+                                        className="h-full bg-primary transition-all duration-300"
                                         style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
                                     />
                                 </div>
@@ -315,6 +424,18 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                 )}
             </div>
 
+            {uploadNotice && (
+                <div
+                    className={`rounded-xl border px-4 py-3 text-sm font-bold ${
+                        uploadNotice.type === 'success'
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                            : 'border-red-500/30 bg-red-500/10 text-red-300'
+                    }`}
+                >
+                    {uploadNotice.message}
+                </div>
+            )}
+
             <div className="bg-[#11161D] border border-white/10 rounded-xl overflow-hidden flex-1 flex flex-col">
                 <div className="px-6 py-4 border-b border-white/10 bg-[#151C24] flex justify-between items-center">
                     <h2 className="font-semibold text-white">מחירונים במערכת ({pricelists.length})</h2>
@@ -323,7 +444,7 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                     <table className="w-full text-right">
                         <thead className="bg-[#1A222C] border-b border-white/10 sticky top-0 z-10">
                             <tr>
-                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 w-16 text-center">מס'</th>
+                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 w-16 text-center">מס&apos;</th>
                                 <th className="px-6 py-3 text-xs font-semibold text-gray-400">שם מחירון</th>
                                 <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-center">מספר סעיפים</th>
                                 <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-center">תאריך העלאה</th>
@@ -344,7 +465,7 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                                     </td>
                                     <td className="px-6 py-3 text-center">
                                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                            {pl.pricelist_items[0]?.count || 0} סעיפים
+                                            {getPricelistCount(pl).toLocaleString()} סעיפים
                                         </span>
                                     </td>
                                     <td className="px-6 py-3 text-center text-sm text-gray-400 font-mono">
@@ -352,12 +473,13 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                                     </td>
                                     <td className="px-6 py-3 text-left">
                                         <div className="flex justify-end gap-2">
-                                            <button 
-                                                onClick={() => { 
-                                                    setSelectedPricelist(pl); 
+                                            <button
+                                                onClick={() => {
+                                                    setSelectedPricelist(pl);
                                                     setSearchTerm('');
                                                     setPage(0);
-                                                    fetchItems(pl.id, true, ''); 
+                                                    setTotalItems(getPricelistCount(pl));
+                                                    void fetchItems(pl.id, true, '');
                                                 }}
                                                 className="p-1.5 text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors"
                                             >
@@ -391,20 +513,20 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                                 </div>
                                 <div>
                                     <h2 className="text-xl font-bold text-white">עיון בסעיפי מחירון: {selectedPricelist.name}</h2>
-                                    <p className="text-xs text-gray-400">סה"כ במחירון: {totalItems.toLocaleString()} סעיפים</p>
+                                    <p className="text-xs text-gray-400">סה&quot;כ במחירון: {totalItems.toLocaleString()} סעיפים</p>
                                 </div>
                             </div>
                             <button onClick={() => setSelectedPricelist(null)} className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors">
                                 <X className="w-5 h-5" />
                             </button>
                         </div>
-                        
+
                         <div className="p-4 border-b border-white/5 bg-black/20 flex gap-4">
                             <div className="relative flex-1">
                                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                                <input 
-                                    type="text" 
-                                    placeholder="חפש לפי תיאור או קוד סעיף..." 
+                                <input
+                                    type="text"
+                                    placeholder="חפש לפי תיאור או קוד סעיף..."
                                     className="w-full bg-white/5 border border-white/10 rounded-lg pr-10 pl-4 py-2 text-sm text-white outline-none focus:border-primary transition-all"
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
@@ -430,7 +552,7 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                                                 <th className="px-6 py-3 text-xs font-semibold text-gray-400 w-32">קוד סעיף</th>
                                                 <th className="px-6 py-3 text-xs font-semibold text-gray-400">תיאור</th>
                                                 <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-center w-24">יחידה</th>
-                                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-center w-32">מחיר (לפני מע"מ)</th>
+                                                <th className="px-6 py-3 text-xs font-semibold text-gray-400 text-center w-32">מחיר (לפני מע&quot;מ)</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-white/5">
@@ -486,8 +608,8 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
 
                                                 // STANDARD ITEM
                                                 // Find the most relevant note for this item (last note with same prefix)
-                                                const governingNote = [...items].reverse().find(n => 
-                                                    n.item_type === 'NOTE' && 
+                                                const governingNote = [...items].reverse().find(n =>
+                                                    n.item_type === 'NOTE' &&
                                                     item.item_code.startsWith(n.item_code.split('.').slice(0, 2).join('.')) &&
                                                     items.indexOf(n) < items.indexOf(item)
                                                 );
@@ -522,10 +644,10 @@ export default function PricelistsPageClient({ projectId }: PricelistsPageClient
                                             })}
                                         </tbody>
                                     </table>
-                                    
+
                                     {hasMore && (
                                         <div className="p-8 flex justify-center">
-                                            <button 
+                                            <button
                                                 onClick={() => fetchItems(selectedPricelist.id, false, searchTerm)}
                                                 disabled={isLoadingItems}
                                                 className="px-6 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm text-gray-300 transition-all flex items-center gap-2 disabled:opacity-50"

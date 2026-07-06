@@ -1,32 +1,66 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createHash } from "crypto";
+import { requireOwnedDocument, requireOwnedProject } from "@/app/api/_utils/auth";
+import { downloadDocumentBuffer, isPdfDocument } from "@/utils/document-storage";
+import { extractPdfText } from "@/utils/document-text-extraction";
+import { syncProjectContractBase } from "@/utils/project-contract-base-server";
+import { createClient } from "@/utils/supabase/server";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const MIN_USEFUL_TEXT_LENGTH = 1000;
+
+type OwnedDocumentForExtraction = {
+    id: string;
+    project_id: string | null;
+    title?: string | null;
+    file_url?: string | null;
+    storage_bucket?: string | null;
+    storage_path?: string | null;
+    extracted_text?: string | null;
+    content_hash?: string | null;
+    extracted_text_hash?: string | null;
+};
+
+function sha256(input: Buffer | string) {
+    return createHash("sha256").update(input).digest("hex");
+}
 
 export async function POST(req: NextRequest) {
     try {
-        const { documentId } = await req.json();
+        const { projectId, documentId, force = false } = await req.json();
+
+        if (!projectId) {
+            return NextResponse.json({ error: "projectId is required" }, { status: 400 });
+        }
 
         if (!documentId) {
             return NextResponse.json({ error: "documentId is required" }, { status: 400 });
         }
 
-        const supabase = createClient(supabaseUrl, supabaseKey);
+        const supabase = await createClient();
 
-        // 1. Получить документ из БД
-        const { data: doc, error: docError } = await supabase
-            .from("documents")
-            .select("id, title, file_url, extracted_text")
-            .eq("id", documentId)
-            .single();
+        const projectOwnership = await requireOwnedProject(supabase, projectId);
+        if (!projectOwnership.ok) {
+            return projectOwnership.response;
+        }
 
-        if (docError || !doc) {
-            return NextResponse.json({ error: "Document not found" }, { status: 404 });
+        const ownership = await requireOwnedDocument<OwnedDocumentForExtraction>(
+            supabase,
+            documentId,
+            "id, project_id, title, file_url, storage_bucket, storage_path, extracted_text, content_hash, extracted_text_hash"
+        );
+
+        if (!ownership.ok) {
+            return ownership.response;
+        }
+
+        const doc = ownership.document;
+
+        if (doc.project_id !== projectId) {
+            return NextResponse.json({ error: "Document does not belong to the requested project" }, { status: 403 });
         }
 
         // Если текст уже извлечён — вернуть длину
-        if (doc.extracted_text && doc.extracted_text.length > 0) {
+        if (!force && doc.extracted_text && doc.extracted_text.length >= MIN_USEFUL_TEXT_LENGTH) {
             return NextResponse.json({
                 success: true,
                 textLength: doc.extracted_text.length,
@@ -34,52 +68,53 @@ export async function POST(req: NextRequest) {
             });
         }
 
-        if (!doc.file_url) {
-            return NextResponse.json({ error: "No file_url for document" }, { status: 400 });
-        }
-
-        // 2. Скачать PDF по URL
-        const isPDF = doc.title?.toLowerCase().endsWith(".pdf") || doc.file_url.toLowerCase().includes(".pdf");
-
-        if (!isPDF) {
+        if (!isPdfDocument(doc)) {
             // Для не-PDF файлов — пометить как "нет текста"
-            await supabase
-                .from("documents")
-                .update({ extracted_text: `[NON-PDF: ${doc.title}]` })
-                .eq("id", documentId);
-
             return NextResponse.json({
                 success: true,
-                textLength: 0,
-                message: "Not a PDF file, skipping extraction",
+                skipped: true,
+                textLength: typeof doc.extracted_text === "string" ? doc.extracted_text.length : 0,
+                message: "Not a PDF file, skipping PDF extraction",
             });
         }
 
-        console.log(`[extract-text] Downloading PDF: ${doc.file_url}`);
-        const pdfResponse = await fetch(doc.file_url);
+        console.log(`[extract-text] Downloading PDF from private storage: ${doc.title}`);
+        const pdfBuffer = await downloadDocumentBuffer(supabase, doc);
+        const contentHash = sha256(pdfBuffer);
 
-        if (!pdfResponse.ok) {
-            return NextResponse.json(
-                { error: `Failed to download PDF: ${pdfResponse.status}` },
-                { status: 500 }
-            );
+        if (
+            !force &&
+            doc.content_hash === contentHash &&
+            doc.extracted_text &&
+            doc.extracted_text.length >= MIN_USEFUL_TEXT_LENGTH
+        ) {
+            return NextResponse.json({
+                success: true,
+                textLength: doc.extracted_text.length,
+                alreadyExtracted: true,
+                contentHash
+            });
         }
 
-        const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
-
         // 3. Извлечь текст через pdf-parse
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const pdfParse = require("pdf-parse");
-        const pdfData = await pdfParse(pdfBuffer);
+        const pdfData = await extractPdfText(pdfBuffer);
         const extractedText = pdfData.text || "";
+        const extractedTextHash = sha256(extractedText);
 
         console.log(`[extract-text] Extracted ${extractedText.length} chars from "${doc.title}"`);
 
         // 4. Сохранить извлечённый текст в БД
         const { error: updateError } = await supabase
             .from("documents")
-            .update({ extracted_text: extractedText })
-            .eq("id", documentId);
+            .update({
+                extracted_text: extractedText,
+                ocr_status: extractedText.length >= MIN_USEFUL_TEXT_LENGTH ? "COMPLETED" : "REQUIRES_REVIEW",
+                content_hash: contentHash,
+                extracted_text_hash: extractedTextHash,
+                processed_at: new Date().toISOString()
+            })
+            .eq("id", documentId)
+                .eq("project_id", projectId);
 
         if (updateError) {
             console.error("[extract-text] DB update error:", updateError);
@@ -89,17 +124,28 @@ export async function POST(req: NextRequest) {
             );
         }
 
+        if (projectId) {
+            try {
+                await syncProjectContractBase(supabase, projectId);
+            } catch (syncError) {
+                console.error("[extract-text] Contract base sync error:", syncError);
+            }
+        }
+
         return NextResponse.json({
             success: true,
             textLength: extractedText.length,
-            pages: pdfData.numpages || 0,
+            pages: pdfData.pages || 0,
+            contentHash,
+            extractedTextHash,
             preview: extractedText.substring(0, 200),
         });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("[extract-text] Error:", error);
+        const message = error instanceof Error ? error.message : "Text extraction failed";
         return NextResponse.json(
-            { error: error.message || "Text extraction failed" },
+            { error: message },
             { status: 500 }
         );
     }

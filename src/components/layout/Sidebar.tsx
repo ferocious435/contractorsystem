@@ -1,8 +1,8 @@
 "use client";
 
-import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { createClient } from '@/utils/supabase/client';
+import { isLocalProjectId } from '@/utils/local-projects';
 import { 
     LayoutDashboard, 
     FileText, 
@@ -13,15 +13,14 @@ import {
     Mail, 
     Cpu, 
     Settings,
-    ChevronLeft,
-    Shield,
     Zap,
-    Box
+    Box,
+    type LucideIcon
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { AI_MODEL_BRANDING } from '@/utils/constants';
 
-function NavItem({ icon: Icon, label, badge, active, onClick, disabled }: { icon: any, label: string, badge?: number, active?: boolean, onClick?: () => void, disabled?: boolean }) {
+function NavItem({ icon: Icon, label, badge, active, onClick, disabled }: { icon: LucideIcon, label: string, badge?: number, active?: boolean, onClick?: () => void, disabled?: boolean }) {
     return (
         <motion.div
             whileHover={disabled ? {} : { x: -4 }}
@@ -61,10 +60,11 @@ function NavItem({ icon: Icon, label, badge, active, onClick, disabled }: { icon
 
 export function Sidebar({ currentView = 'dashboard', onNavigate, projectId }: { currentView?: string, onNavigate?: (view: string) => void, projectId?: string | null }) {
     const [openContradictionsCount, setOpenContradictionsCount] = useState(0);
+    const isLocalProject = isLocalProjectId(projectId);
+    const displayedOpenContradictionsCount = projectId && !isLocalProject ? openContradictionsCount : 0;
 
     useEffect(() => {
-        if (!projectId) {
-            setOpenContradictionsCount(0);
+        if (!projectId || isLocalProject) {
             return;
         }
 
@@ -92,14 +92,14 @@ export function Sidebar({ currentView = 'dashboard', onNavigate, projectId }: { 
         return () => {
             supabase.removeChannel(channel);
         };
-    }, [projectId]);
+    }, [isLocalProject, projectId]);
 
     const handleNav = (view: string) => {
         if (onNavigate) onNavigate(view);
     };
 
     return (
-        <aside className="w-72 bg-[#0B0F14] border-l border-white/5 flex flex-col z-30 relative shadow-[20px_0_50px_rgba(0,0,0,0.5)] h-screen overflow-hidden">
+        <aside className="hidden lg:flex w-72 shrink-0 bg-[#0B0F14] border-l border-white/5 flex-col z-30 relative shadow-[20px_0_50px_rgba(0,0,0,0.5)] h-dvh overflow-hidden">
             {/* Logo Area */}
             <div className="p-10 border-b border-white/5 relative group">
                 <div className="absolute inset-0 bg-gradient-to-b from-blue-500/[0.02] to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -127,7 +127,7 @@ export function Sidebar({ currentView = 'dashboard', onNavigate, projectId }: { 
                         <NavItem icon={LayoutDashboard} label="לוח בקרה" active={currentView === 'dashboard'} onClick={() => handleNav('dashboard')} />
                         <NavItem icon={FileText} label="מסמכי חוזה" active={currentView === 'contracts'} onClick={() => handleNav('contracts')} />
                         <NavItem icon={ClipboardList} label="ביצוע ושטח" active={currentView === 'execution'} onClick={() => handleNav('execution')} />
-                        <NavItem icon={AlertTriangle} label='מכ"ם סתירות' badge={openContradictionsCount} active={currentView === 'radar'} onClick={() => handleNav('radar')} />
+                        <NavItem icon={AlertTriangle} label='מכ"ם סתירות' badge={displayedOpenContradictionsCount} active={currentView === 'radar'} onClick={() => handleNav('radar')} />
                     </div>
                 </div>
 

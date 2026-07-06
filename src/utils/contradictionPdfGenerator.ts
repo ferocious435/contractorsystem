@@ -31,10 +31,13 @@ export const generateContradictionPDF = ({
     doc.addFont('Rubik-Regular.ttf', 'Rubik', 'normal');
     doc.setFont('Rubik');
 
-    const safeText = (text: any): string => {
-        if (text === null || text === undefined || text === '') return '—';
+    const safeText = (text: unknown): string => {
+        if (text === null || text === undefined || text === '') return '-';
         return String(text);
     };
+
+    const asRecord = (value: unknown): Record<string, unknown> =>
+        value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
     // --- Header Section ---
     doc.setFillColor(21, 28, 36);
@@ -124,14 +127,14 @@ export const generateContradictionPDF = ({
             }
         });
 
-        yPos = (doc as any).lastAutoTable.finalY + 8;
+        yPos = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
 
-        // Financial Impact — uses financial_impact_desc from evidence_data
+        // Financial Impact - uses financial_impact_desc from evidence_data
         const financialDesc = safeText(
             c.evidence_data?.financial_impact_desc ||
             c.evidence_data?.business_value
         );
-        if (financialDesc !== '—') {
+        if (financialDesc !== '-') {
             if (yPos > 260) { doc.addPage(); yPos = 20; }
             doc.setFontSize(10);
             doc.setTextColor(15, 23, 42);
@@ -144,8 +147,8 @@ export const generateContradictionPDF = ({
         }
 
         // --- Expert Strategy Section (if exists) ---
-        const expert = c.evidence_data?.expert_strategy;
-        if (expert) {
+        const expert = asRecord(c.evidence_data?.expert_strategy);
+        if (Object.keys(expert).length > 0) {
             if (yPos > 230) { doc.addPage(); yPos = 20; }
             
             doc.setFillColor(241, 245, 249);
@@ -161,7 +164,7 @@ export const generateContradictionPDF = ({
             yPos += 12;
             
             const renderExpertField = (label: string, value: string, color: [number, number, number]) => {
-                if (!value || value === '—') return;
+                if (!value || value === '-') return;
                 doc.setTextColor(color[0], color[1], color[2]);
                 doc.setFont('Rubik', 'bold');
                 doc.text(`${label}:`, 190, yPos, { align: 'right' });
@@ -172,10 +175,10 @@ export const generateContradictionPDF = ({
                 yPos += (lines.length * 4.5) + 3;
             };
 
-            renderExpertField('בסיס הנדסי', expert.technical_foundation, [15, 23, 42]);
-            renderExpertField('טיעון מקצועי', expert.professional_argument, [37, 99, 235]);
-            renderExpertField('הנחיה ליומן', expert.site_diary_instruction, [5, 150, 105]);
-            renderExpertField('הערכת סיכון', expert.risk_assessment, [220, 38, 38]);
+            renderExpertField('בסיס הנדסי', safeText(expert.technical_foundation), [15, 23, 42]);
+            renderExpertField('טיעון מקצועי', safeText(expert.professional_argument), [37, 99, 235]);
+            renderExpertField('הנחיה ליומן', safeText(expert.site_diary_instruction), [5, 150, 105]);
+            renderExpertField('הערכת סיכון', safeText(expert.risk_assessment), [220, 38, 38]);
             
             yPos += 5;
         } else {
@@ -186,7 +189,7 @@ export const generateContradictionPDF = ({
                 c.evidence_data?.justification ||
                 c.description
             );
-            if (adviceText !== '—') {
+            if (adviceText !== '-') {
                 if (yPos > 260) { doc.addPage(); yPos = 20; }
                 doc.setFontSize(10);
                 doc.setTextColor(37, 99, 235);
@@ -201,7 +204,7 @@ export const generateContradictionPDF = ({
 
         // Commercial risk
         const risk = safeText(c.evidence_data?.commercial_risk);
-        if (risk !== '—') {
+        if (risk !== '-') {
             if (yPos > 260) { doc.addPage(); yPos = 20; }
             doc.setFontSize(9);
             doc.setTextColor(150, 100, 0);
@@ -213,7 +216,7 @@ export const generateContradictionPDF = ({
     });
 
     // --- Footer ---
-    const pageCount = (doc as any).internal.getNumberOfPages();
+    const pageCount = (doc as unknown as { internal: { getNumberOfPages(): number } }).internal.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i);
         doc.setFontSize(8);

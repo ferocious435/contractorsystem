@@ -11,58 +11,71 @@ interface EvidenceData {
     work_page?: number | string;
     contract_url?: string;
     work_url?: string;
+    document_pair?: {
+        contract_doc_id?: string | null;
+        work_doc_id?: string | null;
+    };
 }
 
-const EvidenceMarker = ({ 
-    part, 
-    isMarker1, 
-    evidence, 
-    onOpen 
-}: { 
-    part: string; 
-    isMarker1: boolean; 
-    evidence: EvidenceData; 
-    onOpen?: (url: string | null, page: number | string | null) => void 
+const EvidenceMarker = ({
+    part,
+    isMarker1,
+    evidence,
+    onOpen
+}: {
+    part: string;
+    isMarker1: boolean;
+    evidence: EvidenceData;
+    onOpen?: (documentId: string | null, page: number | string | null) => void
 }) => {
     const [isHovered, setIsHovered] = useState(false);
     const quote = isMarker1 ? evidence?.contract_quote : evidence?.work_quote;
     const title = isMarker1 ? evidence?.contract_title : evidence?.work_title;
     const page = isMarker1 ? evidence?.contract_page : evidence?.work_page;
     const url = isMarker1 ? evidence?.contract_url : evidence?.work_url;
-    
-    if (!quote) return <span className="text-blue-500/50 font-mono mx-0.5">{part}</span>;
+    const documentId = isMarker1
+        ? evidence?.document_pair?.contract_doc_id
+        : evidence?.document_pair?.work_doc_id;
+
+    if (!quote) {
+        return (
+            <span className="inline-flex items-center mx-0.5 px-2 py-0.5 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[10px] font-black align-middle">
+                {part} נדרש אימות
+            </span>
+        );
+    }
 
     return (
-        <span 
+        <span
             className="relative inline-block mx-0.5 align-middle select-none"
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
         >
-            <motion.span 
+            <motion.span
                 whileHover={{ scale: 1.15, y: -1 }}
                 whileTap={{ scale: 0.9 }}
                 onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    if (onOpen && url) {
-                        onOpen(url, page || null);
+                    if (onOpen && documentId) {
+                        onOpen(documentId, page || null);
                     } else if (url) {
                         window.open(page ? `${url}#page=${page}` : url, '_blank');
                     }
                 }}
                 className={`cursor-pointer px-2 py-0.5 rounded-md text-[10px] font-black border transition-all shadow-md flex items-center gap-1.5 active:brightness-125 ${
-                    isMarker1 
-                    ? 'bg-blue-600/30 text-blue-300 border-blue-500/50 hover:bg-blue-500/40' 
+                    isMarker1
+                    ? 'bg-blue-600/30 text-blue-300 border-blue-500/50 hover:bg-blue-500/40'
                     : 'bg-red-600/30 text-red-300 border-red-500/50 hover:bg-red-500/40'
                 }`}
             >
                 {part}
                 <ExternalLink size={8} className="opacity-70" />
             </motion.span>
-            
+
             <AnimatePresence>
                 {isHovered && (
-                    <motion.span 
+                    <motion.span
                         initial={{ opacity: 0, scale: 0.9, y: 5, x: '-50%' }}
                         animate={{ opacity: 1, scale: 1, y: 0, x: '-50%' }}
                         exit={{ opacity: 0, scale: 0.9, y: 2, x: '-50%' }}
@@ -80,7 +93,7 @@ const EvidenceMarker = ({
                         <div className="relative">
                             <Quote className="absolute -top-1 -right-1 w-6 h-6 text-white/5 pointer-events-none" />
                             <p className="text-[12px] text-gray-100 leading-relaxed italic font-medium text-right relative z-10 pr-2" dir="rtl">
-                                "{quote}"
+                                &quot;{quote}&quot;
                             </p>
                         </div>
                         <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-[9px] text-gray-500 font-black truncate uppercase tracking-widest">
@@ -105,26 +118,26 @@ const EvidenceMarker = ({
 interface RichTextProps {
     text: string;
     evidence?: EvidenceData;
-    onOpen?: (url: string | null, page: number | string | null) => void;
+    onOpen?: (documentId: string | null, page: number | string | null) => void;
     className?: string;
     dir?: 'rtl' | 'ltr';
 }
 
 export const RichText = ({ text, evidence, onOpen, className = "", dir = "ltr" }: RichTextProps) => {
     if (!text) return null;
-    
+
     const parts = text.split(/(\[[12]\])/);
-    
+
     return (
         <span className={`${className} leading-relaxed block`} dir={dir}>
             {parts.map((part, i) => {
                 const isMarker1 = part === '[1]';
                 const isMarker2 = part === '[2]';
-                
+
                 if (isMarker1 || isMarker2) {
                     return <EvidenceMarker key={i} part={part} isMarker1={isMarker1} evidence={evidence || {}} onOpen={onOpen} />;
                 }
-                
+
                 return <span key={i}>{part}</span>;
             })}
         </span>
