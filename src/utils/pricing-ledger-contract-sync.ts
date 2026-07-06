@@ -6,6 +6,7 @@ type ContractPricelist = {
     contractor_id?: string | null;
     name?: string | null;
     description?: string | null;
+    source_type?: string | null;
     is_global?: boolean | null;
     project_id?: string | null;
 };
@@ -55,7 +56,28 @@ export function isLikelyContractBoqPricelist(pricelist: ContractPricelist): bool
         return false;
     }
 
-    const text = normalizeSearchText(`${pricelist.name || ""} ${pricelist.description || ""}`);
+    const sourceType = normalizeSearchText(pricelist.source_type);
+    const text = normalizeSearchText(`${pricelist.name || ""} ${pricelist.description || ""} ${pricelist.source_type || ""}`);
+    const officialExternalSignals = [
+        "housing ministry",
+        "ministry housing",
+        "ministry of housing",
+        "dekel",
+        "משהב",
+        "משבה",
+        "משרד הבינוי",
+        "שיכון",
+        "דקל",
+        "מחירון",
+    ];
+
+    if (
+        ["housing_ministry", "dekel", "contractor_quote", "custom_analysis"].includes(sourceType) ||
+        officialExternalSignals.some((signal) => text.includes(normalizeSearchText(signal).trim()))
+    ) {
+        return false;
+    }
+
     const boqSignals = [
         "boq",
         "bill of quantities",
@@ -113,7 +135,7 @@ export async function syncContractBoqToLedger(
 
     let pricelistQuery = supabase
         .from("pricelists")
-        .select("id, contractor_id, name, description, is_global, project_id")
+        .select("id, contractor_id, name, description, source_type, is_global, project_id")
         .eq("project_id", projectId)
         .eq("is_global", false);
 

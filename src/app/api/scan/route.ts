@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireOwnedProject } from "@/app/api/_utils/auth";
 import { archiveContradictionRows, type ContradictionArchiveRow } from "@/utils/contradiction-archive";
-import { CONTRACT_DOCUMENT_HIERARCHY_GUIDE, sortContractDocumentsByPrecedence } from "@/utils/contract-document-hierarchy";
+import {
+    CONTRACT_DOCUMENT_HIERARCHY_GUIDE,
+    isProjectContractBaseDocument,
+    isReferenceDocument,
+    sortContractDocumentsByPrecedence,
+} from "@/utils/contract-document-hierarchy";
 import { downloadDocumentBuffer, isPdfDocument as isStoredPdfDocument } from "@/utils/document-storage";
 import { geminiModel, withRetry } from "@/lib/gemini";
 import { createClient } from "@/utils/supabase/server";
@@ -13,7 +18,7 @@ const MAX_CONTRACT_CONTEXT_CHARS = 180_000;
 const MAX_WORK_CONTEXT_CHARS = 80_000;
 const MAX_CHARS_PER_CONTRACT_DOC = 35_000;
 const MIN_USEFUL_TEXT_LENGTH = 1000;
-const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER", "PRICELIST"]);
+const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
 const ACTIVE_SCAN_STALE_MS = 6 * 60 * 1000;
 const SCAN_STATE_COLUMNS = `
@@ -36,7 +41,7 @@ const SCAN_STATE_COLUMNS = `
     completed_at
 `;
 
-type ScanRole = "CONTRACT_BASE" | "WORK_EVIDENCE" | "UNKNOWN";
+type ScanRole = "CONTRACT_BASE" | "WORK_EVIDENCE" | "REFERENCE_LIBRARY" | "UNKNOWN";
 type ScanStateStatus = "IN_PROGRESS" | "COMPLETED" | "ERROR";
 
 type ScanDocument = Record<string, unknown> & {
@@ -279,9 +284,14 @@ function getDocumentRole(doc: ScanDocument): ScanRole {
     const parsedType = String(doc.parsed_json?.type || "").toLowerCase();
     const searchText = `${title} ${parsedType}`;
 
+    if (isReferenceDocument(doc)) {
+        return "REFERENCE_LIBRARY";
+    }
+
     if (
         CONTRACT_ROLES.has(rawCategory) ||
-        /contract|boq|tender|spec|price\s*list|dekel|חוזה|הסכם|כתב\s*כמויות|מפרט|מכרז|מחירון|דקל/.test(searchText)
+        isProjectContractBaseDocument(doc) ||
+        /contract|boq|tender|spec|חוזה|הסכם|כתב\s*כמויות|מפרט|מכרז/.test(searchText)
     ) {
         return "CONTRACT_BASE";
     }
@@ -561,6 +571,20 @@ export async function POST(req: NextRequest) {
 
         if (!ownership.ok) {
             return ownership.response;
+        }
+
+        if (!force) {
+            const currentScanStatus = await loadProjectScanState(supabase, projectId, workDocId);
+            if (currentScanStatus.active) {
+                return NextResponse.json({
+                    success: true,
+                    active: true,
+                    resumed: false,
+                    found: currentScanStatus.found,
+                    message: "Scan is already running. The saved progress can be polled from this endpoint.",
+                    scanStatus: currentScanStatus,
+                });
+            }
         }
 
         if (force) {

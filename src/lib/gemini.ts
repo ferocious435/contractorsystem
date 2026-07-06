@@ -81,11 +81,17 @@ CRITICAL RULES:
 1. ONLY output valid JSON. No markdown outside JSON.
 2. ALL text fields must be in HEBREW.
 3. You MUST provide a full Markdown representation of the document content in "full_markdown".
+4. Shelf contracts such as חוזה מדף 3210, the Blue Book / הספר הכחול, מפרט כללי, government general specifications, standards, and other incorporated reference documents are REFERENCE documents. Do NOT classify them as ordinary project CONTRACT documents unless the document itself is the signed project agreement or a project-specific special specification.
+5. If a reference document is detected, set category="REFERENCE", is_reference=true, reference_family to BLUE_BOOK / SHELF_CONTRACT_3210 / ISRAELI_STANDARD / OTHER_REFERENCE, and authority_scope to REFERENCE_ONLY unless the file itself proves project incorporation.
 
 Structure the JSON:
 {
   "type": "הסכם / כתב כמויות / מפרט טכני / פרוטוקול / אחר",
-  "category": "CONTRACT / EXECUTION / PRICELIST",
+  "category": "CONTRACT / EXECUTION / PRICELIST / REFERENCE",
+  "is_reference": false,
+  "reference_family": "BLUE_BOOK / SHELF_CONTRACT_3210 / ISRAELI_STANDARD / OTHER_REFERENCE / null",
+  "authority_scope": "REFERENCE_ONLY / PROJECT_INCORPORATED / GLOBAL_STANDARD / null",
+  "incorporated_by_contract": "Hebrew explanation or null",
   "summary": "Hebrew summary",
   "full_markdown": "COMPLETE document content converted to clean Markdown. Extract all tables, clauses, prices.",
   "date": "DD.MM.YYYY",

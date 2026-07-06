@@ -1,8 +1,15 @@
-﻿export interface ContractDocumentLike {
+import { isReferenceDocument } from "./contract-document-hierarchy";
+
+export interface ContractDocumentLike {
     title?: string | null;
+    category?: string | null;
     extracted_text?: string | null;
     parsed_json?: {
+        category?: string | null;
         type?: string | null;
+        is_reference?: boolean | null;
+        reference_family?: string | null;
+        authority_scope?: string | null;
     } | null;
 }
 
@@ -53,6 +60,10 @@ export function extractGeneralTotalFromText(text: string | null | undefined): nu
 }
 
 function isLikelyBoqDocument(doc: ContractDocumentLike): boolean {
+    if (isReferenceDocument(doc)) {
+        return false;
+    }
+
     const normalizedTitle = normalizeTitle(doc.title);
     const normalizedText = normalizeText(doc.extracted_text);
     const parsedType = normalizeTitle(doc.parsed_json?.type);
@@ -74,6 +85,10 @@ function isLikelyBoqDocument(doc: ContractDocumentLike): boolean {
 }
 
 function isLikelyAgreementDocument(doc: ContractDocumentLike): boolean {
+    if (isReferenceDocument(doc)) {
+        return false;
+    }
+
     const normalizedTitle = normalizeTitle(doc.title);
     const parsedType = normalizeTitle(doc.parsed_json?.type);
 
@@ -94,6 +109,7 @@ function isLikelyAgreementDocument(doc: ContractDocumentLike): boolean {
 
 export function resolveProjectContractBase(docs: ContractDocumentLike[]): ContractBaseResolution {
     const candidates = docs
+        .filter((doc) => !isReferenceDocument(doc))
         .map((doc) => ({
             title: doc.title || null,
             total: extractGeneralTotalFromText(doc.extracted_text),

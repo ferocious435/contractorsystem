@@ -3,9 +3,28 @@ import { createClient } from '@/utils/supabase/server';
 import { geminiFlashModel, BOQ_PARSING_PROMPT } from '@/lib/gemini';
 import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
 import { parseMinistryHousingPricelistPdf } from '@/utils/ministry-housing-pricelist-parser';
+import { createHash } from 'crypto';
 
 const ALLOWED_PRICELIST_ITEM_TYPES = new Set(['CHAPTER', 'SUBCHAPTER', 'ITEM', 'NOTE']);
 const UPLOAD_ITEM_BATCH_SIZE = 500;
+
+type ParsedPricelistUploadData = {
+  project_name?: string;
+  client_name?: string;
+  source?: unknown;
+  version_label?: unknown;
+  parser_version?: unknown;
+  intro_text?: unknown;
+  outro_text?: unknown;
+  terms_text?: unknown;
+  page_count?: unknown;
+  parse_stats?: unknown;
+  items: Array<Record<string, unknown>>;
+};
+
+type ParsedPricelistUploadDraft = Omit<ParsedPricelistUploadData, 'items'> & {
+  items?: Array<Record<string, unknown>>;
+};
 
 function toNumber(value: unknown, fallback = 0) {
   if (typeof value === 'string') {
@@ -35,9 +54,65 @@ function stripFinalExtension(fileName: string) {
 }
 
 function hasParsedPricelistItems(
-  parsedData: { items?: unknown[] } | null | undefined,
-): parsedData is { project_name?: string; client_name?: string; items: Array<Record<string, unknown>> } {
+  parsedData: ParsedPricelistUploadDraft | null | undefined,
+): parsedData is ParsedPricelistUploadData {
   return Array.isArray(parsedData?.items) && parsedData.items.length > 0;
+}
+
+function normalizeSourceType(value: unknown) {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function inferPricelistSourceType(fileName: string, parsedData: ParsedPricelistUploadDraft | null | undefined) {
+  const explicitSource = normalizeSourceType(parsedData?.source);
+  if (explicitSource) {
+    return explicitSource;
+  }
+
+  const text = `${fileName} ${parsedData?.project_name || ''} ${parsedData?.client_name || ''}`.toLowerCase();
+  if (
+    text.includes('housing ministry') ||
+    text.includes('ministry of housing') ||
+    text.includes('משהב') ||
+    text.includes('משבה') ||
+    text.includes('משרד הבינוי') ||
+    text.includes('שיכון')
+  ) {
+    return 'HOUSING_MINISTRY';
+  }
+
+  if (text.includes('dekel') || text.includes('דקל')) {
+    return 'DEKEL';
+  }
+
+  if (text.includes('quote') || text.includes('הצעת מחיר')) {
+    return 'CONTRACTOR_QUOTE';
+  }
+
+  if (
+    text.includes('boq') ||
+    text.includes('tlv') ||
+    text.includes('skn') ||
+    text.includes('כתב כמויות') ||
+    text.includes('כמויות') ||
+    text.includes('לביצוע')
+  ) {
+    return 'PROJECT_BOQ';
+  }
+
+  return 'CUSTOM_ANALYSIS';
+}
+
+function shouldSyncUploadedPricelistToContractBoq(sourceType: string, fileName: string, parsedData: ParsedPricelistUploadData) {
+  if (sourceType !== 'PROJECT_BOQ') {
+    return false;
+  }
+
+  return hasContractPricedQuantities(parsedData.items) && !/מחירון|דקל|משהב|משבה|housing|ministry/i.test(fileName);
 }
 
 async function insertPricelistItemsInBatches(
@@ -118,7 +193,7 @@ export async function POST(req: Request) {
     const base64File = fileBuffer.toString('base64');
     const mimeType = file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
     const isPdf = mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    let parsedData: { project_name?: string; client_name?: string; items?: Array<Record<string, unknown>> } | null = isPdf
+    let parsedData: ParsedPricelistUploadDraft | null = isPdf
       ? await parseMinistryHousingPricelistPdf(fileBuffer)
       : null;
 
@@ -152,6 +227,19 @@ export async function POST(req: Request) {
       }, { status: 422 });
     }
 
+    const sourceType = inferPricelistSourceType(file.name, parsedData);
+    const contentHash = createHash('sha256').update(fileBuffer).digest('hex');
+    const fileName = `${Date.now()}_${file.name}`;
+    const storagePath = `${user.id}/${fileName}`;
+    const storageBucket = 'documents';
+    const { error: storageError } = await supabase.storage
+      .from(storageBucket)
+      .upload(storagePath, file);
+
+    if (storageError) {
+      throw storageError;
+    }
+
     // 4. Создание записи в таблице pricelists
     const { data: pricelist, error: pError } = await supabase
       .from('pricelists')
@@ -160,7 +248,24 @@ export async function POST(req: Request) {
         description: `AI Parsed from ${file.name}. Client: ${parsedData.client_name || 'Unknown'}`,
         contractor_id: user.id,
         project_id: isGlobal ? null : projectId,
-        is_global: isGlobal
+        is_global: isGlobal,
+        source_type: sourceType,
+        source_file_name: file.name,
+        source_storage_bucket: storageBucket,
+        source_storage_path: storagePath,
+        content_hash: contentHash,
+        publisher: parsedData.client_name || null,
+        version_label: parsedData.version_label || null,
+        parser_version: parsedData.parser_version || null,
+        parse_status: 'READY',
+        intro_text: parsedData.intro_text || null,
+        outro_text: parsedData.outro_text || null,
+        terms_text: parsedData.terms_text || null,
+        metadata: {
+          source: parsedData.source || sourceType,
+          parse_stats: parsedData.parse_stats || null,
+          page_count: parsedData.page_count || null,
+        }
       })
       .select()
       .single();
@@ -169,16 +274,27 @@ export async function POST(req: Request) {
     createdPricelistId = pricelist.id;
 
     // 5. Массовая вставка элементов (pricelist_items)
-    const shouldSyncContractBoq = Boolean(projectId && !isGlobal && hasContractPricedQuantities(parsedData.items));
+    const shouldSyncContractBoq = Boolean(
+      projectId &&
+      !isGlobal &&
+      shouldSyncUploadedPricelistToContractBoq(sourceType, file.name, parsedData)
+    );
 
-    const itemsToInsert = parsedData.items.map((item: Record<string, unknown>) => ({
+    const itemsToInsert = parsedData.items.map((item: Record<string, unknown>, index: number) => ({
       pricelist_id: pricelist.id,
       item_code: item.item_code || '',
       description: item.description || '',
       unit: item.unit || '',
       rate: toNumber(item.unit_price_excl_vat ?? item.rate, 0),
       quantity: toNumber(item.quantity, 0),
-      item_type: normalizePricelistItemType(item.type)
+      item_type: normalizePricelistItemType(item.type),
+      notes: item.notes || null,
+      page_number: item.page_number || null,
+      sort_order: item.sort_order || index + 1,
+      hierarchy_path: item.hierarchy_path || null,
+      source_excerpt: item.source_excerpt || null,
+      metadata: typeof item.metadata === 'object' && item.metadata !== null ? item.metadata : {},
+      raw_row: item,
     }));
 
     await insertPricelistItemsInBatches(supabase, itemsToInsert);
@@ -191,20 +307,14 @@ export async function POST(req: Request) {
         })
       : null;
 
-    // 6. Сохраняем сам файл в документы для истории
-    const fileName = `${Date.now()}_${file.name}`;
-    const storagePath = `${user.id}/${fileName}`;
-    const { error: storageError } = await supabase.storage
-      .from('documents')
-      .upload(storagePath, file);
-
-    if (!storageError && projectId) {
+    // 6. Сохраняем запись документа для истории и предпросмотра исходника
+    if (projectId) {
       await supabase.from('documents').insert({
         project_id: projectId,
         title: pricelistName,
         category: 'PRICELIST',
         file_url: null,
-        storage_bucket: 'documents',
+        storage_bucket: storageBucket,
         storage_path: storagePath,
         ai_status: 'SCANNED',
         parsed_json: parsedData

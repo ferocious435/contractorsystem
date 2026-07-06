@@ -3809,8 +3809,13 @@ assertIncludes(
 );
 assertIncludes(
   "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "const boqRawContext = buildBoqRawContext(toRecords(contractDocs as unknown))",
+  "const boqRawContext = buildBoqRawContext(",
   "AI pricing context load must use the capped raw BOQ context builder"
+);
+assertIncludes(
+  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
+  "filter((doc) => !isReferenceDocument(doc))",
+  "AI pricing context load must keep reference documents out of raw BOQ context"
 );
 assertNotIncludes(
   "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",

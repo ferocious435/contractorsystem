@@ -22,6 +22,7 @@ export function getPricelistMetadata(record: AnyRecord) {
         id: "",
         name: typeof pricelist.name === 'string' ? pricelist.name : null,
         description: typeof pricelist.description === 'string' ? pricelist.description : null,
+        source_type: typeof pricelist.source_type === 'string' ? pricelist.source_type : null,
         is_global: Boolean(pricelist.is_global),
         project_id: typeof pricelist.project_id === 'string' ? pricelist.project_id : null,
     };
@@ -29,9 +30,10 @@ export function getPricelistMetadata(record: AnyRecord) {
 
 export function getPricelistSourcePriority(record: AnyRecord) {
     const metadata = getPricelistMetadata(record);
-    const searchableText = `${metadata.name || ''} ${metadata.description || ''}`.toLowerCase();
+    const sourceType = String(metadata.source_type || '').toUpperCase();
+    const searchableText = `${metadata.name || ''} ${metadata.description || ''} ${metadata.source_type || ''}`.toLowerCase();
 
-    if (
+    if (sourceType === 'HOUSING_MINISTRY' ||
         searchableText.includes('משהב') ||
         searchableText.includes('משבה') ||
         searchableText.includes('משרד הבינוי') ||
@@ -43,7 +45,7 @@ export function getPricelistSourcePriority(record: AnyRecord) {
         return { source: 'HOUSING_MINISTRY', rank: 2 };
     }
 
-    if (searchableText.includes('דקל') || searchableText.includes('dekel')) {
+    if (sourceType === 'DEKEL' || searchableText.includes('דקל') || searchableText.includes('dekel')) {
         return { source: 'DEKEL', rank: 3 };
     }
 

@@ -31,6 +31,11 @@ const radarApi = read('src/components/features/contradiction-radar/api/contradic
 const documentDeleteRoute = read('src/app/api/documents/delete/route.ts');
 const contradictionArchiveUtil = read('src/utils/contradiction-archive.ts');
 const contractDocumentHierarchy = read('src/utils/contract-document-hierarchy.ts');
+const ministryHousingParser = read('src/utils/ministry-housing-pricelist-parser.ts');
+const pricingUploadRoute = read('src/app/api/pricing/upload-universal/route.ts');
+const pricingLedgerContractSync = read('src/utils/pricing-ledger-contract-sync.ts');
+const referenceLibraryParser = read('src/utils/reference-library-parser.ts');
+const referenceLibraryIngestRoute = read('src/app/api/reference-library/ingest/route.ts');
 
 expect('AI processing uses configured key guard', processRoute.includes('requireGeminiApiKey()'));
 expect('AI processing uses retry wrapper', processRoute.includes('withRetry(() => model.generateContent'));
@@ -45,6 +50,7 @@ expect('Document process reports Google native export needs', processRoute.inclu
 expect('Document process reports CAD/BIM/BOQ converter needs', processRoute.includes('CAD_CONVERTER_REQUIRED') && processRoute.includes('BIM_CONVERTER_REQUIRED') && processRoute.includes('BOQ_CONVERTER_REQUIRED'));
 expect('Document process preserves TLV/SKN as BOQ fallback titles', processRoute.includes("lower.includes('tlv')") && processRoute.includes("lower.includes('skn')"));
 expect('Document process fallback stores readable Hebrew', processRoute.includes("type: 'כתב כמויות'") && processRoute.includes("summary: 'מסמך שנקלט למערכת - סיווג לפי שם הקובץ'"));
+expect('Document process marks shelf contract and blue book as reference documents', processRoute.includes('applyReferenceDocumentMetadata') && processRoute.includes("category: 'REFERENCE'") && processRoute.includes("reference_family") && processRoute.includes("authority_scope: 'REFERENCE_ONLY'"));
 
 expect('Validation blocks documents that are not ready', validateRoute.includes('Document is not ready for validation'));
 expect('Validation blocks failed AI analysis', validateRoute.includes('Cannot validate a failed AI analysis'));
@@ -112,6 +118,8 @@ expect('Scan cache is invalidated when completed cache has no active findings', 
 expect('Rescan archives findings through shared evidence-preserving helper', scanRoute.includes('archiveContradictionRows') && scanRoute.includes('current_scan_signature: scanSignature'));
 expect('Scan route exposes durable progress status', scanRoute.includes('export async function GET') && scanRoute.includes('loadProjectScanState') && scanRoute.includes('requireOwnedProject(supabase, projectId)'));
 expect('Scan route persists in-progress checkpoints', scanRoute.includes('status: "IN_PROGRESS"') && scanRoute.includes('processed_work_docs') && scanRoute.includes('total_work_docs'));
+expect('Scan route separates reference documents from contract base', scanRoute.includes('REFERENCE_LIBRARY') && scanRoute.includes('isReferenceDocument(doc)') && !scanRoute.includes('"CONTRACT", "BOQ", "SPECS", "TENDER", "PRICELIST"'));
+expect('Scan route returns existing active scan instead of starting a duplicate', scanRoute.includes('currentScanStatus.active') && scanRoute.includes('Scan is already running'));
 expect('Scan prompt includes contract document hierarchy guide', scanRoute.includes('CONTRACT_DOCUMENT_HIERARCHY_GUIDE') && scanRoute.includes('DOCUMENT HIERARCHY / PRECEDENCE GUIDE'));
 expect('Scan route sorts contract documents before truncation', scanRoute.includes('sortContractDocumentsByPrecedence(contractDocs.filter'));
 expect('Scan route stores document precedence assessment internally', scanRoute.includes('document_precedence_assessment') && scanRoute.includes('document_hierarchy_rule'));
@@ -120,6 +128,11 @@ expect('Scan route preserves zero-finding completed cache', scanRoute.includes('
 expect('Radar API can fetch persisted scan progress', radarApi.includes('fetchRadarScanStatus') && radarApi.includes('/api/scan?') && radarApi.includes('RadarScanProgress'));
 expect('Radar UI polls persisted scan progress', radarState.includes('refreshScanProgress') && radarState.includes('visibilitychange') && radarState.includes('fetchRadarScanStatus'));
 expect('Radar UI no longer relies on fake scan progress steps', !radarState.includes('SCAN_PROGRESS_STEPS') && radarState.includes('שומר התקדמות במערכת'));
+expect('Housing Ministry parser preserves narrative pages and row metadata', ministryHousingParser.includes('intro_text') && ministryHousingParser.includes('outro_text') && ministryHousingParser.includes('terms_text') && ministryHousingParser.includes('page_number') && ministryHousingParser.includes('hierarchy_path'));
+expect('Pricing upload saves original file metadata and blocks official pricebooks from BOQ sync', pricingUploadRoute.includes('source_type') && pricingUploadRoute.includes('source_storage_path') && pricingUploadRoute.includes('content_hash') && pricingUploadRoute.includes('shouldSyncUploadedPricelistToContractBoq'));
+expect('Ledger contract sync rejects official external pricebooks', pricingLedgerContractSync.includes('officialExternalSignals') && pricingLedgerContractSync.includes('housing ministry') && pricingLedgerContractSync.includes('dekel') && pricingLedgerContractSync.includes('מחירון'));
+expect('Reference library parser creates searchable PDF chunks', referenceLibraryParser.includes('parseReferencePdf') && referenceLibraryParser.includes('buildReferenceChunks') && referenceLibraryParser.includes('text_hash') && referenceLibraryParser.includes('page_from'));
+expect('Reference library ingest stores Blue Book and shelf contract outside normal documents', referenceLibraryIngestRoute.includes('reference_documents') && referenceLibraryIngestRoute.includes('reference_document_chunks') && referenceLibraryIngestRoute.includes('SHELF_CONTRACT_3210') && referenceLibraryIngestRoute.includes('BLUE_BOOK'));
 
 const failed = checks.filter((check) => !check.ok);
 for (const check of checks) {

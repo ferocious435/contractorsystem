@@ -2,6 +2,7 @@ import { geminiFlashModel } from '@/lib/gemini';
 import { syncProjectContractBase } from '@/utils/project-contract-base-server';
 import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
 import { isTrustedBaseContractRow } from '@/utils/project-financials';
+import { isReferenceDocument } from '@/utils/contract-document-hierarchy';
 import {
     DEFAULT_PRICING_EVALUATION_TEXT_FALLBACKS,
     normalizePricingEvaluation,
@@ -134,7 +135,9 @@ export class AiEstimatorService {
             .eq('project_id', projectId)
             .in('category', ['CONTRACT', 'BOQ', 'SPECS']);
 
-        const boqRawContext = buildBoqRawContext(toRecords(contractDocs as unknown));
+        const boqRawContext = buildBoqRawContext(
+            toRecords(contractDocs as unknown).filter((doc) => !isReferenceDocument(doc)),
+        );
 
         const keywordPrompt = buildKeywordPrompt({
             title: contradictionRecord.title,
@@ -200,6 +203,7 @@ export class AiEstimatorService {
                 pricelists!inner (
                     name,
                     description,
+                    source_type,
                     is_global,
                     project_id
                 )
@@ -230,6 +234,7 @@ export class AiEstimatorService {
                 pricelists!inner (
                     name,
                     description,
+                    source_type,
                     is_global,
                     project_id
                 )

@@ -8,12 +8,24 @@ export interface MinistryHousingPricelistItem {
   unit: string | null;
   quantity: number;
   unit_price_excl_vat: number;
+  page_number?: number | null;
+  sort_order?: number;
+  hierarchy_path?: string;
+  source_excerpt?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface MinistryHousingPricelistParseResult {
   project_name: string;
   client_name: string;
   source: 'HOUSING_MINISTRY';
+  version_label: string;
+  parser_version: string;
+  page_count: number;
+  parse_stats: Record<string, number>;
+  intro_text: string;
+  outro_text: string;
+  terms_text: string;
   items: MinistryHousingPricelistItem[];
 }
 
@@ -22,14 +34,17 @@ interface RawMinistryHousingBlock {
   subchapter: string;
   chapter: string;
   parts: string[];
+  pageNumber: number | null;
+  ordinal: number;
 }
 
 const ROW_START_RE = /^(\d{4})\s+(\d{3})\s+(\d{1,2})(?:\s+(.*))?$/;
 const MONEY_RE = /^-?\d+(?:,\d{3})*(?:\.\d+)?$/;
 const TRAILING_UNIT_AND_PRICE_RE = /^(.*)\s+(\S{1,16})\s+(-?\d+(?:,\d{3})*(?:\.\d+)?)$/;
-const PAGE_MARKER_RE = /^-- \d+ of \d+ --$/;
+const PAGE_MARKER_RE = /^--\s+(\d+)\s+of\s+(\d+)\s+--$/;
 const PAGE_FOOTER_RE = /^\d+\s+2025/;
 const MIN_ITEMS_FOR_TRUSTED_PARSE = 20;
+const MAX_NARRATIVE_CHARS = 12_000;
 
 const APPENDIX_STOP_PHRASES = [
   'קבוצות עצים לצורך תמחור',
@@ -52,7 +67,6 @@ function parseMoney(value: unknown) {
 function shouldSkipPdfLine(line: string) {
   return (
     !line ||
-    PAGE_MARKER_RE.test(line) ||
     PAGE_FOOTER_RE.test(line) ||
     (line.includes('סעיף') && line.includes('תיאור') && line.includes('מחיר')) ||
     line.includes('מחירון משרד הבינוי והשיכון לעבודות פיתוח וסלילה')
@@ -86,6 +100,11 @@ function buildItemCode(block: RawMinistryHousingBlock) {
   }
 
   return `${chapter}.${subchapter}.${item}`;
+}
+
+function buildHierarchyPath(itemCode: string) {
+  const parts = itemCode.split('.').filter(Boolean);
+  return parts.map((_, index) => parts.slice(0, index + 1).join('.')).join(' > ');
 }
 
 function getItemType(
@@ -147,9 +166,17 @@ function extractDescriptionUnitAndPrice(parts: string[]) {
 function collectRawBlocks(text: string) {
   const blocks: RawMinistryHousingBlock[] = [];
   let currentBlock: RawMinistryHousingBlock | null = null;
+  let currentPage: number | null = null;
+  let ordinal = 0;
 
   for (const rawLine of text.split(/\r?\n/)) {
     let line = rawLine.trim();
+
+    const pageMarker = line.match(PAGE_MARKER_RE);
+    if (pageMarker) {
+      currentPage = Number(pageMarker[1]);
+      continue;
+    }
 
     if (isAtAppendixBoundary(line, currentBlock) && currentBlock) {
       const stopIndex = getAppendixStopIndex(line);
@@ -175,6 +202,8 @@ function collectRawBlocks(text: string) {
         subchapter: rowMatch[2],
         chapter: rowMatch[3],
         parts: rowMatch[4] ? [rowMatch[4]] : [],
+        pageNumber: currentPage,
+        ordinal: ++ordinal,
       };
       continue;
     }
@@ -191,29 +220,94 @@ function collectRawBlocks(text: string) {
   return blocks;
 }
 
-function parseMinistryHousingText(text: string): MinistryHousingPricelistItem[] {
+function normalizeNarrativeText(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => normalizeSpaces(line))
+    .filter((line) => line && !PAGE_MARKER_RE.test(line) && !PAGE_FOOTER_RE.test(line))
+    .join('\n')
+    .slice(0, MAX_NARRATIVE_CHARS);
+}
+
+function getFirstRowIndex(text: string) {
+  const match = text.match(/^(\d{4})\s+(\d{3})\s+(\d{1,2})/m);
+  return match?.index ?? -1;
+}
+
+function getAppendixStartIndex(text: string) {
+  const indexes = APPENDIX_STOP_PHRASES
+    .map((phrase) => text.indexOf(phrase))
+    .filter((index) => index >= 0);
+
+  return indexes.length ? Math.min(...indexes) : -1;
+}
+
+function getPageCount(text: string, fallback = 0) {
+  let maxPage = fallback;
+  for (const match of text.matchAll(new RegExp(PAGE_MARKER_RE.source, 'gm'))) {
+    maxPage = Math.max(maxPage, Number(match[2]) || Number(match[1]) || 0);
+  }
+  return maxPage;
+}
+
+function parseMinistryHousingText(text: string) {
   if (!text.includes('משרד הבינוי והשיכון') || !text.includes('מחירון')) {
-    return [];
+    return {
+      items: [],
+      intro_text: '',
+      outro_text: '',
+      terms_text: '',
+      parse_stats: {},
+    };
   }
 
-  return collectRawBlocks(text)
-    .map((block) => {
-      const { description, unit, price } = extractDescriptionUnitAndPrice(block.parts);
+  const blocks = collectRawBlocks(text);
+  const items: MinistryHousingPricelistItem[] = [];
 
-      if (!description) {
-        return null;
-      }
+  for (const block of blocks) {
+    const { description, unit, price } = extractDescriptionUnitAndPrice(block.parts);
 
-      return {
-        item_code: buildItemCode(block),
-        description,
-        type: getItemType(block, unit, price),
-        unit,
-        quantity: 1,
-        unit_price_excl_vat: price,
-      } satisfies MinistryHousingPricelistItem;
-    })
-    .filter((item): item is MinistryHousingPricelistItem => Boolean(item));
+    if (!description) {
+      continue;
+    }
+
+    const itemCode = buildItemCode(block);
+    const itemType = getItemType(block, unit, price);
+    items.push({
+      item_code: itemCode,
+      description,
+      type: itemType,
+      unit,
+      quantity: 1,
+      unit_price_excl_vat: price,
+      page_number: block.pageNumber,
+      sort_order: block.ordinal,
+      hierarchy_path: buildHierarchyPath(itemCode),
+      source_excerpt: normalizeSpaces(block.parts.join(' ')).slice(0, 800),
+      metadata: {
+        chapter: block.chapter,
+        subchapter: block.subchapter,
+        item: block.item,
+      },
+    });
+  }
+
+  const firstRowIndex = getFirstRowIndex(text);
+  const appendixStartIndex = getAppendixStartIndex(text);
+  const introText = firstRowIndex > 0 ? normalizeNarrativeText(text.slice(0, firstRowIndex)) : '';
+  const outroText = appendixStartIndex >= 0 ? normalizeNarrativeText(text.slice(appendixStartIndex)) : '';
+  const termsText = normalizeNarrativeText([introText, outroText].filter(Boolean).join('\n\n'));
+
+  return {
+    items,
+    intro_text: introText,
+    outro_text: outroText,
+    terms_text: termsText,
+    parse_stats: items.reduce<Record<string, number>>((stats, item) => {
+      stats[item.type] = (stats[item.type] || 0) + 1;
+      return stats;
+    }, {}),
+  };
 }
 
 export async function parseMinistryHousingPricelistPdf(
@@ -223,7 +317,8 @@ export async function parseMinistryHousingPricelistPdf(
 
   try {
     const result = await parser.getText();
-    const items = parseMinistryHousingText(result.text);
+    const parsed = parseMinistryHousingText(result.text);
+    const items = parsed.items;
     const pricedItems = items.filter((item) => item.type === 'ITEM' && item.unit_price_excl_vat > 0);
 
     if (pricedItems.length < MIN_ITEMS_FOR_TRUSTED_PARSE) {
@@ -234,6 +329,13 @@ export async function parseMinistryHousingPricelistPdf(
       project_name: 'מחירון משרד הבינוי והשיכון לעבודות פיתוח וסלילה',
       client_name: 'משרד הבינוי והשיכון',
       source: 'HOUSING_MINISTRY',
+      version_label: '2025.02',
+      parser_version: 'ministry-housing-pdf-v2',
+      page_count: getPageCount(result.text, Number((result as { total?: unknown }).total) || 0),
+      parse_stats: parsed.parse_stats,
+      intro_text: parsed.intro_text,
+      outro_text: parsed.outro_text,
+      terms_text: parsed.terms_text,
       items,
     };
   } finally {

@@ -10,6 +10,7 @@ import {
     getSupportedGeminiMimeType,
     prepareDocumentAnalysisInput,
 } from '@/utils/document-text-extraction';
+import { isReferenceDocument } from '@/utils/contract-document-hierarchy';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -155,6 +156,42 @@ function buildTextFallbackParsedData(
 
     return parsedData;
 }
+
+function applyReferenceDocumentMetadata(
+    parsedData: Record<string, unknown>,
+    docTitle: string,
+    docCategory: string,
+) {
+    if (!isReferenceDocument({ title: docTitle, category: docCategory, parsed_json: parsedData })) {
+        return parsedData;
+    }
+
+    const titleText = docTitle.toLowerCase();
+    const parsedFamily = typeof parsedData.reference_family === 'string'
+        ? parsedData.reference_family.toUpperCase()
+        : '';
+    const isShelfContract = parsedFamily === 'SHELF_CONTRACT_3210' ||
+        titleText.includes('3210') ||
+        docTitle.includes('חוזה מדף') ||
+        docTitle.includes('מדף');
+    const isBlueBook = parsedFamily === 'BLUE_BOOK' ||
+        docTitle.includes('ספר כחול') ||
+        docTitle.includes('הספר הכחול') ||
+        docTitle.includes('מפרט כללי') ||
+        titleText.includes('blue book');
+
+    parsedData.category = 'REFERENCE';
+    parsedData.is_reference = true;
+    parsedData.reference_family = isShelfContract ? 'SHELF_CONTRACT_3210' : isBlueBook ? 'BLUE_BOOK' : parsedFamily || 'OTHER_REFERENCE';
+    parsedData.authority_scope = typeof parsedData.authority_scope === 'string'
+        ? parsedData.authority_scope
+        : 'REFERENCE_ONLY';
+    parsedData.incorporated_by_contract = parsedData.incorporated_by_contract ?? null;
+    parsedData.summary = parsedData.summary ||
+        'מסמך ייחוס מחייב לפי הפניה חוזית; אינו מסמך חוזה פרויקט רגיל בפני עצמו.';
+
+    return parsedData;
+}
 /**
  * POST /api/documents/process
  * 
@@ -244,6 +281,7 @@ export async function POST(req: Request) {
             const result = await withRetry(() => model.generateContent(contentParts));
             const responseText = result.response.text();
             parsedData = parseGeminiJsonObject(responseText);
+            parsedData = applyReferenceDocumentMetadata(parsedData, docTitle, docCategory);
             parsedData.extraction_source = analysisInput.extractionSource;
             parsedData.file_extension = getFileExtension(docTitle) || null;
 
@@ -373,6 +411,19 @@ export async function POST(req: Request) {
 
 function classifyByTitle(title: string, category: string): Record<string, unknown> {
     const lower = title.toLowerCase();
+
+    if (isReferenceDocument({ title, category })) {
+        const isShelfContract = lower.includes('3210') || title.includes('חוזה מדף') || title.includes('מדף');
+        const isBlueBook = title.includes('ספר כחול') || title.includes('הספר הכחול') || title.includes('מפרט כללי') || lower.includes('blue book');
+        return {
+            type: isShelfContract ? 'חוזה מדף 3210' : isBlueBook ? 'המפרט הכללי / הספר הכחול' : 'מסמך ייחוס',
+            category: 'REFERENCE',
+            is_reference: true,
+            reference_family: isShelfContract ? 'SHELF_CONTRACT_3210' : isBlueBook ? 'BLUE_BOOK' : 'OTHER_REFERENCE',
+            authority_scope: 'REFERENCE_ONLY',
+            summary: 'מסמך ייחוס מחייב לפי הפניה חוזית; אינו מסמך חוזה פרויקט רגיל בפני עצמו.'
+        };
+    }
 
     if (lower.includes('כמות') || lower.includes('כמויות') || lower.includes('boq') || lower.includes('tlv') || lower.includes('skn')) {
         return { type: 'כתב כמויות', category: 'CONTRACT', summary: 'כתב כמויות - סיווג לפי שם הקובץ' };

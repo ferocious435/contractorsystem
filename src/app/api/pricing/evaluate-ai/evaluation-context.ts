@@ -2,10 +2,11 @@ import { sortContractDocumentsByPrecedence } from '@/utils/contract-document-hie
 
 type AnyRecord = Record<string, unknown>;
 
-function getPricelistSourceLabel(pricelistName: unknown, description: unknown) {
-    const searchableText = `${pricelistName || ''} ${description || ''}`.toLowerCase();
+function getPricelistSourceLabel(pricelistName: unknown, description: unknown, sourceType: unknown) {
+    const normalizedSourceType = String(sourceType || '').toUpperCase();
+    const searchableText = `${pricelistName || ''} ${description || ''} ${sourceType || ''}`.toLowerCase();
 
-    if (
+    if (normalizedSourceType === 'HOUSING_MINISTRY' ||
         searchableText.includes('משהב') ||
         searchableText.includes('משבה') ||
         searchableText.includes('משרד הבינוי') ||
@@ -17,7 +18,7 @@ function getPricelistSourceLabel(pricelistName: unknown, description: unknown) {
         return 'HOUSING_MINISTRY';
     }
 
-    if (searchableText.includes('דקל') || searchableText.includes('dekel')) {
+    if (normalizedSourceType === 'DEKEL' || searchableText.includes('דקל') || searchableText.includes('dekel')) {
         return 'DEKEL';
     }
 
@@ -94,7 +95,7 @@ export function buildPricelistContext(pricelistMatches: AnyRecord[]) {
         .filter(m => m.item_type === 'ITEM')
         .map(m => {
             const pricelist = firstRecord(m.pricelists);
-            const sourceLabel = getPricelistSourceLabel(pricelist.name, pricelist.description);
+            const sourceLabel = getPricelistSourceLabel(pricelist.name, pricelist.description, pricelist.source_type);
             return `[${sourceLabel}] [${pricelist.name || 'Unknown'}] Code: ${m.item_code}, Desc: ${m.description}, Price: ${m.rate}, Unit: ${m.unit}`;
         })
         .join('\n');
