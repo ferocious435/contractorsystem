@@ -1134,8 +1134,13 @@ function verifyPricingAiRouteModularizationBehavior() {
     buildParentItemCodePrefixes,
     buildParentNoteOrFilter,
     filterExternalPricingReferences,
+    getPricelistSourcePriority,
     isExternalPricingReference,
   } = require(path.join(root, "src/app/api/pricing/evaluate-ai/evaluation-pricelists.ts"));
+  const {
+    getContractDocumentPrecedenceRank,
+    sortContractDocumentsByPrecedence,
+  } = require(path.join(root, "src/utils/contract-document-hierarchy.ts"));
   assert(
     extractPricingKeywords("pipe, concrete, asphalt", "fallback title").join("|") === "pipe|concrete|asphalt|fallback|title",
     "AI evaluation keyword extractor must merge Gemini keywords with contradiction fallback text"
@@ -1162,6 +1167,17 @@ function verifyPricingAiRouteModularizationBehavior() {
       { id: "dekel", pricelists: { is_global: true, name: "Dekel" } },
     ]).map((item) => item.id).join("|") === "dekel",
     "AI evaluation pricelist filter must keep only external pricing references"
+  );
+  assert(getPricelistSourcePriority({ pricelists: { name: "Ministry Housing" } }).rank < getPricelistSourcePriority({ pricelists: { name: "Dekel" } }).rank, "Ministry Housing pricelist references must rank before Dekel when contract context allows them");
+  assert(getPricelistSourcePriority({ pricelists: { name: "Dekel" } }).rank < getPricelistSourcePriority({ pricelists: { name: "supplier quote" } }).rank, "supplier quotes must never rank before official pricelist references");
+  assert(getContractDocumentPrecedenceRank({ category: "CONTRACT", title: "agreement" }) < getContractDocumentPrecedenceRank({ category: "BOQ", title: "boq" }), "contract hierarchy helper must send the main contract before BOQ context");
+  assert(
+    sortContractDocumentsByPrecedence([
+      { title: "Dekel", category: "PRICELIST" },
+      { title: "Agreement", category: "CONTRACT" },
+      { title: "BOQ", category: "BOQ" },
+    ]).map((item) => item.title).join("|") === "Agreement|BOQ|Dekel",
+    "contract hierarchy helper must sort contract context before prompt truncation"
   );
   const parentPrefixes = buildParentItemCodePrefixes([{ item_code: "01.02.03.004" }]);
   assert(parentPrefixes.has("01") && parentPrefixes.has("01.02") && parentPrefixes.has("01.02.03"), "AI evaluation parent prefix builder must preserve hierarchy levels");
@@ -1228,6 +1244,9 @@ function verifyPricingAiRouteModularizationBehavior() {
   assert(pricingPrompt.includes("VAT COMPLIANCE"), "AI evaluation pricing prompt must preserve VAT compliance instructions");
   assert(pricingPrompt.includes("EXCLUDING VAT"), "AI evaluation pricing prompt must preserve excluding-VAT instruction");
   assert(pricingPrompt.includes("CUSTOM_ANALYSIS"), "AI evaluation pricing prompt must preserve custom-analysis source option");
+  assert(pricingPrompt.includes("DOCUMENT HIERARCHY AND PRECEDENCE"), "AI evaluation pricing prompt must include document hierarchy navigation");
+  assert(pricingPrompt.includes("Never rank a quote above an official contract or pricelist source"), "AI evaluation pricing prompt must keep quotes below official sources");
+  assert(pricingPrompt.includes("document_precedence_assessment"), "AI evaluation pricing prompt must require a plain-language precedence assessment");
   assert(pricingPrompt.includes("quantity_basis"), "AI evaluation pricing prompt must preserve quantity basis output contract");
   assert(
     buildExpertPrompt({
@@ -1249,12 +1268,14 @@ function verifyPricingAiRouteModularizationBehavior() {
       ancillary_scope: "NONE",
       source_trace: { keywords: ["pipe"] },
       matched_items: { contract: [], pricelist: [], notes: [] },
+      document_precedence_assessment: "contract controls",
     },
     { strategy: true }
   );
   assert(evidenceData.existing === true, "AI evaluation evidence builder must preserve existing evidence data");
   assert(evidenceData.pricing_evaluation.source === "CUSTOM_ANALYSIS", "AI evaluation evidence builder must persist normalized pricing source");
   assert(evidenceData.pricing_evaluation.confidence_score === 0.5, "AI evaluation evidence builder must persist explicit confidence_score for queue automation");
+  assert(evidenceData.pricing_evaluation.document_precedence_assessment === "contract controls", "AI evaluation evidence builder must persist document precedence assessment for audit use");
   assert(evidenceData.expert_strategy.strategy === true, "AI evaluation evidence builder must persist expert strategy when present");
   assertIncludes(
     "src/app/api/pricing/evaluate-ai/evaluation-normalizers.ts",
@@ -4152,6 +4173,16 @@ assertIncludes(
   "src/app/api/pricing/evaluate-ai/evaluation-prompts.ts",
   "\"HOUSING_MINISTRY\"",
   "AI pricing prompt must allow Ministry of Housing as a first-class pricing source"
+);
+assertIncludes(
+  "src/app/api/pricing/evaluate-ai/evaluation-prompts.ts",
+  "Never rank a quote above an official contract or pricelist source",
+  "AI pricing prompt must keep supplier quotes below official sources"
+);
+assertIncludes(
+  "src/app/api/chat/route.ts",
+  "CONTRACT_DOCUMENT_HIERARCHY_GUIDE",
+  "AI chat advisor must use the same document hierarchy guide as scanning and pricing"
 );
 assertIncludes(
   "src/app/api/pricing/save-ledger/ledger-input.ts",

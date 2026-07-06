@@ -36,7 +36,9 @@ export function getPricelistSourcePriority(record: AnyRecord) {
         searchableText.includes('משבה') ||
         searchableText.includes('משרד הבינוי') ||
         searchableText.includes('שיכון') ||
-        searchableText.includes('housing ministry')
+        searchableText.includes('housing ministry') ||
+        searchableText.includes('ministry housing') ||
+        searchableText.includes('ministry of housing')
     ) {
         return { source: 'HOUSING_MINISTRY', rank: 2 };
     }

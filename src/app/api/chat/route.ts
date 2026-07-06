@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { geminiModelText } from "@/lib/gemini";
 import { VAT_RATE } from "@/utils/constants";
+import { CONTRACT_DOCUMENT_HIERARCHY_GUIDE, DOCUMENT_PRECEDENCE_SUMMARY_HE } from "@/utils/contract-document-hierarchy";
 import { syncProjectContractBase } from "@/utils/project-contract-base-server";
 import { syncContractBoqToLedger } from "@/utils/pricing-ledger-contract-sync";
 import {
@@ -157,6 +158,12 @@ export async function POST(req: NextRequest) {
 - השתמש בידע שלך על חוזי בניה ישראליים, כתבי כמויות, ותקנות.
 - דגש קריטי: סעיפי הערה והנחיות (NOTE) הם המחייבים ביותר בחוזה. אם משתמש שואל על היקף עבודה או מה כלול במחיר, בדוק קודם כל את סעיפי ההערה הרלוונטיים לפני שתענה.
 
+DOCUMENT HIERARCHY / PRECEDENCE GUIDE:
+${CONTRACT_DOCUMENT_HIERARCHY_GUIDE}
+
+תקציר ניווט מסמכים:
+${DOCUMENT_PRECEDENCE_SUMMARY_HE.map((line) => `- ${line}`).join('\n')}
+
 === נתוני הפרויקט הנוכחי ===
 שם הפרויקט: ${project?.name || 'לא ידוע'}
 חוזה בסיס ללא מע"מ: ${totalBaseExclVat > 0 ? `₪${totalBaseExclVat.toLocaleString('he-IL')}` : 'לא הוגדר'}
@@ -196,6 +203,7 @@ Contractor-first operating rules:
 - Separate every answer into: what is known from documents, what is AI inference, what is not verified, financial impact, and next action.
 - Never present an AI assumption as a verified fact. If evidence is missing, say exactly what document/photo/site diary/approval is needed.
 - All money must be treated as excluding VAT first. Show VAT at 18% separately only when relevant.
+- When asked what document controls, apply the project contract hierarchy first. Treat protocols, letters, invoices, photos, and quotes as evidence unless a written approval or change order makes them contractual.
 - Verified open findings: ${verifiedContradictions}
 - Findings requiring verification: ${needsVerificationContradictions}
 - Open findings not yet priced: ${pendingPricingItems}

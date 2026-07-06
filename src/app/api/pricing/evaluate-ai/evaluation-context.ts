@@ -1,3 +1,5 @@
+import { sortContractDocumentsByPrecedence } from '@/utils/contract-document-hierarchy';
+
 type AnyRecord = Record<string, unknown>;
 
 function getPricelistSourceLabel(pricelistName: unknown, description: unknown) {
@@ -8,7 +10,9 @@ function getPricelistSourceLabel(pricelistName: unknown, description: unknown) {
         searchableText.includes('משבה') ||
         searchableText.includes('משרד הבינוי') ||
         searchableText.includes('שיכון') ||
-        searchableText.includes('housing ministry')
+        searchableText.includes('housing ministry') ||
+        searchableText.includes('ministry housing') ||
+        searchableText.includes('ministry of housing')
     ) {
         return 'HOUSING_MINISTRY';
     }
@@ -56,7 +60,7 @@ export function buildBoqRawContext(contractDocs: AnyRecord[] | null | undefined)
     const chunks: string[] = [];
     let usedChars = 0;
 
-    for (const doc of contractDocs.slice(0, MAX_BOQ_RAW_CONTEXT_DOCS)) {
+    for (const doc of sortContractDocumentsByPrecedence(contractDocs).slice(0, MAX_BOQ_RAW_CONTEXT_DOCS)) {
         if (!doc?.parsed_json) {
             continue;
         }
@@ -153,6 +157,7 @@ export function buildPricingEvidenceData(
             source_trace: evaluation.source_trace,
             matched_items: evaluation.matched_items,
             source_basis: evaluation.source_basis || [],
+            document_precedence_assessment: evaluation.document_precedence_assessment || null,
             pricing_breakdown: evaluation.pricing_breakdown || [],
             needed_documents: evaluation.needed_documents || [],
             questions: evaluation.questions || [],

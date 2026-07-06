@@ -11,14 +11,14 @@ const SOURCE_STEPS = [
     { id: 'BOQ', label: 'כתב כמויות', icon: FileSpreadsheet, desc: 'מקור חוזי ראשון' },
     { id: 'HOUSING_MINISTRY', label: 'מחירון משרד השיכון', icon: Landmark, desc: 'אם מצוין בחוזה' },
     { id: 'DEKEL', label: 'דקל', icon: FileText, desc: 'מחירון רשמי נוסף' },
-    { id: 'CONTRACTOR', label: 'הצעות מחיר', icon: ReceiptText, desc: 'אסמכתאות ספקים/קבלנים' },
+    { id: 'CONTRACTOR', label: 'הצעות מחיר', icon: ReceiptText, desc: 'רק כשאין מקור רשמי' },
 ];
 
 const SOURCE_LABELS: Record<string, string> = {
     BOQ: 'נמצא סעיף בכתב הכמויות',
     HOUSING_MINISTRY: 'נמצא במחירון משרד הבינוי והשיכון',
     DEKEL: 'נמצא בסיס במחירון דקל / מחירון רשמי',
-    CONTRACTOR: 'מבוסס על הצעת מחיר או מקור קבלני',
+    CONTRACTOR: 'מבוסס על הצעת מחיר רק לאחר שלא נמצא מקור רשמי מתאים',
     CUSTOM_ANALYSIS: 'טיוטת תמחור לעריכה לפי מסמכי הפרויקט',
 };
 

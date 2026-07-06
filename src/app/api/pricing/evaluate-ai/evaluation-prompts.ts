@@ -1,3 +1,5 @@
+import { CONTRACT_DOCUMENT_HIERARCHY_GUIDE } from '@/utils/contract-document-hierarchy';
+
 export interface KeywordPromptInput {
     title: unknown;
     description: unknown;
@@ -54,8 +56,11 @@ export function buildPricingPrompt({ contradiction, boqContext, boqRawContext, p
         RAW BOQ DATA:
         ${boqRawContext}
 
-        2. CONTRACT-ALLOWED PRICE REFERENCES (official pricelists and quotes):
+        2. PROJECT PRICE REFERENCES (official pricelists, plus quote evidence only as last resort):
         ${pricelistContext}
+
+        DOCUMENT HIERARCHY / NAVIGATION RULES:
+        ${CONTRACT_DOCUMENT_HIERARCHY_GUIDE}
 
         STRICT GUIDELINES:
         1. COMMERICIAL DEFENSE: If the work required is a "Material Change" (שינוי יסודי) or "Extra Work" (עבודה נוספת) not covered by the original scope, you MUST justify why contract prices might not apply (e.g., small quantity, urgent timing, specialized equipment).
@@ -65,10 +70,11 @@ export function buildPricingPrompt({ contradiction, boqContext, boqRawContext, p
            - [1 כתב כמויות / BOQ]: Always use first if a direct or defensible related contract item exists.
            - [2 מחירון משרד השיכון]: Use only if it appears in the project documents or the provided pricelist context.
            - [3 דקל]: Use only if it appears in the project documents or the provided pricelist context.
-           - [4 הצעות מחיר]: Use supplier/contractor quotes only when available in the project context.
+           - [4 הצעות מחיר]: Use supplier/contractor quotes only as supporting evidence or a last-resort fallback after BOQ, Ministry Housing, and Dekel do not provide a usable item. Never rank a quote above an official contract or pricelist source unless a specific contract clause explicitly says so.
            - [5 טיוטת תמחור לעריכה]: If no source item exists, build an editable draft from the contradiction and project documents. This is not a market price and must not be presented as final.
         5. ZERO MATCH: If no direct source item exists in the provided context, you should STILL build the best editable draft estimate you can from the contradiction, BOQ/spec context, execution implications, standards, and documented project logic. Use source=CUSTOM_ANALYSIS, lower confidence, and clearly mark what is source-backed versus AI inference. Ask clarifying questions only when a missing physical or measurable parameter can materially change the amount.
         6. EVIDENCE: Separate verified source evidence from AI inference. If anything is missing, describe only what affects the final amount or final approval, not what is needed to recognize the contradiction itself.
+        6A. DOCUMENT PRECEDENCE: When documents conflict, explain which document family controls the pricing direction, whether the documents complement each other, or whether a supervisor/manager decision is required. Do not let an execution protocol, supplier quote, or site document override a contract/BOQ/spec source unless a written approval or change order proves it.
         7. USER FRICTION: Do not ask the user about approvals, meeting protocols, or budget authorizations as clarifying questions unless the amount itself cannot be computed without them. Put those items in needed_documents instead.
         8. QUANTITY LOGIC:
            - Prefer strongest quantity source: explicit quantity > derived quantity > estimated quantity.
@@ -104,6 +110,7 @@ export function buildPricingPrompt({ contradiction, boqContext, boqRawContext, p
             "ai_rationale": "Deep Hebrew justification including contractual basis",
             "suggested_description": "Professional Hebrew description for the invoice/letter",
             "governing_notes": ["Hebrew strings regarding measurements, inclusions, or risks"],
+            "document_precedence_assessment": "Hebrew string explaining which document/source controls or what approval decision is still required",
             "source_basis": ["Hebrew strings naming the exact BOQ/pricelist/quote/inference basis used for the price"],
             "pricing_breakdown": [
                 {

@@ -175,6 +175,7 @@ export function normalizePricingEvaluation(
     evaluation.suggested_quantity = normalizePositiveQuantity(evaluation.suggested_quantity, 1);
     evaluation.needed_documents = normalizeNonEmptyStrings(evaluation.needed_documents, 4);
     evaluation.source_basis = normalizeNonEmptyStrings(evaluation.source_basis, 6);
+    evaluation.document_precedence_assessment = String(evaluation.document_precedence_assessment || '').trim();
     evaluation.questions = filterPricingQuestions(evaluation.questions, 3);
     evaluation.ancillary_notes = normalizeNonEmptyStrings(evaluation.ancillary_notes, 4);
     evaluation.pricing_breakdown = normalizePricingBreakdown(evaluation.pricing_breakdown, evaluation);

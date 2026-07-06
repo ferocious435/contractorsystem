@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireOwnedProject } from "@/app/api/_utils/auth";
 import { archiveContradictionRows, type ContradictionArchiveRow } from "@/utils/contradiction-archive";
+import { CONTRACT_DOCUMENT_HIERARCHY_GUIDE, sortContractDocumentsByPrecedence } from "@/utils/contract-document-hierarchy";
 import { downloadDocumentBuffer, isPdfDocument as isStoredPdfDocument } from "@/utils/document-storage";
 import { geminiModel, withRetry } from "@/lib/gemini";
 import { createClient } from "@/utils/supabase/server";
@@ -73,6 +74,8 @@ type ScanFinding = Record<string, unknown> & {
     next_check?: unknown;
     missing_evidence?: unknown;
     expert_strategy?: unknown;
+    document_hierarchy_rule?: unknown;
+    document_precedence_assessment?: unknown;
 };
 
 type ScanDocumentWithRole = ScanDocument & { __scanRole: ScanRole };
@@ -443,6 +446,9 @@ The system exists for the contractor: protect payment, margin, schedule, and evi
 Compare the contractual base documents against the current work/site document.
 Return only a valid JSON array. All user-facing text must be short, practical Hebrew.
 
+DOCUMENT HIERARCHY / PRECEDENCE GUIDE:
+${CONTRACT_DOCUMENT_HIERARCHY_GUIDE}
+
 CONTRACTUAL BASE:
 ${contractContext}
 
@@ -464,6 +470,7 @@ IMPORTANT SCAN RULES:
 8. Mention financial impact only as a practical direction unless a price appears in the documents.
 9. Keep outputs businesslike and useful for a contractor, not technical noise.
 10. The contract context may be truncated: ${contractContextBundle.truncated ? "yes" : "no"}. If this limits certainty, say that verification is required.
+11. For every finding, state how document hierarchy was applied: contract source controls, documents complement each other, stricter requirement controls pending manager decision, manager/supervisor decision is required, or the work document is only supporting evidence.
 
 Return JSON array with this exact object shape:
 [
@@ -484,6 +491,8 @@ Return JSON array with this exact object shape:
     "evidence_status": "VERIFIED / REQUIRES_VERIFICATION",
     "missing_evidence": ["מסמכים/בדיקות שחסרים לאימות"],
     "comparison_type": "contract_vs_execution / boq_vs_execution / specs_vs_execution / zero_match / missing_data / site_event",
+    "document_hierarchy_rule": "contract_source_controls / documents_complement_each_other / stricter_requirement_controls / manager_decision_required / work_document_is_supporting_evidence",
+    "document_precedence_assessment": "הסבר קצר בעברית איזה מסמך גובר, האם המסמכים משלימים זה את זה, או איזו הכרעת מנהל/מפקח נדרשת",
     "risk_reason": "למה זה חשוב לקבלן",
     "confidence": 0.0,
     "next_check": "בדיקה מעשית הבאה",
@@ -704,7 +713,7 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
     const contractDocIds = contractDocs.map((doc) => String(doc.id)).sort();
 
     const contractContextBundle = buildBoundedDocumentContext(
-        contractDocs.filter(d => d.extracted_text),
+        sortContractDocumentsByPrecedence(contractDocs.filter(d => d.extracted_text)),
         MAX_CONTRACT_CONTEXT_CHARS,
         MAX_CHARS_PER_CONTRACT_DOC
     );
@@ -862,6 +871,8 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                         contract_url: null,
                         work_url: null,
                         comparison_type: p.comparison_type || null,
+                        document_hierarchy_rule: p.document_hierarchy_rule || null,
+                        document_precedence_assessment: cleanAiText(p.document_precedence_assessment) || null,
                         risk_reason: p.risk_reason || null,
                         confidence: normalizeConfidence(p.confidence),
                         next_check: p.next_check || null,

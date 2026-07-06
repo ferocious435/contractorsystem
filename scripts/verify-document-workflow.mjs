@@ -30,6 +30,7 @@ const scanRoute = read('src/app/api/scan/route.ts');
 const radarApi = read('src/components/features/contradiction-radar/api/contradictionRadarApi.ts');
 const documentDeleteRoute = read('src/app/api/documents/delete/route.ts');
 const contradictionArchiveUtil = read('src/utils/contradiction-archive.ts');
+const contractDocumentHierarchy = read('src/utils/contract-document-hierarchy.ts');
 
 expect('AI processing uses configured key guard', processRoute.includes('requireGeminiApiKey()'));
 expect('AI processing uses retry wrapper', processRoute.includes('withRetry(() => model.generateContent'));
@@ -111,6 +112,10 @@ expect('Scan cache is invalidated when completed cache has no active findings', 
 expect('Rescan archives findings through shared evidence-preserving helper', scanRoute.includes('archiveContradictionRows') && scanRoute.includes('current_scan_signature: scanSignature'));
 expect('Scan route exposes durable progress status', scanRoute.includes('export async function GET') && scanRoute.includes('loadProjectScanState') && scanRoute.includes('requireOwnedProject(supabase, projectId)'));
 expect('Scan route persists in-progress checkpoints', scanRoute.includes('status: "IN_PROGRESS"') && scanRoute.includes('processed_work_docs') && scanRoute.includes('total_work_docs'));
+expect('Scan prompt includes contract document hierarchy guide', scanRoute.includes('CONTRACT_DOCUMENT_HIERARCHY_GUIDE') && scanRoute.includes('DOCUMENT HIERARCHY / PRECEDENCE GUIDE'));
+expect('Scan route sorts contract documents before truncation', scanRoute.includes('sortContractDocumentsByPrecedence(contractDocs.filter'));
+expect('Scan route stores document precedence assessment internally', scanRoute.includes('document_precedence_assessment') && scanRoute.includes('document_hierarchy_rule'));
+expect('Contract hierarchy guide keeps quotes below official sources', contractDocumentHierarchy.includes('Supplier or contractor quotes are supporting evidence') && contractDocumentHierarchy.includes('must not be ranked above BOQ'));
 expect('Scan route preserves zero-finding completed cache', scanRoute.includes('(scanState.findings_count || 0) === 0') && scanRoute.includes('הושלם ללא ממצאים'));
 expect('Radar API can fetch persisted scan progress', radarApi.includes('fetchRadarScanStatus') && radarApi.includes('/api/scan?') && radarApi.includes('RadarScanProgress'));
 expect('Radar UI polls persisted scan progress', radarState.includes('refreshScanProgress') && radarState.includes('visibilitychange') && radarState.includes('fetchRadarScanStatus'));
