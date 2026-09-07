@@ -74,6 +74,9 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('generateScanChunkFindings'));
   assert.ok(route.includes('numPredict: 320'));
   assert.ok(route.includes('Return at most one decisive finding'));
+  assert.ok(route.includes('const WORK_CHUNK_CHARS = 6_000'));
+  assert.ok(route.includes('const MAX_SELECTED_CONTRACT_CHARS = 4_000'));
+  assert.ok(route.includes('const MAX_RELATED_WORK_CHARS = 2_400'));
   assert.ok(route.includes('withScanHeartbeat'));
   assert.ok(route.includes('const SCAN_HEARTBEAT_MS = 15_000'));
   assert.equal(route.includes('const projectWorkSignature ='), false);

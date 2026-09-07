@@ -29,17 +29,21 @@ import { createHash } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const maxDuration = 300;
-const CONTRACT_CHUNK_CHARS = 9_000;
-const WORK_CHUNK_CHARS = 9_000;
-const CHUNK_OVERLAP_CHARS = 500;
-const MAX_SELECTED_CONTRACT_CHARS = 14_000;
-const MAX_SELECTED_CONTRACT_CHUNKS = 3;
-const MAX_RELATED_WORK_CHARS = 9_000;
-const MAX_RELATED_WORK_CHUNKS = 10;
+const CONTRACT_CHUNK_CHARS = 4_000;
+const WORK_CHUNK_CHARS = 6_000;
+const CHUNK_OVERLAP_CHARS = 300;
+const MAX_SELECTED_CONTRACT_CHARS = 4_000;
+const MAX_SELECTED_CONTRACT_CHUNKS = 1;
+const MAX_RELATED_WORK_CHARS = 2_400;
+const MAX_RELATED_WORK_CHUNKS = 4;
 const SCAN_ENGINE_VERSION = "project-timeline-memory-v3";
 const MIN_USEFUL_TEXT_LENGTH = 1000;
 const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
+const SCAN_CONTRACT_HIERARCHY_GUIDE = CONTRACT_DOCUMENT_HIERARCHY_GUIDE
+    .split("\n")
+    .filter((line) => /First follow|Project contract documents|Shelf contracts|Execution documents|If contract documents conflict|For variations/.test(line))
+    .join("\n");
 const ACTIVE_SCAN_STALE_MS = 45_000;
 const SCAN_HEARTBEAT_MS = 15_000;
 const SCAN_STATE_COLUMNS = `
@@ -560,7 +564,7 @@ Compare the contractual base documents against the current work/site document.
 Return only a valid JSON array. All user-facing text must be short, practical Hebrew.
 
 DOCUMENT HIERARCHY / PRECEDENCE GUIDE:
-${CONTRACT_DOCUMENT_HIERARCHY_GUIDE}
+${SCAN_CONTRACT_HIERARCHY_GUIDE}
 
 CONTRACTUAL BASE:
 ${contractContext}
