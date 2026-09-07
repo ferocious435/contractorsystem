@@ -11,6 +11,28 @@ type PreviewResult = {
     provider?: string;
     model?: string;
     projectId?: string;
+    findingId?: string;
+    correctionApplied?: boolean;
+    reviewRecommendation?: {
+        title: string;
+        description: string;
+        category: string;
+        severity: string;
+        strategyAdvice: string;
+        verdict: string;
+        comparisonType: string;
+        missingEvidence: string[];
+    } | null;
+    coverage?: {
+        contract?: { sourceChars?: number; chunks?: number; complete?: boolean };
+        work?: { sourceChars?: number; chunks?: number; complete?: boolean };
+        project?: {
+            documents?: number;
+            workChunks?: number;
+            relatedDocuments?: Array<{ id: string; title: string }>;
+            complete?: boolean;
+        };
+    };
     documents?: {
         contract?: { id?: string; title?: string | null };
         work?: { id?: string; title?: string | null };
@@ -31,12 +53,28 @@ type PreviewResult = {
     error?: string;
 };
 
+function chunkLabel(value?: number) {
+    const count = value || 0;
+    const mod100 = count % 100;
+    const mod10 = count % 10;
+    const word = mod100 >= 11 && mod100 <= 14
+        ? 'частей'
+        : mod10 === 1
+            ? 'часть'
+            : mod10 >= 2 && mod10 <= 4
+                ? 'части'
+                : 'частей';
+    return `${count} ${word}`;
+}
+
 export default function LocalAiCheckClient({ findingRef }: { findingRef: string }) {
     const [result, setResult] = useState<PreviewResult | null>(null);
     const [error, setError] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
     const [extractionStatus, setExtractionStatus] = useState('');
     const [isExtracting, setIsExtracting] = useState(false);
+    const [reviewStatus, setReviewStatus] = useState('');
+    const [isApplyingReview, setIsApplyingReview] = useState(false);
 
     useEffect(() => {
         const controller = new AbortController();
@@ -86,6 +124,36 @@ export default function LocalAiCheckClient({ findingRef }: { findingRef: string 
         }
     }
 
+    async function applyReviewedCorrection() {
+        if (!result?.projectId || !result.findingId || !result.reviewRecommendation) return;
+
+        setIsApplyingReview(true);
+        setReviewStatus('Сохраняю уточнённую карточку…');
+
+        try {
+            const response = await fetch('/api/contradictions', {
+                method: 'PATCH',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    projectId: result.projectId,
+                    id: result.findingId,
+                    review: result.reviewRecommendation,
+                }),
+            });
+            const body = await response.json() as { success?: boolean; error?: string };
+            if (!response.ok || !body.success) throw new Error(body.error || `HTTP ${response.status}`);
+
+            setReviewStatus('Карточка исправлена и сохранена.');
+            setResult(null);
+            setError('');
+            setRefreshKey((value) => value + 1);
+        } catch (caught: unknown) {
+            setReviewStatus(caught instanceof Error ? `Ошибка: ${caught.message}` : 'Не удалось исправить карточку');
+        } finally {
+            setIsApplyingReview(false);
+        }
+    }
+
     return (
         <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
             <div className="mx-auto max-w-2xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
@@ -122,7 +190,25 @@ export default function LocalAiCheckClient({ findingRef }: { findingRef: string 
                             <dd>{result.sourceDiagnostics?.contractReferenceExcerpt || result.sourceDiagnostics?.contractTermMatches?.length ? 'найден в PDF' : 'не найден'}</dd>
                             <dt className="text-slate-400">Цитата выполнения</dt>
                             <dd>{result.verification?.workQuoteMatched ? 'найдена в файле' : 'не найдена'}</dd>
+                            <dt className="text-slate-400">Охват договора</dt>
+                            <dd>{result.coverage?.contract?.complete ? `весь текст · ${chunkLabel(result.coverage.contract.chunks)}` : 'неполный'}</dd>
+                            <dt className="text-slate-400">Охват выполнения</dt>
+                            <dd>{result.coverage?.work?.complete ? `весь текст · ${chunkLabel(result.coverage.work.chunks)}` : 'неполный'}</dd>
+                            <dt className="text-slate-400">Контекст всего проекта</dt>
+                            <dd>{result.coverage?.project?.complete
+                                ? `${result.coverage.project.relatedDocuments?.length || 0} связанных документов из ${result.coverage.project.documents || 0} прочитанных`
+                                : 'не проверен'}</dd>
                         </dl>
+                        {Boolean(result.coverage?.project?.relatedDocuments?.length) && (
+                            <details className="rounded-lg border border-slate-800 bg-slate-950 p-4 text-sm">
+                                <summary className="cursor-pointer text-slate-300">Какие связанные документы учтены</summary>
+                                <ul className="mt-3 space-y-2 text-slate-400">
+                                    {result.coverage?.project?.relatedDocuments?.map((document) => (
+                                        <li key={document.id} dir="auto">{document.title}</li>
+                                    ))}
+                                </ul>
+                            </details>
+                        )}
                         {result.localResult?.explanation && (
                             <p dir="auto" className="rounded-lg bg-slate-950 p-4 text-right text-slate-200">
                                 {result.localResult.explanation}
@@ -169,6 +255,22 @@ export default function LocalAiCheckClient({ findingRef }: { findingRef: string 
                             </div>
                         )}
                         {extractionStatus && <p className="text-sm text-slate-300">{extractionStatus}</p>}
+                        {result.correctionApplied && (
+                            <p className="rounded-lg border border-emerald-800 bg-emerald-950/40 p-3 text-sm text-emerald-200">
+                                Карточка уточнена по всей истории: основные материалы согласованы. Если подрядчику всё ещё нужны два поставщика, нужно передать разбивку по зонам и получить письменное решение.
+                            </p>
+                        )}
+                        {result.reviewRecommendation && (
+                            <button
+                                type="button"
+                                onClick={applyReviewedCorrection}
+                                disabled={isApplyingReview}
+                                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-60"
+                            >
+                                {isApplyingReview ? 'Сохраняю…' : 'Исправить карточку C-CE6070'}
+                            </button>
+                        )}
+                        {reviewStatus && <p className="text-sm text-slate-300">{reviewStatus}</p>}
                     </div>
                 )}
 

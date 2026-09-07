@@ -4441,7 +4441,7 @@ assertIncludes(
 );
 assertIncludes(
   "src/components/features/contradiction-radar/hooks/useContradictionRadarState.ts",
-  "filteredFindings = filterRadarFindings(contradictions, activeFilter)",
+  "const filteredFindings = filterRadarFindings(findingsForStatus, activeFilter);",
   "Contradiction Radar derived state must expose the currently filtered finding list"
 );
 assertIncludes(
@@ -4546,8 +4546,13 @@ assertIncludes(
 );
 assertIncludes(
   "src/app/api/contradictions/route.ts",
-  ".update({ status })",
+  "if (status) updatePayload.status = status;",
   "Contradiction API must update status server-side after access checks"
+);
+assertIncludes(
+  "src/app/api/contradictions/route.ts",
+  ".update(updatePayload)",
+  "Contradiction API must persist only the validated mutation payload"
 );
 assertIncludes(
   "src/components/features/ContradictionRadarFeedItem.tsx",

@@ -117,8 +117,13 @@ test("known-finding preview route is read-only and uses the selected AI provider
   assert.ok(route.includes("Pending approval alone is not a contract contradiction"));
   assert.ok(route.includes("sourcePairVerified && modelResult.contradiction_confirmed === true"));
   assert.ok(route.includes("confidence: sourcePairVerified ? modelConfidence : 0"));
-  assert.ok(route.includes("numPredict: 256"));
-  assert.ok(route.includes("numCtx: 4_096"));
+  assert.ok(route.includes("contractChunks.at(-1)?.end === contractText.length"));
+  assert.ok(route.includes("workChunks.at(-1)?.end === workText.length"));
+  assert.ok(route.includes("selectRelevantProjectChunks"));
+  assert.ok(route.includes("formatRelatedWorkTimeline"));
+  assert.ok(route.includes("RELATED PROJECT TIMELINE"));
+  assert.ok(route.includes("numPredict: 384"));
+  assert.ok(route.includes("numCtx: 8_192"));
   assert.equal(/\.insert\(|\.update\(|\.delete\(|\.upsert\(/.test(route), false);
 });
 
@@ -139,4 +144,6 @@ test("authenticated diagnostic page runs the read-only preview", () => {
   assert.ok(page.includes("readOnly"));
   assert.ok(page.includes("/api/documents/extract-text"));
   assert.ok(page.includes("force: true"));
+  assert.ok(page.includes("applyReviewedCorrection"));
+  assert.ok(page.includes("review: result.reviewRecommendation"));
 });

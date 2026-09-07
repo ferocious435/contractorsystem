@@ -8,15 +8,29 @@ import {
     sortContractDocumentsByPrecedence,
 } from "@/utils/contract-document-hierarchy";
 import { downloadDocumentBuffer, isPdfDocument as isStoredPdfDocument } from "@/utils/document-storage";
+import {
+    buildDocumentScanChunks,
+    formatContractChunkContext,
+    formatRelatedWorkTimeline,
+    selectRelevantContractChunks,
+    selectRelevantProjectChunks,
+    type DocumentScanChunk,
+} from "@/utils/document-scan-chunks";
+import { quoteExistsInSource } from "@/utils/local-ai-preview";
 import { generateComparisonText, getComparisonAiIdentity } from "@/lib/comparison-ai";
 import { createClient } from "@/utils/supabase/server";
 import { createHash } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const maxDuration = 300;
-const MAX_CONTRACT_CONTEXT_CHARS = 180_000;
-const MAX_WORK_CONTEXT_CHARS = 80_000;
-const MAX_CHARS_PER_CONTRACT_DOC = 35_000;
+const CONTRACT_CHUNK_CHARS = 9_000;
+const WORK_CHUNK_CHARS = 9_000;
+const CHUNK_OVERLAP_CHARS = 500;
+const MAX_SELECTED_CONTRACT_CHARS = 14_000;
+const MAX_SELECTED_CONTRACT_CHUNKS = 3;
+const MAX_RELATED_WORK_CHARS = 9_000;
+const MAX_RELATED_WORK_CHUNKS = 10;
+const SCAN_ENGINE_VERSION = "project-timeline-v2";
 const MIN_USEFUL_TEXT_LENGTH = 1000;
 const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
@@ -73,6 +87,7 @@ type ScanFinding = Record<string, unknown> & {
     contract_quote?: unknown;
     work_quote?: unknown;
     contract_document_id?: unknown;
+    work_document_id?: unknown;
     comparison_type?: unknown;
     risk_reason?: unknown;
     confidence?: unknown;
@@ -180,8 +195,14 @@ function buildContractSignature(contractDocs: ScanDocument[]) {
     return sha256(contractDocs.map(getDocumentSignature).sort().join("|"));
 }
 
-function buildScanSignature(projectId: string, contractSignature: string, workSignature: string, aiIdentity: string) {
-    return sha256(`${projectId}:${contractSignature}:${workSignature}:${aiIdentity}`);
+function buildScanSignature(
+    projectId: string,
+    contractSignature: string,
+    projectWorkSignature: string,
+    workSignature: string,
+    aiIdentity: string,
+) {
+    return sha256(`${SCAN_ENGINE_VERSION}:${projectId}:${contractSignature}:${projectWorkSignature}:${workSignature}:${aiIdentity}`);
 }
 
 function nowIso() {
@@ -306,36 +327,6 @@ function getDocumentRole(doc: ScanDocument): ScanRole {
     return "UNKNOWN";
 }
 
-function buildBoundedDocumentContext(docs: ScanDocument[], maxTotalChars: number, maxPerDoc: number) {
-    let usedChars = 0;
-    const includedDocs: ScanDocument[] = [];
-    const sections: string[] = [];
-
-    for (const doc of docs) {
-        const rawText = String(doc.extracted_text || "").trim();
-        if (!rawText) continue;
-        const remaining = maxTotalChars - usedChars;
-        if (remaining <= 0) break;
-
-        const sliceLength = Math.min(rawText.length, maxPerDoc, remaining);
-        const textSlice = rawText.slice(0, sliceLength);
-        usedChars += textSlice.length;
-        includedDocs.push(doc);
-        sections.push(`--- Document ID: ${doc.id}
-Title: ${doc.title}
-Category: ${doc.category}
-Chars included: ${textSlice.length}/${rawText.length} ---
-${textSlice}`);
-    }
-
-    return {
-        context: sections.join("\n\n"),
-        includedDocs,
-        usedChars,
-        truncated: docs.some(doc => String(doc.extracted_text || "").length > maxPerDoc) || usedChars >= maxTotalChars
-    };
-}
-
 async function extractPdfTextForScan<T extends ScanDocument>(supabase: SupabaseClient, doc: T): Promise<T> {
     if (!isPdfDocument(doc)) {
         return doc;
@@ -419,12 +410,11 @@ function normalizeConfidence(value: unknown) {
     return 1;
 }
 
-function normalizeEvidenceStatus(item: ScanFinding) {
+function normalizeEvidenceStatus(item: ScanFinding, contractQuoteMatched: boolean, workQuoteMatched: boolean) {
     const category = String(item.category || "").toLowerCase();
     const comparisonType = String(item.comparison_type || "").toLowerCase();
-    const hasQuotes = Boolean(item.contract_quote && item.work_quote);
 
-    if (!hasQuotes) {
+    if (!contractQuoteMatched || !workQuoteMatched) {
         return "REQUIRES_VERIFICATION";
     }
 
@@ -435,6 +425,24 @@ function normalizeEvidenceStatus(item: ScanFinding) {
     return "VERIFIED";
 }
 
+function dedupeScanFindings(findings: ScanFinding[]) {
+    const unique = new Map<string, ScanFinding>();
+
+    for (const finding of findings) {
+        const key = [
+            finding.category,
+            finding.contract_document_id,
+            finding.contract_quote,
+            finding.work_quote,
+            finding.title,
+        ].map((value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()).join('|');
+
+        if (!unique.has(key)) unique.set(key, finding);
+    }
+
+    return [...unique.values()];
+}
+
 function mapSeverity(category: string) {
     if (/סתירה|contradiction/i.test(category)) return "HIGH";
     if (/שינוי|change|חריג|extra/i.test(category)) return "MEDIUM";
@@ -443,11 +451,22 @@ function mapSeverity(category: string) {
 
 function buildScanPrompt(params: {
     contractContext: string;
+    relatedWorkContext: string;
     workDoc: ScanDocument;
-    workText: string;
-    contractContextBundle: ReturnType<typeof buildBoundedDocumentContext>;
+    workChunk: DocumentScanChunk;
+    contractChunksIndexed: number;
+    contractSourceChars: number;
+    projectWorkChunksIndexed: number;
 }) {
-    const { contractContext, workDoc, workText, contractContextBundle } = params;
+    const {
+        contractContext,
+        relatedWorkContext,
+        workDoc,
+        workChunk,
+        contractChunksIndexed,
+        contractSourceChars,
+        projectWorkChunksIndexed,
+    } = params;
 
     return `
 You are ContractorSystem's construction-claims analyst for an Israeli contractor.
@@ -466,8 +485,11 @@ WORK / SITE DOCUMENT:
 --- Document ID: ${workDoc.id}
 Title: ${workDoc.title}
 Category: ${workDoc.category}
-Chars included: ${workText.length}/${String(workDoc.extracted_text || "").length} ---
-${workText}
+Chunk: ${workChunk.index + 1}/${workChunk.total}; source chars ${workChunk.start}-${workChunk.end} ---
+${workChunk.text}
+
+RELATED WORK / SITE DOCUMENTS FROM THE SAME PROJECT:
+${relatedWorkContext || "No related work-document passage was found."}
 
 IMPORTANT SCAN RULES:
 1. Classify every finding as one of: סתירה, שינוי/חריג, אירוע שטח, חוסר נתונים, אין התאמה ישירה.
@@ -476,11 +498,14 @@ IMPORTANT SCAN RULES:
 4. Evidence status can be VERIFIED only when both contract_quote and work_quote are real quotes from the provided context.
 5. If one quote is missing, use REQUIRES_VERIFICATION and list exactly what is missing.
 6. Never invent a clause, document, page, price, or confident conclusion without evidence.
-7. If no direct contract/BOQ match exists, create a Zero-Match finding: explain that no direct match was found, why it matters to the contractor, what to check next, and confidence.
+7. If this chunk has no concrete finding, return an empty array. Create a Zero-Match finding only when the work text describes a specific obligation, cost, or instruction and no contract match was found.
 8. Mention financial impact only as a practical direction unless a price appears in the documents.
 9. Keep outputs businesslike and useful for a contractor, not technical noise.
-10. The contract context may be truncated: ${contractContextBundle.truncated ? "yes" : "no"}. If this limits certainty, say that verification is required.
+10. Full-text coverage is active. This work document is processed in ${workChunk.total} chunk(s). All ${contractChunksIndexed} contract chunks (${contractSourceChars} source characters) were indexed; the most relevant chunks are shown above.
 11. For every finding, state how document hierarchy was applied: contract source controls, documents complement each other, stricter requirement controls pending manager decision, manager/supervisor decision is required, or the work document is only supporting evidence.
+12. Treat related work documents as a project timeline. A later dated document can resolve, replace, or narrow an earlier issue. Do not present an old issue as current when a later document says it was approved or completed.
+13. If a later related document resolves the issue in the current work chunk, return an empty array. If it changes the issue, describe only the latest documented action and do not invent fault.
+14. The complete readable work corpus was indexed in ${projectWorkChunksIndexed} chunks. The related passages above were selected from that full corpus.
 
 Return JSON array with this exact object shape:
 [
@@ -588,46 +613,8 @@ export async function POST(req: NextRequest) {
         }
 
         if (force) {
-            const { data: rowsToArchive, error: archiveSelectError } = await supabase
-                .from("contradictions")
-                .select("id, evidence_data")
-                .eq("project_id", projectId)
-                .neq("status", "ARCHIVED");
-
-            if (archiveSelectError) {
-                throw archiveSelectError;
-            }
-
-            await archiveContradictionRows(
-                supabase,
-                (rowsToArchive || []) as ContradictionArchiveRow[],
-                {
-                    archive_reason: "Project was rescanned. Previous findings are kept only as historical evidence.",
-                    archived_at: new Date().toISOString(),
-                }
-            );
             await supabase.from("document_scan_state").delete().eq("project_id", projectId);
         } else if (workDocId) {
-            const { data: rowsToArchive, error: archiveSelectError } = await supabase
-                .from("contradictions")
-                .select("id, evidence_data")
-                .eq("project_id", projectId)
-                .eq("source_execution_doc_id", workDocId)
-                .neq("status", "ARCHIVED");
-
-            if (archiveSelectError) {
-                throw archiveSelectError;
-            }
-
-            await archiveContradictionRows(
-                supabase,
-                (rowsToArchive || []) as ContradictionArchiveRow[],
-                {
-                    archive_reason: "Work document was rescanned. Previous findings are kept only as historical evidence.",
-                    archived_at: new Date().toISOString(),
-                    rescanned_work_doc_id: workDocId,
-                }
-            );
             await supabase.from("document_scan_state").delete().eq("project_id", projectId).eq("work_doc_id", workDocId);
         }
 
@@ -650,7 +637,8 @@ export async function POST(req: NextRequest) {
 
         let documentsWithRoles: ScanDocumentWithRole[] = validatedDocuments.map((doc): ScanDocumentWithRole => ({ ...doc, __scanRole: getDocumentRole(doc) }));
         let contractDocs = documentsWithRoles.filter((d) => d.__scanRole === "CONTRACT_BASE");
-        let workDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
+        let allWorkDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
+        let workDocs = allWorkDocs;
 
         if (workDocId) {
             workDocs = workDocs.filter((d) => d.id === workDocId);
@@ -682,7 +670,8 @@ export async function POST(req: NextRequest) {
 
             documentsWithRoles = documentsWithRoles.map((doc) => preparedById.get(doc.id) || doc);
             contractDocs = documentsWithRoles.filter((d) => d.__scanRole === "CONTRACT_BASE");
-            workDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
+            allWorkDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
+            workDocs = allWorkDocs;
 
             if (workDocId) {
                 workDocs = workDocs.filter((d) => d.id === workDocId);
@@ -707,7 +696,15 @@ export async function POST(req: NextRequest) {
             }, { status: 400 });
         }
 
-        const foundContradictions = await analyzeDirectly(supabase, projectId, contractDocs, workDocs, force);
+        const readableProjectWorkDocs = allWorkDocs.filter((doc) => hasUsefulText(doc));
+        const foundContradictions = await analyzeDirectly(
+            supabase,
+            projectId,
+            contractDocs,
+            workDocs,
+            readableProjectWorkDocs,
+            force,
+        );
         const analysisFailures = foundContradictions.__analysisFailures || [];
         const warnings = [...textPreparationFailures, ...analysisFailures];
         const scanStatus = await loadProjectScanState(supabase, projectId, workDocId);
@@ -730,22 +727,42 @@ export async function POST(req: NextRequest) {
     }
 }
 
-async function analyzeDirectly(supabase: SupabaseClient, projectId: string, contractDocs: ScanDocument[], workDocs: ScanDocument[], force = false): Promise<ScanResults> {
+async function analyzeDirectly(
+    supabase: SupabaseClient,
+    projectId: string,
+    contractDocs: ScanDocument[],
+    workDocs: ScanDocument[],
+    projectWorkDocs: ScanDocument[],
+    force = false,
+): Promise<ScanResults> {
     const results: ScanResults = [] as ScanResults;
     const analysisFailures: string[] = [];
     const aiIdentity = getComparisonAiIdentity();
     const aiSignature = `${aiIdentity.provider}:${aiIdentity.model}`;
     const contractSignature = buildContractSignature(contractDocs);
+    const projectWorkSignature = sha256(projectWorkDocs.map(getDocumentSignature).sort().join("|"));
     const contractDocIds = contractDocs.map((doc) => String(doc.id)).sort();
-
-    const contractContextBundle = buildBoundedDocumentContext(
-        sortContractDocumentsByPrecedence(contractDocs.filter(d => d.extracted_text)),
-        MAX_CONTRACT_CONTEXT_CHARS,
-        MAX_CHARS_PER_CONTRACT_DOC
+    const orderedContractDocs = sortContractDocumentsByPrecedence(contractDocs.filter(d => d.extracted_text));
+    const contractChunks = buildDocumentScanChunks(
+        orderedContractDocs,
+        CONTRACT_CHUNK_CHARS,
+        CHUNK_OVERLAP_CHARS,
     );
-    const contractContext = contractContextBundle.context;
+    const contractSourceChars = orderedContractDocs.reduce(
+        (sum, doc) => sum + String(doc.extracted_text || '').length,
+        0,
+    );
+    const projectWorkChunks = buildDocumentScanChunks(
+        projectWorkDocs.filter((doc) => doc.extracted_text),
+        WORK_CHUNK_CHARS,
+        CHUNK_OVERLAP_CHARS,
+    );
+    const projectWorkSourceChars = projectWorkDocs.reduce(
+        (sum, doc) => sum + String(doc.extracted_text || "").length,
+        0,
+    );
 
-    if (!contractContext.trim()) {
+    if (contractChunks.length === 0) {
         throw new Error("Contract documents exist, but no extracted text is available for comparison.");
     }
 
@@ -753,9 +770,20 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
     let processedWorkDocs = 0;
 
     for (const workDoc of scannableWorkDocs) {
-        const workText = String(workDoc.extracted_text || "").slice(0, MAX_WORK_CONTEXT_CHARS);
+        const fullWorkText = String(workDoc.extracted_text || "");
+        const workChunks = buildDocumentScanChunks(
+            [workDoc],
+            WORK_CHUNK_CHARS,
+            CHUNK_OVERLAP_CHARS,
+        );
         const workSignature = getDocumentSignature(workDoc);
-        const scanSignature = buildScanSignature(projectId, contractSignature, workSignature, aiSignature);
+        const scanSignature = buildScanSignature(
+            projectId,
+            contractSignature,
+            projectWorkSignature,
+            workSignature,
+            aiSignature,
+        );
         const stateBase = {
             project_id: projectId,
             contract_doc_ids: contractDocIds,
@@ -767,6 +795,8 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
         };
 
         try {
+            let oldFindingsToArchive: ContradictionArchiveRow[] = [];
+
             if (!force) {
                 const { data: scanStateRow } = await supabase
                     .from("document_scan_state")
@@ -822,7 +852,7 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                         .eq("scan_signature", scanSignature);
                 }
 
-                const { data: oldFindings } = await supabase
+                const { data: oldFindings, error: oldFindingsError } = await supabase
                     .from("contradictions")
                     .select("id, evidence_data")
                     .eq("project_id", projectId)
@@ -830,17 +860,18 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                     .neq("status", "ARCHIVED")
                     .or(`scan_signature.is.null,scan_signature.neq.${scanSignature}`);
 
-                if (oldFindings?.length) {
-                    await archiveContradictionRows(
-                        supabase,
-                        oldFindings as ContradictionArchiveRow[],
-                        {
-                            archive_reason: "Finding was created before the current scan cache signature or documents changed.",
-                            archived_at: new Date().toISOString(),
-                            current_scan_signature: scanSignature,
-                        }
-                    );
-                }
+                if (oldFindingsError) throw oldFindingsError;
+                oldFindingsToArchive = (oldFindings || []) as ContradictionArchiveRow[];
+            } else {
+                const { data: oldFindings, error: oldFindingsError } = await supabase
+                    .from("contradictions")
+                    .select("id, evidence_data")
+                    .eq("project_id", projectId)
+                    .eq("source_execution_doc_id", workDoc.id)
+                    .neq("status", "ARCHIVED");
+
+                if (oldFindingsError) throw oldFindingsError;
+                oldFindingsToArchive = (oldFindings || []) as ContradictionArchiveRow[];
             }
 
             await saveScanState(supabase, {
@@ -855,22 +886,80 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                 completed_at: null,
             });
 
-            const prompt = buildScanPrompt({ contractContext, workDoc, workText, contractContextBundle });
-            const responseText = await generateComparisonText(prompt);
-            const points = parseGeminiJsonArray(responseText);
+            const chunkFindings: ScanFinding[] = [];
 
-            for (const p of points) {
+            for (const workChunk of workChunks) {
+                const selectedContractChunks = selectRelevantContractChunks(
+                    contractChunks,
+                    workChunk.text,
+                    MAX_SELECTED_CONTRACT_CHARS,
+                    MAX_SELECTED_CONTRACT_CHUNKS,
+                );
+                const contractContext = formatContractChunkContext(selectedContractChunks);
+                const relatedWorkChunks = selectRelevantProjectChunks(
+                    projectWorkChunks,
+                    workChunk.text,
+                    MAX_RELATED_WORK_CHARS,
+                    MAX_RELATED_WORK_CHUNKS,
+                    workDoc.id,
+                );
+                const relatedWorkContext = formatRelatedWorkTimeline(relatedWorkChunks, workChunk.text);
+                const prompt = buildScanPrompt({
+                    contractContext,
+                    relatedWorkContext,
+                    workDoc,
+                    workChunk,
+                    contractChunksIndexed: contractChunks.length,
+                    contractSourceChars,
+                    projectWorkChunksIndexed: projectWorkChunks.length,
+                });
+
+                await saveScanState(supabase, {
+                    ...stateBase,
+                    status: "IN_PROGRESS",
+                    findings_count: 0,
+                    processed_work_docs: processedWorkDocs,
+                    current_step: `בודק ${processedWorkDocs + 1}/${scannableWorkDocs.length}, חלק ${workChunk.index + 1}/${workChunk.total}: ${workDoc.title || "מסמך ביצוע"}`,
+                    error_message: null,
+                    started_at: nowIso(),
+                    updated_at: nowIso(),
+                    completed_at: null,
+                });
+
+                const responseText = await generateComparisonText(prompt, process.env, {
+                    numCtx: 8_192,
+                    numPredict: 1_024,
+                    timeoutMs: 180_000,
+                });
+                chunkFindings.push(...parseGeminiJsonArray(responseText));
+            }
+
+            const points = dedupeScanFindings(chunkFindings);
+            const findingRows = points.map((p) => {
                 const category = String(p.category || "");
                 const matchedContractDoc = p.contract_document_id
                     ? contractDocs.find((doc) => doc.id === p.contract_document_id)
                     : null;
                 const missingEvidence = Array.isArray(p.missing_evidence) ? [...p.missing_evidence] : [];
+                const contractQuote = typeof p.contract_quote === 'string' ? p.contract_quote : '';
+                const workQuote = typeof p.work_quote === 'string' ? p.work_quote : '';
+                const contractQuoteMatched = Boolean(
+                    matchedContractDoc
+                    && quoteExistsInSource(String(matchedContractDoc.extracted_text || ''), contractQuote)
+                );
+                const workQuoteMatched = quoteExistsInSource(fullWorkText, workQuote);
 
                 if (!matchedContractDoc) {
                     missingEvidence.push("contract_document_id was not matched to a validated contract document");
                 }
+                if (matchedContractDoc && !contractQuoteMatched) {
+                    missingEvidence.push("contract_quote was not matched exactly to the contract source text");
+                }
+                if (!workQuoteMatched) {
+                    missingEvidence.push("work_quote was not matched exactly to the work source text");
+                }
 
-                const { data, error } = await supabase.from("contradictions").insert({
+                return {
                     project_id: projectId,
                     title: cleanAiText(p.title),
                     description: cleanAiText(p.description),
@@ -882,8 +971,10 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                     status: "OPEN",
                     scan_signature: scanSignature,
                     evidence_data: {
-                        evidence_status: matchedContractDoc ? normalizeEvidenceStatus(p) : "REQUIRES_VERIFICATION",
-                        missing_evidence: missingEvidence,
+                        evidence_status: matchedContractDoc
+                            ? normalizeEvidenceStatus(p, contractQuoteMatched, workQuoteMatched)
+                            : "REQUIRES_VERIFICATION",
+                        missing_evidence: [...new Set(missingEvidence)],
                         clause_reference: p.clause_reference,
                         contract_page: p.contract_page || null,
                         work_page: p.work_page || null,
@@ -908,23 +999,56 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                             work_title: workDoc.title
                         },
                         context_window: {
-                            contract_chars_used: contractContextBundle.usedChars,
-                            contract_context_truncated: contractContextBundle.truncated,
-                            work_chars_used: workText.length,
-                            work_context_truncated: String(workDoc.extracted_text || "").length > workText.length
+                            scan_engine: SCAN_ENGINE_VERSION,
+                            contract_source_chars_indexed: contractSourceChars,
+                            contract_chunks_indexed: contractChunks.length,
+                            contract_chunks_selected_per_work_chunk: MAX_SELECTED_CONTRACT_CHUNKS,
+                            contract_context_truncated: false,
+                            work_chars_used: fullWorkText.length,
+                            work_chunks_processed: workChunks.length,
+                            work_context_truncated: false,
+                            project_work_source_chars_indexed: projectWorkSourceChars,
+                            project_work_chunks_indexed: projectWorkChunks.length,
+                            related_work_chunks_selected_per_work_chunk: MAX_RELATED_WORK_CHUNKS,
+                            project_timeline_context_enabled: true,
+                        },
+                        source_verification: {
+                            contract_quote_matched: contractQuoteMatched,
+                            work_quote_matched: workQuoteMatched,
                         },
                         expert_strategy: p.expert_strategy || {},
                         analysis_provider: aiIdentity.provider,
                         analysis_model: aiIdentity.model,
                     }
-                }).select().single();
+                };
+            });
+
+            let insertedResults: ScanResult[] = [];
+            if (findingRows.length > 0) {
+                const { data, error } = await supabase
+                    .from("contradictions")
+                    .insert(findingRows)
+                    .select();
 
                 if (error) {
-                    throw new Error(`Failed to save scan finding for "${workDoc.title}": ${error.message}`);
+                    throw new Error(`Failed to save scan findings for "${workDoc.title}": ${error.message}`);
                 }
 
-                if (data) results.push(data);
+                insertedResults = (data || []) as ScanResult[];
             }
+
+            if (oldFindingsToArchive.length > 0) {
+                await archiveContradictionRows(
+                    supabase,
+                    oldFindingsToArchive,
+                    {
+                        archive_reason: "A complete replacement scan finished successfully for this work document.",
+                        archived_at: new Date().toISOString(),
+                        current_scan_signature: scanSignature,
+                    }
+                );
+            }
+            results.push(...insertedResults);
 
             const completedAt = nowIso();
             await saveScanState(supabase, {

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { archiveContradictionRows, type ContradictionArchiveRow } from '@/utils/contradiction-archive';
+import { buildContradictionReviewUpdate, type ContradictionReviewInput } from '@/utils/contradiction-review';
 import { createClient } from '@/utils/supabase/server';
 
 const ALLOWED_CONTRADICTION_STATUSES = new Set([
@@ -46,16 +47,21 @@ export async function PATCH(req: Request) {
     const supabase = await createClient();
 
     try {
-        const { projectId, id, status } = await req.json();
+        const { projectId, id, status, review } = await req.json() as {
+            projectId?: string;
+            id?: string;
+            status?: string;
+            review?: ContradictionReviewInput;
+        };
 
-        if (!projectId || !id || !status) {
+        if (!projectId || !id || (!status && !review)) {
             return NextResponse.json(
-                { success: false, error: 'projectId, id and status are required' },
+                { success: false, error: 'projectId, id and a status or review are required' },
                 { status: 400 }
             );
         }
 
-        if (!ALLOWED_CONTRADICTION_STATUSES.has(status)) {
+        if (status && !ALLOWED_CONTRADICTION_STATUSES.has(status)) {
             return NextResponse.json({ success: false, error: 'Unsupported contradiction status' }, { status: 400 });
         }
 
@@ -65,12 +71,31 @@ export async function PATCH(req: Request) {
             return ownership.response;
         }
 
+        const updatePayload: Record<string, unknown> = {};
+        if (status) updatePayload.status = status;
+
+        if (review) {
+            const { data: existingItem, error: existingItemError } = await supabase
+                .from('contradictions')
+                .select('id, evidence_data')
+                .eq('id', id)
+                .eq('project_id', projectId)
+                .maybeSingle();
+
+            if (existingItemError) throw existingItemError;
+            if (!existingItem) {
+                return NextResponse.json({ success: false, error: 'Contradiction not found' }, { status: 404 });
+            }
+
+            Object.assign(updatePayload, buildContradictionReviewUpdate(existingItem.evidence_data, review));
+        }
+
         const { data: updatedItems, error } = await supabase
             .from('contradictions')
-            .update({ status })
+            .update(updatePayload)
             .eq('id', id)
             .eq('project_id', projectId)
-            .select('id, status');
+            .select('id, status, title, description, category, severity, strategy_advice, evidence_data');
 
         if (error) {
             throw error;

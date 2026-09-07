@@ -65,7 +65,7 @@ expect('Document cards detect system errors', documentsClient.includes('hasSyste
 expect('Document cards show specific system error hints', documentsClient.includes('getSystemErrorHint') && documentsClient.includes('AI_RATE_LIMIT'));
 expect('Document cards explain modern file format support', documentsClient.includes('GOOGLE_NATIVE_EXPORT_REQUIRED') && documentsClient.includes('BOQ_CONVERTER_REQUIRED') && documentsClient.includes('TLV/SKN'));
 expect('Document titles strip engineering and BOQ extensions', documentsClient.includes('tlv|skn|boq|bq|qty') && documentsClient.includes('dwg|dwf|dwfx'));
-expect('Document analysis is single-flight from the UI', documentsClient.includes('if (processingId) return') && documentsClient.includes('disabled={Boolean(processingId)}'));
+expect('Document analysis is single-flight from the UI', documentsClient.includes('if (processingId) return') && documentsClient.includes('disabled={Boolean(processingId) ||'));
 expect('Document retry only pre-extracts PDF files', documentsClient.includes('const isPdfDocumentTitle') && documentsClient.includes('if (isPdfDocumentTitle(doc.title))'));
 expect('Document upload and retry share the PDF title guard', documentsClient.includes('const isPDF = isPdfDocumentTitle(file.name)') && documentsClient.includes('if (isPdfDocumentTitle(doc.title))'));
 expect('Document card opens in-app review modal instead of raw signed URL', documentsClient.includes('onClick={() => setSelectedDocForVerification(doc)}') && !documentsClient.includes('window.open(data.signedUrl'));
@@ -114,7 +114,7 @@ expect('Contradiction archive helper preserves previous evidence data', contradi
 expect('Scan clear archives findings instead of deleting them', scanClearRoute.includes('archiveContradictionRows') && !scanClearRoute.includes(".from('contradictions')\n            .delete()"));
 expect('Manual contradiction removal archives findings instead of deleting them', contradictionsRoute.includes('archiveContradictionRows') && !contradictionsRoute.includes(".from('contradictions')\n            .delete()"));
 expect('Document delete archives linked findings without replacing evidence inline', documentDeleteRoute.includes('archiveContradictionRows') && documentDeleteRoute.includes("select('id, evidence_data')") && !documentDeleteRoute.includes(".from('contradictions')\n            .update({\n                status: 'ARCHIVED',\n                evidence_data: {"));
-expect('Scan cache is invalidated when completed cache has no active findings', scanRoute.includes('cachedContradictions?.length') && scanRoute.includes('.delete()\n                        .eq("scan_signature", scanSignature)'));
+expect('Scan cache is invalidated when completed cache has no active findings', scanRoute.includes('cachedContradictions?.length') && /\.from\("document_scan_state"\)\s*\.delete\(\)\s*\.eq\("scan_signature", scanSignature\)/.test(scanRoute));
 expect('Rescan archives findings through shared evidence-preserving helper', scanRoute.includes('archiveContradictionRows') && scanRoute.includes('current_scan_signature: scanSignature'));
 expect('Scan route exposes durable progress status', scanRoute.includes('export async function GET') && scanRoute.includes('loadProjectScanState') && scanRoute.includes('requireOwnedProject(supabase, projectId)'));
 expect('Scan route persists in-progress checkpoints', scanRoute.includes('status: "IN_PROGRESS"') && scanRoute.includes('processed_work_docs') && scanRoute.includes('total_work_docs'));
