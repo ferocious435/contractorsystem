@@ -8,7 +8,7 @@ import {
     sortContractDocumentsByPrecedence,
 } from "@/utils/contract-document-hierarchy";
 import { downloadDocumentBuffer, isPdfDocument as isStoredPdfDocument } from "@/utils/document-storage";
-import { geminiModel, withRetry } from "@/lib/gemini";
+import { generateComparisonText, getComparisonAiIdentity } from "@/lib/comparison-ai";
 import { createClient } from "@/utils/supabase/server";
 import { createHash } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -180,8 +180,8 @@ function buildContractSignature(contractDocs: ScanDocument[]) {
     return sha256(contractDocs.map(getDocumentSignature).sort().join("|"));
 }
 
-function buildScanSignature(projectId: string, contractSignature: string, workSignature: string) {
-    return sha256(`${projectId}:${contractSignature}:${workSignature}`);
+function buildScanSignature(projectId: string, contractSignature: string, workSignature: string, aiIdentity: string) {
+    return sha256(`${projectId}:${contractSignature}:${workSignature}:${aiIdentity}`);
 }
 
 function nowIso() {
@@ -733,6 +733,8 @@ export async function POST(req: NextRequest) {
 async function analyzeDirectly(supabase: SupabaseClient, projectId: string, contractDocs: ScanDocument[], workDocs: ScanDocument[], force = false): Promise<ScanResults> {
     const results: ScanResults = [] as ScanResults;
     const analysisFailures: string[] = [];
+    const aiIdentity = getComparisonAiIdentity();
+    const aiSignature = `${aiIdentity.provider}:${aiIdentity.model}`;
     const contractSignature = buildContractSignature(contractDocs);
     const contractDocIds = contractDocs.map((doc) => String(doc.id)).sort();
 
@@ -753,7 +755,7 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
     for (const workDoc of scannableWorkDocs) {
         const workText = String(workDoc.extracted_text || "").slice(0, MAX_WORK_CONTEXT_CHARS);
         const workSignature = getDocumentSignature(workDoc);
-        const scanSignature = buildScanSignature(projectId, contractSignature, workSignature);
+        const scanSignature = buildScanSignature(projectId, contractSignature, workSignature, aiSignature);
         const stateBase = {
             project_id: projectId,
             contract_doc_ids: contractDocIds,
@@ -854,8 +856,7 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
             });
 
             const prompt = buildScanPrompt({ contractContext, workDoc, workText, contractContextBundle });
-            const result = await withRetry(() => geminiModel.generateContent(prompt));
-            const responseText = result.response.text();
+            const responseText = await generateComparisonText(prompt);
             const points = parseGeminiJsonArray(responseText);
 
             for (const p of points) {
@@ -912,7 +913,9 @@ async function analyzeDirectly(supabase: SupabaseClient, projectId: string, cont
                             work_chars_used: workText.length,
                             work_context_truncated: String(workDoc.extracted_text || "").length > workText.length
                         },
-                        expert_strategy: p.expert_strategy || {}
+                        expert_strategy: p.expert_strategy || {},
+                        analysis_provider: aiIdentity.provider,
+                        analysis_model: aiIdentity.model,
                     }
                 }).select().single();
 

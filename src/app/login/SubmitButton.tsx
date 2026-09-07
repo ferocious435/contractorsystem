@@ -7,15 +7,17 @@ interface SubmitButtonProps {
     children: React.ReactNode
     className?: string
     formAction?: (formData: FormData) => void
+    formNoValidate?: boolean
 }
 
-export function SubmitButton({ children, className, formAction }: SubmitButtonProps) {
+export function SubmitButton({ children, className, formAction, formNoValidate }: SubmitButtonProps) {
     const { pending } = useFormStatus()
 
     return (
         <button
             type="submit"
             formAction={formAction}
+            formNoValidate={formNoValidate}
             disabled={pending}
             className={`${className} flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed`}
         >

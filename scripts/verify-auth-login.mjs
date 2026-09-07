@@ -65,6 +65,14 @@ assert(
   "login must use the password sign-in action"
 );
 assert(
+  loginForm.includes("sendMagicLink") && loginForm.includes("magicLinkAction"),
+  "login must expose the existing passwordless email-link action"
+);
+assert(
+  loginForm.includes("formNoValidate"),
+  "email-link login must work without requiring a password"
+);
+assert(
   loginActions.includes("cookieStore.delete(LOCAL_ACCESS_COOKIE)"),
   "successful real login must clear local/demo access cookie"
 );

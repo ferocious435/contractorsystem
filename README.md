@@ -57,6 +57,10 @@ npm run verify:runtime-pricing
 
 Files matching `.runtime-cookie*` are ignored by Git. The strict pricing check fails closed when no session evidence is provided.
 
+## Local document comparison AI
+
+The contradiction radar can run through local Ollama without a cloud AI key. Installation, configuration, and the read-only `C-CE6070` check are documented in [docs/LOCAL_AI_SETUP_RU.md](docs/LOCAL_AI_SETUP_RU.md).
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

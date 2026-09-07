@@ -1,13 +1,15 @@
 "use client";
 
 import { useActionState } from 'react'
-import { login } from './actions'
+import { login, sendMagicLink } from './actions'
 import { SubmitButton } from './SubmitButton'
 
 const REAL_LOGIN_EMAIL = 'rotem435@gmail.com';
 
 export function LoginForm() {
-    const [state, formAction] = useActionState(login, null);
+    const [passwordState, formAction] = useActionState(login, null);
+    const [magicLinkState, magicLinkAction] = useActionState(sendMagicLink, null);
+    const state = magicLinkState || passwordState;
 
     return (
         <form action={formAction} className="flex flex-col gap-5" dir="rtl" autoComplete="on">
@@ -64,6 +66,14 @@ export function LoginForm() {
 
             <SubmitButton className="w-full bg-primary hover:bg-primary/80 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-[0_0_15px_rgba(59,130,246,0.5)] transform hover:-translate-y-0.5">
                 כניסה
+            </SubmitButton>
+
+            <SubmitButton
+                formAction={magicLinkAction}
+                formNoValidate
+                className="w-full border border-white/15 bg-white/5 hover:bg-white/10 text-gray-200 font-bold py-3 px-4 rounded-lg transition-colors"
+            >
+                שלחו לי קישור כניסה בדוא״ל
             </SubmitButton>
         </form>
     )
