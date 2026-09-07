@@ -40,7 +40,8 @@ const SCAN_ENGINE_VERSION = "project-timeline-memory-v3";
 const MIN_USEFUL_TEXT_LENGTH = 1000;
 const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
-const ACTIVE_SCAN_STALE_MS = 6 * 60 * 1000;
+const ACTIVE_SCAN_STALE_MS = 45_000;
+const SCAN_HEARTBEAT_MS = 15_000;
 const SCAN_STATE_COLUMNS = `
     id,
     project_id,
@@ -342,6 +343,34 @@ async function saveScanState(
 
     if (error) {
         throw error;
+    }
+}
+
+async function withScanHeartbeat<T>(
+    supabase: SupabaseClient,
+    scanSignature: string,
+    operation: () => Promise<T>,
+) {
+    let stopped = false;
+    const timer = setInterval(() => {
+        if (stopped) return;
+
+        void supabase
+            .from("document_scan_state")
+            .update({ updated_at: nowIso() })
+            .eq("scan_signature", scanSignature)
+            .then(({ error }) => {
+                if (error) {
+                    console.warn(`[scan] Heartbeat failed for ${scanSignature.slice(0, 12)}: ${error.message}`);
+                }
+            });
+    }, SCAN_HEARTBEAT_MS);
+
+    try {
+        return await operation();
+    } finally {
+        stopped = true;
+        clearInterval(timer);
     }
 }
 
@@ -984,7 +1013,11 @@ async function analyzeDirectly(
                     completed_at: null,
                 });
 
-                chunkFindings.push(...await generateScanChunkFindings(prompt));
+                chunkFindings.push(...await withScanHeartbeat(
+                    supabase,
+                    scanSignature,
+                    () => generateScanChunkFindings(prompt),
+                ));
             }
 
             const points = dedupeScanFindings(chunkFindings);
