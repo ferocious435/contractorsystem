@@ -315,10 +315,19 @@ async function saveScanState(
 }
 
 function getDocumentRole(doc: ScanDocument): ScanRole {
-    const rawCategory = String(doc.category || doc.parsed_json?.category || "").toUpperCase();
+    const storedCategory = String(doc.category || "").toUpperCase();
+    const parsedCategory = String(doc.parsed_json?.category || "").toUpperCase();
+    const rawCategory = storedCategory || parsedCategory;
     const title = String(doc.title || "").toLowerCase();
     const parsedType = String(doc.parsed_json?.type || "").toLowerCase();
     const searchText = `${title} ${parsedType}`;
+
+    // The upload section is an explicit user choice. Keep execution documents in
+    // the project timeline even when an older or failed AI analysis mistakenly
+    // marked them as reference material.
+    if (WORK_ROLES.has(storedCategory)) {
+        return "WORK_EVIDENCE";
+    }
 
     if (isReferenceDocument(doc)) {
         return "REFERENCE_LIBRARY";
@@ -639,18 +648,11 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ success: true, found: 0, message: "אין מסמכים לסריקה" });
         }
 
-        const unvalidatedDocumentsCount = documents.filter((doc) => doc.ai_status !== "VALIDATED").length;
-        const validatedDocuments = documents.filter((doc) => doc.ai_status === "VALIDATED");
-
-        if (validatedDocuments.length === 0) {
-            return NextResponse.json({
-                success: false,
-                error: "Validate contract and execution documents before scanning for contradictions.",
-                unvalidatedDocumentsCount
-            }, { status: 400 });
-        }
-
-        let documentsWithRoles: ScanDocumentWithRole[] = validatedDocuments.map((doc): ScanDocumentWithRole => ({ ...doc, __scanRole: getDocumentRole(doc) }));
+        const documentsWithoutManualConfirmation = documents.filter((doc) => doc.ai_status !== "VALIDATED").length;
+        let documentsWithRoles: ScanDocumentWithRole[] = documents.map((doc): ScanDocumentWithRole => ({
+            ...doc,
+            __scanRole: getDocumentRole(doc),
+        }));
         let contractDocs = documentsWithRoles.filter((d) => d.__scanRole === "CONTRACT_BASE");
         let allWorkDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
         let workDocs = allWorkDocs;
@@ -735,7 +737,7 @@ export async function POST(req: NextRequest) {
             found: foundContradictions.length,
             contradictions: foundContradictions,
             cached: foundContradictions.length > 0 && foundContradictions.every((item) => item.__cached === true),
-            skippedUnvalidatedDocuments: unvalidatedDocumentsCount,
+            documentsWithoutManualConfirmation,
             warnings,
             scanStatus,
             memory,
@@ -991,7 +993,7 @@ async function analyzeDirectly(
                 const workQuoteMatched = quoteExistsInSource(fullWorkText, workQuote);
 
                 if (!matchedContractDoc) {
-                    missingEvidence.push("contract_document_id was not matched to a validated contract document");
+                    missingEvidence.push("contract_document_id was not matched to a project contract document");
                 }
                 if (matchedContractDoc && !contractQuoteMatched) {
                     missingEvidence.push("contract_quote was not matched exactly to the contract source text");
