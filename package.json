@@ -18,7 +18,7 @@
     "verify:audit-ui": "node --experimental-strip-types --test scripts/verify-radar-status-filters.mjs scripts/verify-document-display-status.mjs scripts/verify-ai-readiness.mjs scripts/verify-document-page-number.mjs scripts/verify-evidence-display-status.mjs scripts/verify-project-overview-counts.mjs",
     "verify:local-ai": "node --experimental-strip-types --test scripts/verify-local-ai.mjs scripts/verify-local-ai-preview.mjs",
     "verify:scan-coverage": "node --experimental-strip-types --test scripts/verify-scan-chunk-coverage.mjs",
-    "verify:scan-memory": "node --experimental-strip-types --test scripts/verify-scan-memory.mjs",
+    "verify:scan-memory": "node --experimental-strip-types --test scripts/verify-scan-memory.mjs scripts/verify-scan-ai-response.mjs",
     "verify:contradiction-review": "node --experimental-strip-types --test scripts/verify-contradiction-review.mjs",
     "lint": "eslint",
     "worker": "nodemon",

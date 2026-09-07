@@ -23,6 +23,7 @@ import {
     hashScanValue,
 } from "@/utils/document-scan-memory";
 import { quoteExistsInSource } from "@/utils/local-ai-preview";
+import { parseScanFindings } from "@/utils/scan-ai-response";
 import { generateComparisonText, getComparisonAiIdentity } from "@/lib/comparison-ai";
 import { createClient } from "@/utils/supabase/server";
 import { createHash } from "crypto";
@@ -140,54 +141,6 @@ type DocumentScanStateRow = {
     completed_at?: string | null;
 };
 
-function extractFirstJsonArray(text: string) {
-    const cleanText = text.replace(/```json|```/g, "").trim();
-    const start = cleanText.indexOf("[");
-    if (start === -1) return null;
-
-    let depth = 0;
-    let inString = false;
-    let escapeNext = false;
-
-    for (let i = start; i < cleanText.length; i++) {
-        const char = cleanText[i];
-
-        if (escapeNext) {
-            escapeNext = false;
-            continue;
-        }
-
-        if (char === "\\") {
-            escapeNext = true;
-            continue;
-        }
-
-        if (char === "\"") {
-            inString = !inString;
-            continue;
-        }
-
-        if (inString) continue;
-
-        if (char === "[") depth++;
-        if (char === "]") depth--;
-
-        if (depth === 0) {
-            return cleanText.slice(start, i + 1);
-        }
-    }
-
-    return null;
-}
-
-function parseGeminiJsonArray(text: string): ScanFinding[] {
-    const jsonArray = extractFirstJsonArray(text);
-    if (!jsonArray) {
-        throw new Error("Gemini did not return a JSON array");
-    }
-    return JSON.parse(jsonArray);
-}
-
 async function generateScanChunkFindings(prompt: string) {
     const attempts = [
         { numPredict: 320, timeoutMs: 90_000, retryInstruction: "" },
@@ -210,7 +163,7 @@ async function generateScanChunkFindings(prompt: string) {
                     timeoutMs: attempt.timeoutMs,
                 },
             );
-            return parseGeminiJsonArray(responseText);
+            return parseScanFindings(responseText) as ScanFinding[];
         } catch (error) {
             lastError = error;
         }
