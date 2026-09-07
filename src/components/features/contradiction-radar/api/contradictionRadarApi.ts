@@ -40,6 +40,11 @@ export interface RadarScanResult {
     message?: string;
     warnings?: string[];
     scanStatus?: RadarScanProgress;
+    memory?: {
+        scanned: number;
+        unchanged: number;
+        total: number;
+    };
 }
 
 async function parseContradictionMutationResponse(response: Response): Promise<ContradictionMutationResult> {

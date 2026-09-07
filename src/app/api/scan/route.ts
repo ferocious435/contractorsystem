@@ -16,6 +16,12 @@ import {
     selectRelevantProjectChunks,
     type DocumentScanChunk,
 } from "@/utils/document-scan-chunks";
+import {
+    buildDocumentFingerprint,
+    buildDocumentSetFingerprint,
+    buildScanMemorySignature,
+    hashScanValue,
+} from "@/utils/document-scan-memory";
 import { quoteExistsInSource } from "@/utils/local-ai-preview";
 import { generateComparisonText, getComparisonAiIdentity } from "@/lib/comparison-ai";
 import { createClient } from "@/utils/supabase/server";
@@ -30,7 +36,7 @@ const MAX_SELECTED_CONTRACT_CHARS = 14_000;
 const MAX_SELECTED_CONTRACT_CHUNKS = 3;
 const MAX_RELATED_WORK_CHARS = 9_000;
 const MAX_RELATED_WORK_CHUNKS = 10;
-const SCAN_ENGINE_VERSION = "project-timeline-v2";
+const SCAN_ENGINE_VERSION = "project-timeline-memory-v3";
 const MIN_USEFUL_TEXT_LENGTH = 1000;
 const CONTRACT_ROLES = new Set(["CONTRACT", "BOQ", "SPECS", "TENDER"]);
 const WORK_ROLES = new Set(["EXECUTION", "SITE_REPORT", "PROTOCOL", "INVOICE", "CHANGE_ORDER", "PHOTO", "VIDEO", "LETTER"]);
@@ -65,6 +71,9 @@ type ScanDocument = Record<string, unknown> & {
     extracted_text?: string | null;
     extracted_text_hash?: string | null;
     content_hash?: string | null;
+    storage_bucket?: string | null;
+    storage_path?: string | null;
+    file_url?: string | null;
     updated_at?: string | null;
     processed_at?: string | null;
     created_at?: string | null;
@@ -101,7 +110,11 @@ type ScanFinding = Record<string, unknown> & {
 type ScanDocumentWithRole = ScanDocument & { __scanRole: ScanRole };
 
 type ScanResult = Record<string, unknown> & { __cached?: boolean };
-type ScanResults = ScanResult[] & { __analysisFailures?: string[] };
+type ScanResults = ScanResult[] & {
+    __analysisFailures?: string[];
+    __cachedDocuments?: number;
+    __scannedDocuments?: number;
+};
 type DocumentScanStateRow = {
     id?: string;
     project_id: string;
@@ -170,10 +183,6 @@ function parseGeminiJsonArray(text: string): ScanFinding[] {
     return JSON.parse(jsonArray);
 }
 
-function sha256(input: string) {
-    return createHash("sha256").update(input).digest("hex");
-}
-
 function sha256Buffer(input: Buffer) {
     return createHash("sha256").update(input).digest("hex");
 }
@@ -187,22 +196,28 @@ function isPdfDocument(doc: ScanDocument) {
 }
 
 function getDocumentSignature(doc: ScanDocument) {
-    const textHash = doc.extracted_text_hash || sha256(String(doc.extracted_text || ""));
-    return `${doc.id}:${doc.content_hash || "no-file-hash"}:${textHash}:${doc.updated_at || doc.processed_at || doc.created_at || ""}`;
+    return buildDocumentFingerprint(doc);
 }
 
 function buildContractSignature(contractDocs: ScanDocument[]) {
-    return sha256(contractDocs.map(getDocumentSignature).sort().join("|"));
+    return buildDocumentSetFingerprint(contractDocs);
 }
 
 function buildScanSignature(
     projectId: string,
     contractSignature: string,
-    projectWorkSignature: string,
+    relatedWorkSignature: string,
     workSignature: string,
     aiIdentity: string,
 ) {
-    return sha256(`${SCAN_ENGINE_VERSION}:${projectId}:${contractSignature}:${projectWorkSignature}:${workSignature}:${aiIdentity}`);
+    return buildScanMemorySignature({
+        engineVersion: SCAN_ENGINE_VERSION,
+        projectId,
+        contractFingerprint: contractSignature,
+        workFingerprint: workSignature,
+        relatedWorkFingerprint: relatedWorkSignature,
+        aiIdentity,
+    });
 }
 
 function nowIso() {
@@ -342,7 +357,7 @@ async function extractPdfTextForScan<T extends ScanDocument>(supabase: SupabaseC
     await parser.destroy();
 
     const extractedText = pdfData.text || "";
-    const extractedTextHash = sha256(extractedText);
+    const extractedTextHash = hashScanValue(extractedText);
     const nextAiStatus = doc.ai_status === "VALIDATED"
         ? "VALIDATED"
         : extractedText.length >= MIN_USEFUL_TEXT_LENGTH ? "SCANNED" : doc.ai_status;
@@ -708,6 +723,11 @@ export async function POST(req: NextRequest) {
         const analysisFailures = foundContradictions.__analysisFailures || [];
         const warnings = [...textPreparationFailures, ...analysisFailures];
         const scanStatus = await loadProjectScanState(supabase, projectId, workDocId);
+        const memory = {
+            scanned: foundContradictions.__scannedDocuments || 0,
+            unchanged: foundContradictions.__cachedDocuments || 0,
+            total: workDocs.filter((doc) => hasUsefulText(doc)).length,
+        };
 
         return NextResponse.json({
             success: warnings.length === 0,
@@ -717,7 +737,8 @@ export async function POST(req: NextRequest) {
             cached: foundContradictions.length > 0 && foundContradictions.every((item) => item.__cached === true),
             skippedUnvalidatedDocuments: unvalidatedDocumentsCount,
             warnings,
-            scanStatus
+            scanStatus,
+            memory,
         });
 
     } catch (error: unknown) {
@@ -737,10 +758,11 @@ async function analyzeDirectly(
 ): Promise<ScanResults> {
     const results: ScanResults = [] as ScanResults;
     const analysisFailures: string[] = [];
+    let cachedDocumentCount = 0;
+    let scannedDocumentCount = 0;
     const aiIdentity = getComparisonAiIdentity();
     const aiSignature = `${aiIdentity.provider}:${aiIdentity.model}`;
     const contractSignature = buildContractSignature(contractDocs);
-    const projectWorkSignature = sha256(projectWorkDocs.map(getDocumentSignature).sort().join("|"));
     const contractDocIds = contractDocs.map((doc) => String(doc.id)).sort();
     const orderedContractDocs = sortContractDocumentsByPrecedence(contractDocs.filter(d => d.extracted_text));
     const contractChunks = buildDocumentScanChunks(
@@ -752,8 +774,12 @@ async function analyzeDirectly(
         (sum, doc) => sum + String(doc.extracted_text || '').length,
         0,
     );
+    const stableProjectWorkDocs = projectWorkDocs
+        .filter((doc) => doc.extracted_text)
+        .sort((left, right) => left.id.localeCompare(right.id));
+    const projectWorkDocumentsById = new Map(stableProjectWorkDocs.map((doc) => [doc.id, doc]));
     const projectWorkChunks = buildDocumentScanChunks(
-        projectWorkDocs.filter((doc) => doc.extracted_text),
+        stableProjectWorkDocs,
         WORK_CHUNK_CHARS,
         CHUNK_OVERLAP_CHARS,
     );
@@ -776,11 +802,30 @@ async function analyzeDirectly(
             WORK_CHUNK_CHARS,
             CHUNK_OVERLAP_CHARS,
         );
+        const relatedWorkChunksByIndex = new Map<number, DocumentScanChunk[]>();
+        const relatedWorkDocumentIds = new Set<string>();
+        for (const workChunk of workChunks) {
+            const relatedChunks = selectRelevantProjectChunks(
+                projectWorkChunks,
+                workChunk.text,
+                MAX_RELATED_WORK_CHARS,
+                MAX_RELATED_WORK_CHUNKS,
+                workDoc.id,
+            );
+            relatedWorkChunksByIndex.set(workChunk.index, relatedChunks);
+            for (const relatedChunk of relatedChunks) {
+                relatedWorkDocumentIds.add(relatedChunk.documentId);
+            }
+        }
+        const relatedWorkDocuments = [...relatedWorkDocumentIds]
+            .map((documentId) => projectWorkDocumentsById.get(documentId))
+            .filter((document): document is ScanDocument => Boolean(document));
+        const relatedWorkSignature = buildDocumentSetFingerprint(relatedWorkDocuments);
         const workSignature = getDocumentSignature(workDoc);
         const scanSignature = buildScanSignature(
             projectId,
             contractSignature,
-            projectWorkSignature,
+            relatedWorkSignature,
             workSignature,
             aiSignature,
         );
@@ -815,6 +860,7 @@ async function analyzeDirectly(
 
                     if (cachedContradictions?.length) {
                         cachedContradictions.forEach((item) => results.push({ ...item, __cached: true }));
+                        cachedDocumentCount += 1;
                         await saveScanState(supabase, {
                             ...stateBase,
                             status: "COMPLETED",
@@ -831,6 +877,7 @@ async function analyzeDirectly(
                     }
 
                     if ((scanState.findings_count || 0) === 0) {
+                        cachedDocumentCount += 1;
                         await saveScanState(supabase, {
                             ...stateBase,
                             status: "COMPLETED",
@@ -896,13 +943,7 @@ async function analyzeDirectly(
                     MAX_SELECTED_CONTRACT_CHUNKS,
                 );
                 const contractContext = formatContractChunkContext(selectedContractChunks);
-                const relatedWorkChunks = selectRelevantProjectChunks(
-                    projectWorkChunks,
-                    workChunk.text,
-                    MAX_RELATED_WORK_CHARS,
-                    MAX_RELATED_WORK_CHUNKS,
-                    workDoc.id,
-                );
+                const relatedWorkChunks = relatedWorkChunksByIndex.get(workChunk.index) || [];
                 const relatedWorkContext = formatRelatedWorkTimeline(relatedWorkChunks, workChunk.text);
                 const prompt = buildScanPrompt({
                     contractContext,
@@ -1010,6 +1051,8 @@ async function analyzeDirectly(
                             project_work_source_chars_indexed: projectWorkSourceChars,
                             project_work_chunks_indexed: projectWorkChunks.length,
                             related_work_chunks_selected_per_work_chunk: MAX_RELATED_WORK_CHUNKS,
+                            related_work_document_ids: [...relatedWorkDocumentIds].sort(),
+                            related_work_signature: relatedWorkSignature,
                             project_timeline_context_enabled: true,
                         },
                         source_verification: {
@@ -1049,6 +1092,7 @@ async function analyzeDirectly(
                 );
             }
             results.push(...insertedResults);
+            scannedDocumentCount += 1;
 
             const completedAt = nowIso();
             await saveScanState(supabase, {
@@ -1089,5 +1133,7 @@ async function analyzeDirectly(
     }
 
     results.__analysisFailures = analysisFailures;
+    results.__cachedDocuments = cachedDocumentCount;
+    results.__scannedDocuments = scannedDocumentCount;
     return results;
 }

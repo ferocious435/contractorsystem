@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 import { requireOwnedProject } from "@/app/api/_utils/auth";
 import { DOCUMENTS_BUCKET } from "@/utils/document-storage";
@@ -90,6 +90,7 @@ export async function POST(req: NextRequest) {
         }
 
         const fileBuffer = Buffer.from(await file.arrayBuffer());
+        const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
         const storagePath = `${projectId}/${randomUUID()}${getSafeExtension(file.name, file.type || "")}`;
 
         const { error: storageError } = await supabase.storage
@@ -110,6 +111,7 @@ export async function POST(req: NextRequest) {
                 file_url: null,
                 storage_bucket: DOCUMENTS_BUCKET,
                 storage_path: storagePath,
+                content_hash: contentHash,
                 ai_status: "PENDING",
             })
             .select()

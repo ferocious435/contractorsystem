@@ -283,7 +283,10 @@ export function useContradictionRadarState({
             if (data.success || data.partial) {
                 await fetchDocuments();
                 await fetchContradictions();
-                setCurrentStep(`הבדיקה הושלמה: נמצאו ${data.found || 0} ממצאים`);
+                const memorySummary = data.memory
+                    ? ` נסרקו ${data.memory.scanned} מסמכים חדשים או שהשתנו; ${data.memory.unchanged} מסמכים לא השתנו.`
+                    : '';
+                setCurrentStep(`הבדיקה הושלמה: נמצאו ${data.found || 0} ממצאים.${memorySummary}`);
                 setCurrentStepStatus('success');
                 setProgress(100);
                 setIsScanning(false);

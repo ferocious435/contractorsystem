@@ -130,7 +130,9 @@ test('scan route processes every work chunk and records complete coverage', () =
   assert.ok(route.includes('selectRelevantContractChunks'));
   assert.ok(route.includes('selectRelevantProjectChunks'));
   assert.ok(route.includes('formatRelatedWorkTimeline'));
-  assert.ok(route.includes('projectWorkSignature'));
+  assert.ok(route.includes('relatedWorkSignature'));
+  assert.ok(route.includes('relatedWorkChunksByIndex'));
+  assert.equal(route.includes('const projectWorkSignature ='), false);
   assert.ok(route.includes('for (const workChunk of workChunks)'));
   assert.ok(route.includes('work_context_truncated: false'));
   assert.ok(route.includes('work_chunks_processed: workChunks.length'));
