@@ -183,6 +183,37 @@ function parseGeminiJsonArray(text: string): ScanFinding[] {
     return JSON.parse(jsonArray);
 }
 
+async function generateScanChunkFindings(prompt: string) {
+    const attempts = [
+        { numPredict: 640, timeoutMs: 150_000, retryInstruction: "" },
+        {
+            numPredict: 384,
+            timeoutMs: 90_000,
+            retryInstruction: "\nRETRY: Return at most one decisive finding. Keep every value very short and return valid JSON only.",
+        },
+    ];
+    let lastError: unknown = new Error("Local AI did not return a valid scan result");
+
+    for (const attempt of attempts) {
+        try {
+            const responseText = await generateComparisonText(
+                `${prompt}${attempt.retryInstruction}`,
+                process.env,
+                {
+                    numCtx: 8_192,
+                    numPredict: attempt.numPredict,
+                    timeoutMs: attempt.timeoutMs,
+                },
+            );
+            return parseGeminiJsonArray(responseText);
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    throw lastError;
+}
+
 function sha256Buffer(input: Buffer) {
     return createHash("sha256").update(input).digest("hex");
 }
@@ -530,6 +561,7 @@ IMPORTANT SCAN RULES:
 12. Treat related work documents as a project timeline. A later dated document can resolve, replace, or narrow an earlier issue. Do not present an old issue as current when a later document says it was approved or completed.
 13. If a later related document resolves the issue in the current work chunk, return an empty array. If it changes the issue, describe only the latest documented action and do not invent fault.
 14. The complete readable work corpus was indexed in ${projectWorkChunksIndexed} chunks. The related passages above were selected from that full corpus.
+15. Return at most two decisive findings for this chunk. Keep every text value short.
 
 Return JSON array with this exact object shape:
 [
@@ -554,24 +586,7 @@ Return JSON array with this exact object shape:
     "document_precedence_assessment": "הסבר קצר בעברית איזה מסמך גובר, האם המסמכים משלימים זה את זה, או איזו הכרעת מנהל/מפקח נדרשת",
     "risk_reason": "למה זה חשוב לקבלן",
     "confidence": 0.0,
-    "next_check": "בדיקה מעשית הבאה",
-    "expert_strategy": {
-      "ripple_effect": {
-        "technical_analysis": "השפעה הנדסית קצרה",
-        "work_disruption": "השפעה על רצף עבודה/זמן",
-        "implied_items": ["סעיפים או עבודות נלוות אפשריות"]
-      },
-      "contractual_diagnostic": {
-        "legal_basis": "בסיס חוזי/מסחרי או נדרש אימות",
-        "argument_for_supervisor": "טיעון קצר מול מפקח/מזמין"
-      },
-      "operational_instructions": {
-        "site_diary_draft": "נוסח קצר ליומן עבודה",
-        "required_evidence": ["תמונות", "אישור מפקח", "מדידות", "מסמך נוסף"]
-      },
-      "financial_impact_desc": "משמעות כספית אפשרית ללא המצאת מחיר",
-      "risk_assessment": "סיכון אם לא יתועד/יתומחר"
-    }
+    "next_check": "בדיקה מעשית הבאה"
   }
 ]`;
 }
@@ -969,12 +984,7 @@ async function analyzeDirectly(
                     completed_at: null,
                 });
 
-                const responseText = await generateComparisonText(prompt, process.env, {
-                    numCtx: 8_192,
-                    numPredict: 1_024,
-                    timeoutMs: 180_000,
-                });
-                chunkFindings.push(...parseGeminiJsonArray(responseText));
+                chunkFindings.push(...await generateScanChunkFindings(prompt));
             }
 
             const points = dedupeScanFindings(chunkFindings);

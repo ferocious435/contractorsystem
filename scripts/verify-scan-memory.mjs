@@ -71,6 +71,9 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('WORK_ROLES.has(storedCategory)'));
   assert.ok(route.includes('documents.map((doc): ScanDocumentWithRole'));
   assert.equal(route.includes('const validatedDocuments ='), false);
+  assert.ok(route.includes('generateScanChunkFindings'));
+  assert.ok(route.includes('numPredict: 640'));
+  assert.ok(route.includes('Return at most two decisive findings'));
   assert.equal(route.includes('const projectWorkSignature ='), false);
   assert.ok(uploadRoute.includes('createHash("sha256").update(fileBuffer).digest("hex")'));
   assert.ok(uploadRoute.includes('content_hash: contentHash'));
