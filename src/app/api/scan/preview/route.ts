@@ -5,6 +5,8 @@ import { createClient } from '@/utils/supabase/server';
 import {
     extractEvidenceWindow,
     extractFirstJsonObject,
+    findEvidenceReferenceMatch,
+    findEvidenceTermMatches,
     quoteExistsInSource,
 } from '@/utils/local-ai-preview';
 
@@ -93,9 +95,16 @@ export async function GET(req: NextRequest) {
         const evidence = finding.evidence_data || {};
         const storedContractQuote = readEvidenceString(evidence, 'contract_quote');
         const storedWorkQuote = readEvidenceString(evidence, 'work_quote');
+        const contractEvidenceQuery = [storedContractQuote, finding.title, finding.description]
+            .filter(Boolean)
+            .join('\n');
         const storedContractQuoteExists = quoteExistsInSource(contractText, storedContractQuote);
         const storedWorkQuoteExists = quoteExistsInSource(workText, storedWorkQuote);
-        const contractExcerpt = extractEvidenceWindow(contractText, storedContractQuote);
+        const contractReferenceMatch = findEvidenceReferenceMatch(contractText, contractEvidenceQuery);
+        const workReferenceMatch = findEvidenceReferenceMatch(workText, storedWorkQuote);
+        const contractTermMatches = findEvidenceTermMatches(contractText, storedContractQuote);
+        const contractExcerpt = contractReferenceMatch?.excerpt
+            || extractEvidenceWindow(contractText, contractEvidenceQuery);
         const workExcerpt = extractEvidenceWindow(workText, storedWorkQuote);
         const prompt = `
 You verify one known finding in an Israeli construction project. Work only from the two excerpts below.
@@ -106,6 +115,8 @@ Rules:
 2. If either source does not prove the claim, set contradiction_confirmed=false.
 3. Do not invent a clause, page, price, date, party, or approval.
 4. This is a read-only comparison. Do not suggest that any database record was changed.
+5. A permitted manufacturer and a pending approval describe different facts. Pending approval alone is not a contract contradiction.
+6. Confirm a contradiction only when the contract excerpt and the work excerpt contain directly conflicting requirements or facts.
 
 Known finding reference: ${findingRef}
 Known title: ${finding.title || ''}
@@ -137,8 +148,17 @@ Return exactly these fields:
             timeoutMs: 120_000,
         });
         const modelResult = extractFirstJsonObject(responseText);
+        const sourcePairVerified = storedContractQuoteExists && storedWorkQuoteExists;
+        const modelConfidence = typeof modelResult.confidence === 'number'
+            ? Math.max(0, Math.min(1, modelResult.confidence))
+            : 0;
         const localResult = {
             ...modelResult,
+            contradiction_confirmed: sourcePairVerified && modelResult.contradiction_confirmed === true,
+            confidence: sourcePairVerified ? modelConfidence : 0,
+            explanation: sourcePairVerified
+                ? modelResult.explanation
+                : 'Автоматически не подтверждено: одна из сохранённых цитат не совпадает с исходным текстом полностью.',
             contract_document_id: contractDocument.id,
             work_document_id: workDocument.id,
             contract_quote: storedContractQuote,
@@ -159,7 +179,19 @@ Return exactly these fields:
             findingRef,
             provider: identity.provider,
             model: identity.model,
+            projectId: finding.project_id,
+            documents: {
+                contract: { id: contractDocument.id, title: contractDocument.title },
+                work: { id: workDocument.id, title: workDocument.title },
+            },
             verification,
+            sourceDiagnostics: {
+                contractReference: contractReferenceMatch?.reference || null,
+                contractReferenceExcerpt: contractReferenceMatch?.excerpt || null,
+                contractTermMatches,
+                workReference: workReferenceMatch?.reference || null,
+                workReferenceExcerpt: workReferenceMatch?.excerpt || null,
+            },
             storedFinding: {
                 title: finding.title,
                 description: finding.description,
