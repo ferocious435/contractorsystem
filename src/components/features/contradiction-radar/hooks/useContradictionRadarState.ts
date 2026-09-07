@@ -5,6 +5,7 @@ import { createClient } from '@/utils/supabase/client';
 import { isLocalProjectId } from '@/utils/local-projects';
 import { generateContradictionPDF } from '@/utils/contradictionPdfGenerator';
 import type { ContradictionItem } from '@/types';
+import { useAiReadiness } from '@/hooks/useAiReadiness';
 import {
     deleteContradictionById,
     fetchRadarContradictions,
@@ -20,9 +21,12 @@ import {
 import {
     buildRadarFindingCounts,
     buildRadarFindingFilterOptions,
+    buildRadarStatusFilterOptions,
     filterRadarFindings,
     type RadarFindingFilter,
+    type RadarStatusFilter,
 } from '../utils/findingClassification';
+import { normalizeDocumentPage } from '../utils/documentPage';
 
 interface UseContradictionRadarStateOptions {
     projectId: string;
@@ -40,6 +44,8 @@ export function useContradictionRadarState({
     projectName,
 }: UseContradictionRadarStateOptions) {
     const isLocalProject = isLocalProjectId(projectId);
+    const aiStatus = useAiReadiness();
+    const aiAvailable = isLocalProject || aiStatus?.available === true;
     const [contradictions, setContradictions] = useState<ContradictionItem[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -51,6 +57,7 @@ export function useContradictionRadarState({
     const [projectDocuments, setProjectDocuments] = useState<RadarProjectDocument[]>([]);
     const [resolvedProjectName, setResolvedProjectName] = useState<string>(projectName || DEFAULT_PROJECT_NAME);
     const [activeFilter, setActiveFilter] = useState<RadarFindingFilter>('ALL');
+    const [activeStatusFilter, setActiveStatusFilter] = useState<RadarStatusFilter>('OPEN');
     const scanWasActiveRef = useRef(false);
     const scanResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -244,7 +251,8 @@ export function useContradictionRadarState({
                 throw new Error(data?.error || "Failed to open document");
             }
 
-            const anchor = page ? `#page=${page}` : '';
+            const normalizedPage = normalizeDocumentPage(page);
+            const anchor = normalizedPage ? `#page=${normalizedPage}` : '';
             window.open(`${data.signedUrl}${anchor}`, '_blank');
         } catch (error) {
             console.error("Open document error:", error);
@@ -256,6 +264,12 @@ export function useContradictionRadarState({
     }, []);
 
     const scanProject = useCallback(async (force = false) => {
+        if (!aiAvailable) {
+            setCurrentStep('חיבור ה-AI לא מוגדר. המסמכים הקיימים לא השתנו.');
+            setCurrentStepStatus('error');
+            return;
+        }
+
         setIsScanning(true);
         setProgress(0);
         setCurrentStepStatus(null);
@@ -305,6 +319,7 @@ export function useContradictionRadarState({
         }
     }, [
         applyScanProgress,
+        aiAvailable,
         fetchContradictions,
         fetchDocuments,
         projectId,
@@ -313,6 +328,12 @@ export function useContradictionRadarState({
     ]);
 
     const rescanItem = useCallback(async (id: string, workDocId?: string) => {
+        if (!aiAvailable) {
+            setCurrentStep('חיבור ה-AI לא מוגדר. אי אפשר לסרוק מחדש כרגע.');
+            setCurrentStepStatus('error');
+            return;
+        }
+
         setRescanningIds((prev) => new Set(prev).add(id));
         try {
             const data = await rescanRadarItem(projectId, workDocId);
@@ -328,7 +349,7 @@ export function useContradictionRadarState({
                 return next;
             });
         }
-    }, [fetchContradictions, projectId]);
+    }, [aiAvailable, fetchContradictions, projectId]);
 
     const updateStatus = useCallback(async (
         id: string,
@@ -383,8 +404,13 @@ export function useContradictionRadarState({
         projectDocuments,
         resolvedProjectName,
         activeFilter,
+        activeStatusFilter,
+        aiAvailable: aiStatus === null && !isLocalProject ? null : aiAvailable,
     }), [
         activeFilter,
+        activeStatusFilter,
+        aiAvailable,
+        aiStatus,
         contradictions,
         currentStep,
         currentStepStatus,
@@ -395,15 +421,22 @@ export function useContradictionRadarState({
         projectDocuments,
         rescanningIds,
         resolvedProjectName,
+        isLocalProject,
     ]);
 
     const setters = useMemo(() => ({
         setExpandedId,
         setActiveFilter,
+        setActiveStatusFilter,
     }), []);
 
     const handleFilterChange = useCallback((filter: RadarFindingFilter) => {
         setActiveFilter(filter);
+        setExpandedId(null);
+    }, []);
+
+    const handleStatusFilterChange = useCallback((filter: RadarStatusFilter) => {
+        setActiveStatusFilter(filter);
         setExpandedId(null);
     }, []);
 
@@ -416,6 +449,7 @@ export function useContradictionRadarState({
         rescanItem,
         scanProject,
         handleFilterChange,
+        handleStatusFilterChange,
         toggleExpanded,
         updateStatus,
     }), [
@@ -427,18 +461,21 @@ export function useContradictionRadarState({
         rescanItem,
         scanProject,
         handleFilterChange,
+        handleStatusFilterChange,
         toggleExpanded,
         updateStatus,
     ]);
 
     const derived = useMemo(() => {
-        const findingCounts = buildRadarFindingCounts(contradictions);
-        const filteredFindings = filterRadarFindings(contradictions, activeFilter);
+        const findingsForStatus = filterRadarFindings(contradictions, 'ALL', activeStatusFilter);
+        const findingCounts = buildRadarFindingCounts(findingsForStatus);
+        const filteredFindings = filterRadarFindings(findingsForStatus, activeFilter);
 
         return {
             contractDocsCount: projectDocuments.filter((document) => document.category === 'CONTRACT').length,
             executionDocsCount: projectDocuments.filter((document) => document.category === 'EXECUTION').length,
             filterOptions: buildRadarFindingFilterOptions(findingCounts),
+            statusFilterOptions: buildRadarStatusFilterOptions(contradictions),
             filteredFindings,
             findingCounts,
             hasContradictions: contradictions.length > 0,
@@ -447,7 +484,7 @@ export function useContradictionRadarState({
             shouldAnimateItems: filteredFindings.length <= RADAR_ITEM_MOTION_THRESHOLD,
             totalContradictions: findingCounts.all,
         };
-    }, [activeFilter, contradictions, projectDocuments]);
+    }, [activeFilter, activeStatusFilter, contradictions, projectDocuments]);
 
     return {
         state,

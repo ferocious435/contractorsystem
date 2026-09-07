@@ -11,6 +11,8 @@ import { VAT_RATE } from "@/utils/constants";
 import { getAmountInclVat, getAmountVat, getLedgerRowAmount, getMoneySum, getPreferredProjectAmount, isVisibleLedgerRow } from "@/utils/project-financials";
 import { isLocalProjectId } from "@/utils/local-projects";
 import { getLocalDemoProjectProfile } from "@/utils/local-demo-data";
+import { useAiReadiness } from '@/hooks/useAiReadiness';
+import { summarizeOpenContradictions } from './projectOverviewStats';
 
 interface ProjectOverviewProps {
     projectId: string;
@@ -18,6 +20,7 @@ interface ProjectOverviewProps {
 }
 
 export default function ProjectOverview({ projectId, onNavigate }: ProjectOverviewProps) {
+    const aiStatus = useAiReadiness();
     const [stats, setStats] = useState({
         originalBudget: 0,
         approvedVO: 0,
@@ -65,7 +68,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                     .eq('project_id', projectId),
                 supabase
                     .from('contradictions')
-                    .select('status, category')
+                    .select('status, category, severity')
                     .eq('project_id', projectId),
                 supabase
                     .from('documents')
@@ -87,14 +90,14 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                 const withEvidence = visibleLedgerRows.filter(r => r.ai_rationale || r.governing_notes).length;
                 const coverage = visibleLedgerRows.length > 0 ? Math.round((withEvidence / visibleLedgerRows.length) * 100) : 0;
 
-                const criticalItems = contradictions?.filter(c => c.status === 'OPEN' && c.category === 'CONTRADICTION').length || 0;
+                const contradictionSummary = summarizeOpenContradictions(contradictions);
 
                 setStats({
                     originalBudget: getPreferredProjectAmount(project?.budget, ledger),
                     approvedVO: approved,
                     pendingVO: pending,
-                    criticalCount: criticalItems,
-                    totalDiscrepancies: contradictions?.length || 0,
+                    criticalCount: contradictionSummary.highRiskOpenCount,
+                    totalDiscrepancies: contradictionSummary.openCount,
                     documentCount: docCount || 0,
                     evidenceCoverage: coverage,
                     clientName: project?.client_name || "לקוח לא ידוע"
@@ -238,7 +241,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                         <div className="p-4 bg-white/5 rounded-2xl border border-white/5 flex items-center justify-between group-hover:border-blue-500/30 transition-all">
                             <div className="flex items-center gap-3">
                                 <Sparkles size={16} className="text-blue-400" />
-                                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">כיסוי הוכחות</span>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">פריטי תמחור עם הסבר</span>
                             </div>
                             <span className="text-xl font-black text-blue-400 font-mono">{stats.evidenceCoverage}%</span>
                         </div>
@@ -259,7 +262,14 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                     { label: 'בקרת סתירות', icon: <AlertTriangle size={20} />, value: stats.totalDiscrepancies, sub: 'סתירות מזוהות', color: 'blue', view: 'בקרת סתירות' },
                     { label: 'תמחור חריגים', icon: <Zap size={20} />, value: stats.pendingVO > 0 ? 'פעיל' : 'נקי', sub: 'סטטוס תמחור', color: 'orange', view: 'תמחור' },
                     { label: 'מסמכים', icon: <Clock size={20} />, value: stats.documentCount, sub: 'קבצים במערכת', color: 'purple', view: 'מסמכי חוזה' },
-                    { label: 'יועץ בינה מלאכותית', icon: <Activity size={20} />, value: 'אונליין', sub: 'תמיכת Gemini', color: 'emerald', view: 'יועץ בינה מלאכותית' },
+                    {
+                        label: 'יועץ בינה מלאכותית',
+                        icon: <Activity size={20} />,
+                        value: aiStatus === null ? 'בודק...' : aiStatus.available ? 'זמין' : 'לא מוגדר',
+                        sub: aiStatus?.provider || 'Gemini 3.5 Flash',
+                        color: aiStatus?.available ? 'emerald' : 'orange',
+                        view: 'יועץ בינה מלאכותית',
+                    },
                 ].map((item, i) => (
                     <motion.div 
                         key={i}

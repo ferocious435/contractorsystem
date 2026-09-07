@@ -15,6 +15,7 @@
     "verify:goal-readiness": "node scripts/verify-enterprise-goal-readiness.mjs",
     "verify:runtime-smoke": "node scripts/verify-runtime-smoke.mjs",
     "verify:runtime-pricing": "node scripts/verify-runtime-pricing.mjs",
+    "verify:audit-ui": "node --experimental-strip-types --test scripts/verify-radar-status-filters.mjs scripts/verify-document-display-status.mjs scripts/verify-ai-readiness.mjs scripts/verify-document-page-number.mjs scripts/verify-evidence-display-status.mjs scripts/verify-project-overview-counts.mjs",
     "lint": "eslint",
     "worker": "nodemon",
     "clean:worker": "powershell -Command \"Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }\"",

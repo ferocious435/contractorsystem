@@ -22,6 +22,7 @@ import {
 import type { ContradictionItem } from '@/types';
 import { RichText } from '@/components/ui/RichText';
 import { getRadarFindingReference } from './contradiction-radar/utils/findingClassification';
+import { getEvidenceDisplayStatus } from './contradiction-radar/utils/evidenceVerification';
 
 type EvidenceRecord = Record<string, unknown>;
 
@@ -45,6 +46,7 @@ interface ContradictionRadarFeedItemProps {
     isExpanded: boolean;
     isItemRescanning: boolean;
     isScanning: boolean;
+    aiAvailable: boolean;
     shouldAnimate: boolean;
     onToggleExpand: (id: string) => void;
     onRescanItem: (id: string, executionDocId?: string) => void;
@@ -107,6 +109,7 @@ function ContradictionRadarFeedItem({
     isExpanded,
     isItemRescanning,
     isScanning,
+    aiAvailable,
     shouldAnimate,
     onToggleExpand,
     onRescanItem,
@@ -115,14 +118,6 @@ function ContradictionRadarFeedItem({
     onNavigate,
     onRadarOpenDocument,
 }: ContradictionRadarFeedItemProps) {
-    const normalizeConfidence = (value: unknown) => {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue) || numericValue <= 0) return null;
-        if (numericValue <= 1) return numericValue;
-        if (numericValue <= 100) return numericValue / 100;
-        return 1;
-    };
-
     const cleanDisplayText = (text?: string | null) => {
         return String(text || '')
             .replace(/Powered by[^\n.]*/gi, '')
@@ -162,21 +157,12 @@ function ContradictionRadarFeedItem({
     const expertOperationalInstructions = getEvidenceRecord(expert?.operational_instructions);
     const expertContractualDiagnostic = getEvidenceRecord(expert?.contractual_diagnostic);
     const missingEvidence = toStringList(evidenceData?.missing_evidence);
-    const confidenceRatio = normalizeConfidence(evidenceData?.confidence);
-    const comparisonType = String(evidenceData?.comparison_type || '').toLowerCase();
-    const hasQuotes = Boolean(evidenceData?.contract_quote && evidenceData?.work_quote);
     const workPage = toPageValue(evidenceData?.work_page);
     const contractPage = toPageValue(evidenceData?.contract_page);
     const clauseReference = toDisplayText(evidenceData?.clause_reference);
     const richTextEvidence = toRichTextEvidenceData(evidenceData);
 
-    const evidenceStatus = (() => {
-        if (!hasQuotes) return 'REQUIRES_VERIFICATION';
-        if (comparisonType.includes('missing_data') || String(c.category || '').includes('חוסר נתונים')) {
-            return 'REQUIRES_VERIFICATION';
-        }
-        return toDisplayText(evidenceData?.evidence_status) || 'VERIFIED';
-    })();
+    const evidenceStatus = getEvidenceDisplayStatus(evidenceData);
 
     const recommendationText = cleanDisplayText(
         toDisplayText(c.strategy_advice) ||
@@ -204,8 +190,8 @@ function ContradictionRadarFeedItem({
     ) || 'המשמעות לקבלן היא שינוי בפועל לעומת הבסיס החוזי, ולכן יש מקום לבדיקה מסחרית ולבחינת דרישה מסודרת.';
 
     const verificationMessage = missingEvidence.length > 0
-        ? `המערכת זיהתה כאן בעיה אמיתית על בסיס המסמכים שכבר נמצאו. כדי להפוך אותה לדרישה כספית חזקה יותר, כדאי להשלים: ${missingEvidence.join(' | ')}.`
-        : 'המערכת זיהתה כאן פער אמיתי בין המסמכים. לפני דרישה כספית סופית כדאי לחזק את התיעוד או את הכמות בפועל.';
+        ? `כדי לבדוק את הממצא צריך להשלים: ${missingEvidence.join(' | ')}.`
+        : 'נמצאו שתי מובאות, אך הן עדיין לא אומתו אוטומטית מול הטקסט המלא של שני המקורות. יש לפתוח את המקורות ולבדוק אותן לפני פעולה כספית.';
 
     const RowComponent = (shouldAnimate ? motion.div : 'div') as React.ElementType;
     const rowAnimationProps = shouldAnimate
@@ -248,21 +234,19 @@ function ContradictionRadarFeedItem({
                             </div>
 
                             <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border ${
-                                evidenceStatus === 'VERIFIED'
+                                evidenceStatus === 'SOURCE_VERIFIED'
                                     ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
                                     : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
                             }`}>
                                 <ShieldAlert size={13} />
                                 <span className="text-xs font-bold">
-                                    {evidenceStatus === 'VERIFIED' ? 'יש בסיס מסמכי ברור' : 'הסתירה קיימת, אבל כדאי לחזק את הבסיס'}
+                                    {evidenceStatus === 'SOURCE_VERIFIED'
+                                        ? 'המובאות אומתו מול המקור'
+                                        : evidenceStatus === 'QUOTES_REQUIRE_SOURCE_CHECK'
+                                            ? 'יש מובאות · נדרש אימות במקור'
+                                            : 'חסר בסיס מסמכי מלא'}
                                 </span>
                             </div>
-
-                            {confidenceRatio !== null && (
-                                <span className="px-3 py-1.5 rounded-full bg-white/[0.04] border border-white/10 text-xs font-bold text-gray-300">
-                                    ודאות {Math.round(confidenceRatio * 100)}%
-                                </span>
-                            )}
                         </div>
 
                         <h3 className="text-2xl font-black text-white leading-tight group-hover:text-blue-300 transition-colors">
@@ -280,11 +264,11 @@ function ContradictionRadarFeedItem({
                                 e.stopPropagation();
                                 onRescanItem(c.id, c.source_execution_doc_id);
                             }}
-                            disabled={isItemRescanning || isScanning}
+                            disabled={isItemRescanning || isScanning || !aiAvailable}
+                            title={aiAvailable ? 'סריקה מחדש' : 'נדרש חיבור AI לפני סריקה מחדש'}
                             className={`p-2.5 rounded-xl border border-white/10 transition-all ${
                                 isItemRescanning ? 'bg-blue-500/20 text-blue-400' : 'bg-white/[0.03] text-gray-500 hover:text-white hover:bg-white/10'
                             }`}
-                            title="סריקה מחדש"
                         >
                             <RefreshCw className={`w-4 h-4 ${isItemRescanning ? 'animate-spin' : ''}`} />
                         </button>
@@ -376,11 +360,11 @@ function ContradictionRadarFeedItem({
                                 <div className="text-base text-gray-200 leading-8">
                                     <RichText text={cleanDisplayText(c.description || '')} evidence={richTextEvidence} onOpen={onRadarOpenDocument} />
                                 </div>
-                                {evidenceStatus !== 'VERIFIED' && (
+                                {evidenceStatus !== 'SOURCE_VERIFIED' && (
                                     <div className="mt-5 p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl">
                                         <div className="flex items-center gap-2 text-amber-300 text-sm font-bold mb-2">
                                             <ShieldAlert className="w-4 h-4" />
-                                            צריך לחזק את הבסיס לפני דרישה כספית מלאה
+                                            נדרשת בדיקה מול מסמכי המקור
                                         </div>
                                         <p className="text-sm text-gray-300 leading-7">{verificationMessage}</p>
                                     </div>
@@ -392,10 +376,10 @@ function ContradictionRadarFeedItem({
                             <div className="bg-white/[0.02] p-5 rounded-2xl border border-white/5 space-y-3">
                                 <div className="flex items-center gap-2 text-sm font-bold text-blue-300">
                                     <Shield className="w-4 h-4" />
-                                    מה נדרש לפי החוזה או הבסיס
+                                    ציטוט מהחוזה או מהבסיס
                                 </div>
                                 <p className="text-sm text-gray-200 leading-7">
-                                    {cleanDisplayText(toDisplayText(evidenceData?.original_instruction) || toDisplayText(evidenceData?.contract_quote)) || 'לא נמצא עדיין ניסוח חוזי ישיר להצגה במסך.'}
+                                    {cleanDisplayText(toDisplayText(evidenceData?.contract_quote) || toDisplayText(evidenceData?.original_instruction)) || 'לא נמצא עדיין ציטוט חוזי ישיר להצגה במסך.'}
                                 </p>
                                 {clauseReference && (
                                     <span className="inline-flex px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs text-blue-200">
@@ -407,10 +391,10 @@ function ContradictionRadarFeedItem({
                             <div className="bg-white/[0.02] p-5 rounded-2xl border border-white/5 space-y-3">
                                 <div className="flex items-center gap-2 text-sm font-bold text-amber-300">
                                     <FileSearch className="w-4 h-4" />
-                                    מה קרה בפועל
+                                    ציטוט ממסמך הביצוע
                                 </div>
                                 <p className="text-sm text-gray-200 leading-7">
-                                    {cleanDisplayText(toDisplayText(evidenceData?.new_requirement) || toDisplayText(evidenceData?.work_quote)) || 'לא נמצא עדיין ניסוח ביצוע ישיר להצגה במסך.'}
+                                    {cleanDisplayText(toDisplayText(evidenceData?.work_quote) || toDisplayText(evidenceData?.new_requirement)) || 'לא נמצא עדיין ציטוט ישיר ממסמך הביצוע.'}
                                 </p>
                             </div>
                         </div>

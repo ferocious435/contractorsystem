@@ -33,7 +33,7 @@ export interface ParsedDocumentJson extends Record<string, unknown> {
     system_error?: string | null;
     system_errors?: ParsedSystemError[];
     type?: string | null;
-    warnings?: string[];
+    warnings?: unknown[];
 }
 
 export interface ProjectDocument extends Record<string, unknown> {

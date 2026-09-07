@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, CheckCircle2, ShieldCheck, FileSearch, AlertTriangle, Info, Layers, ExternalLink } from 'lucide-react';
 import type { ParsedDocumentJson, ParsedFinancialItem, ParsedSystemError, ProjectDocument } from './types';
+import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 
 interface ScreenOfTruthModalProps {
     document: ProjectDocument;
@@ -182,7 +183,7 @@ function getSystemErrorText(errors: ParsedSystemError[], fallback?: string | nul
 }
 
 function isDocumentWarning(warning: string) {
-    return !/GoogleGenerativeAI|API key|Forbidden|fetching from|AI processing warning|reported as leaked|generateContent/i.test(warning);
+    return !/GoogleGenerativeAI|Gemini|API key|Forbidden|fetching from|AI processing warning|reported as leaked|generateContent|quota|rate.?limit|429|RESOURCE_EXHAUSTED/i.test(warning);
 }
 
 export default function ScreenOfTruthModal({ document: doc, projectId, onClose, onValidate }: ScreenOfTruthModalProps) {
@@ -195,8 +196,16 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
     const documentType = safeStructuredText(jsonData.document_type || jsonData.type, inferDocumentType(doc.title, doc.category));
     const summary = getUsefulSummary(jsonData, doc);
     const readablePreviewText = getReadableDocumentText(jsonData, doc);
-    const systemErrors = Array.isArray(jsonData.system_errors) ? jsonData.system_errors : [];
-    const hasSystemError = doc.ai_status === 'ERROR' || Boolean(jsonData.system_error || jsonData.analysis_status === 'AI_ERROR');
+    const warningSystemErrors = Array.isArray(jsonData.warnings)
+        ? jsonData.warnings
+            .map((warning) => getRecord(warning))
+            .filter((warning): warning is ParsedSystemError => Boolean(warning?.code))
+        : [];
+    const systemErrors = [
+        ...(Array.isArray(jsonData.system_errors) ? jsonData.system_errors : []),
+        ...warningSystemErrors,
+    ];
+    const hasSystemError = hasIncompleteAiAnalysis({ ...doc, parsed_json: jsonData });
     const financialItems = Array.isArray(jsonData.financial_data?.items) ? jsonData.financial_data.items : [];
     const totalAmount = jsonData.financial_data?.total_amount;
     const hasFinancialItems = financialItems.length > 0;
@@ -292,16 +301,16 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
                 <div className="flex justify-between items-center gap-4 px-5 md:px-8 py-4 border-b border-white/5 bg-black/40">
                     <div className="flex items-center gap-4 min-w-0">
                         <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${
-                            isAlreadyValidated
-                                ? 'border-emerald-500/30 bg-emerald-500/10'
-                                : hasSystemError
-                                    ? 'border-red-500/30 bg-red-500/10'
+                            hasSystemError
+                                ? 'border-amber-500/30 bg-amber-500/10'
+                                : isAlreadyValidated
+                                    ? 'border-emerald-500/30 bg-emerald-500/10'
                                     : 'border-blue-500/30 bg-blue-500/10'
                         }`}>
-                            {isAlreadyValidated ? (
+                            {hasSystemError ? (
+                                <AlertTriangle className="w-6 h-6 text-amber-400" />
+                            ) : isAlreadyValidated ? (
                                 <ShieldCheck className="w-6 h-6 text-emerald-400" />
-                            ) : hasSystemError ? (
-                                <AlertTriangle className="w-6 h-6 text-red-400" />
                             ) : (
                                 <FileSearch className="w-6 h-6 text-blue-400" />
                             )}
@@ -310,10 +319,16 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
                         <div className="min-w-0">
                             <h2 className="text-lg md:text-2xl font-black text-white truncate">{cleanTitle(doc.title)}</h2>
                             <div className="flex flex-wrap items-center gap-2 mt-1 text-sm">
-                                <span className={isAlreadyValidated ? 'text-emerald-400 font-bold' : hasSystemError ? 'text-red-300 font-bold' : 'text-blue-400 font-bold'}>
-                                    {isAlreadyValidated ? 'המסמך כבר אושר' : hasSystemError ? 'הניתוח לא הושלם' : 'מוכן לסקירה לפני אישור'}
+                                <span className={hasSystemError ? 'text-amber-300 font-bold' : isAlreadyValidated ? 'text-emerald-400 font-bold' : 'text-blue-400 font-bold'}>
+                                    {hasSystemError && isAlreadyValidated
+                                        ? 'אושר ידנית · ניתוח AI לא הושלם'
+                                        : hasSystemError
+                                            ? 'ניתוח AI לא הושלם'
+                                            : isAlreadyValidated
+                                                ? 'המסמך אושר ידנית'
+                                                : 'מוכן לסקירה לפני אישור'}
                                 </span>
-                                {confidencePercent ? (
+                                {confidencePercent && !hasSystemError ? (
                                     <span className="text-gray-400">רמת ודאות: {confidencePercent}%</span>
                                 ) : null}
                             </div>
@@ -403,12 +418,14 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
 
                         <div className="flex-1 overflow-y-auto p-5 md:p-7 space-y-6">
                             {hasSystemError ? (
-                                <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-5 text-red-100 leading-7">
-                                    <div className="flex items-center gap-2 text-base font-black text-red-200">
+                                <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-5 text-amber-100 leading-7">
+                                    <div className="flex items-center gap-2 text-base font-black text-amber-200">
                                         <AlertTriangle className="w-5 h-5" />
-                                        לא מאשרים את המסמך במצב הזה
+                                        {isAlreadyValidated
+                                            ? 'האישור הידני נשמר, אך ניתוח ה-AI לא הושלם'
+                                            : 'ניתוח ה-AI לא הושלם'}
                                     </div>
-                                    <p className="mt-3 text-sm text-red-100/90">{getSystemErrorText(systemErrors, jsonData.system_error)}</p>
+                                    <p className="mt-3 text-sm text-amber-100/90">הקובץ נשמר במערכת. {getSystemErrorText(systemErrors, jsonData.system_error)}</p>
                                 </div>
                             ) : null}
 
@@ -506,8 +523,10 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
                         <div className="px-5 md:px-8 py-5 bg-black/40 border-t border-white/5">
                             <div className="flex items-center justify-between gap-4 flex-wrap">
                                 <div className="text-sm text-gray-400 leading-6 max-w-xl">
-                                    {isAlreadyValidated
-                                        ? 'המסמך כבר מאושר במערכת.'
+                                    {isAlreadyValidated && hasSystemError
+                                        ? 'האישור הידני נשמר, אבל אין כרגע ניתוח AI מלא שאפשר להסתמך עליו.'
+                                        : isAlreadyValidated
+                                            ? 'המסמך אושר ידנית לאחר ניתוח AI מלא.'
                                         : canValidate
                                             ? 'אישור הופך את המסמך למקור מאומת להמשך עבודה במערכת.'
                                             : 'אי אפשר לאשר עד שיש ניתוח תקין וברור.'}

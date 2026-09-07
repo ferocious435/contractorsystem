@@ -19,6 +19,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import ScreenOfTruthModal from './ScreenOfTruthModal';
 import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
 import type { DocumentCategory, ParsedDocumentJson, ProjectDocument } from './types';
+import { getDocumentDisplayState, hasIncompleteAiAnalysis } from './documentDisplayStatus';
+import { useAiReadiness } from '@/hooks/useAiReadiness';
 
 interface DocumentsPageClientProps {
     projectId: string;
@@ -52,6 +54,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
     const isLocalProject = isLocalProjectId(projectId);
     const isDemoProject = isDemoProjectId(projectId);
+    const aiStatus = useAiReadiness();
     const [documents, setDocuments] = useState<ProjectDocument[]>(
         (initialDocuments.length ? initialDocuments : buildDemoDocuments(projectId, category)).map(normalizeDocument)
     );
@@ -179,6 +182,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
     const runAIParsing = async (doc: ProjectDocument) => {
         if (processingId) return;
+        if (!isLocalProject && aiStatus?.available !== true) return;
         setProcessingId(doc.id);
 
         if (isLocalProject) {
@@ -300,43 +304,41 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         }
     };
 
-    const getStatusIcon = (status?: string | null) => {
-        switch (status) {
+    const getStatusIcon = (doc: ProjectDocument) => {
+        switch (getDocumentDisplayState(doc).key) {
             case 'VALIDATED':
                 return <ShieldCheck className="w-4 h-4 text-emerald-400" />;
             case 'SCANNED':
                 return <Scan className="w-4 h-4 text-blue-400" />;
             case 'PROCESSING':
-            case 'EXTRACTING':
                 return <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />;
-            case 'ERROR':
+            case 'VALIDATED_WITH_AI_WARNING':
+            case 'AI_INCOMPLETE':
                 return <AlertTriangle className="w-4 h-4 text-red-500" />;
             default:
                 return <Clock className="w-4 h-4 text-gray-500" />;
         }
     };
 
-    const getStatusLabel = (status?: string | null) => {
-        const labelByStatus: Record<string, string> = {
-            VALIDATED: 'מאושר כמקור',
-            SCANNED: 'מוכן לבדיקה',
-            PROCESSING: 'מנתח מסמך...',
-            EXTRACTING: 'קורא מסמך...',
-            ERROR: 'שגיאת ניתוח',
-            PENDING: 'הועלה, ממתין לניתוח',
+    const getStatusLabel = (doc: ProjectDocument) => {
+        const labelByStatus = {
+            VALIDATED: 'אושר ידנית',
+            VALIDATED_WITH_AI_WARNING: 'אושר ידנית · AI לא הושלם',
+            AI_INCOMPLETE: 'ניתוח AI לא הושלם',
+            SCANNED: 'ניתוח הושלם · נדרש אישור',
+            PROCESSING: 'המערכת קוראת ומנתחת...',
+            TEXT_READ: 'הטקסט נקרא · נדרש ניתוח',
+            PENDING: 'הקובץ נשמר · ממתין לניתוח',
         };
-        if (!status) return labelByStatus.PENDING;
-        if (labelByStatus[status]) return labelByStatus[status];
-
-        return 'ממתין לטיפול';
+        return labelByStatus[getDocumentDisplayState(doc).key];
     };
 
     const getEvidenceConfidenceLabel = (doc: ProjectDocument) => {
         const rawConfidence = doc.parsed_json?.confidence ?? doc.parsed_json?.confidence_score ?? doc.parsed_json?.document_confidence;
         const confidence = typeof rawConfidence === 'number' ? rawConfidence : Number(rawConfidence);
 
-        if (doc.parsed_json?.system_error || doc.parsed_json?.analysis_status === 'AI_ERROR') return 'AI לא עבד';
-        if (doc.ai_status === 'VALIDATED') return 'מאושר כמקור';
+        if (hasIncompleteAiAnalysis(doc)) return 'AI לא הושלם';
+        if (doc.ai_status === 'VALIDATED') return 'אושר ידנית';
         if (doc.ai_status === 'SCANNED') return 'צריך אישור';
         if (doc.extracted_text_hash || doc.ocr_status === 'COMPLETED') return 'טקסט נקרא';
 
@@ -345,7 +347,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             return `${Math.round(percent)}%`;
         }
 
-        if (doc.ai_status === 'VALIDATED') return 'מאושר כמקור';
+        if (doc.ai_status === 'VALIDATED') return 'אושר ידנית';
         if (doc.extracted_text_hash || doc.ocr_status === 'COMPLETED' || doc.ai_status === 'SCANNED') return 'נדרש אישור';
         return 'עדיין לא נותח';
     };
@@ -389,11 +391,18 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     };
 
     const hasSystemError = (doc: ProjectDocument) => {
-        return doc.ai_status === 'ERROR' || Boolean(doc.parsed_json?.system_error || doc.parsed_json?.analysis_status === 'AI_ERROR');
+        return hasIncompleteAiAnalysis(doc);
     };
 
     const getSystemErrorCode = (doc: ProjectDocument) => {
-        return String(doc.parsed_json?.system_errors?.[0]?.code || doc.parsed_json?.system_error || 'AI_ANALYSIS_FAILED');
+        const warning = Array.isArray(doc.parsed_json?.warnings)
+            ? doc.parsed_json.warnings.find((item) => item && typeof item === 'object' && !Array.isArray(item))
+            : null;
+        const warningCode = warning && typeof warning === 'object' && 'code' in warning
+            ? (warning as Record<string, unknown>).code
+            : null;
+
+        return String(doc.parsed_json?.system_errors?.[0]?.code || doc.parsed_json?.system_error || warningCode || 'AI_ANALYSIS_FAILED');
     };
 
     const getSystemErrorHint = (doc: ProjectDocument) => {
@@ -421,9 +430,17 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     };
 
     const getActionHint = (doc: ProjectDocument) => {
-        if (hasSystemError(doc)) return getSystemErrorHint(doc);
+        if (hasSystemError(doc)) {
+            if (doc.ai_status === 'VALIDATED') {
+                return 'הקובץ והאישור הידני נשמרו, אך ניתוח ה-AI לא הושלם.';
+            }
+            if (getDocumentDisplayState(doc).textRead) {
+                return 'הקובץ והטקסט נשמרו, אך ניתוח ה-AI לא הושלם.';
+            }
+            return getSystemErrorHint(doc);
+        }
         if (doc.ai_status === 'SCANNED') return 'בדוק את מה שהמערכת מצאה ואשר רק אם זה נכון.';
-        if (doc.ai_status === 'VALIDATED') return 'המסמך מאושר ויכול לשמש מקור להמשך העבודה.';
+        if (doc.ai_status === 'VALIDATED') return 'ניתוח ה-AI הושלם והמסמך אושר ידנית.';
         if (doc.ai_status === 'PROCESSING' || doc.ai_status === 'EXTRACTING') return 'המערכת עובדת על המסמך עכשיו.';
         if (doc.extracted_text_hash || doc.ocr_status === 'COMPLETED') return 'הטקסט נקרא, אבל עדיין צריך ניתוח AI.';
         return 'המסמך הועלה ועדיין לא נותח.';
@@ -445,7 +462,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     };
 
     const documentsNeedingAction = documents.filter((doc) =>
-        hasSystemError(doc) || doc.ai_status === 'SCANNED' || doc.ai_status === 'PENDING' || !doc.ai_status
+        getDocumentDisplayState(doc).needsAction
     );
     const documentErrors = documents.filter(hasSystemError);
     const validatedDocuments = documents.filter((doc) => doc.ai_status === 'VALIDATED');
@@ -454,7 +471,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         { id: 'ALL' as const, label: 'כל המסמכים', count: documents.length },
         { id: 'ERROR' as const, label: 'שגיאות', count: documentErrors.length },
         { id: 'PENDING' as const, label: 'ממתין לניתוח', count: documents.filter((doc) => doc.ai_status === 'PENDING' || !doc.ai_status).length },
-        { id: 'VALIDATED' as const, label: 'מאושרים', count: validatedDocuments.length },
+        { id: 'VALIDATED' as const, label: 'אישור ידני', count: validatedDocuments.length },
     ];
 
     const visibleDocuments = documents
@@ -497,7 +514,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                             <ShieldCheck className="w-5 h-5 text-emerald-400" />
                         </div>
                         <div>
-                            <div className="text-sm font-bold text-gray-400">מסמכים מאומתים</div>
+                            <div className="text-sm font-bold text-gray-400">אושרו ידנית</div>
                             <div className="text-3xl font-black text-emerald-400 mt-1">
                                 {documents.filter(d => d.ai_status === 'VALIDATED').length}
                             </div>
@@ -602,8 +619,8 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                     </div>
 
                                     <div className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-white/5 rounded-full">
-                                        {getStatusIcon(doc.ai_status)}
-                                        <span className="text-xs font-bold text-gray-300">{getStatusLabel(doc.ai_status)}</span>
+                                        {getStatusIcon(doc)}
+                                        <span className="text-xs font-bold text-gray-300">{getStatusLabel(doc)}</span>
                                     </div>
                                 </div>
 
@@ -671,14 +688,19 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                     </div>
 
                                     <div className="flex flex-wrap justify-end gap-2">
-                                        {(doc.ai_status === 'PENDING' || doc.ai_status === 'ERROR' || !doc.ai_status) && (
+                                        {(doc.ai_status === 'PENDING' || hasSystemError(doc) || !doc.ai_status) && (
                                             <button
                                                 onClick={() => runAIParsing(doc)}
-                                                disabled={Boolean(processingId)}
-                                                className={`min-h-11 flex items-center gap-2 px-4 py-3 bg-blue-500 text-black rounded-xl text-sm font-black hover:scale-105 transition-transform active:scale-95 shadow-[0_10px_20px_rgba(59,130,246,0.2)] ${processingId ? 'opacity-60 cursor-not-allowed hover:scale-100' : ''}`}
+                                                disabled={Boolean(processingId) || (!isLocalProject && aiStatus?.available !== true)}
+                                                title={!isLocalProject && aiStatus?.available === false ? 'נדרש חיבור AI לפני ניתוח חדש' : undefined}
+                                                className={`min-h-11 flex items-center gap-2 px-4 py-3 bg-blue-500 text-black rounded-xl text-sm font-black hover:scale-105 transition-transform active:scale-95 shadow-[0_10px_20px_rgba(59,130,246,0.2)] ${processingId || (!isLocalProject && aiStatus?.available !== true) ? 'opacity-60 cursor-not-allowed hover:scale-100' : ''}`}
                                             >
                                                 <Play size={12} className="fill-current" />
-                                                {processingId === doc.id ? 'מנתח...' : getPrimaryActionLabel(doc)}
+                                                {processingId === doc.id
+                                                    ? 'מנתח...'
+                                                    : !isLocalProject && aiStatus?.available === false
+                                                        ? 'נדרש חיבור AI'
+                                                        : getPrimaryActionLabel(doc)}
                                             </button>
                                         )}
                                         {doc.ai_status === 'SCANNED' && (
@@ -690,7 +712,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                                                 {getPrimaryActionLabel(doc)}
                                             </button>
                                         )}
-                                        {doc.ai_status === 'VALIDATED' && (
+                                        {getDocumentDisplayState(doc).key === 'VALIDATED' && (
                                             <div className="min-h-11 flex items-center gap-2 px-4 py-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 rounded-xl text-sm font-black">
                                                 <ShieldCheck size={12} />
                                                 מאושר כמקור

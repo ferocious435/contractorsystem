@@ -10,6 +10,7 @@ interface ContradictionRadarHeaderProps {
     contractDocsCount: number;
     executionDocsCount: number;
     hasContradictions: boolean;
+    aiAvailable: boolean | null;
     projectName: string;
     scanProject: (force: boolean) => void;
     onExportPDF: () => void;
@@ -23,6 +24,7 @@ export default function ContradictionRadarHeader({
     contractDocsCount,
     executionDocsCount,
     hasContradictions,
+    aiAvailable,
     projectName,
     scanProject,
     onExportPDF,
@@ -64,10 +66,21 @@ export default function ContradictionRadarHeader({
                             <div>
                                 <div className="text-xs text-gray-500 font-bold">מצב הבדיקה</div>
                                 <div className="text-sm text-white font-bold mt-1">
-                                    {isScanning ? 'המערכת סורקת עכשיו מסמכים' : 'המערכת מוכנה לבדיקה'}
+                                    {isScanning
+                                        ? 'המערכת סורקת עכשיו מסמכים'
+                                        : aiAvailable === null
+                                            ? 'בודק את חיבור ה-AI'
+                                            : aiAvailable
+                                                ? 'המערכת מוכנה לבדיקה'
+                                                : 'חיבור ה-AI לא מוגדר'}
                                 </div>
                             </div>
-                            <div className={`w-3 h-3 rounded-full ${isScanning ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]' : 'bg-emerald-500'}`} />
+                            <div className={`w-3 h-3 rounded-full ${isScanning
+                                ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]'
+                                : aiAvailable
+                                    ? 'bg-emerald-500'
+                                    : 'bg-amber-500'
+                            }`} />
                         </div>
 
                         <div className="mt-4 text-sm text-gray-400">
@@ -95,25 +108,37 @@ export default function ContradictionRadarHeader({
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 p-6 bg-white/[0.03] border border-white/5 rounded-[2rem]">
                     <div>
                         <div className="text-sm font-bold text-white">
-                            {isScanning ? 'הבדיקה רצה עכשיו' : 'אפשר להריץ בדיקה חדשה או לייצא דוח'}
+                            {isScanning
+                                ? 'הבדיקה רצה עכשיו'
+                                : aiAvailable
+                                    ? 'אפשר להריץ בדיקה חדשה או לייצא דוח'
+                                    : 'אפשר לצפות בממצאים ולייצא דוח'}
                         </div>
                         <div className="text-sm text-gray-400 mt-1">
-                            בדיקה חכמה משתמשת בתוצאות הקיימות וסורקת רק מה שבאמת צריך.
+                            {aiAvailable
+                                ? 'בדיקה חכמה משתמשת בתוצאות הקיימות וסורקת רק מה שבאמת צריך.'
+                                : 'ניתוח חדש יופעל רק לאחר הגדרת חיבור AI בשרת.'}
                         </div>
                     </div>
 
                     <div className="flex items-center gap-3 flex-wrap">
                         <button
                             onClick={() => scanProject(false)}
-                            disabled={isScanning}
+                            disabled={isScanning || aiAvailable !== true}
                             className={`px-7 py-4 rounded-2xl font-black text-sm transition-all active:scale-95 flex items-center gap-3 ${
-                                isScanning
+                                isScanning || aiAvailable !== true
                                     ? 'bg-white/5 text-gray-500 cursor-not-allowed border border-white/5'
                                     : 'bg-white text-black hover:bg-blue-50 hover:text-blue-600'
                             }`}
                         >
                             <Zap className={`w-4 h-4 ${isScanning ? 'animate-spin' : ''}`} />
-                            {isScanning ? 'הבדיקה פועלת...' : 'בדיקה חכמה'}
+                            {isScanning
+                                ? 'הבדיקה פועלת...'
+                                : aiAvailable === true
+                                    ? 'בדיקה חכמה'
+                                    : aiAvailable === false
+                                        ? 'נדרש חיבור AI'
+                                        : 'בודק חיבור...'}
                         </button>
 
                         <button

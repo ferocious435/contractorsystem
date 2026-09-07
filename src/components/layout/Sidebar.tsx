@@ -18,7 +18,7 @@ import {
     type LucideIcon
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { AI_MODEL_BRANDING } from '@/utils/constants';
+import { useAiReadiness } from '@/hooks/useAiReadiness';
 
 function NavItem({ icon: Icon, label, badge, active, onClick, disabled }: { icon: LucideIcon, label: string, badge?: number, active?: boolean, onClick?: () => void, disabled?: boolean }) {
     return (
@@ -60,6 +60,7 @@ function NavItem({ icon: Icon, label, badge, active, onClick, disabled }: { icon
 
 export function Sidebar({ currentView = 'dashboard', onNavigate, projectId }: { currentView?: string, onNavigate?: (view: string) => void, projectId?: string | null }) {
     const [openContradictionsCount, setOpenContradictionsCount] = useState(0);
+    const aiStatus = useAiReadiness();
     const isLocalProject = isLocalProjectId(projectId);
     const displayedOpenContradictionsCount = projectId && !isLocalProject ? openContradictionsCount : 0;
 
@@ -162,18 +163,30 @@ export function Sidebar({ currentView = 'dashboard', onNavigate, projectId }: { 
                             <Zap className="w-3 h-3 text-blue-400" />
                             <span className="text-[9px] font-mono text-gray-500 uppercase tracking-widest font-black">ליבת בינה מלאכותית</span>
                         </div>
-                        <div className="px-2 py-0.5 bg-blue-500/10 border border-blue-500/20 rounded-md">
-                            <span className="text-[8px] font-mono text-blue-500 font-black uppercase">פעיל</span>
+                        <div className={`px-2 py-0.5 border rounded-md ${aiStatus?.available
+                            ? 'bg-emerald-500/10 border-emerald-500/20'
+                            : 'bg-amber-500/10 border-amber-500/20'
+                        }`}>
+                            <span className={`text-[8px] font-mono font-black uppercase ${aiStatus?.available ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                {aiStatus === null ? 'בודק...' : aiStatus.available ? 'זמין' : 'לא מוגדר'}
+                            </span>
                         </div>
                     </div>
-                    <p className="text-[11px] font-mono text-gray-300 font-black uppercase tracking-widest text-right">Powered by {AI_MODEL_BRANDING}</p>
+                    <p className="text-[11px] font-mono text-gray-300 font-black uppercase tracking-widest text-right">
+                        {aiStatus?.provider || 'Gemini 3.5 Flash'}
+                    </p>
+                    {aiStatus && !aiStatus.available ? (
+                        <p className="mt-2 text-[10px] text-amber-300/80 font-bold text-right">נדרש חיבור AI לפני ניתוח חדש</p>
+                    ) : null}
                     <div className="mt-2 h-1 w-full bg-white/5 rounded-full overflow-hidden">
-                        <motion.div 
-                            initial={{ x: '-100%' }}
-                            animate={{ x: '100%' }}
-                            transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}
-                            className="h-full w-1/3 bg-gradient-to-r from-transparent via-blue-500 to-transparent"
-                        />
+                        {aiStatus?.available ? (
+                            <motion.div
+                                initial={{ x: '-100%' }}
+                                animate={{ x: '100%' }}
+                                transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}
+                                className="h-full w-1/3 bg-gradient-to-r from-transparent via-emerald-500 to-transparent"
+                            />
+                        ) : null}
                     </div>
                 </motion.div>
             </div>

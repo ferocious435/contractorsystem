@@ -22,11 +22,14 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
         rescanningIds,
         resolvedProjectName,
         activeFilter,
+        activeStatusFilter,
+        aiAvailable,
     } = state;
     const {
         deleteContradiction,
         handleExportPDF,
         handleFilterChange,
+        handleStatusFilterChange,
         radarOpenDocument,
         rescanItem,
         scanProject,
@@ -73,12 +76,29 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                 contractDocsCount={derived.contractDocsCount}
                 executionDocsCount={derived.executionDocsCount}
                 hasContradictions={derived.hasContradictions}
+                aiAvailable={aiAvailable}
                 projectName={resolvedProjectName}
                 scanProject={scanProject}
                 onExportPDF={handleExportPDF}
             />
 
             <div className="flex flex-col gap-6">
+                <div className="flex items-center gap-2 flex-wrap" aria-label="מצב ממצאים">
+                    {derived.statusFilterOptions.map((option) => (
+                        <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => handleStatusFilterChange(option.id)}
+                            className={`px-4 py-2 border rounded-xl text-sm font-bold transition-all active:scale-95 ${activeStatusFilter === option.id
+                                ? 'bg-blue-500/15 border-blue-500/35 text-blue-300'
+                                : 'bg-white/[0.03] border-white/10 text-gray-400 hover:bg-white/[0.07] hover:text-white'
+                            }`}
+                            aria-pressed={activeStatusFilter === option.id}
+                        >
+                            {option.label} ({option.count})
+                        </button>
+                    ))}
+                </div>
                 <div className="flex items-center justify-between flex-wrap gap-4">
                     <h3 className="text-2xl font-black text-white">ממצאים מול מסמכי הביצוע</h3>
                     <div className="flex items-center gap-2 flex-wrap">
@@ -140,6 +160,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                                     isExpanded={expandedId === finding.id}
                                     isItemRescanning={rescanningIds.has(finding.id)}
                                     isScanning={isScanning}
+                                    aiAvailable={aiAvailable === true}
                                     shouldAnimate={derived.shouldAnimateItems}
                                     onToggleExpand={toggleExpanded}
                                     onRescanItem={rescanItem}

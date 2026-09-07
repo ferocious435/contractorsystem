@@ -8,6 +8,14 @@ export type RadarFindingFilter =
     | 'MISSING_INFO'
     | 'NO_DIRECT_MATCH';
 
+export type RadarStatusFilter = 'OPEN' | 'MOVED_TO_PRICING' | 'ARCHIVED';
+
+export interface RadarStatusFilterOption {
+    id: RadarStatusFilter;
+    label: string;
+    count: number;
+}
+
 export interface RadarFindingFilterOption {
     id: RadarFindingFilter;
     label: string;
@@ -97,9 +105,38 @@ export function buildRadarFindingCounts(items: ContradictionItem[]): RadarFindin
     });
 }
 
-export function filterRadarFindings(items: ContradictionItem[], filter: RadarFindingFilter) {
-    if (filter === 'ALL') return items;
-    return items.filter((item) => getRadarFindingKind(item) === filter);
+export function filterRadarFindings(
+    items: ContradictionItem[],
+    filter: RadarFindingFilter,
+    statusFilter?: RadarStatusFilter
+) {
+    const itemsWithStatus = statusFilter
+        ? items.filter((item) => item.status === statusFilter)
+        : items;
+
+    if (filter === 'ALL') return itemsWithStatus;
+    return itemsWithStatus.filter((item) => getRadarFindingKind(item) === filter);
+}
+
+export function buildRadarStatusFilterOptions(items: ContradictionItem[]): RadarStatusFilterOption[] {
+    const countByStatus = items.reduce<Record<RadarStatusFilter, number>>((counts, item) => {
+        if (item.status === 'MOVED_TO_PRICING' || item.status === 'ARCHIVED') {
+            counts[item.status] += 1;
+        } else {
+            counts.OPEN += 1;
+        }
+        return counts;
+    }, {
+        OPEN: 0,
+        MOVED_TO_PRICING: 0,
+        ARCHIVED: 0,
+    });
+
+    return [
+        { id: 'OPEN', label: 'פתוחים', count: countByStatus.OPEN },
+        { id: 'MOVED_TO_PRICING', label: 'הועברו לתמחור', count: countByStatus.MOVED_TO_PRICING },
+        { id: 'ARCHIVED', label: 'ארכיון', count: countByStatus.ARCHIVED },
+    ];
 }
 
 export function buildRadarFindingFilterOptions(counts: RadarFindingCountSummary): RadarFindingFilterOption[] {
