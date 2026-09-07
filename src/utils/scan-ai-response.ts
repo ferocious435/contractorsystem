@@ -43,9 +43,11 @@ function normalizeFindings(value: unknown): ParsedScanFinding[] | null {
     if (!value || typeof value !== "object") return null;
     const record = value as Record<string, unknown>;
 
-    for (const key of ["findings", "results", "items"]) {
-        if (Array.isArray(record[key])) {
-            return normalizeFindings(record[key]);
+    for (const key of ["findings", "results", "items", "finding", "result", "data", "output", "response"]) {
+        const nested = record[key];
+        if (Array.isArray(nested) || (nested && typeof nested === "object")) {
+            const normalized = normalizeFindings(nested);
+            if (normalized) return normalized;
         }
     }
 

@@ -72,7 +72,7 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('documents.map((doc): ScanDocumentWithRole'));
   assert.equal(route.includes('const validatedDocuments ='), false);
   assert.ok(route.includes('generateScanChunkFindings'));
-  assert.ok(route.includes('numPredict: 320'));
+  assert.ok(route.includes('numPredict: 512'));
   assert.ok(route.includes('Return at most one decisive finding'));
   assert.ok(route.includes('const WORK_CHUNK_CHARS = 6_000'));
   assert.ok(route.includes('const MAX_SELECTED_CONTRACT_CHARS = 4_000'));

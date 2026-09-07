@@ -143,10 +143,10 @@ type DocumentScanStateRow = {
 
 async function generateScanChunkFindings(prompt: string) {
     const attempts = [
-        { numPredict: 320, timeoutMs: 90_000, retryInstruction: "" },
+        { numPredict: 512, timeoutMs: 100_000, retryInstruction: "" },
         {
-            numPredict: 192,
-            timeoutMs: 60_000,
+            numPredict: 384,
+            timeoutMs: 75_000,
             retryInstruction: "\nRETRY: Return at most one decisive finding. Keep every value very short and return valid JSON only.",
         },
     ];
