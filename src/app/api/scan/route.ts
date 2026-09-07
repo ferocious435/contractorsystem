@@ -186,10 +186,10 @@ function parseGeminiJsonArray(text: string): ScanFinding[] {
 
 async function generateScanChunkFindings(prompt: string) {
     const attempts = [
-        { numPredict: 640, timeoutMs: 150_000, retryInstruction: "" },
+        { numPredict: 320, timeoutMs: 90_000, retryInstruction: "" },
         {
-            numPredict: 384,
-            timeoutMs: 90_000,
+            numPredict: 192,
+            timeoutMs: 60_000,
             retryInstruction: "\nRETRY: Return at most one decisive finding. Keep every value very short and return valid JSON only.",
         },
     ];
@@ -590,7 +590,7 @@ IMPORTANT SCAN RULES:
 12. Treat related work documents as a project timeline. A later dated document can resolve, replace, or narrow an earlier issue. Do not present an old issue as current when a later document says it was approved or completed.
 13. If a later related document resolves the issue in the current work chunk, return an empty array. If it changes the issue, describe only the latest documented action and do not invent fault.
 14. The complete readable work corpus was indexed in ${projectWorkChunksIndexed} chunks. The related passages above were selected from that full corpus.
-15. Return at most two decisive findings for this chunk. Keep every text value short.
+15. Return at most one decisive finding for this chunk. Keep every text value short.
 
 Return JSON array with this exact object shape:
 [
@@ -599,20 +599,12 @@ Return JSON array with this exact object shape:
     "description": "מה לא מסתדר ומה המשמעות לקבלן",
     "category": "סתירה / שינוי/חריג / אירוע שטח / חוסר נתונים / אין התאמה ישירה",
     "advice": "מה הקבלן צריך לבדוק או לעשות עכשיו",
-    "clause_reference": "סעיף רלוונטי או null",
-    "contract_page": "עמוד/מיקום במסמך החוזי או null",
-    "work_page": "עמוד/מיקום במסמך העבודה או null",
-    "original_instruction": "מה נדרש לפי החוזה או null",
-    "new_requirement": "מה קרה בפועל או מה נדרש בשטח",
     "contract_quote": "ציטוט מדויק מהחוזה/BOQ או null",
     "work_quote": "ציטוט מדויק ממסמך העבודה/שטח או null",
     "contract_document_id": "Document ID from contractual base or null",
     "work_document_id": "${workDoc.id}",
-    "evidence_status": "VERIFIED / REQUIRES_VERIFICATION",
-    "missing_evidence": ["מסמכים/בדיקות שחסרים לאימות"],
     "comparison_type": "contract_vs_execution / boq_vs_execution / specs_vs_execution / zero_match / missing_data / site_event",
     "document_hierarchy_rule": "contract_source_controls / documents_complement_each_other / stricter_requirement_controls / manager_decision_required / work_document_is_supporting_evidence",
-    "document_precedence_assessment": "הסבר קצר בעברית איזה מסמך גובר, האם המסמכים משלימים זה את זה, או איזו הכרעת מנהל/מפקח נדרשת",
     "risk_reason": "למה זה חשוב לקבלן",
     "confidence": 0.0,
     "next_check": "בדיקה מעשית הבאה"
