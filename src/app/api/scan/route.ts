@@ -240,7 +240,7 @@ function summarizeScanState(rows: DocumentScanStateRow[]) {
         )
     );
     const staleInProgressRow = rows.find((row) => row.status === "IN_PROGRESS" && !isFreshInProgressScan(row));
-    const isPaused = !activeRow && total > 0 && (processed < total || Boolean(staleInProgressRow));
+    const isPaused = !activeRow && total > 0 && processed < total;
     const status = activeRow
         ? "IN_PROGRESS"
         : isPaused
