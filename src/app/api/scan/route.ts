@@ -497,6 +497,52 @@ function isTemplatePlaceholderFinding(finding: Pick<ScanFinding, "title" | "desc
     return values.some((value) => placeholders.includes(value));
 }
 
+async function archiveTemplatePlaceholderFindings(supabase: SupabaseClient, projectId: string) {
+    const { data: candidates, error: candidateError } = await supabase
+        .from("contradictions")
+        .select("id, title, description, strategy_advice, scan_signature")
+        .eq("project_id", projectId)
+        .neq("status", "ARCHIVED");
+    if (candidateError) throw candidateError;
+
+    const invalidFindings = (candidates || []).filter((finding) => isTemplatePlaceholderFinding({
+        title: finding.title,
+        description: finding.description,
+        advice: finding.strategy_advice,
+    }));
+    if (invalidFindings.length === 0) return 0;
+
+    const { error: archiveError } = await supabase
+        .from("contradictions")
+        .update({ status: "ARCHIVED" })
+        .in("id", invalidFindings.map((finding) => String(finding.id)));
+    if (archiveError) throw archiveError;
+
+    const affectedSignatures = [...new Set(
+        invalidFindings
+            .map((finding) => String(finding.scan_signature || ""))
+            .filter(Boolean),
+    )];
+
+    for (const scanSignature of affectedSignatures) {
+        const { count, error: countError } = await supabase
+            .from("contradictions")
+            .select("id", { count: "exact", head: true })
+            .eq("project_id", projectId)
+            .eq("scan_signature", scanSignature)
+            .neq("status", "ARCHIVED");
+        if (countError) throw countError;
+
+        const { error: stateUpdateError } = await supabase
+            .from("document_scan_state")
+            .update({ findings_count: count || 0, updated_at: nowIso() })
+            .eq("scan_signature", scanSignature);
+        if (stateUpdateError) throw stateUpdateError;
+    }
+
+    return invalidFindings.length;
+}
+
 function mapSeverity(category: string) {
     if (/סתירה|contradiction/i.test(category)) return "HIGH";
     if (/שינוי|change|חריג|extra/i.test(category)) return "MEDIUM";
@@ -814,6 +860,8 @@ export async function POST(req: NextRequest) {
         if (!ownership.ok) {
             return ownership.response;
         }
+
+        await archiveTemplatePlaceholderFindings(supabase, projectId);
 
         if (!force) {
             const currentScanStatus = await loadProjectScanState(supabase, projectId, workDocId);

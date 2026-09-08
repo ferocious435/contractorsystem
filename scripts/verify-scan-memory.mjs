@@ -85,6 +85,7 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('memory-baseline:v1:${projectId}'));
   assert.ok(route.includes('initializeExistingScanMemory'));
   assert.ok(route.includes('isTemplatePlaceholderFinding'));
+  assert.ok(route.includes('archiveTemplatePlaceholderFindings'));
   assert.equal(route.includes('const projectWorkSignature ='), false);
   assert.ok(uploadRoute.includes('createHash("sha256").update(fileBuffer).digest("hex")'));
   assert.ok(uploadRoute.includes('content_hash: contentHash'));
