@@ -484,6 +484,19 @@ function dedupeScanFindings(findings: ScanFinding[]) {
     return [...unique.values()];
 }
 
+function isTemplatePlaceholderFinding(finding: Pick<ScanFinding, "title" | "description" | "advice">) {
+    const values = [finding.title, finding.description, finding.advice]
+        .map((value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase());
+    const placeholders = [
+        "כותרת קצרה בעברית",
+        "מה לא מסתדר ומה המשמעות לקבלן",
+        "מה הקבלן צריך לבדוק או לעשות עכשיו",
+        "short title in hebrew",
+    ];
+
+    return values.some((value) => placeholders.includes(value));
+}
+
 function mapSeverity(category: string) {
     if (/סתירה|contradiction/i.test(category)) return "HIGH";
     if (/שינוי|change|חריג|extra/i.test(category)) return "MEDIUM";
@@ -626,12 +639,31 @@ async function initializeExistingScanMemory(
 
     const { data: legacyFindings, error: findingsError } = await supabase
         .from("contradictions")
-        .select("id, source_execution_doc_id")
+        .select("id, source_execution_doc_id, title, description, strategy_advice")
         .eq("project_id", projectId)
         .neq("status", "ARCHIVED");
 
     if (findingsError) throw findingsError;
     if (!legacyFindings?.length) return null;
+
+    const invalidFindingIds = legacyFindings
+        .filter((finding) => isTemplatePlaceholderFinding({
+            title: finding.title,
+            description: finding.description,
+            advice: finding.strategy_advice,
+        }))
+        .map((finding) => String(finding.id));
+    const validLegacyFindings = legacyFindings.filter(
+        (finding) => !invalidFindingIds.includes(String(finding.id)),
+    );
+
+    if (invalidFindingIds.length > 0) {
+        const { error: archiveInvalidError } = await supabase
+            .from("contradictions")
+            .update({ status: "ARCHIVED" })
+            .in("id", invalidFindingIds);
+        if (archiveInvalidError) throw archiveInvalidError;
+    }
 
     const readableWorkDocs = projectWorkDocs
         .filter((doc) => hasUsefulText(doc))
@@ -650,7 +682,7 @@ async function initializeExistingScanMemory(
     const projectWorkDocumentsById = new Map(readableWorkDocs.map((doc) => [doc.id, doc]));
     const findingsByWorkDocId = new Map<string, string[]>();
 
-    for (const finding of legacyFindings) {
+    for (const finding of validLegacyFindings) {
         const workDocumentId = String(finding.source_execution_doc_id || "");
         if (!workDocumentId) continue;
         const ids = findingsByWorkDocId.get(workDocumentId) || [];
@@ -728,7 +760,7 @@ async function initializeExistingScanMemory(
     });
 
     return {
-        findings: legacyFindings.length,
+        findings: validLegacyFindings.length,
         unchanged: readableWorkDocs.length,
         total: projectWorkDocs.length,
     };
@@ -1204,7 +1236,8 @@ async function analyzeDirectly(
                 ));
             }
 
-            const points = dedupeScanFindings(chunkFindings);
+            const points = dedupeScanFindings(chunkFindings)
+                .filter((finding) => !isTemplatePlaceholderFinding(finding));
             const findingRows = points.map((p) => {
                 const category = String(p.category || "");
                 const matchedContractDoc = p.contract_document_id
