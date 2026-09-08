@@ -676,12 +676,11 @@ async function initializeExistingScanMemory(
     const baselineSignature = `memory-baseline:v1:${projectId}`;
     const { data: existingBaseline, error: baselineReadError } = await supabase
         .from("document_scan_state")
-        .select("scan_signature")
+        .select("scan_signature, scanned_at")
         .eq("scan_signature", baselineSignature)
         .maybeSingle();
 
     if (baselineReadError) throw baselineReadError;
-    if (existingBaseline) return null;
 
     const { data: legacyFindings, error: findingsError } = await supabase
         .from("contradictions")
@@ -711,10 +710,18 @@ async function initializeExistingScanMemory(
         if (archiveInvalidError) throw archiveInvalidError;
     }
 
-    const readableWorkDocs = projectWorkDocs
+    const completedAt = existingBaseline?.scanned_at || nowIso();
+    const baselineCutoff = new Date(completedAt).getTime();
+    const baselineWorkDocs = projectWorkDocs
+        .filter((doc) => {
+            const createdAt = new Date(String(doc.created_at || "")).getTime();
+            return !Number.isFinite(createdAt) || createdAt <= baselineCutoff;
+        })
+        .sort((left, right) => left.id.localeCompare(right.id));
+    const readableWorkDocs = baselineWorkDocs
         .filter((doc) => hasUsefulText(doc))
         .sort((left, right) => left.id.localeCompare(right.id));
-    if (readableWorkDocs.length === 0) return null;
+    if (baselineWorkDocs.length === 0) return null;
 
     const aiIdentity = getComparisonAiIdentity();
     const aiSignature = `${aiIdentity.provider}:${aiIdentity.model}`;
@@ -736,10 +743,9 @@ async function initializeExistingScanMemory(
         findingsByWorkDocId.set(workDocumentId, ids);
     }
 
-    const completedAt = nowIso();
     const scanStates: DocumentScanStateRow[] = [];
 
-    for (const [index, workDoc] of readableWorkDocs.entries()) {
+    for (const [index, workDoc] of baselineWorkDocs.entries()) {
         const { relatedWorkSignature } = getRelatedWorkMemory(
             workDoc,
             projectWorkChunks,
@@ -773,7 +779,7 @@ async function initializeExistingScanMemory(
             status: "COMPLETED",
             findings_count: findingIds.length,
             processed_work_docs: index + 1,
-            total_work_docs: projectWorkDocs.length,
+            total_work_docs: baselineWorkDocs.length,
             current_step: `הזיכרון נשמר: ${workDoc.title || "מסמך ביצוע"}`,
             error_message: null,
             scanned_at: completedAt,
@@ -796,8 +802,8 @@ async function initializeExistingScanMemory(
         scan_signature: baselineSignature,
         status: "COMPLETED",
         findings_count: 0,
-        processed_work_docs: projectWorkDocs.length,
-        total_work_docs: projectWorkDocs.length,
+        processed_work_docs: baselineWorkDocs.length,
+        total_work_docs: baselineWorkDocs.length,
         current_step: "MEMORY_BASELINE_INITIALIZED",
         error_message: null,
         scanned_at: completedAt,
@@ -807,9 +813,42 @@ async function initializeExistingScanMemory(
 
     return {
         findings: validLegacyFindings.length,
-        unchanged: readableWorkDocs.length,
-        total: projectWorkDocs.length,
+        unchanged: baselineWorkDocs.length,
+        total: baselineWorkDocs.length,
+        initialized: !existingBaseline,
     };
+}
+
+async function hasCompletedScanMemory(
+    supabase: SupabaseClient,
+    projectId: string,
+    contractDocs: ScanDocument[],
+    workDoc: ScanDocument,
+    projectWorkDocs: ScanDocument[],
+) {
+    const readableProjectWorkDocs = projectWorkDocs.filter((doc) => hasUsefulText(doc));
+    const projectWorkChunks = buildDocumentScanChunks(
+        readableProjectWorkDocs,
+        WORK_CHUNK_CHARS,
+        CHUNK_OVERLAP_CHARS,
+    );
+    const documentsById = new Map(readableProjectWorkDocs.map((doc) => [doc.id, doc]));
+    const { relatedWorkSignature } = getRelatedWorkMemory(workDoc, projectWorkChunks, documentsById);
+    const aiIdentity = getComparisonAiIdentity();
+    const scanSignature = buildScanSignature(
+        projectId,
+        buildContractSignature(contractDocs),
+        relatedWorkSignature,
+        getDocumentSignature(workDoc),
+        `${aiIdentity.provider}:${aiIdentity.model}`,
+    );
+    const { data, error } = await supabase
+        .from("document_scan_state")
+        .select("status")
+        .eq("scan_signature", scanSignature)
+        .maybeSingle();
+    if (error) throw error;
+    return data?.status === "COMPLETED";
 }
 
 export async function GET(req: NextRequest) {
@@ -977,7 +1016,7 @@ export async function POST(req: NextRequest) {
                 allWorkDocs,
             );
 
-            if (initializedMemory) {
+            if (initializedMemory?.initialized) {
                 return NextResponse.json({
                     success: true,
                     found: initializedMemory.findings,
@@ -999,6 +1038,24 @@ export async function POST(req: NextRequest) {
 
         if (!workDocs.some((doc) => hasUsefulText(doc)) && batchCursor !== null) {
             const nextCursor = Math.min(batchCursor + 1, allWorkDocs.length);
+            const unchanged = workDocs[0]
+                ? await hasCompletedScanMemory(supabase, projectId, contractDocs, workDocs[0], allWorkDocs)
+                : false;
+
+            if (unchanged) {
+                return NextResponse.json({
+                    success: true,
+                    found: 0,
+                    memory: { scanned: 0, unchanged: 1, total: 1 },
+                    continuation: {
+                        done: nextCursor >= allWorkDocs.length,
+                        nextCursor,
+                        processed: nextCursor,
+                        total: allWorkDocs.length,
+                    },
+                });
+            }
+
             return NextResponse.json({
                 success: false,
                 partial: true,
