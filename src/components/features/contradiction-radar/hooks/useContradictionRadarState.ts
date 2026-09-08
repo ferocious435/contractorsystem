@@ -36,6 +36,7 @@ interface UseContradictionRadarStateOptions {
 const DEFAULT_PROJECT_NAME = 'פרויקט';
 const RADAR_ITEM_MOTION_THRESHOLD = 200;
 const SCAN_STATUS_POLL_MS = 3000;
+const SCAN_RESULT_VISIBLE_MS = 15_000;
 
 type ScanStepStatus = 'success' | 'error' | null;
 
@@ -97,7 +98,7 @@ export function useContradictionRadarState({
             setProgress(0);
             setCurrentStep(null);
             setCurrentStepStatus(null);
-        }, 5000);
+        }, SCAN_RESULT_VISIBLE_MS);
     }, []);
 
     const applyScanProgress = useCallback(async (
