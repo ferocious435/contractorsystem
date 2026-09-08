@@ -79,6 +79,9 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('const MAX_RELATED_WORK_CHARS = 2_400'));
   assert.ok(route.includes('withScanHeartbeat'));
   assert.ok(route.includes('const SCAN_HEARTBEAT_MS = 15_000'));
+  assert.ok(route.includes('body.batchCursor'));
+  assert.ok(route.includes('workDocs.slice(batchCursor, batchCursor + 1)'));
+  assert.ok(route.includes('offset: batchCursor'));
   assert.equal(route.includes('const projectWorkSignature ='), false);
   assert.ok(uploadRoute.includes('createHash("sha256").update(fileBuffer).digest("hex")'));
   assert.ok(uploadRoute.includes('content_hash: contentHash'));

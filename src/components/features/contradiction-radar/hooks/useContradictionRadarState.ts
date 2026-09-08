@@ -59,6 +59,7 @@ export function useContradictionRadarState({
     const [activeFilter, setActiveFilter] = useState<RadarFindingFilter>('ALL');
     const [activeStatusFilter, setActiveStatusFilter] = useState<RadarStatusFilter>('OPEN');
     const scanWasActiveRef = useRef(false);
+    const scanRequestPendingRef = useRef(false);
     const scanResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const fetchContradictions = useCallback(async () => {
@@ -270,39 +271,66 @@ export function useContradictionRadarState({
             return;
         }
 
+        if (scanRequestPendingRef.current) {
+            return;
+        }
+
         setIsScanning(true);
         setProgress(0);
         setCurrentStepStatus(null);
         setCurrentStep('מתחיל בדיקה ושומר התקדמות במערכת');
         scanWasActiveRef.current = true;
+        scanRequestPendingRef.current = true;
 
         try {
-            const data = await scanRadarProject(projectId, force);
-            const latestStatus = data.scanStatus || await refreshScanProgress({ showFinished: true });
+            let cursor = 0;
+            let firstRequest = true;
+            let found = 0;
+            let scanned = 0;
+            let unchanged = 0;
+            let hadWarnings = false;
 
-            if (data.success || data.partial) {
-                await fetchDocuments();
-                await fetchContradictions();
-                const memorySummary = data.memory
-                    ? ` נסרקו ${data.memory.scanned} מסמכים חדשים או שהשתנו; ${data.memory.unchanged} מסמכים לא השתנו.`
-                    : '';
-                setCurrentStep(`הבדיקה הושלמה: נמצאו ${data.found || 0} ממצאים.${memorySummary}`);
-                setCurrentStepStatus('success');
-                setProgress(100);
-                setIsScanning(false);
-                scanWasActiveRef.current = false;
-                scheduleScanBannerReset();
-            } else if (latestStatus?.active) {
-                await applyScanProgress(latestStatus);
-            } else {
-                setCurrentStep(data.message || 'אירעה שגיאה במהלך הבדיקה');
-                setCurrentStepStatus('error');
-                setIsScanning(false);
-                scanWasActiveRef.current = false;
-                scheduleScanBannerReset();
+            while (true) {
+                const data = await scanRadarProject(projectId, firstRequest ? force : false, cursor);
+                firstRequest = false;
+
+                if (!data.success && !data.partial) {
+                    const latestStatus = data.scanStatus || await refreshScanProgress({ showFinished: true });
+                    if (latestStatus?.active) {
+                        scanRequestPendingRef.current = false;
+                        await applyScanProgress(latestStatus);
+                        return;
+                    }
+                    throw new Error(data.message || 'אירעה שגיאה במהלך הבדיקה');
+                }
+
+                found += data.found || 0;
+                scanned += data.memory?.scanned || 0;
+                unchanged += data.memory?.unchanged || 0;
+                hadWarnings = hadWarnings || Boolean(data.partial || data.warnings?.length);
+
+                if (!data.continuation || data.continuation.done) {
+                    break;
+                }
+
+                cursor = data.continuation.nextCursor;
+                setProgress(Math.round((data.continuation.processed / data.continuation.total) * 100));
+                setCurrentStep(`הבדיקה מתקדמת: ${data.continuation.processed}/${data.continuation.total} מסמכים`);
             }
+
+            scanRequestPendingRef.current = false;
+            await fetchDocuments();
+            await fetchContradictions();
+            const warningSummary = hadWarnings ? ' יש מסמכים שלא ניתן היה לקרוא והם סומנו לבדיקה.' : '';
+            setCurrentStep(`הבדיקה הושלמה: נמצאו ${found} ממצאים. נסרקו ${scanned} מסמכים חדשים או שהשתנו; ${unchanged} מסמכים לא השתנו.${warningSummary}`);
+            setCurrentStepStatus(hadWarnings ? 'error' : 'success');
+            setProgress(100);
+            setIsScanning(false);
+            scanWasActiveRef.current = false;
+            scheduleScanBannerReset();
         } catch (err) {
             console.error('Scan error:', err);
+            scanRequestPendingRef.current = false;
             try {
                 const latestStatus = await refreshScanProgress({ showFinished: true });
                 if (!latestStatus?.active) {

@@ -603,6 +603,9 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
         const { projectId, force = false, workDocId = null } = body;
+        const batchCursor = Number.isInteger(body.batchCursor) && body.batchCursor >= 0
+            ? Number(body.batchCursor)
+            : null;
 
         if (!projectId) {
             return NextResponse.json({ error: "projectId is required" }, { status: 400 });
@@ -647,11 +650,15 @@ export async function POST(req: NextRequest) {
             __scanRole: getDocumentRole(doc),
         }));
         let contractDocs = documentsWithRoles.filter((d) => d.__scanRole === "CONTRACT_BASE");
-        let allWorkDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
+        let allWorkDocs = documentsWithRoles
+            .filter((d) => d.__scanRole === "WORK_EVIDENCE")
+            .sort((left, right) => left.id.localeCompare(right.id));
         let workDocs = allWorkDocs;
 
         if (workDocId) {
             workDocs = workDocs.filter((d) => d.id === workDocId);
+        } else if (batchCursor !== null) {
+            workDocs = workDocs.slice(batchCursor, batchCursor + 1);
         }
 
         if (contractDocs.length === 0) {
@@ -659,6 +666,20 @@ export async function POST(req: NextRequest) {
                 success: false,
                 error: "לא נמצאו מסמכי בסיס להשוואה. יש להעלות או לסווג חוזה, כתב כמויות, מפרט או מכרז לפני סריקת סתירות."
             }, { status: 400 });
+        }
+
+        if (workDocs.length === 0 && batchCursor !== null && batchCursor >= allWorkDocs.length) {
+            return NextResponse.json({
+                success: true,
+                found: 0,
+                memory: { scanned: 0, unchanged: 0, total: 0 },
+                continuation: {
+                    done: true,
+                    nextCursor: allWorkDocs.length,
+                    processed: allWorkDocs.length,
+                    total: allWorkDocs.length,
+                },
+            });
         }
 
         if (workDocs.length === 0) {
@@ -680,11 +701,15 @@ export async function POST(req: NextRequest) {
 
             documentsWithRoles = documentsWithRoles.map((doc) => preparedById.get(doc.id) || doc);
             contractDocs = documentsWithRoles.filter((d) => d.__scanRole === "CONTRACT_BASE");
-            allWorkDocs = documentsWithRoles.filter((d) => d.__scanRole === "WORK_EVIDENCE");
+            allWorkDocs = documentsWithRoles
+                .filter((d) => d.__scanRole === "WORK_EVIDENCE")
+                .sort((left, right) => left.id.localeCompare(right.id));
             workDocs = allWorkDocs;
 
             if (workDocId) {
                 workDocs = workDocs.filter((d) => d.id === workDocId);
+            } else if (batchCursor !== null) {
+                workDocs = workDocs.slice(batchCursor, batchCursor + 1);
             }
 
             if (failures.length > 0) {
@@ -697,6 +722,23 @@ export async function POST(req: NextRequest) {
                 success: false,
                 error: "Contract documents exist, but no readable text could be extracted for comparison. Open the contract documents page and run document scan on at least one contract/BOQ PDF."
             }, { status: 400 });
+        }
+
+        if (!workDocs.some((doc) => hasUsefulText(doc)) && batchCursor !== null) {
+            const nextCursor = Math.min(batchCursor + 1, allWorkDocs.length);
+            return NextResponse.json({
+                success: false,
+                partial: true,
+                found: 0,
+                warnings: ["The document could not be read and was skipped."],
+                memory: { scanned: 0, unchanged: 0, total: 1 },
+                continuation: {
+                    done: nextCursor >= allWorkDocs.length,
+                    nextCursor,
+                    processed: nextCursor,
+                    total: allWorkDocs.length,
+                },
+            });
         }
 
         if (!workDocs.some((doc) => hasUsefulText(doc))) {
@@ -714,6 +756,10 @@ export async function POST(req: NextRequest) {
             workDocs,
             readableProjectWorkDocs,
             force,
+            batchCursor === null ? undefined : {
+                offset: batchCursor,
+                total: allWorkDocs.length,
+            },
         );
         const analysisFailures = foundContradictions.__analysisFailures || [];
         const warnings = [...textPreparationFailures, ...analysisFailures];
@@ -723,6 +769,17 @@ export async function POST(req: NextRequest) {
             unchanged: foundContradictions.__cachedDocuments || 0,
             total: workDocs.filter((doc) => hasUsefulText(doc)).length,
         };
+        const nextCursor = batchCursor === null
+            ? null
+            : Math.min(batchCursor + 1, allWorkDocs.length);
+        const continuation = nextCursor === null
+            ? undefined
+            : {
+                done: nextCursor >= allWorkDocs.length,
+                nextCursor,
+                processed: nextCursor,
+                total: allWorkDocs.length,
+            };
 
         return NextResponse.json({
             success: warnings.length === 0,
@@ -734,6 +791,7 @@ export async function POST(req: NextRequest) {
             warnings,
             scanStatus,
             memory,
+            continuation,
         });
 
     } catch (error: unknown) {
@@ -750,6 +808,7 @@ async function analyzeDirectly(
     workDocs: ScanDocument[],
     projectWorkDocs: ScanDocument[],
     force = false,
+    batchProgress?: { offset: number; total: number },
 ): Promise<ScanResults> {
     const results: ScanResults = [] as ScanResults;
     const analysisFailures: string[] = [];
@@ -788,7 +847,8 @@ async function analyzeDirectly(
     }
 
     const scannableWorkDocs = workDocs.filter((doc) => Boolean(doc.extracted_text));
-    let processedWorkDocs = 0;
+    let processedWorkDocs = batchProgress?.offset || 0;
+    const totalWorkDocs = batchProgress?.total || scannableWorkDocs.length;
 
     for (const workDoc of scannableWorkDocs) {
         const fullWorkText = String(workDoc.extracted_text || "");
@@ -831,7 +891,7 @@ async function analyzeDirectly(
             contract_signature: contractSignature,
             work_signature: workSignature,
             scan_signature: scanSignature,
-            total_work_docs: scannableWorkDocs.length,
+            total_work_docs: totalWorkDocs,
         };
 
         try {
@@ -921,7 +981,7 @@ async function analyzeDirectly(
                 status: "IN_PROGRESS",
                 findings_count: 0,
                 processed_work_docs: processedWorkDocs,
-                current_step: `בודק ${processedWorkDocs + 1}/${scannableWorkDocs.length}: ${workDoc.title || "מסמך ביצוע"}`,
+                current_step: `בודק ${processedWorkDocs + 1}/${totalWorkDocs}: ${workDoc.title || "מסמך ביצוע"}`,
                 error_message: null,
                 started_at: nowIso(),
                 updated_at: nowIso(),
@@ -955,7 +1015,7 @@ async function analyzeDirectly(
                     status: "IN_PROGRESS",
                     findings_count: 0,
                     processed_work_docs: processedWorkDocs,
-                    current_step: `בודק ${processedWorkDocs + 1}/${scannableWorkDocs.length}, חלק ${workChunk.index + 1}/${workChunk.total}: ${workDoc.title || "מסמך ביצוע"}`,
+                    current_step: `בודק ${processedWorkDocs + 1}/${totalWorkDocs}, חלק ${workChunk.index + 1}/${workChunk.total}: ${workDoc.title || "מסמך ביצוע"}`,
                     error_message: null,
                     started_at: nowIso(),
                     updated_at: nowIso(),

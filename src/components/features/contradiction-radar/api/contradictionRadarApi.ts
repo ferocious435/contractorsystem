@@ -45,6 +45,12 @@ export interface RadarScanResult {
         unchanged: number;
         total: number;
     };
+    continuation?: {
+        done: boolean;
+        nextCursor: number;
+        processed: number;
+        total: number;
+    };
 }
 
 async function parseContradictionMutationResponse(response: Response): Promise<ContradictionMutationResult> {
@@ -183,7 +189,8 @@ export async function fetchRadarScanStatus(projectId: string, workDocId?: string
 
 export async function scanRadarProject(
     projectId: string,
-    force = false
+    force = false,
+    batchCursor = 0,
 ): Promise<RadarScanResult> {
     if (isLocalProjectId(projectId)) {
         return { success: true, found: isDemoProjectId(projectId) ? 1 : 0, message: 'Demo scan completed locally.' };
@@ -192,7 +199,7 @@ export async function scanRadarProject(
     const response = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, force }),
+        body: JSON.stringify({ projectId, force, batchCursor }),
     });
 
     return parseRadarScanResponse(response);
