@@ -82,6 +82,8 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('body.batchCursor'));
   assert.ok(route.includes('workDocs.slice(batchCursor, batchCursor + 1)'));
   assert.ok(route.includes('offset: batchCursor'));
+  assert.ok(route.includes('memory-baseline:v1:${projectId}'));
+  assert.ok(route.includes('initializeExistingScanMemory'));
   assert.equal(route.includes('const projectWorkSignature ='), false);
   assert.ok(uploadRoute.includes('createHash("sha256").update(fileBuffer).digest("hex")'));
   assert.ok(uploadRoute.includes('content_hash: contentHash'));

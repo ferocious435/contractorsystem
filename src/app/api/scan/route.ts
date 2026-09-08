@@ -569,6 +569,171 @@ Return JSON array with this exact object shape:
 ]`;
 }
 
+function getRelatedWorkMemory(
+    workDoc: ScanDocument,
+    projectWorkChunks: DocumentScanChunk[],
+    projectWorkDocumentsById: Map<string, ScanDocument>,
+) {
+    const workChunks = buildDocumentScanChunks(
+        [workDoc],
+        WORK_CHUNK_CHARS,
+        CHUNK_OVERLAP_CHARS,
+    );
+    const relatedWorkChunksByIndex = new Map<number, DocumentScanChunk[]>();
+    const relatedWorkDocumentIds = new Set<string>();
+
+    for (const workChunk of workChunks) {
+        const relatedChunks = selectRelevantProjectChunks(
+            projectWorkChunks,
+            workChunk.text,
+            MAX_RELATED_WORK_CHARS,
+            MAX_RELATED_WORK_CHUNKS,
+            workDoc.id,
+        );
+        relatedWorkChunksByIndex.set(workChunk.index, relatedChunks);
+        for (const relatedChunk of relatedChunks) {
+            relatedWorkDocumentIds.add(relatedChunk.documentId);
+        }
+    }
+
+    const relatedWorkDocuments = [...relatedWorkDocumentIds]
+        .map((documentId) => projectWorkDocumentsById.get(documentId))
+        .filter((document): document is ScanDocument => Boolean(document));
+
+    return {
+        workChunks,
+        relatedWorkChunksByIndex,
+        relatedWorkDocumentIds,
+        relatedWorkSignature: buildDocumentSetFingerprint(relatedWorkDocuments),
+    };
+}
+
+async function initializeExistingScanMemory(
+    supabase: SupabaseClient,
+    projectId: string,
+    contractDocs: ScanDocument[],
+    projectWorkDocs: ScanDocument[],
+) {
+    const baselineSignature = `memory-baseline:v1:${projectId}`;
+    const { data: existingBaseline, error: baselineReadError } = await supabase
+        .from("document_scan_state")
+        .select("scan_signature")
+        .eq("scan_signature", baselineSignature)
+        .maybeSingle();
+
+    if (baselineReadError) throw baselineReadError;
+    if (existingBaseline) return null;
+
+    const { data: legacyFindings, error: findingsError } = await supabase
+        .from("contradictions")
+        .select("id, source_execution_doc_id")
+        .eq("project_id", projectId)
+        .neq("status", "ARCHIVED");
+
+    if (findingsError) throw findingsError;
+    if (!legacyFindings?.length) return null;
+
+    const readableWorkDocs = projectWorkDocs
+        .filter((doc) => hasUsefulText(doc))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    if (readableWorkDocs.length === 0) return null;
+
+    const aiIdentity = getComparisonAiIdentity();
+    const aiSignature = `${aiIdentity.provider}:${aiIdentity.model}`;
+    const contractSignature = buildContractSignature(contractDocs);
+    const contractDocIds = contractDocs.map((doc) => String(doc.id)).sort();
+    const projectWorkChunks = buildDocumentScanChunks(
+        readableWorkDocs,
+        WORK_CHUNK_CHARS,
+        CHUNK_OVERLAP_CHARS,
+    );
+    const projectWorkDocumentsById = new Map(readableWorkDocs.map((doc) => [doc.id, doc]));
+    const findingsByWorkDocId = new Map<string, string[]>();
+
+    for (const finding of legacyFindings) {
+        const workDocumentId = String(finding.source_execution_doc_id || "");
+        if (!workDocumentId) continue;
+        const ids = findingsByWorkDocId.get(workDocumentId) || [];
+        ids.push(String(finding.id));
+        findingsByWorkDocId.set(workDocumentId, ids);
+    }
+
+    const completedAt = nowIso();
+    const scanStates: DocumentScanStateRow[] = [];
+
+    for (const [index, workDoc] of readableWorkDocs.entries()) {
+        const { relatedWorkSignature } = getRelatedWorkMemory(
+            workDoc,
+            projectWorkChunks,
+            projectWorkDocumentsById,
+        );
+        const workSignature = getDocumentSignature(workDoc);
+        const scanSignature = buildScanSignature(
+            projectId,
+            contractSignature,
+            relatedWorkSignature,
+            workSignature,
+            aiSignature,
+        );
+        const findingIds = findingsByWorkDocId.get(workDoc.id) || [];
+
+        if (findingIds.length > 0) {
+            const { error: findingUpdateError } = await supabase
+                .from("contradictions")
+                .update({ scan_signature: scanSignature })
+                .in("id", findingIds);
+            if (findingUpdateError) throw findingUpdateError;
+        }
+
+        scanStates.push({
+            project_id: projectId,
+            contract_doc_ids: contractDocIds,
+            work_doc_id: workDoc.id,
+            contract_signature: contractSignature,
+            work_signature: workSignature,
+            scan_signature: scanSignature,
+            status: "COMPLETED",
+            findings_count: findingIds.length,
+            processed_work_docs: index + 1,
+            total_work_docs: projectWorkDocs.length,
+            current_step: `הזיכרון נשמר: ${workDoc.title || "מסמך ביצוע"}`,
+            error_message: null,
+            scanned_at: completedAt,
+            updated_at: completedAt,
+            completed_at: completedAt,
+        });
+    }
+
+    const { error: stateWriteError } = await supabase
+        .from("document_scan_state")
+        .upsert(scanStates, { onConflict: "scan_signature" });
+    if (stateWriteError) throw stateWriteError;
+
+    await saveScanState(supabase, {
+        project_id: projectId,
+        contract_doc_ids: contractDocIds,
+        work_doc_id: contractDocs[0]?.id || readableWorkDocs[0].id,
+        contract_signature: contractSignature,
+        work_signature: "existing-project-baseline",
+        scan_signature: baselineSignature,
+        status: "COMPLETED",
+        findings_count: 0,
+        processed_work_docs: projectWorkDocs.length,
+        total_work_docs: projectWorkDocs.length,
+        current_step: "MEMORY_BASELINE_INITIALIZED",
+        error_message: null,
+        scanned_at: completedAt,
+        updated_at: completedAt,
+        completed_at: completedAt,
+    });
+
+    return {
+        findings: legacyFindings.length,
+        unchanged: readableWorkDocs.length,
+        total: projectWorkDocs.length,
+    };
+}
+
 export async function GET(req: NextRequest) {
     try {
         const { searchParams } = new URL(req.url);
@@ -724,6 +889,34 @@ export async function POST(req: NextRequest) {
             }, { status: 400 });
         }
 
+        if (!workDocId && batchCursor === 0) {
+            const initializedMemory = await initializeExistingScanMemory(
+                supabase,
+                projectId,
+                contractDocs,
+                allWorkDocs,
+            );
+
+            if (initializedMemory) {
+                return NextResponse.json({
+                    success: true,
+                    found: initializedMemory.findings,
+                    memory: {
+                        scanned: 0,
+                        unchanged: initializedMemory.unchanged,
+                        total: initializedMemory.total,
+                    },
+                    continuation: {
+                        done: true,
+                        nextCursor: initializedMemory.total,
+                        processed: initializedMemory.total,
+                        total: initializedMemory.total,
+                    },
+                    baselineInitialized: true,
+                });
+            }
+        }
+
         if (!workDocs.some((doc) => hasUsefulText(doc)) && batchCursor !== null) {
             const nextCursor = Math.min(batchCursor + 1, allWorkDocs.length);
             return NextResponse.json({
@@ -852,30 +1045,12 @@ async function analyzeDirectly(
 
     for (const workDoc of scannableWorkDocs) {
         const fullWorkText = String(workDoc.extracted_text || "");
-        const workChunks = buildDocumentScanChunks(
-            [workDoc],
-            WORK_CHUNK_CHARS,
-            CHUNK_OVERLAP_CHARS,
-        );
-        const relatedWorkChunksByIndex = new Map<number, DocumentScanChunk[]>();
-        const relatedWorkDocumentIds = new Set<string>();
-        for (const workChunk of workChunks) {
-            const relatedChunks = selectRelevantProjectChunks(
-                projectWorkChunks,
-                workChunk.text,
-                MAX_RELATED_WORK_CHARS,
-                MAX_RELATED_WORK_CHUNKS,
-                workDoc.id,
-            );
-            relatedWorkChunksByIndex.set(workChunk.index, relatedChunks);
-            for (const relatedChunk of relatedChunks) {
-                relatedWorkDocumentIds.add(relatedChunk.documentId);
-            }
-        }
-        const relatedWorkDocuments = [...relatedWorkDocumentIds]
-            .map((documentId) => projectWorkDocumentsById.get(documentId))
-            .filter((document): document is ScanDocument => Boolean(document));
-        const relatedWorkSignature = buildDocumentSetFingerprint(relatedWorkDocuments);
+        const {
+            workChunks,
+            relatedWorkChunksByIndex,
+            relatedWorkDocumentIds,
+            relatedWorkSignature,
+        } = getRelatedWorkMemory(workDoc, projectWorkChunks, projectWorkDocumentsById);
         const workSignature = getDocumentSignature(workDoc);
         const scanSignature = buildScanSignature(
             projectId,
