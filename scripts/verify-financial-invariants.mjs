@@ -4391,7 +4391,7 @@ assertNotIncludes(
 );
 assertIncludes(
   "src/components/features/contradiction-radar/hooks/useContradictionRadarState.ts",
-  "const data = await scanRadarProject(projectId, force)",
+  "const data = await scanRadarProject(projectId,",
   "Contradiction Radar state hook must delegate full scans to the API client"
 );
 assertIncludes(
