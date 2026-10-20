@@ -1,0 +1,71 @@
+name: Project quality
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: TypeScript, tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_SUPABASE_URL: "https://ci-placeholder.supabase.co"
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-placeholder"
+      SUPABASE_SERVICE_ROLE_KEY: "ci-placeholder"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check TypeScript
+        run: npx tsc --noEmit
+
+      - name: Check code style
+        run: npm run lint
+
+      - name: Check documents
+        run: npm run verify:documents
+
+      - name: Check interface and evidence display
+        run: npm run verify:audit-ui
+
+      - name: Check local AI integration without calling Ollama
+        run: npm run verify:local-ai
+
+      - name: Check scan coverage and memory
+        run: |
+          npm run verify:scan-coverage
+          npm run verify:scan-memory
+
+      - name: Check contradiction review
+        run: npm run verify:contradiction-review
+
+      - name: Check financial rules and BOQ scale
+        run: |
+          npm run verify:financials
+          npm run verify:boq-scale
+
+      - name: Build production application
+        run: npm run build

@@ -195,8 +195,8 @@ function applyReferenceDocumentMetadata(
 /**
  * POST /api/documents/process
  * 
- * ׳§׳•׳¨׳ ׳׳× ׳”׳׳¡׳׳ ׳‘׳׳׳¦׳¢׳•׳× Gemini AI ׳•׳׳—׳׳¥ ׳׳™׳“׳¢ ׳׳•׳‘׳ ׳”.
- * ׳¢׳•׳‘׳“ ׳¢׳ ׳›׳ ׳¡׳•׳’׳™ ׳”׳׳¡׳׳›׳™׳: ׳—׳•׳–׳™׳, ׳›׳×׳‘׳™ ׳›׳׳•׳™׳•׳×, ׳₪׳¨׳•׳˜׳•׳§׳•׳׳™׳, ׳׳›׳×׳‘׳™׳ ׳•׳›׳•'.
+ * Reads a stored document, extracts its text and creates structured analysis.
+ * Supports contracts, BOQs, protocols, letters and reference documents.
  */
 export async function POST(req: Request) {
     let documentIdForStatus: string | null = null;
@@ -222,7 +222,7 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "documentId is required" }, { status: 400 });
         }
 
-        // 1. ׀׀¾׀»ׁƒׁ‡׀°׀µ׀¼ ׀´׀¾׀÷ׁƒ׀¼׀µ׀½ׁ‚ ׀¸׀· ׀‘׀”
+        // 1. Confirm project and document access.
         const projectOwnership = await requireOwnedProject(supabase, projectId);
         if (!projectOwnership.ok) {
             return projectOwnership.response;
@@ -242,14 +242,14 @@ export async function POST(req: Request) {
         const docTitle = typeof doc.title === 'string' ? doc.title : '';
         const docCategory = typeof doc.category === 'string' ? doc.category : '';
 
-        // 2. ׀׀±׀½׀¾׀²׀»ׁ׀µ׀¼ ׁׁ‚׀°ׁ‚ׁƒׁ ׀½׀° PROCESSING
+        // 2. Mark the document as processing.
         await supabase
             .from('documents')
             .update({ ai_status: 'PROCESSING' })
             .eq('id', documentId)
             .eq('project_id', projectId);
 
-        // 3. ׀׀½׀°׀»׀¸׀·׀¸ׁ€ׁƒ׀µ׀¼ ׀´׀¾׀÷ׁƒ׀¼׀µ׀½ׁ‚ ׁ‡׀µׁ€׀µ׀· Gemini AI
+        // 3. Analyze the document through the configured AI service.
         let parsedData: Record<string, unknown>;
         let analysisInput: PreparedDocumentAnalysisInput | null = null;
 
@@ -366,7 +366,7 @@ export async function POST(req: Request) {
             }, { status: getAiErrorStatus(aiErrorCode) });
         }
 
-        // 4. ׀¡׀¾ׁ…ׁ€׀°׀½ׁ׀µ׀¼ ׁ€׀µ׀·ׁƒ׀»ׁׁ‚׀°ׁ‚
+        // 4. Save the structured result.
         const { error: updateError } = await supabase
             .from('documents')
             .update({
@@ -381,14 +381,14 @@ export async function POST(req: Request) {
         return NextResponse.json({
             success: true,
             autoValidated: false,
-            message: `׳”׳׳¡׳׳ "${parsedData.type}" ׳ ׳¡׳¨׳§. ׳ ׳“׳¨׳© ׳׳™׳׳•׳× ׳ ׳×׳•׳ ׳™׳ ׳׳₪׳ ׳™ ׳§׳׳™׳˜׳” ׳¡׳•׳₪׳™׳×.`,
+            message: `המסמך "${parsedData.type}" נסרק. נדרש אימות נתונים לפני קליטה סופית.`,
             parsed_json: parsedData
         });
 
     } catch (error: unknown) {
         console.error("Error processing document:", error);
 
-        // ׀׀±׀½׀¾׀²׀»ׁ׀µ׀¼ ׁׁ‚׀°ׁ‚ׁƒׁ ׀½׀° ERROR
+        // Mark the document as failed when processing cannot complete.
         try {
             if (documentIdForStatus && projectIdForStatus) {
                 const supabase = await createClient();

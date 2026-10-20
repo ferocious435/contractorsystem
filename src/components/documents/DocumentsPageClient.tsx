@@ -367,7 +367,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
     const looksCorruptText = (value: string) => {
         if (!value.trim()) return false;
-        if (/[�\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value)) return true;
+        if (/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value)) return true;
         if (/ג[€”‚]|׳.{0,2}׳|׀/.test(value)) return true;
 
         const suspicious = (value.match(/[׳״`~^]/g) || []).length;

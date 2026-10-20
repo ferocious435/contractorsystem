@@ -113,8 +113,8 @@ assertIncludes(
 );
 assertIncludes(
   "src/app/dashboard/[id]/documents/page.tsx",
-  ".eq('contractor_id', user.id)",
-  "documents page must explicitly deny projects that do not belong to the signed-in contractor"
+  ".eq('id', projectId)",
+  "documents page must load the requested project through authenticated Supabase RLS"
 );
 assertIncludes(
   "src/app/dashboard/[id]/documents/page.tsx",
@@ -123,8 +123,18 @@ assertIncludes(
 );
 assertIncludes(
   "src/app/api/_utils/auth.ts",
-  '.eq("projects.contractor_id", auth.user.id)',
-  "shared document ownership helper must scope documents through the owning project contractor"
+  '.eq("id", documentId)',
+  "shared document ownership helper must load the requested document through authenticated Supabase RLS"
+);
+assertIncludes(
+  "supabase/migrations/0000_initial_schema.sql",
+  'CREATE POLICY "Users can access documents for their projects" ON documents',
+  "document access must be protected by an owner-scoped database policy"
+);
+assertIncludes(
+  "supabase/migrations/0000_initial_schema.sql",
+  "project_id IN (SELECT id FROM projects WHERE contractor_id = auth.uid())",
+  "document RLS must scope rows through the signed-in contractor's projects"
 );
 assertIncludes(
   "src/app/api/documents/signed-url/route.ts",
