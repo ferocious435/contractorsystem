@@ -1,3 +1,6 @@
+import { planIssueReconciliation, type ReconciliationDocument } from './radar-issue-reconciliation.ts';
+export { planIssueReconciliation, type IssueReconciliationInput, type IssueReconciliationPlan } from './radar-issue-reconciliation.ts';
+
 export type ReplaceableScanFinding = {
     id: string;
     evidence_data?: unknown | null;
@@ -17,6 +20,7 @@ export type RepeatableScanFinding = ReplaceableScanFinding & {
 export type RepeatableDocument = {
     id: string;
     title?: string | null;
+    extracted_text?: string | null;
 };
 
 export type RepeatedFindingHistoryEntry = {
@@ -47,14 +51,18 @@ export function findingNeedsHistory(row: ReplaceableScanFinding) {
         || evidence.approved_by_user
         || row.pricing_status === 'PRICED'
         || row.status === 'MOVED_TO_PRICING'
+        || (isRecord(evidence.issue_reconciliation) && evidence.issue_reconciliation.canonicalId === row.id)
+        || (isRecord(evidence.issue_link) && Boolean(evidence.issue_link.canonicalId))
     );
 }
 
 // A previous human review is not proof of correctness. Financial work needs a separate review.
 export function canRemoveUnsupportedAutomaticFinding(row: ReplaceableScanFinding) {
+    const evidence = isRecord(row.evidence_data) ? row.evidence_data : {};
     return Boolean(row.scan_signature)
         && row.pricing_status !== 'PRICED'
-        && row.status !== 'MOVED_TO_PRICING';
+        && row.status !== 'MOVED_TO_PRICING'
+        && !isRecord(evidence.issue_reconciliation) && !isRecord(evidence.issue_link);
 }
 
 export function isObsoleteAutomaticArchiveRow(row: ReplaceableScanFinding) {
@@ -189,6 +197,23 @@ export function planRepeatedFindingConsolidation(params: {
         });
     }
 
+    const groupedIds = new Set(plan.flatMap(group => [group.keepId, ...group.deleteIds]));
+    for (const row of params.findings) {
+        if (groupedIds.has(row.id) || findingNeedsHistory(row) || !row.scan_signature) continue;
+        const semantic = planIssueReconciliation({ seedId: row.id,
+            findings: params.findings.filter(value => value.scan_signature && !findingNeedsHistory(value)),
+            documents: params.documents as ReconciliationDocument[] });
+        if (!semantic.canonicalId || !semantic.markDuplicates.length) continue;
+        const repeatedHistory = semantic.attachHistory.map(entry => {
+            const finding = params.findings.find(value => value.id === entry.findingId)!;
+            return { finding_id: entry.findingId, source_document_id: entry.sourceDocumentId,
+                source_document_title: entry.sourceDocumentTitle, document_date: entry.date,
+                title: finding.title || null, category: finding.category || null, work_quote: entry.anchor.quote };
+        });
+        plan.push({ keepId: semantic.canonicalId, deleteIds: semantic.markDuplicates, repeatedHistory });
+        groupedIds.add(semantic.canonicalId);
+        semantic.markDuplicates.forEach(id => groupedIds.add(id));
+    }
     return plan.sort((left, right) => left.keepId.localeCompare(right.keepId));
 }
 

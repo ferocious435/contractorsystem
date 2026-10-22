@@ -33,7 +33,7 @@
     "verify:document-references": "node --experimental-strip-types --test scripts/verify-document-reference-authority.mjs scripts/verify-document-reference-loader.mjs scripts/verify-bound-reference-comparison.mjs scripts/verify-reference-page-preview.mjs",
     "verify:support-enrichment": "node --experimental-strip-types --test scripts/verify-support-source-enrichment.mjs",
     "verify:support-model": "node --experimental-strip-types scripts/verify-local-support-model.mjs",
-    "verify:scan-retention": "node --experimental-strip-types --test scripts/verify-scan-finding-retention.mjs",
+    "verify:scan-retention": "node --experimental-strip-types --test scripts/verify-scan-finding-retention.mjs scripts/verify-issue-reconciliation.mjs scripts/verify-issue-reconciliation-persistence.mjs",
     "verify:contradiction-review": "node --experimental-strip-types --test scripts/verify-contradiction-review.mjs",
     "lint": "eslint",
     "worker": "nodemon",

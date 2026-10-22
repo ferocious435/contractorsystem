@@ -55,6 +55,7 @@ import {
     deleteObsoleteAutomaticArchiveRows,
     deleteUnsupportedAutomaticFindings,
     replacePreviousScanFindings,
+    reconcileSavedIssueRecords,
     type ReplaceableScanFinding,
 } from "@/utils/scan-finding-retention";
 import { loadProjectComparisonReferenceContext } from "@/utils/document-reference-authority-server";
@@ -911,9 +912,20 @@ export async function POST(req: NextRequest) {
             return ownership.response;
         }
 
+        if (body.reconcileSavedOnly === true && body.revalidateSavedOnly !== true) {
+            return NextResponse.json({ success: false, error: 'Reconciliation requires saved-evidence mode' }, { status: 400 });
+        }
+
         if (body.revalidateSavedOnly === true) {
             if (background || force || retrySkipped || backgroundScanJobs.has(projectId)) {
                 return NextResponse.json({ success: false, error: 'Saved-evidence review cannot run together with scanning' }, { status: 409 });
+            }
+            if (body.reconcileSavedOnly === true) {
+                if (typeof body.issueId !== 'string' || !body.issueId || workDocId || retryDocumentId || body.issueHistoryOnly) {
+                    return NextResponse.json({ success: false, error: 'A single saved issue is required for reconciliation' }, { status: 400 });
+                }
+                const reconciliation = await reconcileSavedIssueRecords(supabase, projectId, { seedId: body.issueId, apply: body.apply === true });
+                return NextResponse.json({ success: true, ...reconciliation, scanned: 0 });
             }
             const excluded = body.issueHistoryOnly === true ? 0
                 : await deleteUnsupportedAutomaticFindings(supabase, projectId, { reviewOnly: true });

@@ -62,6 +62,33 @@ test('cleanup archives a real resolved question with its resolution source inste
   assert.equal(db.state.contradictions[0].evidence_data.archive_meta.resolution_quote, reply.extracted_text);
 });
 
+test('replacement preserves the primary linked question instead of creating a technical archive closure', async () => {
+  const linked = { ...openCard, evidence_data: { ...openCard.evidence_data, issue_reconciliation: { canonicalId: openCard.id } } };
+  const db = memoryDatabase({ contradictions: [linked], document_scan_state: [] });
+  const result = await cleanup.replacePreviousScanFindings({ supabase: db, rows: [linked], currentScanSignature: 'new-scan' });
+  assert.equal(result.archived, 0);
+  assert.deepEqual(db.state.contradictions, [linked]);
+});
+
+test('protecting linked history does not prevent a later documented resolution from closing the question', async () => {
+  const linked = { ...openCard, evidence_data: { ...openCard.evidence_data, issue_reconciliation: { canonicalId: openCard.id } } };
+  const reply = { id: 'reply', project_id: 'project', title: 'פרוטוקול 02.01.2025', category: 'EXECUTION', extracted_text: 'תכנית הניקוז תוקנה בהתאם להוראות המתכנן והנושא נסגר.' };
+  const db = memoryDatabase({ contradictions: [linked], documents: [openWork, reply], document_scan_state: [] });
+  await cleanup.deleteUnsupportedAutomaticFindings(db, 'project');
+  assert.equal(db.state.contradictions[0].status, 'ARCHIVED');
+  assert.equal(db.state.contradictions[0].evidence_data.archive_meta.resolution_document_id, reply.id);
+  assert.deepEqual(db.state.contradictions[0].evidence_data.issue_reconciliation, linked.evidence_data.issue_reconciliation);
+});
+
+test('a broken source on a linked primary question is flagged without deleting its collected history', async () => {
+  const linked = { ...openCard, evidence_data: { work_quote: 'A no-longer-available quote', issue_reconciliation: { canonicalId: openCard.id } } };
+  const db = memoryDatabase({ contradictions: [linked], documents: [openWork], document_scan_state: [] });
+  assert.equal(await cleanup.deleteUnsupportedAutomaticFindings(db, 'project'), 0);
+  assert.equal(db.state.contradictions.length, 1);
+  assert.equal(db.state.contradictions[0].evidence_data.evidence_status, 'REQUIRES_VERIFICATION');
+  assert.deepEqual(db.state.contradictions[0].evidence_data.issue_reconciliation, linked.evidence_data.issue_reconciliation);
+});
+
 test('revalidation keeps an unresolved question and flags its existing unrelated source without silently replacing it', async () => {
   const contract = { id: 'base', project_id: 'project', title: 'חוזה', category: 'CONTRACT', extracted_text: 'הקבלן יגיש תכניות DWG למסירת העבודה.' };
   const card = { ...openCard, target_contract_doc_id: contract.id, evidence_data: { ...openCard.evidence_data,

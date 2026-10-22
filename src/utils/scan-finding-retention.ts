@@ -2,11 +2,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { isDeepStrictEqual } from 'node:util';
 import { archiveContradictionRows, type ContradictionArchiveRow } from '@/utils/contradiction-archive';
 import {
-    attachRepeatedFindingHistory,
     canRemoveUnsupportedAutomaticFinding,
     findingNeedsHistory,
     isObsoleteAutomaticArchiveRow,
-    planRepeatedFindingConsolidation,
     type ReplaceableScanFinding,
 } from '@/utils/scan-finding-retention-policy';
 import {
@@ -24,6 +22,8 @@ import { isProjectContractBaseDocument, isReferenceDocument } from '@/utils/cont
 import { loadProjectBoundReferenceDocuments } from '@/utils/document-reference-authority-server';
 import { contractSourcePointers, type BoundReferenceDocument } from '@/utils/bound-reference-comparison';
 import { assessDocumentSourceReadiness, type DocumentSourceInput } from '@/utils/document-source-readiness';
+import { reconcileSavedIssueRecords } from './radar-issue-reconciliation-server.ts';
+export { reconcileSavedIssueRecords } from './radar-issue-reconciliation-server.ts';
 
 export { findingNeedsHistory, type ReplaceableScanFinding } from '@/utils/scan-finding-retention-policy';
 const REFERENCE_VERIFICATION_MISSING = 'לא ניתן לאמת כעת את ההפניה למסמך המקור';
@@ -68,7 +68,8 @@ export async function replacePreviousScanFindings(params: {
     currentScanSignature: string;
 }) {
     const { supabase, rows, currentScanSignature } = params;
-    const preserved = rows.filter(findingNeedsHistory);
+    const preserved = rows.filter((row) => findingNeedsHistory(row)
+        && !isLinkedPrimary(row) && !isTechnicalRadarExclusion(row));
     const obsoleteAutomatic = rows.filter((row) => !findingNeedsHistory(row));
 
     if (obsoleteAutomatic.length > 0) {
@@ -142,6 +143,10 @@ function asRecord(value: unknown): Record<string, unknown> {
         : {};
 }
 
+function isLinkedPrimary(row: ReplaceableScanFinding) {
+    return asRecord(asRecord(row.evidence_data).issue_reconciliation).canonicalId === row.id;
+}
+
 function groundStoredFinding(row: StoredFinding, currentWorkDocument: StoredDocument, contractDocuments: StoredDocument[]) {
     const evidence = asRecord(row.evidence_data);
     const finding: ContractScanFinding = {
@@ -177,55 +182,10 @@ export async function consolidateRepeatedAutomaticFindings(
     supabase: SupabaseClient,
     projectId: string,
 ) {
-    const [findingResult, documentResult] = await Promise.all([
-        supabase
-            .from('contradictions')
-            .select('id, title, category, source_execution_doc_id, target_contract_doc_id, evidence_data, scan_signature, pricing_status, status, created_at')
-            .eq('project_id', projectId)
-            .neq('status', 'ARCHIVED')
-            .not('scan_signature', 'is', null),
-        supabase
-            .from('documents')
-            .select('id, title')
-            .eq('project_id', projectId),
-    ]);
-    if (findingResult.error) throw findingResult.error;
-    if (documentResult.error) throw documentResult.error;
-
-    const findings = (findingResult.data || []) as StoredFinding[];
-    const findingsById = new Map(findings.map((finding) => [finding.id, finding]));
-    const plan = planRepeatedFindingConsolidation({
-        findings,
-        documents: (documentResult.data || []) as StoredDocument[],
-    });
-
-    let deleted = 0;
-    const affectedSignatures: string[] = [];
-    for (const group of plan) {
-        const keptFinding = findingsById.get(group.keepId);
-        if (!keptFinding) continue;
-        const { error: updateError } = await supabase
-            .from('contradictions')
-            .update({
-                evidence_data: attachRepeatedFindingHistory(
-                    keptFinding.evidence_data,
-                    group.repeatedHistory,
-                ),
-            })
-            .eq('id', group.keepId);
-        if (updateError) throw new Error(`Failed to save repeated finding history: ${updateError.message}`);
-
-        await deleteFindingIds(supabase, group.deleteIds);
-        affectedSignatures.push(...group.deleteIds.flatMap((id) => {
-            const signature = findingsById.get(id)?.scan_signature;
-            return signature ? [signature] : [];
-        }));
-        deleted += group.deleteIds.length;
-    }
-
-    await refreshScanStateFindingCounts(supabase, projectId, affectedSignatures);
-
-    return { groups: plan.length, deleted };
+    const result = await reconcileSavedIssueRecords(supabase, projectId, { apply: true });
+    // Keep the response compatible; records are now linked and excluded, never deleted as repeats.
+    return { groups: result.plans.length, deleted: 0, updated: result.updated,
+        duplicates: result.duplicates, invalid: result.invalid };
 }
 
 export async function deleteUnsupportedAutomaticFindings(
@@ -260,7 +220,8 @@ export async function deleteUnsupportedAutomaticFindings(
         && assessDocumentSourceReadiness(document).canCompare);
     for (const row of findings) {
         if (!options.reviewOnly && isTechnicalRadarExclusion(row)) continue;
-        if (!canRemoveUnsupportedAutomaticFinding(row)) continue;
+        if (!canRemoveUnsupportedAutomaticFinding(row)
+            && !(isLinkedPrimary(row) && row.pricing_status !== 'PRICED' && row.status !== 'MOVED_TO_PRICING')) continue;
         if (options.reviewOnly && findingNeedsHistory(row)) continue;
         const evidence = asRecord(row.evidence_data);
         if (hasUnverifiedStoredReference(row, contractDocuments)) {
@@ -394,11 +355,28 @@ export async function deleteUnsupportedAutomaticFindings(
             } }).eq('id', row.id).eq('project_id', projectId);
             if (error) throw error;
         }
-    } else if (invalid.length > 0) await deleteFindingIds(supabase, invalid.map((row) => row.id));
+    } else if (invalid.length > 0) {
+        const disposable = invalid.filter(canRemoveUnsupportedAutomaticFinding);
+        if (disposable.length) await deleteFindingIds(supabase, disposable.map(row => row.id));
+        for (const row of invalid.filter(isLinkedPrimary)) {
+            const evidence = asRecord(row.evidence_data), assessment = invalidAssessments.get(row.id);
+            const missing = Array.isArray(evidence.missing_evidence) ? evidence.missing_evidence : [];
+            const next = { ...evidence, evidence_status: 'REQUIRES_VERIFICATION',
+                missing_evidence: [...new Set([...missing, 'המקור הזמין אינו מוכיח עוד את הממצא השמור; היסטוריית הנושא נשמרה.'])],
+                source_verification: { ...asRecord(evidence.source_verification), quality_gate_passed: false,
+                    work_quote_matched: assessment?.workQuoteMatched ?? false,
+                    contract_quote_matched: assessment?.contractQuoteMatched ?? false,
+                    verification_reasons: assessment?.reasons || ['work_document_not_found'] },
+            };
+            if (isDeepStrictEqual(evidence, next)) continue;
+            const { error } = await supabase.from('contradictions').update({ evidence_data: next }).eq('id', row.id).eq('project_id', projectId);
+            if (error) throw error;
+        }
+    }
 
     const signatures = (options.reviewOnly ? findings : [...invalid, ...archived])
         .map((row) => row.scan_signature).filter((value): value is string => Boolean(value));
     await refreshScanStateFindingCounts(supabase, projectId, signatures);
 
-    return invalid.length;
+    return options.reviewOnly ? invalid.length : invalid.filter(canRemoveUnsupportedAutomaticFinding).length;
 }

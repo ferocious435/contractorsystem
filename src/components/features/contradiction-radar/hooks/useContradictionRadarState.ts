@@ -84,6 +84,19 @@ export function useContradictionRadarState({
         }
     }, [projectId]);
 
+    useEffect(() => {
+        let mounted = true;
+        const onFindingsUpdated = (event: Event) => {
+            if ((event as CustomEvent<{ projectId?: string }>).detail?.projectId !== projectId) return;
+            // Refresh counts without unmounting the open card and its saved-record preview.
+            void fetchRadarContradictions(projectId).then(data => {
+                if (mounted) setContradictions(data);
+            }).catch(error => console.error('Error refreshing linked findings:', error));
+        };
+        window.addEventListener(RADAR_FINDINGS_UPDATED_EVENT, onFindingsUpdated);
+        return () => { mounted = false; window.removeEventListener(RADAR_FINDINGS_UPDATED_EVENT, onFindingsUpdated); };
+    }, [projectId]);
+
     const fetchDocuments = useCallback(async () => {
         try {
             const data = await fetchRadarDocuments(projectId);
