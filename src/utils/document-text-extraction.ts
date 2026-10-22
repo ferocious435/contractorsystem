@@ -1,7 +1,19 @@
 const MAX_AI_TEXT_CHARS = 120_000;
 import { createRequire } from "node:module";
+import { extractPdfPagesWithLocalMcp } from '@/utils/local-ocr-mcp';
 
-const MAX_STORED_TEXT_CHARS = 500_000;
+import {
+    extractScannedPdfTextLocally,
+    mergeExtractedAndOcrText,
+} from "@/utils/local-document-ocr";
+import {
+    DOCUMENT_READING_VERSION,
+    hasCompleteOcrPageCoverage,
+    hasDocumentBodyText,
+    pdfPagesNeedingOcr,
+    type DocumentReadingVerification,
+} from '@/utils/document-source-readiness';
+
 const PDF_MIME_TYPE = "application/pdf";
 
 const DIRECT_GEMINI_MIME_TYPES: Record<string, string> = {
@@ -103,7 +115,7 @@ type OfficeParserModule = {
 };
 
 type PdfParseConstructor = new (options: { data: Buffer | Uint8Array }) => {
-    getText(): Promise<{ text?: string; total?: number }>;
+    getText(): Promise<{ text?: string; total?: number; pages?: Array<{ num: number; text: string }> }>;
     destroy(): Promise<void>;
 };
 
@@ -128,6 +140,9 @@ export type PreparedDocumentAnalysisInput =
         extractedText: string;
         aiText: string;
         wasTruncated: boolean;
+        requiresReview?: boolean;
+        ocrConfidence?: number;
+        readingVerification?: DocumentReadingVerification;
     };
 
 export function getFileExtension(title: string) {
@@ -319,7 +334,7 @@ function detectOfficeParserFileTypeFromBuffer(buffer: Buffer) {
 
 function requireUsefulText(text: string, code = "DOCUMENT_TEXT_EXTRACTION_EMPTY") {
     const normalized = normalizeText(text);
-    if (normalized.length < 3) {
+    if (!normalized) {
         throw new Error(`${code}: extracted text is empty`);
     }
     return normalized;
@@ -338,8 +353,9 @@ export async function extractPdfText(buffer: Buffer) {
     try {
         const pdfData = await parser.getText();
         return {
-            text: requireUsefulText(pdfData.text || ""),
+            text: normalizeText(pdfData.text || ""),
             pages: pdfData.total || 0,
+            pageTexts: pdfData.pages || [],
         };
     } finally {
         await parser.destroy();
@@ -388,18 +404,23 @@ function throwConverterRequired(extension: string) {
     throw new Error(`${item.code}: ${item.label} requires a converter or export`);
 }
 
-function makeTextInput(fileBuffer: Buffer, extractionSource: string, text: string): PreparedDocumentAnalysisInput {
+function makeTextInput(
+    fileBuffer: Buffer,
+    extractionSource: string,
+    text: string,
+    quality: { requiresReview?: boolean; ocrConfidence?: number; readingVerification?: DocumentReadingVerification } = {},
+): PreparedDocumentAnalysisInput {
     const extracted = requireUsefulText(text);
     const ai = truncateText(extracted, MAX_AI_TEXT_CHARS);
-    const stored = truncateText(extracted, MAX_STORED_TEXT_CHARS);
 
     return {
         kind: "text",
         fileBuffer,
         extractionSource,
-        extractedText: stored.text,
+        extractedText: extracted,
         aiText: ai.text,
-        wasTruncated: ai.wasTruncated || stored.wasTruncated,
+        wasTruncated: ai.wasTruncated,
+        ...quality,
     };
 }
 
@@ -408,11 +429,79 @@ export async function prepareDocumentAnalysisInput(fileBuffer: Buffer, title: st
     const directMimeType = getSupportedGeminiMimeTypeFromBuffer(fileBuffer);
 
     if (directMimeType === PDF_MIME_TYPE) {
+        let extractedPdfText: Awaited<ReturnType<typeof extractPdfText>> | null = null;
+        let requestedOcrPages: number[] | undefined;
         try {
-            const pdfText = await extractPdfText(fileBuffer);
-            return makeTextInput(fileBuffer, "pdf_text_extraction", pdfText.text);
+            extractedPdfText = await extractPdfText(fileBuffer);
+            requestedOcrPages = pdfPagesNeedingOcr(extractedPdfText.pageTexts, extractedPdfText.pages);
+            if (extractedPdfText.pages > 0 && requestedOcrPages.length === 0) {
+                return makeTextInput(fileBuffer, "pdf_text_extraction", extractedPdfText.text, {
+                    readingVerification: { version: DOCUMENT_READING_VERSION, complete: true,
+                        totalPages: extractedPdfText.pages, readPages: extractedPdfText.pageTexts.map((page) => page.num), unreadablePages: [] },
+                });
+            }
         } catch (error) {
-            console.warn("[document-text-extraction] PDF text extraction failed; falling back to Gemini multimodal.", error);
+            console.warn("[document-text-extraction] PDF text extraction failed; trying local OCR.", error);
+        }
+
+        try {
+            const ocr = await extractScannedPdfTextLocally(fileBuffer, {
+                pageCount: extractedPdfText?.pages,
+                pageNumbers: requestedOcrPages?.length ? requestedOcrPages : undefined,
+            }).catch((error) => {
+                if (!extractedPdfText?.pages) throw error;
+                console.warn('[document-text-extraction] Primary OCR failed; trying MCP for unread pages.', error);
+                return { text: '', pages: extractedPdfText.pages, confidence: 0,
+                    pageResults: [] as Awaited<ReturnType<typeof extractScannedPdfTextLocally>>['pageResults'] };
+            });
+            const totalPages = extractedPdfText?.pages || ocr.pages;
+            const expectedOcrPages = requestedOcrPages?.length ? requestedOcrPages
+                : Array.from({ length: totalPages }, (_, index) => index + 1);
+            const uncertainPages = expectedOcrPages.filter((page) => !hasCompleteOcrPageCoverage(ocr.pageResults, [page]));
+            if (uncertainPages.length) {
+                try {
+                    const alternatives = await extractPdfPagesWithLocalMcp(fileBuffer, uncertainPages);
+                    for (const alternative of alternatives) {
+                        const index = ocr.pageResults.findIndex((page) => page.page === alternative.page);
+                        if (index < 0) ocr.pageResults.push(alternative);
+                        else if (alternative.confidence > ocr.pageResults[index].confidence) ocr.pageResults[index] = alternative;
+                    }
+                    ocr.confidence = ocr.pageResults.reduce((sum, page) => sum + page.confidence, 0) / ocr.pageResults.length;
+                } catch (error) { console.warn('[ocr:mcp] Primary OCR result retained:', error); }
+            }
+            const nativeByPage = new Map(extractedPdfText?.pageTexts.map((page) => [page.num, page.text]) || []);
+            const ocrByPage = new Map(ocr.pageResults.map((page) => [page.page, page]));
+            const unreadablePages = expectedOcrPages.filter((page) => !hasCompleteOcrPageCoverage(ocr.pageResults, [page]));
+            const readPages = Array.from({ length: totalPages }, (_, index) => index + 1)
+                .filter((page) => expectedOcrPages.includes(page) ? !unreadablePages.includes(page)
+                    : hasDocumentBodyText(nativeByPage.get(page) || ''));
+            const complete = readPages.length === totalPages && unreadablePages.length === 0;
+            const mergedText = Array.from({ length: totalPages }, (_, index) => index + 1)
+                .map((page) => `${mergeExtractedAndOcrText(nativeByPage.get(page) || '', ocrByPage.get(page)?.text || '')}\n\n-- ${page} of ${totalPages} --`)
+                .join('\n\n');
+            return makeTextInput(
+                fileBuffer,
+                extractedPdfText ? "pdf_text_plus_local_ocr" : "pdf_local_ocr",
+                mergedText,
+                {
+                    requiresReview: !complete || ocr.confidence < 65,
+                    ocrConfidence: ocr.confidence,
+                    readingVerification: { version: DOCUMENT_READING_VERSION, complete, totalPages, readPages, unreadablePages },
+                },
+            );
+        } catch (error) {
+            console.warn("[document-text-extraction] Local PDF OCR failed.", error);
+            if (extractedPdfText?.text) {
+                return makeTextInput(
+                    fileBuffer,
+                    "pdf_text_extraction_ocr_pending",
+                    extractedPdfText.text,
+                    { requiresReview: true, readingVerification: { version: DOCUMENT_READING_VERSION, complete: false,
+                        totalPages: extractedPdfText.pages,
+                        readPages: extractedPdfText.pageTexts.filter((page) => !requestedOcrPages?.includes(page.num)).map((page) => page.num),
+                        unreadablePages: requestedOcrPages || [] } },
+                );
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 import { createClient } from '@/utils/supabase/client';
 import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
 import type { ContradictionItem } from '@/types';
+import { isTechnicalRadarExclusion } from '@/utils/radar-review-disposition';
 
 export interface RadarProjectDocument {
     id: string;
@@ -31,6 +32,9 @@ export interface RadarScanProgress {
     updatedAt?: string | null;
     completedAt?: string | null;
     found?: number;
+    skipped?: number;
+    excluded?: number;
+    failed?: number;
 }
 
 export interface RadarScanResult {
@@ -51,6 +55,51 @@ export interface RadarScanResult {
         processed: number;
         total: number;
     };
+}
+
+export interface RadarSupportSources {
+    referenceChecks?: {
+        error?: string;
+        eligibleComparisonPages?: number;
+        missingRequiredDocuments?: Array<{ targetLabel: string }>;
+    };
+    blueBook: {
+        available: boolean;
+        title: string | null;
+        status: string | null;
+    };
+    shelfContract3210: {
+        available: boolean;
+        title: string | null;
+        status: string | null;
+    };
+    priceLists: Array<{
+        id: string;
+        name: string;
+        sourceType: string | null;
+        version: string | null;
+        status: string;
+    }>;
+    standards: Array<{
+        id: string;
+        title: string;
+        status: string;
+    }>;
+}
+
+const EMPTY_SUPPORT_SOURCES: RadarSupportSources = {
+    blueBook: { available: false, title: null, status: null },
+    shelfContract3210: { available: false, title: null, status: null },
+    priceLists: [],
+    standards: [],
+};
+
+export async function revalidateRadarSavedEvidence(projectId: string): Promise<{ message: string; excluded: number }> {
+    const response = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, revalidateSavedOnly: true }) });
+    const result = await response.json();
+    if (!response.ok || !result.success) throw new Error(result.error || 'בדיקת הראיות נכשלה');
+    return { message: String(result.message), excluded: Number(result.excluded) };
 }
 
 async function parseContradictionMutationResponse(response: Response): Promise<ContradictionMutationResult> {
@@ -161,7 +210,7 @@ export async function fetchRadarContradictions(projectId: string): Promise<Contr
         throw error;
     }
 
-    return (data || []) as ContradictionItem[];
+    return ((data || []) as ContradictionItem[]).filter(item => !isTechnicalRadarExclusion(item));
 }
 
 export async function fetchRadarScanStatus(projectId: string, workDocId?: string): Promise<RadarScanProgress> {
@@ -187,10 +236,32 @@ export async function fetchRadarScanStatus(projectId: string, workDocId?: string
     return parseRadarScanStatusResponse(response);
 }
 
+export async function fetchRadarSupportSources(projectId: string): Promise<RadarSupportSources> {
+    if (isLocalProjectId(projectId)) return EMPTY_SUPPORT_SOURCES;
+
+    const params = new URLSearchParams({ projectId });
+    const response = await fetch(`/api/scan/support-sources?${params.toString()}`);
+    const payload = await response.json();
+
+    if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || 'Failed to load support sources');
+    }
+
+    return {
+        blueBook: payload.blueBook || EMPTY_SUPPORT_SOURCES.blueBook,
+        shelfContract3210: payload.shelfContract3210 || EMPTY_SUPPORT_SOURCES.shelfContract3210,
+        priceLists: Array.isArray(payload.priceLists) ? payload.priceLists : [],
+        standards: Array.isArray(payload.standards) ? payload.standards : [],
+        referenceChecks: payload.referenceChecks && typeof payload.referenceChecks === 'object' ? payload.referenceChecks : undefined,
+    };
+}
+
 export async function scanRadarProject(
     projectId: string,
     force = false,
     batchCursor = 0,
+    background = false,
+    retrySkipped = false,
 ): Promise<RadarScanResult> {
     if (isLocalProjectId(projectId)) {
         return { success: true, found: isDemoProjectId(projectId) ? 1 : 0, message: 'Demo scan completed locally.' };
@@ -199,7 +270,7 @@ export async function scanRadarProject(
     const response = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, force, batchCursor }),
+        body: JSON.stringify({ projectId, force, batchCursor, background, retrySkipped }),
     });
 
     return parseRadarScanResponse(response);

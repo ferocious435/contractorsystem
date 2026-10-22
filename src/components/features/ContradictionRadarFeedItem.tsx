@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import type { ContradictionItem } from '@/types';
 import { RichText } from '@/components/ui/RichText';
-import { getRadarFindingReference } from './contradiction-radar/utils/findingClassification';
+import { getRadarFindingKind, getRadarFindingReference } from './contradiction-radar/utils/findingClassification';
 import { getEvidenceDisplayStatus } from './contradiction-radar/utils/evidenceVerification';
 
 type EvidenceRecord = Record<string, unknown>;
@@ -83,6 +83,11 @@ function toStringList(value: unknown): string[] {
         .filter((entry): entry is string => Boolean(entry));
 }
 
+function toRecordList(value: unknown): EvidenceRecord[] {
+    if (!Array.isArray(value)) return [];
+    return value.filter(isEvidenceRecord);
+}
+
 function toRichTextEvidenceData(evidenceData?: EvidenceRecord): RichTextEvidenceData | undefined {
     if (!evidenceData) return undefined;
 
@@ -128,21 +133,26 @@ function ContradictionRadarFeedItem({
     };
 
     const getCategoryMeta = () => {
-        const category = String(c.category || '');
-        if (category.includes('סתירה') || c.severity === 'HIGH') {
+        const kind = getRadarFindingKind(c);
+        if (kind === 'CONTRADICTION') {
             return {
                 label: 'סתירה מהותית',
                 icon: <AlertTriangle className="h-4 w-4 text-red-500" />,
                 tone: 'red',
             };
         }
-        if (category.includes('שינוי') || category.includes('הנחיה') || c.severity === 'MEDIUM') {
+        if (kind === 'VARIATION') {
             return {
                 label: 'שינוי או חריג',
                 icon: <Zap className="h-4 w-4 text-blue-500" />,
                 tone: 'blue',
             };
         }
+        if (kind === 'MISSING_INFO' || kind === 'NO_DIRECT_MATCH') return {
+            label: kind === 'MISSING_INFO' ? 'חוסר נתונים' : 'אין התאמה ישירה',
+            icon: <FileSearch className="h-4 w-4 text-amber-500" />,
+            tone: 'amber',
+        };
         return {
             label: 'אירוע שטח',
             icon: <Activity className="h-4 w-4 text-emerald-500" />,
@@ -157,10 +167,20 @@ function ContradictionRadarFeedItem({
     const expertOperationalInstructions = getEvidenceRecord(expert?.operational_instructions);
     const expertContractualDiagnostic = getEvidenceRecord(expert?.contractual_diagnostic);
     const missingEvidence = toStringList(evidenceData?.missing_evidence);
+    const completionDeadlineReview = getEvidenceRecord(evidenceData?.completion_deadline_review);
+    const completionDeadlineReferences = [...toRecordList(completionDeadlineReview?.agreementSources), ...toRecordList(completionDeadlineReview?.references)];
     const workPage = toPageValue(evidenceData?.work_page);
     const contractPage = toPageValue(evidenceData?.contract_page);
     const clauseReference = toDisplayText(evidenceData?.clause_reference);
     const richTextEvidence = toRichTextEvidenceData(evidenceData);
+    const contractReferenceAuthority = getEvidenceRecord(evidenceData?.contract_reference_authority);
+    const incorporationChain = toRecordList(contractReferenceAuthority?.chain);
+    const supportAnalysis = getEvidenceRecord(evidenceData?.support_analysis);
+    const supportReferences = toRecordList(supportAnalysis?.reference_evidence);
+    const supportPrices = toRecordList(supportAnalysis?.price_evidence);
+    const supportStatus = toDisplayText(supportAnalysis?.status);
+    const impactSummary = cleanDisplayText(toDisplayText(supportAnalysis?.impact_summary));
+    const repeatedHistory = toRecordList(evidenceData?.repeated_history);
 
     const evidenceStatus = getEvidenceDisplayStatus(evidenceData);
 
@@ -247,6 +267,13 @@ function ContradictionRadarFeedItem({
                                             : 'חסר בסיס מסמכי מלא'}
                                 </span>
                             </div>
+
+                            {repeatedHistory.length > 1 && (
+                                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-violet-500/10 border-violet-500/20 text-violet-300">
+                                    <RefreshCw size={13} />
+                                    <span className="text-xs font-bold">חזר ב־{repeatedHistory.length} פרוטוקולים</span>
+                                </div>
+                            )}
                         </div>
 
                         <h3 className="text-2xl font-black text-white leading-tight group-hover:text-blue-300 transition-colors">
@@ -310,7 +337,7 @@ function ContradictionRadarFeedItem({
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        onRadarOpenDocument(c.target_doc?.id, contractPage);
+                                        onRadarOpenDocument(c.target_doc?.id || richTextEvidence?.document_pair?.contract_doc_id, contractPage);
                                     }}
                                     className="flex items-center gap-3 group/doc transition-all"
                                 >
@@ -319,7 +346,7 @@ function ContradictionRadarFeedItem({
                                     </div>
                                     <div className="text-right">
                                         <div className="text-xs text-gray-500 font-bold">מסמך חוזי</div>
-                                        <div className="text-sm text-gray-200 font-bold">{c.target_doc?.title || 'לא נמצא מסמך חוזי'}</div>
+                                        <div className="text-sm text-gray-200 font-bold">{c.target_doc?.title || richTextEvidence?.contract_title || 'לא נמצא מסמך חוזי'}</div>
                                     </div>
                                 </button>
                             </div>
@@ -350,6 +377,38 @@ function ContradictionRadarFeedItem({
                                 </button>
                             </div>
                         </div>
+
+                        {repeatedHistory.length > 1 && (
+                            <div className="bg-violet-500/[0.05] p-5 rounded-2xl border border-violet-500/20 space-y-3">
+                                <div className="flex items-center gap-2 text-sm font-bold text-violet-300">
+                                    <ClipboardList className="w-4 h-4" />
+                                    היסטוריית הנושא בפרוטוקולים
+                                </div>
+                                <p className="text-sm text-gray-300 leading-7">
+                                    הכרטיס מציג את העדכון האחרון. הנושא הופיע גם בפרוטוקולים הבאים:
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                    {repeatedHistory.map((entry, index) => {
+                                        const documentId = toDisplayText(entry.source_document_id);
+                                        const documentTitle = toDisplayText(entry.source_document_title) || 'פרוטוקול';
+                                        const documentDate = toDisplayText(entry.document_date);
+                                        return (
+                                            <button
+                                                key={`${documentId || 'protocol'}-${documentDate || index}`}
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    onRadarOpenDocument(documentId, null);
+                                                }}
+                                                disabled={!documentId}
+                                                className="px-3 py-2 rounded-xl bg-black/20 border border-white/10 text-xs text-gray-200 hover:border-violet-400/40 hover:text-white disabled:cursor-default disabled:opacity-60 transition-colors"
+                                            >
+                                                {documentDate ? `${documentDate} · ` : ''}{documentTitle}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
 
                         <div className="space-y-4">
                             <div className="flex items-center gap-3">
@@ -398,6 +457,92 @@ function ContradictionRadarFeedItem({
                                 </p>
                             </div>
                         </div>
+
+                        {completionDeadlineReferences.length > 0 && (
+                            <div className="p-5 rounded-2xl border border-amber-400/20 bg-amber-500/5 space-y-3">
+                                <h4 className="text-sm font-bold text-amber-200">מקורות שנבדקו למועד ההשלמה</h4>
+                                {completionDeadlineReferences.map((source, index) => {
+                                    const anchor = getEvidenceRecord(source.anchor);
+                                    return <details key={`completion-source-${index}`} className="text-sm text-gray-300">
+                                        <summary className="cursor-pointer">{toDisplayText(source.title)} · {toDisplayText(source.date)} · {source.scope === 'PROJECT' ? 'הפרויקט כולו' : source.scope === 'WATER_AND_SEWER' ? 'עבודות מים וביוב' : 'היקף לא מפורש'}</summary>
+                                        <p className="mt-2 leading-7">{toDisplayText(anchor?.quote)}</p>
+                                        <button className="text-blue-300 text-xs mt-2" onClick={() => onRadarOpenDocument(toDisplayText(source.documentId), toPageValue(anchor?.page))}>פתח מסמך מקור</button>
+                                    </details>;
+                                })}
+                            </div>
+                        )}
+
+                        {supportAnalysis && (
+                            <div className="bg-white/[0.02] p-5 rounded-2xl border border-white/5 space-y-4">
+                                <div className="flex items-center gap-2 text-sm font-bold text-violet-300">
+                                    <Database className="w-4 h-4" />
+                                    בדיקת השפעה ומקורות נוספים
+                                </div>
+                                {supportStatus === 'ERROR' ? (
+                                    <p className="text-sm text-amber-300">בדיקת המקורות הנוספים לא הושלמה ודורשת ניסיון נוסף.</p>
+                                ) : (
+                                    <>
+                                        {impactSummary && <p className="text-sm text-gray-100 leading-7">{impactSummary}</p>}
+                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                                            <div className="bg-black/20 border border-white/5 rounded-xl p-4 space-y-2">
+                                                <div className="text-xs font-bold text-gray-400">חוזה מדף, הספר הכחול או תקן</div>
+                                                {supportReferences.length === 0 ? (
+                                                    <div className="text-xs text-gray-500">לא נמצא קטע נוסף שרלוונטי ישירות לממצא.</div>
+                                                ) : supportReferences.map((reference, index) => (
+                                                    <div key={`support-reference-${index}`} className="text-xs text-gray-300 leading-6">
+                                                        <div className="font-bold text-gray-100">
+                                                            {toDisplayText(reference.title) || 'מקור נוסף'}
+                                                            {reference.page ? ` · עמוד ${toDisplayText(reference.page)}` : ''}
+                                                        </div>
+                                                        <div>{cleanDisplayText(toDisplayText(reference.quote))}</div>
+                                                        <div className="text-gray-500">
+                                                            {reference.applicability === 'CONFIRMED'
+                                                                ? 'המקור מקושר למסמכי הפרויקט'
+                                                                : reference.applicability === 'NEEDS_REVIEW'
+                                                                    ? 'צריך לבדוק אם המקור מחייב בפרויקט'
+                                                                    : 'מקור עזר; לא הוכח שהוא מחייב בפרויקט'}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <div className="bg-black/20 border border-white/5 rounded-xl p-4 space-y-2">
+                                                <div className="text-xs font-bold text-gray-400">בדיקת מחיר</div>
+                                                {supportPrices.length === 0 ? (
+                                                    <div className="text-xs text-gray-500">לא נמצאה התאמת מחיר ישירה. סדר הבדיקה נשאר: כתב הכמויות תחילה, אחריו מחירון מתאים.</div>
+                                                ) : supportPrices.map((price, index) => (
+                                                    <div key={`support-price-${index}`} className="text-xs text-gray-300 leading-6">
+                                                        <div className="font-bold text-gray-100">
+                                                            {toDisplayText(price.pricelist_name) || 'מחירון'}
+                                                            {price.item_code ? ` · ${toDisplayText(price.item_code)}` : ''}
+                                                        </div>
+                                                        <div>{cleanDisplayText(toDisplayText(price.description))}</div>
+                                                        {price.unit_price_excl_vat !== null && price.unit_price_excl_vat !== undefined && (
+                                                            <div className="text-gray-500">מחיר יחידה לפני מע״מ: {toDisplayText(price.unit_price_excl_vat)} {toDisplayText(price.unit) || ''}</div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
+
+                        {incorporationChain.length > 0 && (
+                            <div className="rounded-xl border border-white/10 p-4 space-y-3 text-xs text-gray-300 leading-6">
+                                <div className="font-bold text-gray-100">שרשרת ההפניות למסמך</div>
+                                {incorporationChain.map((link, index) => (
+                                    <div key={`incorporation-${index}`}>
+                                        <button className="text-blue-300 underline" onClick={(event) => {
+                                            event.stopPropagation();
+                                            onRadarOpenDocument(toDisplayText(link.sourceDocumentId), toPageValue(link.sourcePage));
+                                        }}>{toDisplayText(link.sourceTitle)}</button>
+                                        <span> ← {toDisplayText(link.targetTitle)}</span>
+                                        <p>{toDisplayText(link.quote)}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
 
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                             <div className="bg-blue-500/5 p-5 rounded-2xl border border-blue-500/15 space-y-3">

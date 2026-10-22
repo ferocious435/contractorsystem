@@ -1,0 +1,519 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { generateComparisonText, getComparisonAiIdentity } from '@/lib/comparison-ai';
+import { isReferenceDocument } from '@/utils/contract-document-hierarchy';
+import { buildDocumentScanChunks, selectRelevantContractChunks } from '@/utils/document-scan-chunks';
+import { extractFirstJsonObject } from '@/utils/local-ai-preview';
+import {
+    buildSafeIlikeOrFilter,
+    buildSupportAnalysisPrompt,
+    extractSupportSearchTerms,
+    rankSupportCandidates,
+    selectRelevantSupportIds,
+    SUPPORT_ANALYSIS_RESPONSE_SCHEMA,
+    SUPPORT_ANALYSIS_VERSION,
+    supportSourceSignature,
+    supportAnalysisTextIsGrounded,
+    type SupportCandidate,
+} from '@/utils/support-source-enrichment';
+import { loadProjectReferenceAuthority } from '@/utils/document-reference-authority-server';
+import { resolveDocumentReferenceAuthority, type DocumentReferenceGraph } from '@/utils/document-reference-authority';
+
+type AnyRecord = Record<string, unknown>;
+
+type FindingRow = {
+    id: string;
+    title?: string | null;
+    description?: string | null;
+    category?: string | null;
+    strategy_advice?: string | null;
+    evidence_data?: AnyRecord | null;
+    scan_signature?: string | null;
+};
+
+type DocumentRow = {
+    id: string;
+    title?: string | null;
+    category?: string | null;
+    extracted_text?: string | null;
+    extracted_text_hash?: string | null;
+    parsed_json?: AnyRecord | null;
+};
+
+type ReferenceRow = {
+    id: string;
+    title?: string | null;
+    reference_type?: string | null;
+    authority_scope?: string | null;
+    text_hash?: string | null;
+    status?: string | null;
+    source_document_id?: string | null;
+};
+
+type ReferenceChunkRow = {
+    id: string;
+    reference_document_id: string;
+    title?: string | null;
+    section_code?: string | null;
+    page_from?: number | null;
+    text?: string | null;
+};
+
+type PriceListRow = {
+    id: string;
+    name?: string | null;
+    source_type?: string | null;
+    content_hash?: string | null;
+    parse_status?: string | null;
+};
+
+type PriceItemRow = {
+    id: string;
+    pricelist_id: string;
+    item_code?: string | null;
+    item_type?: string | null;
+    description?: string | null;
+    unit?: string | null;
+    rate?: number | string | null;
+    page_number?: number | null;
+    source_excerpt?: string | null;
+    pricelists?: AnyRecord | AnyRecord[] | null;
+};
+
+export type SupportEnrichmentProgress = {
+    processed: number;
+    total: number;
+    failed: number;
+    currentTitle: string;
+};
+
+function text(value: unknown) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function readRecord(value: unknown): AnyRecord {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as AnyRecord : {};
+}
+
+function getReferenceType(value: { title?: string | null; reference_type?: string | null; parsed_json?: AnyRecord | null }) {
+    const parsedFamily = text(value.parsed_json?.reference_family).toUpperCase();
+    const storedType = text(value.reference_type).toUpperCase();
+    if (parsedFamily || storedType) return parsedFamily || storedType;
+    const title = text(value.title).toLowerCase();
+    if (/3210|חוזה\s*מדף|shelf\s*contract/.test(title)) return 'SHELF_CONTRACT_3210';
+    if (/ספר\s*כחול|הספר\s*הכחול|מפרט\s*כללי|blue\s*book/.test(title)) return 'BLUE_BOOK';
+    return 'OTHER_REFERENCE';
+}
+
+function joinedPriceList(row: PriceItemRow) {
+    if (Array.isArray(row.pricelists)) return readRecord(row.pricelists[0]);
+    return readRecord(row.pricelists);
+}
+
+async function loadReferenceRows(supabase: SupabaseClient, projectId: string) {
+    const { data, error } = await supabase
+        .from('reference_documents')
+        .select('id, title, reference_type, authority_scope, text_hash, status, source_document_id')
+        .or(`project_id.eq.${projectId},project_id.is.null`)
+        .eq('status', 'READY');
+    if (error) {
+        console.warn('[scan:support] Reference library is unavailable:', error.message);
+        return [] as ReferenceRow[];
+    }
+    return (data || []) as ReferenceRow[];
+}
+
+async function loadPriceLists(supabase: SupabaseClient, projectId: string) {
+    const { data, error } = await supabase
+        .from('pricelists')
+        .select('id, name, source_type, content_hash, parse_status')
+        .or(`project_id.eq.${projectId},project_id.is.null,is_global.eq.true`);
+    if (error) {
+        console.warn('[scan:support] Price lists are unavailable:', error.message);
+        return [] as PriceListRow[];
+    }
+    return (data || []) as PriceListRow[];
+}
+
+async function findReferenceCandidates(params: {
+    supabase: SupabaseClient;
+    query: string;
+    terms: string[];
+    references: ReferenceRow[];
+    fallbackReferenceDocuments: DocumentRow[];
+    authorityGraph: DocumentReferenceGraph;
+}) {
+    const {
+        supabase,
+        query,
+        terms,
+        references,
+        fallbackReferenceDocuments,
+        authorityGraph,
+    } = params;
+    const candidates: SupportCandidate[] = [];
+    const referenceIds = references.map((row) => row.id);
+    const filter = buildSafeIlikeOrFilter('text', terms);
+
+    if (referenceIds.length > 0 && filter) {
+        const { data, error } = await supabase
+            .from('reference_document_chunks')
+            .select('id, reference_document_id, title, section_code, page_from, text')
+            .in('reference_document_id', referenceIds)
+            .or(filter)
+            .limit(50);
+        if (error) {
+            console.warn('[scan:support] Reference search failed:', error.message);
+        } else {
+            for (const chunk of (data || []) as ReferenceChunkRow[]) {
+                const reference = references.find((row) => row.id === chunk.reference_document_id);
+                if (!reference || !text(chunk.text)) continue;
+                const referenceType = getReferenceType(reference);
+                const sourceClause = authorityGraph.documents.find((row) => row.id === reference.id)?.clauses.find((row) => row.id === chunk.id);
+                const authority = resolveDocumentReferenceAuthority(authorityGraph, {
+                    targetDocumentId: reference.id,
+                    sectionCode: sourceClause?.sectionCode,
+                    edition: sourceClause?.edition,
+                    requireEdition: true,
+                });
+                candidates.push({
+                    id: chunk.id,
+                    sourceId: reference.id,
+                    title: reference.title,
+                    sourceType: referenceType,
+                    page: chunk.page_from || null,
+                    sectionCode: sourceClause?.sectionCode || null,
+                    text: text(chunk.text).slice(0, 1_200),
+                    applicability: authority.applicability,
+                    applicabilityReason: authority.reason,
+                    incorporationEvidence: authority.chain.map((link) => ({
+                        document_id: link.sourceDocumentId, title: link.sourceTitle, quote: link.quote,
+                        target_document_id: link.targetDocumentId, target_title: link.targetTitle,
+                        page: link.sourcePage,
+                    })),
+                });
+            }
+        }
+    }
+
+    const fallbackChunks = buildDocumentScanChunks(fallbackReferenceDocuments, 2_500, 250);
+    const selectedFallbackChunks = selectRelevantContractChunks(fallbackChunks, query, 6_000, 3);
+    for (const chunk of selectedFallbackChunks) {
+        const document = fallbackReferenceDocuments.find((row) => row.id === chunk.documentId);
+        if (!document) continue;
+        const referenceType = getReferenceType(document);
+        const authority = resolveDocumentReferenceAuthority(authorityGraph, {
+            targetDocumentId: document.id, requireEdition: true,
+        });
+        candidates.push({
+            id: `${document.id}:${chunk.index}`,
+            sourceId: document.id,
+            title: document.title,
+            sourceType: referenceType,
+            page: null,
+            sectionCode: null,
+            text: chunk.text.slice(0, 1_200),
+            applicability: authority.applicability,
+            applicabilityReason: authority.reason,
+            incorporationEvidence: authority.chain.map((link) => ({
+                document_id: link.sourceDocumentId, title: link.sourceTitle, quote: link.quote,
+                target_document_id: link.targetDocumentId, target_title: link.targetTitle,
+                page: link.sourcePage,
+            })),
+        });
+    }
+
+    return rankSupportCandidates(query, candidates, 4);
+}
+
+async function findPriceCandidates(params: {
+    supabase: SupabaseClient;
+    query: string;
+    terms: string[];
+    priceLists: PriceListRow[];
+}) {
+    const { supabase, query, terms, priceLists } = params;
+    const priceListIds = priceLists.map((row) => row.id);
+    const filter = buildSafeIlikeOrFilter('description', terms);
+    if (priceListIds.length === 0 || !filter) return [];
+
+    const { data, error } = await supabase
+        .from('pricelist_items')
+        .select(`
+            id,
+            pricelist_id,
+            item_code,
+            item_type,
+            description,
+            unit,
+            rate,
+            page_number,
+            source_excerpt,
+            pricelists!inner(id, name, source_type)
+        `)
+        .in('pricelist_id', priceListIds)
+        .eq('item_type', 'ITEM')
+        .or(filter)
+        .limit(60);
+    if (error) {
+        console.warn('[scan:support] Price search failed:', error.message);
+        return [];
+    }
+
+    const candidates = ((data || []) as unknown as PriceItemRow[]).map((row): SupportCandidate => {
+        const priceList = joinedPriceList(row);
+        return {
+            id: row.id,
+            sourceId: row.pricelist_id,
+            title: text(priceList.name) || priceLists.find((item) => item.id === row.pricelist_id)?.name || 'מחירון',
+            sourceType: text(priceList.source_type) || null,
+            itemCode: row.item_code || null,
+            unit: row.unit || null,
+            rate: row.rate ?? null,
+            page: row.page_number || null,
+            text: (text(row.source_excerpt) || text(row.description)).slice(0, 900),
+        };
+    });
+
+    return rankSupportCandidates(query, candidates, 5);
+}
+
+function mapReferenceEvidence(candidate: SupportCandidate) {
+    return {
+        reference_document_id: candidate.sourceId || null,
+        reference_chunk_id: candidate.id,
+        title: candidate.title || null,
+        reference_type: candidate.sourceType || null,
+        applicability: candidate.applicability || 'REFERENCE_ONLY',
+        applicability_reason: candidate.applicabilityReason || null,
+        incorporation_evidence: candidate.incorporationEvidence || [],
+        page: candidate.page || null,
+        section_code: candidate.sectionCode || null,
+        quote: candidate.text,
+    };
+}
+
+function mapPriceEvidence(candidate: SupportCandidate) {
+    return {
+        pricelist_id: candidate.sourceId || null,
+        pricelist_item_id: candidate.id,
+        pricelist_name: candidate.title || null,
+        source_type: candidate.sourceType || null,
+        item_code: candidate.itemCode || null,
+        description: candidate.text,
+        unit: candidate.unit || null,
+        unit_price_excl_vat: candidate.rate ?? null,
+        page: candidate.page || null,
+    };
+}
+
+export async function enrichProjectFindingsWithSupportSources(params: {
+    supabase: SupabaseClient;
+    projectId: string;
+    onProgress?: (progress: SupportEnrichmentProgress) => Promise<void> | void;
+}) {
+    const { supabase, projectId, onProgress } = params;
+    const [documentsResult, findingsResult, references, priceLists] = await Promise.all([
+        supabase
+            .from('documents')
+            .select('id, title, category, extracted_text, extracted_text_hash, parsed_json')
+            .eq('project_id', projectId),
+        supabase
+            .from('contradictions')
+            .select('id, title, description, category, strategy_advice, evidence_data, scan_signature')
+            .eq('project_id', projectId)
+            .neq('status', 'ARCHIVED')
+            .not('scan_signature', 'is', null)
+            .order('created_at', { ascending: true }),
+        loadReferenceRows(supabase, projectId),
+        loadPriceLists(supabase, projectId),
+    ]);
+
+    if (documentsResult.error) throw documentsResult.error;
+    if (findingsResult.error) throw findingsResult.error;
+
+    const documents = (documentsResult.data || []) as DocumentRow[];
+    const findings = (findingsResult.data || []) as FindingRow[];
+    const fallbackReferenceDocuments = documents.filter((document) => isReferenceDocument(document) && text(document.extracted_text));
+    const authority = await loadProjectReferenceAuthority({ supabase, projectId, documents, references });
+    const sourceSignature = supportSourceSignature([
+        authority.signature,
+        ...references.map((row) => [row.id, row.text_hash, row.status]),
+        ...fallbackReferenceDocuments.map((row) => [row.id, row.extracted_text_hash]),
+        ...priceLists.map((row) => [row.id, row.content_hash, row.parse_status]),
+    ]);
+    const identity = getComparisonAiIdentity();
+    let processed = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const finding of findings) {
+        const evidence = readRecord(finding.evidence_data);
+        const existingSupport = readRecord(evidence.support_analysis);
+        if (
+            existingSupport.version === SUPPORT_ANALYSIS_VERSION
+            && existingSupport.source_signature === sourceSignature
+            && existingSupport.status === 'COMPLETE'
+        ) {
+            skipped += 1;
+            processed += 1;
+            await onProgress?.({ processed, total: findings.length, failed, currentTitle: text(finding.title) });
+            continue;
+        }
+
+        try {
+            const query = [
+                finding.title,
+                text(evidence.work_quote),
+            ].filter(Boolean).join('\n');
+            const terms = extractSupportSearchTerms(query);
+            const referenceCandidates = await findReferenceCandidates({
+                supabase,
+                query,
+                terms,
+                references,
+                fallbackReferenceDocuments,
+                authorityGraph: authority.graph,
+            });
+            const needsCommercialReview = /סתירה|שינוי|חריג|פעולה/iu.test(text(finding.category));
+            const priceCandidates = needsCommercialReview
+                ? await findPriceCandidates({ supabase, query, terms, priceLists })
+                : [];
+
+            let impactSummary = 'לא נמצא מקור נוסף שמוכיח השפעה כספית או חוזית מעבר למסמכי הפרויקט.';
+            let recommendedAction = text(finding.strategy_advice) || 'לשמור את הציטוטים ולבדוק את הצעד הבא מול מסמכי הפרויקט.';
+            let selectedReferenceIds: string[] = [];
+            let selectedPriceItemIds: string[] = [];
+
+            if (needsCommercialReview && (referenceCandidates.length > 0 || priceCandidates.length > 0)) {
+                const prompt = buildSupportAnalysisPrompt({
+                    title: text(finding.title),
+                    category: text(finding.category),
+                    contractQuote: text(evidence.contract_quote),
+                    workQuote: text(evidence.work_quote),
+                    referenceCandidates,
+                    priceCandidates,
+                });
+                const modelText = await generateComparisonText(prompt, process.env, {
+                    numCtx: 8_192,
+                    numPredict: 384,
+                    timeoutMs: 180_000,
+                    responseFormat: SUPPORT_ANALYSIS_RESPONSE_SCHEMA,
+                    temperature: 0,
+                    seed: 42,
+                });
+                const modelResult = extractFirstJsonObject(modelText);
+                impactSummary = text(modelResult.impact_summary) || impactSummary;
+                recommendedAction = text(modelResult.recommended_action) || recommendedAction;
+                selectedReferenceIds = selectRelevantSupportIds({
+                    value: modelResult.reference_ids,
+                    prefix: 'R',
+                    candidates: referenceCandidates,
+                    query,
+                });
+                selectedPriceItemIds = selectRelevantSupportIds({
+                    value: modelResult.price_item_ids,
+                    prefix: 'P',
+                    candidates: priceCandidates,
+                    query,
+                });
+                const selectedReferencesForCheck = selectedReferenceIds.map((id) =>
+                    referenceCandidates[Number(id.slice(1)) - 1]
+                ).filter((candidate): candidate is SupportCandidate => Boolean(candidate));
+                const suppliedSourceText = [
+                    query,
+                    text(evidence.contract_quote),
+                    ...selectedReferencesForCheck.map((candidate) => candidate.text),
+                    ...selectedPriceItemIds.map((id) => priceCandidates[Number(id.slice(1)) - 1])
+                        .filter((candidate): candidate is SupportCandidate => Boolean(candidate))
+                        .map((candidate) => `${candidate.itemCode || ''} ${candidate.text} ${candidate.rate ?? ''}`),
+                ].join('\n');
+                if (!supportAnalysisTextIsGrounded({
+                    impactSummary,
+                    recommendedAction,
+                    suppliedSourceText,
+                    selectedReferences: selectedReferencesForCheck,
+                })) {
+                    impactSummary = 'המקורות הנוספים לא הוכיחו השפעה חדשה מעבר למסמכי הפרויקט.';
+                    recommendedAction = text(finding.strategy_advice) || 'לשמור את הציטוטים ולבדוק את הצעד הבא מול מסמכי הפרויקט.';
+                    selectedReferenceIds = [];
+                    selectedPriceItemIds = [];
+                }
+            }
+
+            const selectedReferences = selectedReferenceIds.map((id) =>
+                referenceCandidates[Number(id.slice(1)) - 1]
+            ).filter((candidate): candidate is SupportCandidate => Boolean(candidate));
+            const selectedPrices = selectedPriceItemIds.map((id) =>
+                priceCandidates[Number(id.slice(1)) - 1]
+            ).filter((candidate): candidate is SupportCandidate => Boolean(candidate));
+            const supportAnalysis = {
+                version: SUPPORT_ANALYSIS_VERSION,
+                status: 'COMPLETE',
+                source_signature: sourceSignature,
+                analyzed_at: new Date().toISOString(),
+                impact_summary: impactSummary,
+                recommended_action: recommendedAction,
+                reference_evidence: selectedReferences.map(mapReferenceEvidence),
+                price_evidence: selectedPrices.map(mapPriceEvidence),
+                source_inventory: {
+                    blue_book: references.some((row) => getReferenceType(row) === 'BLUE_BOOK')
+                        || fallbackReferenceDocuments.some((row) => getReferenceType(row) === 'BLUE_BOOK'),
+                    shelf_contract_3210: references.some((row) => getReferenceType(row) === 'SHELF_CONTRACT_3210')
+                        || fallbackReferenceDocuments.some((row) => getReferenceType(row) === 'SHELF_CONTRACT_3210'),
+                    price_lists: priceLists.map((row) => ({ id: row.id, name: row.name, status: row.parse_status || 'READY' })),
+                },
+                pricing_rule: 'PROJECT_BOQ_FIRST_THEN_APPLICABLE_OFFICIAL_PRICELIST',
+                analysis_provider: identity.provider,
+                analysis_model: identity.model,
+            };
+            const { error } = await supabase
+                .from('contradictions')
+                .update({
+                    strategy_advice: recommendedAction,
+                    evidence_data: { ...evidence, support_analysis: supportAnalysis },
+                })
+                .eq('id', finding.id)
+                .eq('project_id', projectId);
+            if (error) throw error;
+        } catch (error: unknown) {
+            failed += 1;
+            const message = error instanceof Error ? error.message : 'Support analysis failed';
+            console.warn(`[scan:support] Failed to enrich ${finding.id}:`, message);
+            await supabase
+                .from('contradictions')
+                .update({
+                    evidence_data: {
+                        ...evidence,
+                        support_analysis: {
+                            version: SUPPORT_ANALYSIS_VERSION,
+                            status: 'ERROR',
+                            source_signature: sourceSignature,
+                            analyzed_at: new Date().toISOString(),
+                            error: message,
+                        },
+                    },
+                })
+                .eq('id', finding.id)
+                .eq('project_id', projectId);
+        }
+
+        processed += 1;
+        await onProgress?.({ processed, total: findings.length, failed, currentTitle: text(finding.title) });
+    }
+
+    return {
+        total: findings.length,
+        processed,
+        enriched: Math.max(0, processed - skipped - failed),
+        skipped,
+        failed,
+        sourceSignature,
+        inventory: {
+            blueBook: references.some((row) => getReferenceType(row) === 'BLUE_BOOK')
+                || fallbackReferenceDocuments.some((row) => getReferenceType(row) === 'BLUE_BOOK'),
+            shelfContract3210: references.some((row) => getReferenceType(row) === 'SHELF_CONTRACT_3210')
+                || fallbackReferenceDocuments.some((row) => getReferenceType(row) === 'SHELF_CONTRACT_3210'),
+            priceLists: priceLists.map((row) => ({ id: row.id, name: row.name, status: row.parse_status || 'READY' })),
+        },
+    };
+}

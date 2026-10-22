@@ -1,4 +1,5 @@
 import { createClient } from '@/utils/supabase/client';
+import { isTechnicalRadarExclusion } from '@/utils/radar-review-disposition';
 import {
     AI_BULK_APPROVE_CONFIDENCE_THRESHOLD,
     getPricingEvidenceConfidenceScore,
@@ -169,7 +170,7 @@ export async function fetchPendingQueue(projectId: string): Promise<PricingContr
 
     const rows = (data || []) as unknown as Record<string, unknown>[];
 
-    return rows.map((item: Record<string, unknown>) => {
+    return rows.filter(item => !isTechnicalRadarExclusion(item)).map((item: Record<string, unknown>) => {
         const aiMetadata = normalizePricingQueueAiMetadata(item);
 
         return {

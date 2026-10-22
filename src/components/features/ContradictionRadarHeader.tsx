@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 interface ContradictionRadarHeaderProps {
     isScanning: boolean;
     progress: number;
+    retryableDocsCount?: number;
     currentStep: string | null;
     currentStepStatus?: 'success' | 'error' | null;
     contractDocsCount: number;
@@ -12,13 +13,14 @@ interface ContradictionRadarHeaderProps {
     hasContradictions: boolean;
     aiAvailable: boolean | null;
     projectName: string;
-    scanProject: (force: boolean) => void;
+    scanProject: (force: boolean, retrySkipped?: boolean) => void;
     onExportPDF: () => void;
 }
 
 export default function ContradictionRadarHeader({
     isScanning,
     progress,
+    retryableDocsCount = 0,
     currentStep,
     currentStepStatus,
     contractDocsCount,
@@ -122,6 +124,15 @@ export default function ContradictionRadarHeader({
                     </div>
 
                     <div className="flex items-center gap-3 flex-wrap">
+                        {retryableDocsCount > 0 && (
+                            <button
+                                onClick={() => scanProject(false, true)}
+                                disabled={isScanning || aiAvailable !== true}
+                                className="px-5 py-4 rounded-2xl font-bold text-sm border border-amber-500/30 text-amber-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-amber-500/10"
+                            >
+                                בדיקה חוזרת ל־{retryableDocsCount} מסמכים
+                            </button>
+                        )}
                         <button
                             onClick={() => scanProject(false)}
                             disabled={isScanning || aiAvailable !== true}

@@ -1,3 +1,7 @@
+import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
+import { meaningfulRetrievalTerms, contractRetrievalWeights, selectContractContext, contractContextText,
+    type ContractContextSelection, type ComparisonContextSelection } from './contract-context-selection.ts';
+
 export type ScanChunkDocument = {
     id: string;
     title?: string | null;
@@ -14,6 +18,8 @@ export type DocumentScanChunk = {
     start: number;
     end: number;
     text: string;
+    sourceText?: string;
+    context_selection?: ContractContextSelection;
 };
 
 const DEFAULT_CHUNK_CHARS = 9_000;
@@ -26,11 +32,32 @@ function normalizePdfLetterSpacing(value: string) {
     );
 }
 
+export function normalizeDocumentTextForScan(value: unknown) {
+    return normalizePdfLetterSpacing(String(value || ''))
+        .replace(/[^\S\r\n]+/gu, ' ')
+        .replace(/ *\r?\n */g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+export function hasUsefulDocumentScanText(document: {
+    title?: string | null;
+    extracted_text?: string | null;
+    ocr_status?: string | null;
+    storage_path?: string | null;
+    file_url?: string | null;
+    parsed_json?: unknown;
+}) {
+    return assessDocumentSourceReadiness({
+        ...document, extracted_text: normalizeDocumentTextForScan(document.extracted_text),
+    }).canCompare;
+}
+
 function chooseChunkEnd(text: string, start: number, maxChars: number) {
     const hardEnd = Math.min(text.length, start + maxChars);
     if (hardEnd >= text.length) return text.length;
 
-    const minimumUsefulEnd = start + Math.floor(maxChars * 0.65);
+    const minimumUsefulEnd = start + Math.floor(maxChars * 0.85);
     const paragraphEnd = text.lastIndexOf('\n\n', hardEnd);
     if (paragraphEnd >= minimumUsefulEnd) return paragraphEnd + 2;
 
@@ -73,7 +100,11 @@ export function buildDocumentScanChunks(
     overlapChars = DEFAULT_CHUNK_OVERLAP,
 ): DocumentScanChunk[] {
     return documents.flatMap((document) => {
-        const chunks = chunkDocumentText(String(document.extracted_text || ''), maxChars, overlapChars);
+        const chunks = chunkDocumentText(
+            normalizeDocumentTextForScan(document.extracted_text),
+            maxChars,
+            overlapChars,
+        );
         return chunks.map((chunk, index) => ({
             ...chunk,
             documentId: document.id,
@@ -81,6 +112,7 @@ export function buildDocumentScanChunks(
             category: String(document.category || ''),
             index,
             total: chunks.length,
+            sourceText: String(document.extracted_text || ''),
         }));
     });
 }
@@ -123,19 +155,38 @@ export function selectRelevantContractChunks(
     maxSelectedChars = 14_000,
     maxSelectedChunks = 3,
 ) {
-    const workTokens = tokenizeForRetrieval(workText);
-    const ranked = contractChunks
-        .map((chunk, order) => ({ chunk, order, score: relevanceScore(chunk, workTokens) }))
+    const workTokens = meaningfulRetrievalTerms(workText);
+    if (workTokens.size === 0 || maxSelectedChars <= 0 || maxSelectedChunks <= 0) return [];
+    const weights = contractRetrievalWeights(contractChunks.map(chunk => chunk.text), workTokens);
+    const rankedChunks = contractChunks
+        .filter(chunk => typeof chunk.sourceText === 'string')
+        .map((chunk, order) => {
+            const chunkTerms = meaningfulRetrievalTerms(chunk.text);
+            return { chunk, order, score: [...workTokens].filter(term => chunkTerms.has(term))
+                .reduce((sum, term) => sum + (weights.get(term) || 1), 0) };
+        })
+        .filter(candidate => candidate.score > 0)
         .sort((left, right) => right.score - left.score || left.order - right.order);
 
+    const documentCandidates = new Map<string, typeof rankedChunks[number]>();
+    for (const candidate of rankedChunks) {
+        if (!documentCandidates.has(candidate.chunk.documentId)) documentCandidates.set(candidate.chunk.documentId, candidate);
+    }
+    const ranked = [...documentCandidates.values()].map(candidate => ({ ...candidate,
+        context: selectContractContext({ id: candidate.chunk.documentId, extracted_text: candidate.chunk.sourceText! },
+            workText, maxSelectedChars, weights),
+    })).filter(candidate => candidate.context.source_anchors.length > 0)
+        .sort((left, right) => (right.context.relevance_score || 0) - (left.context.relevance_score || 0) || left.order - right.order);
     const selected: DocumentScanChunk[] = [];
     let usedChars = 0;
-
     for (const candidate of ranked) {
         if (selected.length >= maxSelectedChunks) break;
-        if (selected.length > 0 && usedChars + candidate.chunk.text.length > maxSelectedChars) continue;
-        selected.push(candidate.chunk);
-        usedChars += candidate.chunk.text.length;
+        const context = usedChars === 0 ? candidate.context : selectContractContext({ id: candidate.chunk.documentId,
+            extracted_text: candidate.chunk.sourceText! }, workText, maxSelectedChars - usedChars, weights);
+        const text = contractContextText(context);
+        if (!text || text.length > maxSelectedChars - usedChars) continue;
+        selected.push({ ...candidate.chunk, text, context_selection: context });
+        usedChars += text.length;
     }
 
     return selected;
@@ -274,8 +325,43 @@ export function formatDocumentChunkContext(chunks: DocumentScanChunk[]) {
     return chunks.map((chunk) => `--- Document ID: ${chunk.documentId}
 Title: ${chunk.title}
 Category: ${chunk.category}
-Chunk: ${chunk.index + 1}/${chunk.total}; source chars ${chunk.start}-${chunk.end} ---
-${chunk.text}`).join('\n\n');
+${chunk.context_selection ? 'Retrieval seed chunk' : 'Chunk'}: ${chunk.index + 1}/${chunk.total} ---
+${chunk.context_selection ? [
+    `Selection: ${chunk.context_selection.reason}; complete: ${chunk.context_selection.complete}; limitations: ${chunk.context_selection.limitations.join(', ') || 'none'}`,
+    ...chunk.context_selection.source_anchors.map(anchor => `Saved source chars ${anchor.start}-${anchor.end}; page ${anchor.page ?? 'unconfirmed'}:\n${anchor.quote}`),
+].join('\n') : `Normalized source chars ${chunk.start}-${chunk.end}:\n${chunk.text}`}`).join('\n\n');
 }
 
 export const formatContractChunkContext = formatDocumentChunkContext;
+
+export function formatContractComparisonContext(
+    nativeChunks: DocumentScanChunk[],
+    referenceChunks: DocumentScanChunk[],
+    queryText: string,
+) {
+    return prepareContractComparisonContext(nativeChunks, referenceChunks, queryText).text;
+}
+
+export function prepareContractComparisonContext(
+    nativeChunks: DocumentScanChunk[],
+    referenceChunks: DocumentScanChunk[],
+    queryText: string,
+) {
+    const selected = referenceChunks.length === 0 ? nativeChunks
+        : [...nativeChunks.slice(0, 1), ...referenceChunks.slice(0, 1)]
+        .map((chunk) => {
+            if (chunk.context_selection || chunk.text.length <= 1_100 || typeof chunk.sourceText !== 'string') return chunk;
+            const context = selectContractContext({ id: chunk.documentId,
+                extracted_text: chunk.sourceText || chunk.text }, queryText, 1_100);
+            return { ...chunk, text: contractContextText(context), context_selection: context };
+        });
+    const sources = selected.map(chunk => ({ documentId: chunk.documentId,
+        selection: chunk.context_selection || { reason: 'legacy_chunk_without_source_offsets', matched_terms: [],
+            source_anchors: [], complete: false, limitations: ['source_offsets_unavailable'] } }));
+    const selection: ComparisonContextSelection = {
+        version: 'source-context-v1', complete: sources.length > 0 && sources.every(source => source.selection.complete),
+        limitations: sources.length ? [...new Set(sources.flatMap(source => source.selection.limitations))] : ['no_subject_match'],
+        sources,
+    };
+    return { text: formatDocumentChunkContext(selected), selection };
+}

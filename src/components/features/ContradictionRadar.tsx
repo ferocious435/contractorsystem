@@ -1,4 +1,5 @@
 ﻿import { Activity, Shield, Zap, ArrowRight } from 'lucide-react';
+import { BookOpen, CheckCircle2, AlertCircle } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import ContradictionRadarHeader from './ContradictionRadarHeader';
 import ContradictionRadarFeedItem from './ContradictionRadarFeedItem';
@@ -19,11 +20,16 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
         isLoading,
         isScanning,
         progress,
+        retryableDocsCount,
         rescanningIds,
         resolvedProjectName,
         activeFilter,
         activeStatusFilter,
         aiAvailable,
+        supportSources,
+        isReviewing,
+        reviewMessage,
+        reviewError,
     } = state;
     const {
         deleteContradiction,
@@ -35,6 +41,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
         scanProject,
         toggleExpanded,
         updateStatus,
+        reviewSavedEvidence,
     } = actions;
 
     const getFilterButtonClass = (tone: string, isActive: boolean) => {
@@ -71,6 +78,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
             <ContradictionRadarHeader
                 isScanning={isScanning}
                 progress={progress}
+                retryableDocsCount={retryableDocsCount}
                 currentStep={currentStep}
                 currentStepStatus={currentStepStatus}
                 contractDocsCount={derived.contractDocsCount}
@@ -81,6 +89,75 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                 scanProject={scanProject}
                 onExportPDF={handleExportPDF}
             />
+
+            <div className="flex flex-wrap items-center gap-4 -mt-5">
+                <button onClick={reviewSavedEvidence} disabled={isReviewing || isScanning}
+                    className="px-5 py-3 rounded-2xl border border-blue-400/30 text-blue-200 text-sm font-bold disabled:opacity-40 hover:bg-blue-500/10">
+                    {isReviewing ? 'בודק ראיות בממצאים...' : 'בדיקת ראיות בממצאים שמורים'}
+                </button>
+                {reviewMessage && <p role={reviewError ? 'alert' : 'status'} className={`text-sm ${reviewError ? 'text-red-300' : 'text-emerald-300'}`}>{reviewMessage}</p>}
+            </div>
+
+            {supportSources && (
+                <div className="bg-[#151C24]/55 border border-white/10 rounded-[2rem] p-6 space-y-4">
+                    <div className="flex items-center gap-3">
+                        <BookOpen className="w-5 h-5 text-blue-400" />
+                        <div>
+                            <div className="text-base font-black text-white">מקורות והפניות במסמכי הפרויקט</div>
+                            <div className="text-xs text-gray-500 mt-1">ההפניות במסמכי הפרויקט קובעות אילו מקורות, פרקים ומהדורות משתתפים בבדיקה.</div>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                        {[
+                            {
+                                label: 'חוזה מדף 3210',
+                                available: supportSources.shelfContract3210.available,
+                                detail: supportSources.shelfContract3210.available ? 'קיים במערכת' : 'לא נטען',
+                            },
+                            {
+                                label: 'הספר הכחול',
+                                available: supportSources.blueBook.available,
+                                detail: supportSources.blueBook.available ? 'קיים במערכת' : 'לא נטען',
+                            },
+                            {
+                                label: 'מחירונים',
+                                available: supportSources.priceLists.length > 0,
+                                detail: supportSources.priceLists.length > 0
+                                    ? `${supportSources.priceLists.length}: ${supportSources.priceLists.map((item) => item.name).join(' · ')}`
+                                    : 'לא נטענו',
+                            },
+                            {
+                                label: 'תקנים',
+                                available: supportSources.standards.length > 0,
+                                detail: supportSources.standards.length > 0
+                                    ? `${supportSources.standards.length}: ${supportSources.standards.map((item) => item.title).join(' · ')}`
+                                    : 'לא נטענו',
+                            },
+                        ].map((source) => (
+                            <div key={source.label} className="bg-black/20 border border-white/5 rounded-2xl p-4">
+                                <div className="flex items-center gap-2 text-sm font-bold text-gray-200">
+                                    {source.available
+                                        ? <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                        : <AlertCircle className="w-4 h-4 text-amber-300" />}
+                                    {source.label}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-2 leading-5">{source.detail}</div>
+                            </div>
+                        ))}
+                    </div>
+                    {supportSources.referenceChecks?.error ? (
+                        <p className="text-xs text-amber-300">בדיקת ההפניות לא הושלמה. תחולת המקורות עדיין לא אומתה.</p>
+                    ) : supportSources.referenceChecks?.eligibleComparisonPages === 0 && (
+                        <p className="text-xs text-amber-300">בספריית הייחוס עדיין לא נמצאה אסמכתה מספקת שמקשרת סעיף לפרק ולמהדורה המחייבים בפרויקט.</p>
+                    )}
+                    {Boolean(supportSources.referenceChecks?.missingRequiredDocuments?.length) && (
+                        <details className="text-xs text-amber-200 leading-6">
+                            <summary className="cursor-pointer">מסמכי הפרויקט מפנים למקורות שהטקסט המלא שלהם חסר במערכת ({supportSources.referenceChecks?.missingRequiredDocuments?.length})</summary>
+                            <p className="mt-2">{supportSources.referenceChecks?.missingRequiredDocuments?.map((source) => source.targetLabel).join(' · ')}</p>
+                        </details>
+                    )}
+                </div>
+            )}
 
             <div className="flex flex-col gap-6">
                 <div className="flex items-center gap-2 flex-wrap" aria-label="מצב ממצאים">

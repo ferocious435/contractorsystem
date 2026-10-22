@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import { isLocalProjectId } from '@/utils/local-projects';
+import { summarizeOpenContradictions } from '@/components/features/projectOverviewStats';
+import { RADAR_FINDINGS_UPDATED_EVENT } from '@/utils/radar-review-disposition';
 import { 
     LayoutDashboard, 
     FileText, 
@@ -72,17 +74,21 @@ export function Sidebar({ currentView = 'dashboard', onNavigate, projectId }: { 
         const supabase = createClient();
 
         const fetchCount = async () => {
-            const { count } = await supabase
+            const { data } = await supabase
                 .from('contradictions')
-                .select('id', { count: 'exact', head: true })
+                .select('status,severity,evidence_data')
                 .eq('project_id', projectId)
                 .eq('status', 'OPEN')
                 .eq('severity', 'HIGH');
 
-            setOpenContradictionsCount(count || 0);
+            setOpenContradictionsCount(summarizeOpenContradictions(data).highRiskOpenCount);
         };
 
         fetchCount();
+        const refreshAfterReview = (event: Event) => {
+            if ((event as CustomEvent<{ projectId: string }>).detail?.projectId === projectId) void fetchCount();
+        };
+        window.addEventListener(RADAR_FINDINGS_UPDATED_EVENT, refreshAfterReview);
 
         const channel = supabase.channel('sidebar-contradictions')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'contradictions', filter: `project_id=eq.${projectId}` }, () => {
@@ -91,6 +97,7 @@ export function Sidebar({ currentView = 'dashboard', onNavigate, projectId }: { 
             .subscribe();
 
         return () => {
+            window.removeEventListener(RADAR_FINDINGS_UPDATED_EVENT, refreshAfterReview);
             supabase.removeChannel(channel);
         };
     }, [isLocalProject, projectId]);

@@ -39,6 +39,9 @@ export const generateContradictionPDF = ({
     const asRecord = (value: unknown): Record<string, unknown> =>
         value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+    const asRecordList = (value: unknown): Record<string, unknown>[] =>
+        Array.isArray(value) ? value.map(asRecord).filter((item) => Object.keys(item).length > 0) : [];
+
     // --- Header Section ---
     doc.setFillColor(21, 28, 36);
     doc.rect(0, 0, 210, 40, 'F');
@@ -144,6 +147,45 @@ export const generateContradictionPDF = ({
             const finLines = doc.splitTextToSize(financialDesc, 180);
             doc.text(finLines, 195, yPos, { align: 'right' });
             yPos += (finLines.length * 5) + 6;
+        }
+
+        const supportAnalysis = asRecord(c.evidence_data?.support_analysis);
+        if (supportAnalysis.status === 'COMPLETE') {
+            if (yPos > 230) { doc.addPage(); yPos = 20; }
+            doc.setFontSize(10);
+            doc.setTextColor(91, 33, 182);
+            doc.text('בדיקת השפעה ומקורות נוספים:', 195, yPos, { align: 'right' });
+            yPos += 6;
+
+            const impact = safeText(supportAnalysis.impact_summary);
+            if (impact !== '-') {
+                doc.setTextColor(51, 65, 85);
+                const impactLines = doc.splitTextToSize(impact, 180);
+                doc.text(impactLines, 195, yPos, { align: 'right' });
+                yPos += (impactLines.length * 5) + 4;
+            }
+
+            const references = asRecordList(supportAnalysis.reference_evidence);
+            for (const reference of references) {
+                if (yPos > 270) { doc.addPage(); yPos = 20; }
+                const sourceLine = `${safeText(reference.title)}${reference.page ? ` · עמוד ${safeText(reference.page)}` : ''}: ${safeText(reference.quote)}`;
+                const sourceLines = doc.splitTextToSize(sourceLine, 180);
+                doc.setTextColor(71, 85, 105);
+                doc.text(sourceLines, 195, yPos, { align: 'right' });
+                yPos += (sourceLines.length * 4.5) + 3;
+            }
+
+            const prices = asRecordList(supportAnalysis.price_evidence);
+            for (const price of prices) {
+                if (yPos > 270) { doc.addPage(); yPos = 20; }
+                const priceLine = `${safeText(price.pricelist_name)} · ${safeText(price.item_code)} · ${safeText(price.description)} · מחיר יחידה לפני מע״מ: ${safeText(price.unit_price_excl_vat)}`;
+                const priceLines = doc.splitTextToSize(priceLine, 180);
+                doc.setTextColor(71, 85, 105);
+                doc.text(priceLines, 195, yPos, { align: 'right' });
+                yPos += (priceLines.length * 4.5) + 3;
+            }
+
+            yPos += 4;
         }
 
         // --- Expert Strategy Section (if exists) ---

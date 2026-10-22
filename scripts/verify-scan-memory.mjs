@@ -72,22 +72,38 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('documents.map((doc): ScanDocumentWithRole'));
   assert.equal(route.includes('const validatedDocuments ='), false);
   assert.ok(route.includes('generateScanChunkFindings'));
-  assert.ok(route.includes('numPredict: 512'));
-  assert.ok(route.includes('Return at most one decisive finding'));
-  assert.ok(route.includes('const WORK_CHUNK_CHARS = 6_000'));
-  assert.ok(route.includes('const MAX_SELECTED_CONTRACT_CHARS = 4_000'));
-  assert.ok(route.includes('const MAX_RELATED_WORK_CHARS = 2_400'));
+  assert.ok(route.includes('single most decisive finding'));
+  assert.ok(route.includes('const WORK_CHUNK_CHARS = 7_000'));
+  assert.ok(route.includes('const MAX_SELECTED_CONTRACT_CHARS = 2_500'));
+  assert.ok(route.includes('const MAX_RELATED_WORK_CHARS = 2_100'));
   assert.ok(route.includes('withScanHeartbeat'));
   assert.ok(route.includes('const SCAN_HEARTBEAT_MS = 15_000'));
   assert.ok(route.includes('body.batchCursor'));
   assert.ok(route.includes('workDocs.slice(batchCursor, batchCursor + 1)'));
   assert.ok(route.includes('offset: batchCursor'));
+  assert.ok(route.includes('runProjectScanInBackground'));
+  assert.ok(route.includes('backgroundScanJobs'));
+  assert.ok(route.includes('latestRowsByDocument'));
+  assert.ok(route.includes('deleteSupersededScanStates'));
+  assert.ok(route.includes('findPreferredPdfDuplicates'));
+  assert.ok(route.includes('removePreferredPdfDuplicates'));
+  assert.ok(route.includes('unsupported candidate(s)'));
+  assert.equal(route.includes('throw new Error(`Model result failed evidence quality control:'), false);
   assert.ok(route.includes('memory-baseline:v1:${projectId}'));
-  assert.ok(route.includes('initializeExistingScanMemory'));
+  assert.ok(route.includes('resetPrematureScanBaseline'));
+  assert.equal(route.includes('initializeExistingScanMemory'), false);
   assert.ok(route.includes('isTemplatePlaceholderFinding'));
-  assert.ok(route.includes('archiveTemplatePlaceholderFindings'));
+  assert.ok(route.includes('deleteTemplatePlaceholderFindings'));
+  assert.ok(route.includes('assessContractScanFinding'));
+  assert.ok(route.includes('status: "SKIPPED"'));
   assert.ok(route.includes('const isPaused = !activeRow && total > 0 && processed < total'));
   assert.equal(route.includes('const projectWorkSignature ='), false);
   assert.ok(uploadRoute.includes('createHash("sha256").update(fileBuffer).digest("hex")'));
   assert.ok(uploadRoute.includes('content_hash: contentHash'));
+});
+
+test('a new scan does not rewrite old run totals and inflate current progress', () => {
+  const route = fs.readFileSync('src/app/api/scan/route.ts', 'utf8');
+
+  assert.equal(route.includes('.update({ total_work_docs: remainingWorkTotal })'), false);
 });

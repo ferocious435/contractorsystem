@@ -1,8 +1,62 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import { registerHooks } from 'node:module';
 
+const projectHook = registerHooks({ resolve(specifier, context, nextResolve) {
+  return nextResolve(specifier.startsWith('@/') ? new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href : specifier, context);
+} });
 const chunkModule = await import('../src/utils/document-scan-chunks.ts');
+projectHook.deregister();
+
+test('a complete instruction of one line is not dropped because of its length', () => {
+  assert.equal(chunkModule.hasUsefulDocumentScanText({ title: 'הנחיה.docx', ocr_status: 'COMPLETED',
+    extracted_text: 'יש להשאיר את המעבר פתוח.' }), true);
+});
+
+test('a short readable letter reaches analysis after its complete extraction is confirmed', () => {
+  const letter = {
+    title: 'מכתב נלווה לבקשה להיתר.docx',
+    ocr_status: 'REQUIRES_REVIEW',
+    extracted_text: 'נדון: בקשה לאישור עבודות הגנה על עמוד מתח עליון מס\' 10822/16\nלכבוד חח"י,\nבהתאם לתכנון וביצוע עבודות תשתית באזור תעשיה קרית גת תבע מזרחית הננו פונים אליכם בבקשה לאישור ביצוע עבודות הגנה על עמוד מתח עליון מס\' 10822/16.\nעבודות אלו נדרשות לשם הבטחת שלמות העמוד והמערכות הצמודות אליו, וזאת בהתאם להנחיות שקיבלנו מכם בפגישות משותפות. כמו כן, העבודות יתבצעו תוך תיאום מלא עם הגורמים המקצועיים הרלוונטיים בחברת החשמל ותוך שמירה על כל הכללים המחייבים.',
+  };
+  assert.equal(chunkModule.hasUsefulDocumentScanText(letter), false);
+  assert.equal(chunkModule.hasUsefulDocumentScanText({ ...letter, ocr_status: 'COMPLETED' }), true);
+  assert.equal(chunkModule.buildDocumentScanChunks([{ ...letter, id: 'permit' }]).length, 1);
+});
+
+test('a short PDF price excerpt is readable only after extraction is complete', () => {
+  const excerpt = {
+    title: 'סעיף מחיר.pdf',
+    parsed_json: { source_reading: { version: 'page-coverage-v1', complete: true,
+      totalPages: 1, readPages: [1], unreadablePages: [] } },
+    extracted_text: '51.001.0075 פירוק מבנה כבישים ומדרכות הכולל אספלט, מצע, תשתית ומילוי עד עומק שמונים סנטימטרים, לרבות פינוי הפסולת לאתר מורשה.',
+  };
+  assert.equal(chunkModule.hasUsefulDocumentScanText({ ...excerpt, ocr_status: 'COMPLETED' }), true);
+  assert.equal(chunkModule.hasUsefulDocumentScanText({ ...excerpt, ocr_status: 'REQUIRES_REVIEW' }), false);
+  assert.equal(chunkModule.hasUsefulDocumentScanText({ ...excerpt, ocr_status: 'ERROR' }), false);
+  assert.equal(chunkModule.hasUsefulDocumentScanText(excerpt), false);
+});
+
+test('empty text, a page counter, and an extracted header do not count as a read document', () => {
+  for (const extracted_text of ['', '-- 1 of 1 --', '2090365.pdf 20.10.2026', 'QA.19.01.05C 28.11.23']) {
+    assert.equal(chunkModule.hasUsefulDocumentScanText({ title: 'letter.docx', extracted_text }), false);
+  }
+});
+
+test('partial OCR cannot become a successful read just because a long header was extracted', () => {
+  assert.equal(chunkModule.hasUsefulDocumentScanText({
+    title: 'scanned-report.pdf', ocr_status: 'REQUIRES_REVIEW',
+    extracted_text: 'This text is readable but other pages could not be recognized. '.repeat(30),
+  }), false);
+});
+
+test('PDF extraction status is respected when the PDF extension exists only in storage metadata', () => {
+  assert.equal(chunkModule.hasUsefulDocumentScanText({
+    title: 'scanned report', storage_path: 'project/report.pdf', ocr_status: 'ERROR',
+    extracted_text: 'This text is readable but other pages could not be recognized. '.repeat(30),
+  }), false);
+});
 
 test('long document chunks cover the complete source without gaps', () => {
   const source = Array.from({ length: 320 }, (_, index) => `SECTION-${index.toString().padStart(3, '0')} ${'תוכן '.repeat(20)}`).join('\n');
@@ -15,6 +69,30 @@ test('long document chunks cover the complete source without gaps', () => {
     assert.ok(chunks[index].start <= chunks[index - 1].end, 'adjacent chunks must overlap or touch');
   }
   assert.ok(chunks.some((chunk) => chunk.text.includes('SECTION-319')));
+});
+
+test('reference comparison preserves native context when no reference applies and retains both relevant source excerpts otherwise', () => {
+  const native = chunkModule.buildDocumentScanChunks([{ id: 'project', title: 'מפרט מיוחד', extracted_text: 'על עבודות הצנרת יחול פרק 57 של המפרט הכללי מהדורת 2023.' }]);
+  assert.equal(chunkModule.formatContractComparisonContext(native, [], 'צנרת'), chunkModule.formatContractChunkContext(native));
+  const requirement = 'עטיפת הצינור תבוצע בחול מצומנט בשיעור 8%.';
+  const reference = chunkModule.buildDocumentScanChunks([{ id: 'reference-page', title: 'מפרט כללי',
+    extracted_text: `${'טקסט כללי '.repeat(150)} ${requirement} ${'טקסט כללי '.repeat(150)}` }]);
+  const context = chunkModule.formatContractComparisonContext(native, reference, 'עטיפת הצינור בחול מצומנט');
+  assert.ok(context.includes('Document ID: project'));
+  assert.ok(context.includes('Document ID: reference-page'));
+  assert.ok(context.includes(requirement));
+});
+
+test('scan preparation collapses layout whitespace before chunking', () => {
+  const meaningfulText = Array.from({ length: 900 }, (_, index) => `מילה${index % 100}`).join(' ');
+  const layoutHeavyText = meaningfulText.replaceAll(' ', ' '.repeat(20));
+  const chunks = chunkModule.buildDocumentScanChunks([
+    { id: 'docx-table', title: 'Protocol.docx', category: 'EXECUTION', extracted_text: layoutHeavyText },
+  ], 6_000, 300);
+
+  assert.equal(chunks.length, 2);
+  assert.ok(chunks.map((chunk) => chunk.text).join(' ').includes('מילה99'));
+  assert.equal(chunks.some((chunk) => / {2,}/.test(chunk.text)), false);
 });
 
 test('retrieval can select evidence located after the former contract limit', () => {
@@ -139,7 +217,21 @@ test('scan route processes every work chunk and records complete coverage', () =
   assert.ok(route.includes('project_timeline_context_enabled: true'));
   assert.equal(route.includes('.slice(0, MAX_WORK_CONTEXT_CHARS)'), false);
   assert.ok(
-    route.indexOf('A complete replacement scan finished successfully') > route.indexOf('for (const workChunk of workChunks)'),
-    'old findings must be archived only after every chunk finished successfully',
+    route.indexOf('await replacePreviousScanFindings') > route.indexOf('for (const workChunk of workChunks)'),
+    'obsolete automatic findings must be replaced only after every chunk finished successfully',
   );
+});
+
+test('paused scan is not reported as finished when unreadable documents exist', () => {
+  const hook = fs.readFileSync(
+    'src/components/features/contradiction-radar/hooks/useContradictionRadarState.ts',
+    'utf8',
+  ).replace(/\r\n/g, '\n');
+
+  const pausedBranch = hook.indexOf("scanStatus.status === 'PAUSED'");
+  const skippedBranch = hook.indexOf("(scanStatus.skipped || 0) > 0");
+
+  assert.ok(pausedBranch >= 0, 'paused scan branch must exist');
+  assert.ok(skippedBranch >= 0, 'unreadable-document branch must exist');
+  assert.ok(pausedBranch < skippedBranch, 'paused state must take precedence over unreadable documents');
 });

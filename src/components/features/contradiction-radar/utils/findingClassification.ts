@@ -1,4 +1,5 @@
 import type { ContradictionItem } from '@/types';
+import { isTechnicalRadarExclusion } from '../../../../utils/radar-review-disposition.ts';
 
 export type RadarFindingFilter =
     | 'ALL'
@@ -41,7 +42,6 @@ export function getRadarFindingKind(item: ContradictionItem): Exclude<RadarFindi
     const comparisonType = String(item.evidence_data?.comparison_type || '').toLowerCase();
 
     if (
-        item.severity === 'HIGH' ||
         includesAny(category, ['סתירה', 'contradiction'])
     ) {
         return 'CONTRADICTION';
@@ -85,6 +85,7 @@ export function getRadarFindingReference(item: ContradictionItem) {
 
 export function buildRadarFindingCounts(items: ContradictionItem[]): RadarFindingCountSummary {
     return items.reduce<RadarFindingCountSummary>((counts, item) => {
+        if (isTechnicalRadarExclusion(item)) return counts;
         const kind = getRadarFindingKind(item);
         counts.all += 1;
 
@@ -110,9 +111,8 @@ export function filterRadarFindings(
     filter: RadarFindingFilter,
     statusFilter?: RadarStatusFilter
 ) {
-    const itemsWithStatus = statusFilter
-        ? items.filter((item) => item.status === statusFilter)
-        : items;
+    const visible = items.filter(item => !isTechnicalRadarExclusion(item));
+    const itemsWithStatus = statusFilter ? visible.filter((item) => item.status === statusFilter) : visible;
 
     if (filter === 'ALL') return itemsWithStatus;
     return itemsWithStatus.filter((item) => getRadarFindingKind(item) === filter);
@@ -120,6 +120,7 @@ export function filterRadarFindings(
 
 export function buildRadarStatusFilterOptions(items: ContradictionItem[]): RadarStatusFilterOption[] {
     const countByStatus = items.reduce<Record<RadarStatusFilter, number>>((counts, item) => {
+        if (isTechnicalRadarExclusion(item)) return counts;
         if (item.status === 'MOVED_TO_PRICING' || item.status === 'ARCHIVED') {
             counts[item.status] += 1;
         } else {

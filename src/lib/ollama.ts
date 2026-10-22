@@ -15,6 +15,9 @@ export interface OllamaGenerationTuning {
     numCtx?: number;
     numPredict?: number;
     timeoutMs?: number;
+    responseFormat?: Record<string, unknown>;
+    temperature?: number;
+    seed?: number;
 }
 
 function getConfiguredOllamaModel(environment: Environment) {
@@ -71,13 +74,14 @@ export async function generateOllamaText(
             model,
             prompt,
             stream: false,
-            format: 'json',
+            format: options.responseFormat || 'json',
             think: false,
-            keep_alive: '10m',
+            keep_alive: '60m',
             options: {
-                temperature: 0.1,
+                temperature: options.temperature ?? 0,
                 num_ctx: options.numCtx ?? 8_192,
                 num_predict: options.numPredict ?? 768,
+                seed: options.seed ?? 42,
             },
         }),
         signal: AbortSignal.timeout(options.timeoutMs ?? 300_000),

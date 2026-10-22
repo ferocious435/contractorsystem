@@ -5,6 +5,7 @@ import { createClient } from "@/utils/supabase/client";
 import { AlertTriangle, AlertCircle, TrendingUp, Zap, ArrowRight } from "lucide-react";
 import { AI_MODEL_BRANDING } from "@/utils/constants";
 import { getLedgerRowAmount } from "@/utils/project-financials";
+import { isTechnicalRadarExclusion } from '@/utils/radar-review-disposition';
 
 interface AIInsight {
     id: string;
@@ -27,11 +28,10 @@ export function AIPanel({ projectId }: { projectId: string | null }) {
             // 1. Загружаем открытые противоречия
             const { data: contradictions } = await supabase
                 .from('contradictions')
-                .select('id, title, description, severity, strategy_advice')
+                .select('id, title, description, severity, strategy_advice, evidence_data')
                 .eq('project_id', projectId)
                 .eq('status', 'OPEN')
-                .order('severity', { ascending: false })
-                .limit(5);
+                .order('severity', { ascending: false });
 
             // 2. Загружаем ожидающие VO (Variation Orders)
             const { data: pendingVOs } = await supabase
@@ -46,7 +46,7 @@ export function AIPanel({ projectId }: { projectId: string | null }) {
 
             // Противоречия → инсайты
             if (contradictions) {
-                contradictions.forEach(c => {
+                contradictions.filter(c => !isTechnicalRadarExclusion(c)).slice(0, 5).forEach(c => {
                     newInsights.push({
                         id: c.id,
                         type: 'contradiction',

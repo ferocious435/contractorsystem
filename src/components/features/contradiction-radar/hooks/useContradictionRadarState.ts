@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RADAR_FINDINGS_UPDATED_EVENT } from '@/utils/radar-review-disposition';
 import { createClient } from '@/utils/supabase/client';
 import { isLocalProjectId } from '@/utils/local-projects';
 import { generateContradictionPDF } from '@/utils/contradictionPdfGenerator';
@@ -12,11 +13,14 @@ import {
     fetchRadarDocuments,
     fetchRadarProjectName,
     fetchRadarScanStatus,
+    fetchRadarSupportSources,
     rescanRadarItem,
     scanRadarProject,
     type RadarScanProgress,
     type RadarProjectDocument,
+    type RadarSupportSources,
     updateContradictionStatus,
+    revalidateRadarSavedEvidence,
 } from '../api/contradictionRadarApi';
 import {
     buildRadarFindingCounts,
@@ -52,10 +56,15 @@ export function useContradictionRadarState({
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [isScanning, setIsScanning] = useState(false);
     const [progress, setProgress] = useState(0);
+    const [retryableDocsCount, setRetryableDocsCount] = useState(0);
     const [rescanningIds, setRescanningIds] = useState<Set<string>>(new Set());
     const [currentStep, setCurrentStep] = useState<string | null>(null);
     const [currentStepStatus, setCurrentStepStatus] = useState<ScanStepStatus>(null);
+    const [isReviewing, setIsReviewing] = useState(false);
+    const [reviewMessage, setReviewMessage] = useState<string | null>(null);
+    const [reviewError, setReviewError] = useState(false);
     const [projectDocuments, setProjectDocuments] = useState<RadarProjectDocument[]>([]);
+    const [supportSources, setSupportSources] = useState<RadarSupportSources | null>(null);
     const [resolvedProjectName, setResolvedProjectName] = useState<string>(projectName || DEFAULT_PROJECT_NAME);
     const [activeFilter, setActiveFilter] = useState<RadarFindingFilter>('ALL');
     const [activeStatusFilter, setActiveStatusFilter] = useState<RadarStatusFilter>('OPEN');
@@ -89,6 +98,15 @@ export function useContradictionRadarState({
         }
     }, [projectId, projectName]);
 
+    const fetchSupportSources = useCallback(async () => {
+        try {
+            setSupportSources(await fetchRadarSupportSources(projectId));
+        } catch (err) {
+            console.error('Error fetching support sources:', err);
+            setSupportSources(null);
+        }
+    }, [projectId]);
+
     const scheduleScanBannerReset = useCallback(() => {
         if (scanResetTimerRef.current) {
             clearTimeout(scanResetTimerRef.current);
@@ -105,6 +123,10 @@ export function useContradictionRadarState({
         scanStatus: RadarScanProgress,
         options: { showFinished?: boolean } = {}
     ) => {
+        // Polling may return the previous completed run while the start request
+        // is still being accepted. It must not announce that the new run ended.
+        if (scanRequestPendingRef.current && !scanStatus.active) return;
+        setRetryableDocsCount((scanStatus.skipped || 0) + (scanStatus.failed || 0));
         if (scanStatus.active) {
             scanWasActiveRef.current = true;
             if (scanResetTimerRef.current) {
@@ -133,13 +155,21 @@ export function useContradictionRadarState({
         await fetchDocuments();
         await fetchContradictions();
 
-        if (scanStatus.status === 'ERROR') {
+        if (scanStatus.status === 'ERROR' || (scanStatus.failed || 0) > 0) {
             setProgress(scanStatus.progress);
-            setCurrentStep(scanStatus.errorMessage || 'הבדיקה נעצרה בגלל שגיאה. אפשר להמשיך מהנקודה האחרונה.');
+            setCurrentStep(scanStatus.errorMessage || `הבדיקה הסתיימה עם ${scanStatus.failed || 0} מסמכים שדורשים ניסיון נוסף.`);
             setCurrentStepStatus('error');
         } else if (scanStatus.status === 'PAUSED') {
             setProgress(scanStatus.progress);
             setCurrentStep(`הבדיקה נעצרה אחרי ${scanStatus.processed}/${scanStatus.total} מסמכים. לחיצה נוספת תמשיך מאותה נקודה.`);
+            setCurrentStepStatus('error');
+        } else if ((scanStatus.skipped || 0) > 0) {
+            setProgress(scanStatus.progress);
+            setCurrentStep(`הבדיקה הסתיימה. ${scanStatus.skipped || 0} מסמכים לא נקראו וסומנו לבדיקה.`);
+            setCurrentStepStatus('error');
+        } else if ((scanStatus.excluded || 0) > 0) {
+            setProgress(scanStatus.total > 0 ? 100 : scanStatus.progress);
+            setCurrentStep(`המעבר הסתיים. ${scanStatus.excluded} טיוטות או קטעי מסמכים לא שימשו כהוראות מחייבות; נדרש בירור גרסה והקשר.`);
             setCurrentStepStatus('error');
         } else {
             setProgress(scanStatus.total > 0 ? 100 : scanStatus.progress);
@@ -168,6 +198,7 @@ export function useContradictionRadarState({
     useEffect(() => {
         void fetchContradictions();
         void fetchDocuments();
+        void fetchSupportSources();
 
         if (!projectName) {
             fetchRadarProjectName(projectId)
@@ -195,7 +226,7 @@ export function useContradictionRadarState({
         return () => {
             supabase.removeChannel(channel);
         };
-    }, [fetchContradictions, fetchDocuments, isLocalProject, projectId, projectName]);
+    }, [fetchContradictions, fetchDocuments, fetchSupportSources, isLocalProject, projectId, projectName]);
 
     useEffect(() => {
         if (isLocalProject) return;
@@ -254,6 +285,10 @@ export function useContradictionRadarState({
             }
 
             const normalizedPage = normalizeDocumentPage(page);
+            if (data.previewKind === 'reference') {
+                window.open(`${data.signedUrl}${normalizedPage ? `&page=${normalizedPage}` : ''}`, '_blank');
+                return;
+            }
             const anchor = normalizedPage ? `#page=${normalizedPage}` : '';
             window.open(`${data.signedUrl}${anchor}`, '_blank');
         } catch (error) {
@@ -265,7 +300,7 @@ export function useContradictionRadarState({
         setExpandedId((prev) => (prev === id ? null : id));
     }, []);
 
-    const scanProject = useCallback(async (force = false) => {
+    const scanProject = useCallback(async (force = false, retrySkipped = false) => {
         if (!aiAvailable) {
             setCurrentStep('חיבור ה-AI לא מוגדר. המסמכים הקיימים לא השתנו.');
             setCurrentStepStatus('error');
@@ -284,51 +319,17 @@ export function useContradictionRadarState({
         scanRequestPendingRef.current = true;
 
         try {
-            let cursor = 0;
-            let firstRequest = true;
-            let found = 0;
-            let scanned = 0;
-            let unchanged = 0;
-            let hadWarnings = false;
+            const data = await scanRadarProject(projectId, force, 0, true, retrySkipped);
+            scanRequestPendingRef.current = false;
 
-            while (true) {
-                const data = await scanRadarProject(projectId, firstRequest ? force : false, cursor);
-                firstRequest = false;
-
-                if (!data.success && !data.partial) {
-                    const latestStatus = data.scanStatus || await refreshScanProgress({ showFinished: true });
-                    if (latestStatus?.active) {
-                        scanRequestPendingRef.current = false;
-                        await applyScanProgress(latestStatus);
-                        return;
-                    }
-                    throw new Error(data.message || 'אירעה שגיאה במהלך הבדיקה');
-                }
-
-                found += data.found || 0;
-                scanned += data.memory?.scanned || 0;
-                unchanged += data.memory?.unchanged || 0;
-                hadWarnings = hadWarnings || Boolean(data.partial || data.warnings?.length);
-
-                if (!data.continuation || data.continuation.done) {
-                    break;
-                }
-
-                cursor = data.continuation.nextCursor;
-                setProgress(Math.round((data.continuation.processed / data.continuation.total) * 100));
-                setCurrentStep(`הבדיקה מתקדמת: ${data.continuation.processed}/${data.continuation.total} מסמכים`);
+            if (!data.success) {
+                throw new Error(data.message || 'אירעה שגיאה במהלך הבדיקה');
             }
 
-            scanRequestPendingRef.current = false;
-            await fetchDocuments();
-            await fetchContradictions();
-            const warningSummary = hadWarnings ? ' יש מסמכים שלא ניתן היה לקרוא והם סומנו לבדיקה.' : '';
-            setCurrentStep(`הבדיקה הושלמה: נמצאו ${found} ממצאים. נסרקו ${scanned} מסמכים חדשים או שהשתנו; ${unchanged} מסמכים לא השתנו.${warningSummary}`);
-            setCurrentStepStatus(hadWarnings ? 'error' : 'success');
-            setProgress(100);
-            setIsScanning(false);
-            scanWasActiveRef.current = false;
-            scheduleScanBannerReset();
+            const latestStatus = data.scanStatus || await refreshScanProgress();
+            if (latestStatus) {
+                await applyScanProgress(latestStatus);
+            }
         } catch (err) {
             console.error('Scan error:', err);
             scanRequestPendingRef.current = false;
@@ -352,8 +353,6 @@ export function useContradictionRadarState({
     }, [
         applyScanProgress,
         aiAvailable,
-        fetchContradictions,
-        fetchDocuments,
         projectId,
         refreshScanProgress,
         scheduleScanBannerReset,
@@ -424,20 +423,40 @@ export function useContradictionRadarState({
         }
     }, [contradictions, resolvedProjectName]);
 
+    const reviewSavedEvidence = useCallback(async () => {
+        setIsReviewing(true);
+        setReviewMessage(null);
+        setReviewError(false);
+        try {
+            const result = await revalidateRadarSavedEvidence(projectId);
+            await fetchContradictions();
+            setReviewMessage(result.message);
+            window.dispatchEvent(new CustomEvent(RADAR_FINDINGS_UPDATED_EVENT, { detail: { projectId } }));
+        } catch (error) {
+            setReviewError(true);
+            setReviewMessage(error instanceof Error ? error.message : 'בדיקת הראיות נכשלה');
+        } finally { setIsReviewing(false); }
+    }, [projectId, fetchContradictions]);
+
     const state = useMemo(() => ({
         contradictions,
         isLoading,
         expandedId,
         isScanning,
         progress,
+        retryableDocsCount,
         rescanningIds,
         currentStep,
         currentStepStatus,
         projectDocuments,
+        supportSources,
         resolvedProjectName,
         activeFilter,
         activeStatusFilter,
         aiAvailable: aiStatus === null && !isLocalProject ? null : aiAvailable,
+        isReviewing,
+        reviewMessage,
+        reviewError,
     }), [
         activeFilter,
         activeStatusFilter,
@@ -450,10 +469,15 @@ export function useContradictionRadarState({
         isLoading,
         isScanning,
         progress,
+        retryableDocsCount,
         projectDocuments,
+        supportSources,
         rescanningIds,
         resolvedProjectName,
         isLocalProject,
+        isReviewing,
+        reviewMessage,
+        reviewError,
     ]);
 
     const setters = useMemo(() => ({
@@ -476,6 +500,7 @@ export function useContradictionRadarState({
         deleteContradiction,
         fetchContradictions,
         fetchDocuments,
+        fetchSupportSources,
         handleExportPDF,
         radarOpenDocument,
         rescanItem,
@@ -484,10 +509,12 @@ export function useContradictionRadarState({
         handleStatusFilterChange,
         toggleExpanded,
         updateStatus,
+        reviewSavedEvidence,
     }), [
         deleteContradiction,
         fetchContradictions,
         fetchDocuments,
+        fetchSupportSources,
         handleExportPDF,
         radarOpenDocument,
         rescanItem,
@@ -496,6 +523,7 @@ export function useContradictionRadarState({
         handleStatusFilterChange,
         toggleExpanded,
         updateStatus,
+        reviewSavedEvidence,
     ]);
 
     const derived = useMemo(() => {

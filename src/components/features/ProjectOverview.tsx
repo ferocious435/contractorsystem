@@ -68,7 +68,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                     .eq('project_id', projectId),
                 supabase
                     .from('contradictions')
-                    .select('status, category, severity')
+                    .select('status, category, severity, evidence_data')
                     .eq('project_id', projectId),
                 supabase
                     .from('documents')
@@ -259,7 +259,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
             {/* Quick Actions & Recent Activity Placeholder */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 {[
-                    { label: 'בקרת סתירות', icon: <AlertTriangle size={20} />, value: stats.totalDiscrepancies, sub: 'סתירות מזוהות', color: 'blue', view: 'בקרת סתירות' },
+                    { label: 'בקרת סתירות', icon: <AlertTriangle size={20} />, value: stats.totalDiscrepancies, sub: 'ממצאים פתוחים', color: 'blue', view: 'בקרת סתירות' },
                     { label: 'תמחור חריגים', icon: <Zap size={20} />, value: stats.pendingVO > 0 ? 'פעיל' : 'נקי', sub: 'סטטוס תמחור', color: 'orange', view: 'תמחור' },
                     { label: 'מסמכים', icon: <Clock size={20} />, value: stats.documentCount, sub: 'קבצים במערכת', color: 'purple', view: 'מסמכי חוזה' },
                     {

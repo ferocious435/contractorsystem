@@ -6,6 +6,7 @@ import { getLedgerRowAmount, getMoneySum, getPreferredProjectAmount, isVisibleLe
 import { syncSingleProjectContractBase } from "@/utils/project-contract-base-client";
 import { isLocalProjectId } from "@/utils/local-projects";
 import { getLocalDemoProjectProfile } from "@/utils/local-demo-data";
+import { summarizeOpenContradictions } from './projectOverviewStats';
 
 export function KPIStrip({ projectId }: { projectId: string | null }) {
     const [originalBudget, setOriginalBudget] = useState(0);
@@ -63,14 +64,14 @@ export function KPIStrip({ projectId }: { projectId: string | null }) {
                 setOriginalBudget(Number(resolvedBudget ?? projectData?.budget));
             }
 
-            const { count } = await supabase
+            const { data: riskRows } = await supabase
                 .from("contradictions")
-                .select("id", { count: "exact", head: true })
+                .select("status,severity,evidence_data")
                 .eq("project_id", projectId)
                 .eq("status", "OPEN")
                 .eq("severity", "HIGH");
 
-            setIdentifiedRisks(count || 0);
+            setIdentifiedRisks(summarizeOpenContradictions(riskRows).highRiskOpenCount);
         };
 
         fetchKpiData();

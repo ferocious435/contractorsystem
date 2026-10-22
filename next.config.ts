@@ -1,7 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["officeparser", "pdf-parse"],
+  serverExternalPackages: [
+    "officeparser",
+    "pdf-parse",
+    "tesseract.js",
+    "@tesseract.js-data/eng",
+    "@tesseract.js-data/heb",
+  ],
   eslint: {
     ignoreDuringBuilds: true,
   },
