@@ -1,5 +1,6 @@
 import type { DocumentSourceInput, DocumentReadingVerification } from './document-source-readiness';
 import { readEvidenceMeaning, type EvidenceMeaning, type EvidenceClaimExtraction } from './radar-evidence-meaning.ts';
+import { compareRequirementStatements, isConditionalRequirement, isUnexecutedAnnexForm, requirementKinds } from './requirement-statement-comparison.ts';
 
 export type { EvidenceMeaning, EvidenceClaimExtraction } from './radar-evidence-meaning.ts';
 
@@ -235,6 +236,20 @@ export function assessEvidenceRelation(input: EvidenceRelationInput): EvidenceRe
     }
     if (work.subject !== 'UNKNOWN' && baseline.subject !== 'UNKNOWN' && work.subject !== baseline.subject) {
         return finish('DIFFERENT_SUBJECT', 'different_work_subjects');
+    }
+    const proposedAnnex = isUnexecutedAnnexForm(String(input.work.document.extracted_text || ''));
+    if (!proposedAnnex && !isConditionalRequirement(work.statement)
+        && /מורה|הורה|דורש|נדרש|על הקבלן|הקבלן (?:חייב|מתחייב)/u.test(work.statement)) {
+        const governingQuote = input.baseline?.quote || '';
+        const requirementPairs = requirementKinds(input.work.quote)
+            .map(kind => compareRequirementStatements(kind, input.work.quote, governingQuote));
+        const incompatible = requirementPairs.find(pair => pair.relation === 'INCOMPATIBLE');
+        if (incompatible) return finish('INCOMPATIBLE', incompatible.reason);
+        const compatible = requirementPairs.find(pair => pair.relation === 'COMPATIBLE');
+        if (compatible) return requirementPairs.length === 1 ? finish('COMPATIBLE', compatible.reason)
+            : finish('INSUFFICIENT_EVIDENCE', 'compound_request_conditions_not_established');
+        const separatePriceBasis = requirementPairs.find(pair => pair.reason === 'method_authority_does_not_establish_price_or_waiver');
+        if (separatePriceBasis) return finish('INSUFFICIENT_EVIDENCE', separatePriceBasis.reason);
     }
     if (['PRICE', 'MEASUREMENT', 'PAYMENT_CLAIM'].includes(work.role)
         || ['PRICE', 'MEASUREMENT', 'PAYMENT_CLAIM'].includes(baseline.role)) return finish('DIFFERENT_SUBJECT', 'pricing_or_measurement_is_not_a_conflicting_instruction');

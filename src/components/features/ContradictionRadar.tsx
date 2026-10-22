@@ -97,7 +97,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                 </button>
                 <button onClick={() => reviewSavedEvidence(true)} disabled={isReviewing || isScanning}
                     className="px-5 py-3 rounded-2xl border border-violet-400/30 text-violet-200 text-sm font-bold disabled:opacity-40 hover:bg-violet-500/10">
-                    עדכון היסטוריית MTM מהמסמכים השמורים
+                    בדיקת MTM מול המסמכים השמורים
                 </button>
                 {reviewMessage && <p role={reviewError ? 'alert' : 'status'} className={`text-sm ${reviewError ? 'text-red-300' : 'text-emerald-300'}`}>{reviewMessage}</p>}
             </div>

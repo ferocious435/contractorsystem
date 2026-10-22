@@ -44,7 +44,8 @@ type StoredIncorporation = {
 const PAGE_SIZE = 500;
 const WORK_ROLES = new Set(['EXECUTION', 'SITE_REPORT', 'PROTOCOL', 'INVOICE', 'CHANGE_ORDER', 'PHOTO', 'VIDEO', 'LETTER']);
 const CONTRACT_ROLES = new Set(['CONTRACT', 'BOQ', 'SPECS', 'TENDER']);
-const boundSourceCache = new Map<string, { key: string; expiresAt: number; promise: Promise<BoundReferenceDocument[]> }>();
+type ComparisonReferenceContext = { graph: DocumentReferenceGraph; signature: string; boundDocuments: BoundReferenceDocument[] };
+const boundSourceCache = new Map<string, { key: string; expiresAt: number; promise: Promise<ComparisonReferenceContext> }>();
 
 async function readAllRows<T>(getPage: (start: number, end: number) => PromiseLike<{
     data: unknown[] | null;
@@ -139,7 +140,7 @@ export async function loadProjectReferenceAuthority(params: {
     return { graph, signature };
 }
 
-export async function loadProjectBoundReferenceDocuments(params: {
+export async function loadProjectComparisonReferenceContext(params: {
     supabase: SupabaseClient;
     projectId: string;
     documents: AuthorityProjectDocument[];
@@ -152,7 +153,7 @@ export async function loadProjectBoundReferenceDocuments(params: {
     const cached = boundSourceCache.get(projectId);
     if (cached?.key === key && cached.expiresAt > Date.now()) return cached.promise;
     const promise = loadProjectReferenceAuthority({ supabase, projectId, documents, references })
-        .then(({ graph }) => buildBoundReferenceDocuments(graph));
+        .then(({ graph, signature }) => ({ graph, signature, boundDocuments: buildBoundReferenceDocuments(graph) }));
     boundSourceCache.set(projectId, { key, promise, expiresAt: Date.now() + 60_000 });
     if (boundSourceCache.size > 8) boundSourceCache.delete(boundSourceCache.keys().next().value!);
     try { return await promise; }
@@ -160,4 +161,10 @@ export async function loadProjectBoundReferenceDocuments(params: {
         if (boundSourceCache.get(projectId)?.promise === promise) boundSourceCache.delete(projectId);
         throw error;
     }
+}
+
+export async function loadProjectBoundReferenceDocuments(params: {
+    supabase: SupabaseClient; projectId: string; documents: AuthorityProjectDocument[];
+}) {
+    return (await loadProjectComparisonReferenceContext(params)).boundDocuments;
 }

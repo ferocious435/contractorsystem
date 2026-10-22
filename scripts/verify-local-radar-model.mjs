@@ -290,12 +290,16 @@ Title: פרוטוקול 22.01.2025
   },
 ];
 
-// Future model acceptance only: do not run this script during the offline step.
-for (const [name, work, baseline, incompatible] of [
+// Targeted model acceptance uses the product adapter and never writes findings.
+for (const [name, work, baseline, incompatible, unresolvedPrice] of [
   ['an exact value inside an allowed material range', 'עטיפת הצינור תבוצע בחול מצומנט 6%.', 'עטיפת הצינור תבוצע בחול מצומנט 4–8%.', false],
   ['different numeric properties are not a conflict', 'לוח הזמנים מצביע על עיכוב של 17 חודשים.', 'תקופת הביצוע תהיה 19 חודשים.', false],
   ['different pipe layers are not a conflict', 'עטיפת הצינור תבוצע בחול מצומנט 8%.', 'חומר מילוי תחתון יהיה חומר מילוי אינרטי.', false],
   ['different words for the same property still expose a conflict', 'המפקח דורש שהמילוי סביב הצינור יהיה חול מצומנט 4%.', 'עטיפת הצינור תבוצע בחול מיוצב בצמנט 8%.', true],
+  ['method instruction bypasses governing written approval', 'המפקח מורה לבצע קידוח MTM ללא אישור המנהל.', 'שינוי שיטת הביצוע טעון אישור מראש ובכתב של המנהל.', true],
+  ['response demand below an explicit minimum', 'המפקח דורש להעביר תשובה בתוך 3 ימי עבודה ממועד המכתב.', 'אין לדרוש מהקבלן תשובה בתוך פחות מ-7 ימי עבודה ממועד המכתב.', true],
+  ['permitted method instruction has no contradiction', 'המפקח מורה בכתב לבצע את הקידוח בשיטת MTM.', 'המפקח רשאי להורות על שינוי שיטת הביצוע בכתב.', false],
+  ['method power alone does not establish an imposed price', 'המפקח דורש לבצע בשיטת MTM ללא תוספת מחיר.', 'המפקח רשאי להורות על שינוי שיטת הביצוע בכתב.', false, true],
 ]) cases.push({ name, contracts: [{ id: 'semantic-base', title: 'מפרט.docx', category: 'SPECS', extracted_text: baseline }],
   workDocument: { id: 'semantic-work', title: 'הוראה.docx', category: 'PROTOCOL', extracted_text: work },
   assertResult(result) {
@@ -303,6 +307,14 @@ for (const [name, work, baseline, incompatible] of [
       assert.equal(result.acceptedFindings.length, 1);
       assert.equal(result.acceptedFindings[0].semantic_assessment.relation, 'INCOMPATIBLE');
       assert.equal(result.acceptedFindings[0].category, 'סתירה');
+    } else if (unresolvedPrice) {
+      // The imposed price is an unresolved project issue, unlike a neutral or
+      // fully permitted instruction. It must never become a proved conflict.
+      for (const finding of result.acceptedFindings) {
+        assert.equal(finding.category, 'חוסר נתונים');
+        assert.equal(finding.semantic_assessment.relation, 'INSUFFICIENT_EVIDENCE');
+        assert.ok(finding.semantic_assessment.reasons.includes('method_authority_does_not_establish_price_or_waiver'));
+      }
     } else assert.equal(result.acceptedFindings.length, 0);
   },
 });

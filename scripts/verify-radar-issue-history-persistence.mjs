@@ -2,20 +2,28 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import './radar-point-1-3-harness.mjs';
-import { refreshSavedIssueHistories } from '../src/utils/radar-issue-history-server.ts';
+import { registerHooks } from 'node:module';
+const hook = registerHooks({ resolve(specifier, context, nextResolve) {
+  return nextResolve(specifier.startsWith('@/') ? new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href : specifier, context);
+} });
+const { refreshSavedIssueHistories } = await import('../src/utils/radar-issue-history-server.ts');
+hook.deregister();
 
 function database(rows, documents) {
   const writes = [];
   return { writes, from(table) {
-    assert.ok(['contradictions', 'documents'].includes(table), `History must not touch ${table}`);
+    assert.ok(['contradictions', 'documents', 'reference_documents', 'reference_document_incorporations', 'reference_document_chunks'].includes(table), `History must not touch ${table}`);
     const predicates = [], query = {
       select() { return query; },
       eq(key, value) { predicates.push(row => row[key] === value); return query; },
       neq(key, value) { predicates.push(row => row[key] !== value); return query; },
+      in(key, values) { predicates.push(row => values.includes(row[key])); return query; },
+      or() { return query; }, order() { return query; }, range() { return query; },
       update(patch) { query.patch = patch; return query; },
       then(resolve, reject) {
-        const matches = (table === 'contradictions' ? rows : documents).filter(row => predicates.every(predicate => predicate(row)));
+        const matches = (table === 'contradictions' ? rows : table === 'documents' ? documents : []).filter(row => predicates.every(predicate => predicate(row)));
         if (query.patch) for (const row of matches) {
+          assert.equal(table, 'contradictions', 'Reference and document sources are read-only');
           assert.deepEqual(Object.keys(query.patch), ['evidence_data'], 'No status, finance or source mutation');
           writes.push({ id: row.id, patch: structuredClone(query.patch) });
           Object.assign(row, structuredClone(query.patch));

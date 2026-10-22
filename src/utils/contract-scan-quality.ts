@@ -7,11 +7,11 @@ import { buildIssueHistory, documentEventDate, isMtmIssueText, issueAspectsInTex
 import { reviewIssueTiming } from './radar-issue-timing.ts';
 export { reviewCompletionDeadlineBasis } from './completion-deadline-review.ts';
 
-export const CONTRACT_SCAN_INSTRUCTION_VERSION = 'evidence-comparison-v17';
+export const CONTRACT_SCAN_INSTRUCTION_VERSION = 'evidence-comparison-v18';
 // Reassessing saved quotes does not require generating them again. Retain the
 // existing source-memory identity; the new instruction applies to future inputs.
 export const CONTRACT_SCAN_MEMORY_VERSION = 'project-timeline-timeline-evidence-v14-compact-whitespace-v2';
-export const CONTRACT_SCAN_QUALITY_VERSION = 'evidence-relation-v6-aspect-history';
+export const CONTRACT_SCAN_QUALITY_VERSION = 'evidence-relation-v7-requirement-basis';
 
 export const CONTRACT_SCAN_RESPONSE_SCHEMA = {
     type: 'array',
@@ -724,6 +724,7 @@ RULES:
 18. Extract each side separately. A price excerpt, measurement, payment claim, request, proposal, response or event is not an operative instruction merely because it contains a material or a number. A measurement/payment rule does not select the material. Initial schedule submission and routine monthly updates can coexist.
 19. For each extraction, subject/value/scope/location/party/condition/period must be exact phrases in that side's quote and refer to the same assertion. party means the party obligated, not the author. Use null when absent. Never take a value from a different product or clause. The server verifies these spans and the comparison; do not return a relation or confidence score.
 20. An unsigned copy is not automatically a draft, refusal or binding replacement. Distinguish a requested change from a decision; do not infer signatures, dates or final authority. A rejection remains a rejection, not an agreement. A warning is an attributed claim, not admitted fault or proved damage.
+21. Compare the demand itself against its governing rule. A general project rule or an incorporated reference may apply without naming MTM or the street. Keep method authority, required written approval, signature, response period and price/waiver conditions separate. Permission to change a method does not prove power to impose a price or waive claims. An instruction explicitly bypassing required approval, or a response demand below an explicit permitted minimum with the same clock and units, can be incompatible. Preserve all qualifications. Source availability alone does not establish applicability or precedence.
 
 Allowed roles: ${STATEMENT_ROLES.join(' | ')}.
 Allowed attributes: ${COMPARISON_ATTRIBUTES.join(' | ')}.
@@ -936,6 +937,8 @@ export function sourceVerificationMissingEvidence(reasons: string[]) {
         numeric_value_not_unambiguous: 'הערך המספרי או יחידתו אינם חד משמעיים; אין להסיק סתירה ממספרים בלבד',
         units_not_comparable: 'יחידות המדידה אינן ניתנות להשוואה על סמך המקורות הקיימים',
         incompatibility_not_established: 'לא הוכח שלא ניתן לקיים את הדרישות יחד',
+        compound_request_conditions_not_established: 'נמצא בסיס לחלק מהדרישה; יתר התנאים, לרבות מחיר או ויתור, לא הוכחו',
+        method_authority_does_not_establish_price_or_waiver: 'סמכות לשינוי שיטה אינה מוכיחה סמכות לקבוע מחיר ללא תוספת או לדרוש ויתור; נדרש בסיס נפרד לתנאי המסוים',
     };
     return [...new Set(reasons.flatMap(reason => messages[reason] ? [messages[reason]] : []))];
 }

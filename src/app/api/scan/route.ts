@@ -57,7 +57,8 @@ import {
     replacePreviousScanFindings,
     type ReplaceableScanFinding,
 } from "@/utils/scan-finding-retention";
-import { loadProjectBoundReferenceDocuments } from "@/utils/document-reference-authority-server";
+import { loadProjectComparisonReferenceContext } from "@/utils/document-reference-authority-server";
+import { isRequirementContractSource } from '@/utils/radar-requirement-context';
 import { buildReferenceAwareContractSignature, contractSourcePointers, selectBoundReferenceDocuments,
     type BoundReferenceDocument } from "@/utils/bound-reference-comparison";
 
@@ -919,7 +920,7 @@ export async function POST(req: NextRequest) {
             const history = await refreshSavedIssueHistories(supabase, projectId);
             return NextResponse.json({ success: true, excluded, historyUpdated: history.updated, scanned: 0,
                 message: body.issueHistoryOnly === true
-                    ? `היסטוריית MTM עודכנה מהמסמכים השמורים. סריקה חדשה לא הופעלה. עודכנו ${history.updated} כרטיסים.`
+                    ? `היסטוריית MTM ובסיס הדרישות נבדקו מול המסמכים השמורים. סריקה חדשה לא הופעלה. עודכנו ${history.updated} כרטיסים.`
                     : `בדיקת הממצאים השמורים הושלמה. ${excluded} השוואות שגויות הוצאו מהתצוגה.` });
         }
 
@@ -1271,9 +1272,11 @@ async function analyzeDirectly(
     const aiSignature = `${aiIdentity.provider}:${aiIdentity.model}`;
     const baseContractSignature = buildContractSignature(contractDocs);
     let boundReferences: BoundReferenceDocument[] = [];
+    let comparisonReferenceContext: Awaited<ReturnType<typeof loadProjectComparisonReferenceContext>> | undefined;
     let referenceSourcesAvailable = true;
     try {
-        boundReferences = await loadProjectBoundReferenceDocuments({ supabase, projectId, documents: contractDocs.filter(hasUsefulText) });
+        comparisonReferenceContext = await loadProjectComparisonReferenceContext({ supabase, projectId, documents: contractDocs.filter(isRequirementContractSource) });
+        boundReferences = comparisonReferenceContext.boundDocuments;
     } catch (error) {
         referenceSourcesAvailable = false;
         console.warn('[scan] Reference authority verification unavailable:', error);
@@ -1562,7 +1565,7 @@ async function analyzeDirectly(
                     scan_signature: scanSignature,
                     evidence_data: {
                         issue_history: savedIssueHistory({ id: '', title: String(cleanAiText(assessment.presentation.title) || ''),
-                            evidence_data: { work_quote: String(p.work_quote || '') } }, issueHistoryDocuments),
+                            evidence_data: { work_quote: String(p.work_quote || '') } }, issueHistoryDocuments, { ...comparisonReferenceContext, projectId }),
                         evidence_status: assessment.evidenceStatus,
                         comparison: p.comparison || null,
                         comparison_span_repairs: p.comparison_span_repairs || [],

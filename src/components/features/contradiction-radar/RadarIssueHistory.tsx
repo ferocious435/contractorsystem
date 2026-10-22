@@ -2,6 +2,8 @@ import type { IssueHistoryAssessment, IssueAspect, IssueState } from '@/utils/ra
 import type { IssueTimingReview } from '@/utils/radar-issue-timing';
 import type { CompletionDeadlineReview } from '@/utils/completion-deadline-review';
 import { explainLetterResponseClock } from './utils/issueTimingDisplay';
+import { RadarRequirementReview } from './RadarRequirementReview';
+import type { IssueRequirementReview } from '@/utils/radar-requirement-review';
 
 const aspects: { key: IssueAspect; label: string }[] = [
     { key: 'METHOD', label: 'שיטת הביצוע' }, { key: 'SIGNATURE', label: 'חתימת הנספח' }, { key: 'PRICE', label: 'הסכמה על המחיר' },
@@ -17,7 +19,8 @@ export function RadarIssueHistory({ value, openDocument }: {
     value: unknown; openDocument: (id: string, page: number | null) => void;
 }) {
     if (!value || typeof value !== 'object') return null;
-    const history = value as IssueHistoryAssessment & { timing?: IssueTimingReview; completionBasis?: CompletionDeadlineReview | null };
+    const history = value as IssueHistoryAssessment & { timing?: IssueTimingReview; completionBasis?: CompletionDeadlineReview | null;
+        requirementReview?: IssueRequirementReview; projectId?: string };
     if (history.version !== 'aspect-history-v1' || !history.aspects || !Array.isArray(history.events)) return null;
     return <section aria-label="היסטוריית MTM" className="p-5 rounded-2xl border border-blue-400/20 bg-blue-500/5 space-y-4">
         <div>
@@ -50,16 +53,19 @@ export function RadarIssueHistory({ value, openDocument }: {
                 <div className="mt-3 space-y-3">{history.timing.requirements.filter(item => item.clock !== 'UNSPECIFIED').map((item, index) => <div key={`timing-source-${index}`}>
                     <div>{dateLabel(item.date)} · {item.documentTitle}</div>
                     {item.scope === 'LETTER_RESPONSE' && <p className="text-blue-200 mt-1">מענה למכתב כולו; אינו מועד לחתימת MTM. {explainLetterResponseClock(item.anchor.quote)} ימי עבודה לא הומרו לימים קלנדריים.</p>}
-                    <p className="text-amber-200 mt-1">{item.authority === 'SIGNED_AGREEMENT' ? 'התחייבות בהסכם חתום' : item.authority === 'CONDITIONAL_CHOICE' ? 'תנאי לבחירת שיטה; אינו מוכיח איחור בחתימה' : 'הוראה או בקשת תגובה; לא הוכחה התחייבות חוזית למועד החתימה'}</p>
+                    <p className="text-amber-200 mt-1">{item.authority === 'SIGNED_AGREEMENT' ? 'התחייבות בהסכם חתום' : item.authority === 'APPLICABLE_DOCUMENT' ? 'חובה ומועד מתוך מסמך מחייב שתחולתו הוכחה' : item.authority === 'CONDITIONAL_CHOICE' ? 'תנאי לבחירת שיטה; אינו מוכיח איחור בחתימה' : 'הוראה או בקשת תגובה; לא הוכחה התחייבות חוזית למועד החתימה'}</p>
                     <blockquote className="mt-1 leading-6">{item.anchor.quote}</blockquote>
                     <button type="button" className="text-blue-300 mt-1" onClick={() => openDocument(item.documentId, item.anchor.page)}>פתח מסמך מקור</button>
                 </div>)}</div>
             </details>
         </div>}
+        <RadarRequirementReview value={history.requirementReview} projectId={history.projectId} openDocument={openDocument} />
         {history.ownerNotes?.map(note => <div key={note.id} className="p-3 rounded-xl border border-violet-400/20 bg-violet-500/5 text-sm">
             <div className="font-bold text-violet-200">עדכון בעל הפרויקט — בנפרד מהראיות במסמכים</div>
             <p className="text-gray-200 mt-2 leading-7">{note.text}</p>
-            <p className="text-xs text-gray-400 mt-2">לא צורף מסמך חתום או מועד חתימה. העדכון אינו משנה את המצב בתקופת המסמכים.</p>
+            <p className="text-xs text-gray-400 mt-2">{note.aspect === 'SIGNATURE'
+                ? 'לא צורף מסמך חתום או מועד חתימה. העדכון אינו משנה את המצב בתקופת המסמכים.'
+                : 'הסבר בעל הפרויקט נשמר כהקשר לתהליך. הוא אינו מחליף את המסמכים או מוסיף מועד או אישור מתועדים.'}</p>
         </div>)}
         <details className="text-sm text-gray-300">
             <summary className="cursor-pointer">אירועים ומקורות ({history.events.length})</summary>
