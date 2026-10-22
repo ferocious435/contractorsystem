@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { archiveContradictionRows, type ContradictionArchiveRow } from '@/utils/contradiction-archive';
 import { buildContradictionReviewUpdate, type ContradictionReviewInput } from '@/utils/contradiction-review';
 import { createClient } from '@/utils/supabase/server';
+import { canAutomaticallyPriceFinding } from '@/utils/radar-review-disposition';
 
 const ALLOWED_CONTRADICTION_STATUSES = new Set([
     'OPEN',
@@ -74,19 +75,15 @@ export async function PATCH(req: Request) {
         const updatePayload: Record<string, unknown> = {};
         if (status) updatePayload.status = status;
 
+        const { data: existingItem, error: existingItemError } = await supabase.from('contradictions')
+            .select('id,status,evidence_data').eq('id',id).eq('project_id',projectId).maybeSingle();
+        if (existingItemError) throw existingItemError;
+        if (!existingItem) return NextResponse.json({ success:false,error:'Contradiction not found' },{status:404});
+        if (status === 'MOVED_TO_PRICING' && !canAutomaticallyPriceFinding(existingItem)) {
+            return NextResponse.json({ success:false,error:'הממצא הוחרג או נסגר; החישובים הקודמים נשמרו בהיסטוריית הנושא.' },{status:409});
+        }
+
         if (review) {
-            const { data: existingItem, error: existingItemError } = await supabase
-                .from('contradictions')
-                .select('id, evidence_data')
-                .eq('id', id)
-                .eq('project_id', projectId)
-                .maybeSingle();
-
-            if (existingItemError) throw existingItemError;
-            if (!existingItem) {
-                return NextResponse.json({ success: false, error: 'Contradiction not found' }, { status: 404 });
-            }
-
             Object.assign(updatePayload, buildContradictionReviewUpdate(existingItem.evidence_data, review));
         }
 

@@ -23,6 +23,7 @@ import { loadProjectBoundReferenceDocuments } from '@/utils/document-reference-a
 import { contractSourcePointers, type BoundReferenceDocument } from '@/utils/bound-reference-comparison';
 import { assessDocumentSourceReadiness, type DocumentSourceInput } from '@/utils/document-source-readiness';
 import { reconcileSavedIssueRecords } from './radar-issue-reconciliation-server.ts';
+import { buildRadarEvidenceAssessment, planSavedFindingReview } from './radar-saved-finding-review.ts';
 export { reconcileSavedIssueRecords } from './radar-issue-reconciliation-server.ts';
 
 export { findingNeedsHistory, type ReplaceableScanFinding } from '@/utils/scan-finding-retention-policy';
@@ -264,11 +265,7 @@ export async function deleteUnsupportedAutomaticFindings(
         if (!sourceReadingComplete && !missingEvidence.includes(SOURCE_READING_INCOMPLETE)) missingEvidence.push(SOURCE_READING_INCOMPLETE);
         const nextEvidence: Record<string, unknown> = {
             ...evidence, work_quote: finding.work_quote, contract_quote: finding.contract_quote,
-            contract_source_anchor: assessment.contractSourceAnchor,
-            work_source_anchor: assessment.workSourceAnchor,
             source_repair_suggestions: finding.source_repair_suggestions || [],
-            semantic_assessment: assessment.evidenceRelation,
-            evidence_status: sourceReadingComplete ? assessment.evidenceStatus : 'REQUIRES_VERIFICATION',
             comparison_type: finding.comparison_type || evidence.comparison_type,
             contractual_reply_deadline: assessment.replyDeadline,
             missing_evidence: missingEvidence,
@@ -286,18 +283,12 @@ export async function deleteUnsupportedAutomaticFindings(
                 work_doc_id: currentWorkDocument.id,
                 work_title: currentWorkDocument.title || null,
             },
+            ...buildRadarEvidenceAssessment(finding, assessment, evidence),
+            evidence_status: sourceReadingComplete ? assessment.evidenceStatus : 'REQUIRES_VERIFICATION',
             source_verification: {
-                ...asRecord(evidence.source_verification),
-                contract_quote_matched: assessment.contractQuoteMatched,
-                work_quote_matched: assessment.workQuoteMatched,
-                quality_gate_passed: true,
-                quality_gate_version: CONTRACT_SCAN_QUALITY_VERSION,
+                ...buildRadarEvidenceAssessment(finding, assessment, evidence).source_verification,
                 reference_chain_verified: Boolean(sourcePointers.referenceAuthority),
                 source_reading_complete: sourceReadingComplete,
-                comparison_context_complete: asRecord(finding.context_selection).complete ?? null,
-                verification_reasons: assessment.verificationReasons,
-                semantic_relation: assessment.evidenceRelation.relation,
-                semantic_assessment_version: assessment.evidenceRelation.version,
             },
         };
         if (options.reviewOnly) delete nextEvidence.review_disposition;
@@ -343,16 +334,10 @@ export async function deleteUnsupportedAutomaticFindings(
 
     if (options.reviewOnly) {
         for (const row of invalid) {
-            const assessment = invalidAssessments.get(row.id);
-            const evidence = asRecord(row.evidence_data);
-            const { error } = await supabase.from('contradictions').update({ evidence_data: { ...evidence,
-                evidence_status: 'REQUIRES_VERIFICATION',
-                ...(assessment ? { semantic_assessment: assessment.evidenceRelation } : {}),
-                source_verification: { ...asRecord(evidence.source_verification), quality_gate_passed: false,
-                    quality_gate_version: CONTRACT_SCAN_QUALITY_VERSION },
-                review_disposition: { type: 'INVALID_AUTOMATIC_FINDING', checked_version: CONTRACT_SCAN_QUALITY_VERSION,
-                    reasons: [...new Set(assessment ? [...assessment.reasons, ...assessment.evidenceRelation.reasons] : ['work_document_not_found'])] },
-            } }).eq('id', row.id).eq('project_id', projectId);
+            const plan = planSavedFindingReview({ finding: row, documents, contractDocuments });
+            if (isDeepStrictEqual(row.evidence_data, plan.patch.evidence_data)) continue;
+            const { error } = await supabase.from('contradictions').update({ evidence_data: plan.patch.evidence_data })
+                .eq('id', row.id).eq('project_id', projectId);
             if (error) throw error;
         }
     } else if (invalid.length > 0) {

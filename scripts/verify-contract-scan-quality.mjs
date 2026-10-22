@@ -747,6 +747,6 @@ test('scan route removes the false baseline, deletes placeholders, and applies t
   assert.ok(route.includes('deleteTemplatePlaceholderFindings'));
   assert.ok(/\.from\("contradictions"\)\s*\.delete\(\)/.test(route));
   assert.ok(route.includes('assessContractScanFinding'));
-  assert.ok(route.includes('quality_gate_passed: true'));
+  assert.ok(route.includes('buildRadarEvidenceAssessment(p, assessment)'));
   assert.ok(route.includes('status: "SKIPPED"'));
 });

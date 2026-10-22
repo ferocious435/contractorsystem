@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { buildRadarEvidenceAssessment } from '@/utils/radar-saved-finding-review';
+import { reviewSavedRadarFindings } from '@/utils/radar-saved-finding-review-server';
 import { refreshSavedIssueHistories, savedIssueHistory } from '@/utils/radar-issue-history-server';
 import { requireOwnedProject } from "@/app/api/_utils/auth";
 import {
@@ -36,7 +38,6 @@ import {
     buildGroundedScanResponseSchema,
     CONTRACT_SCAN_INSTRUCTION_VERSION,
     CONTRACT_SCAN_MEMORY_VERSION,
-    CONTRACT_SCAN_QUALITY_VERSION,
     CONTRACT_SCAN_RESPONSE_SCHEMA,
     findingHasActionableWorkEvidence,
     findingIsSupersededByLaterEvidence,
@@ -927,13 +928,19 @@ export async function POST(req: NextRequest) {
                 const reconciliation = await reconcileSavedIssueRecords(supabase, projectId, { seedId: body.issueId, apply: body.apply === true });
                 return NextResponse.json({ success: true, ...reconciliation, scanned: 0 });
             }
-            const excluded = body.issueHistoryOnly === true ? 0
-                : await deleteUnsupportedAutomaticFindings(supabase, projectId, { reviewOnly: true });
-            const history = await refreshSavedIssueHistories(supabase, projectId);
-            return NextResponse.json({ success: true, excluded, historyUpdated: history.updated, scanned: 0,
-                message: body.issueHistoryOnly === true
-                    ? `היסטוריית MTM ובסיס הדרישות נבדקו מול המסמכים השמורים. סריקה חדשה לא הופעלה. עודכנו ${history.updated} כרטיסים.`
-                    : `בדיקת הממצאים השמורים הושלמה. ${excluded} השוואות שגויות הוצאו מהתצוגה.` });
+            if (body.issueHistoryOnly === true) {
+                const history = await refreshSavedIssueHistories(supabase, projectId);
+                return NextResponse.json({ success: true, historyUpdated: history.updated, scanned: 0,
+                    message: `היסטוריית MTM ובסיס הדרישות נבדקו מול המסמכים השמורים. סריקה חדשה לא הופעלה. עודכנו ${history.updated} כרטיסים.` });
+            }
+            if (workDocId || retryDocumentId) return NextResponse.json({ success: false, error: 'Saved review accepts finding IDs only' }, { status: 400 });
+            const review = await reviewSavedRadarFindings(supabase, projectId, {
+                findingIds: body.findingIds, apply: body.apply === true, reviewToken: body.reviewToken,
+            });
+            return NextResponse.json({ success: true, ...review, scanned: 0,
+                message: body.apply === true
+                    ? `הבדיקה עודכנה: ${review.confirmed} סתירות מבוססות, ${review.requiresReview} שאלות לבירור ו־${review.excluded} השוואות טכניות שהוחרגו. המסמכים, החישובים וההיסטוריה נשמרו.`
+                    : 'תוצאות הבדיקה מוכנות; הנתונים טרם שונו.' });
         }
 
         if (background && !workDocId) {
@@ -1560,6 +1567,7 @@ async function analyzeDirectly(
                 const matchedContractDoc = assessment.contractDocument;
                 const sourceDocument = comparisonDocuments.find((document) => document.id === matchedContractDoc?.id) || null;
                 const sourcePointers = contractSourcePointers(sourceDocument);
+                const checkedEvidence = buildRadarEvidenceAssessment(p, assessment);
                 const missingEvidence = Array.isArray(p.missing_evidence) ? [...p.missing_evidence] : [];
                 missingEvidence.push(...sourceVerificationMissingEvidence(assessment.verificationReasons));
                 const contextSelection = p.context_selection as ReturnType<typeof prepareContractComparisonContext>['selection'];
@@ -1578,10 +1586,8 @@ async function analyzeDirectly(
                     evidence_data: {
                         issue_history: savedIssueHistory({ id: '', title: String(cleanAiText(assessment.presentation.title) || ''),
                             evidence_data: { work_quote: String(p.work_quote || '') } }, issueHistoryDocuments, { ...comparisonReferenceContext, projectId }),
-                        evidence_status: assessment.evidenceStatus,
                         comparison: p.comparison || null,
                         comparison_span_repairs: p.comparison_span_repairs || [],
-                        semantic_assessment: assessment.evidenceRelation,
                         analysis_instruction_version: CONTRACT_SCAN_INSTRUCTION_VERSION,
                         contractual_reply_deadline: assessment.replyDeadline,
                         contract_reference_authority: sourcePointers.referenceAuthority,
@@ -1589,8 +1595,6 @@ async function analyzeDirectly(
                         clause_reference: p.clause_reference,
                         contract_page: sourcePointers.referenceAuthority?.page || assessment.contractSourceAnchor?.page || null,
                         work_page: assessment.workSourceAnchor?.page || null,
-                        contract_source_anchor: assessment.contractSourceAnchor,
-                        work_source_anchor: assessment.workSourceAnchor,
                         context_selection: contextSelection,
                         supplied_contract_document_ids: p.supplied_contract_document_ids,
                         source_repair_suggestions: p.source_repair_suggestions || [],
@@ -1638,17 +1642,10 @@ async function analyzeDirectly(
                             related_work_signature: relatedWorkSignature,
                             project_timeline_context_enabled: true,
                         },
+                        ...checkedEvidence,
                         source_verification: {
-                            contract_quote_matched: assessment.contractQuoteMatched,
-                            work_quote_matched: assessment.workQuoteMatched,
-                            quality_gate_passed: true,
-                            quality_gate_version: CONTRACT_SCAN_QUALITY_VERSION,
+                            ...checkedEvidence.source_verification,
                             reference_chain_verified: Boolean(sourcePointers.referenceAuthority),
-                            source_reading_complete: !assessment.verificationReasons.includes('source_reading_incomplete'),
-                            comparison_context_complete: contextSelection.complete,
-                            verification_reasons: assessment.verificationReasons,
-                            semantic_relation: assessment.evidenceRelation.relation,
-                            semantic_assessment_version: assessment.evidenceRelation.version,
                         },
                         expert_strategy: p.expert_strategy || {},
                         analysis_provider: aiIdentity.provider,

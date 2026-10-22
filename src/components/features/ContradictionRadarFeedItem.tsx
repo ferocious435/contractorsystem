@@ -1,6 +1,7 @@
 import React from 'react';
 import { RadarIssueHistory } from './contradiction-radar/RadarIssueHistory';
 import { RadarLinkedRecords } from './contradiction-radar/RadarLinkedRecords';
+import { RadarFindingAssessment } from './contradiction-radar/RadarFindingAssessment';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     AlertTriangle,
@@ -24,7 +25,7 @@ import {
 import type { ContradictionItem } from '@/types';
 import { RichText } from '@/components/ui/RichText';
 import { getRadarFindingKind, getRadarFindingReference } from './contradiction-radar/utils/findingClassification';
-import { getEvidenceDisplayStatus } from './contradiction-radar/utils/evidenceVerification';
+import { getEvidenceDisplayStatus, evidenceStatusLabel } from './contradiction-radar/utils/evidenceVerification';
 
 type EvidenceRecord = Record<string, unknown>;
 
@@ -213,7 +214,7 @@ function ContradictionRadarFeedItem({
 
     const verificationMessage = missingEvidence.length > 0
         ? `כדי לבדוק את הממצא צריך להשלים: ${missingEvidence.join(' | ')}.`
-        : 'נמצאו שתי מובאות, אך הן עדיין לא אומתו אוטומטית מול הטקסט המלא של שני המקורות. יש לפתוח את המקורות ולבדוק אותן לפני פעולה כספית.';
+        : 'יש לבדוק את משמעות הדרישות, תחולתן והקשר בין המקורות לפני פעולה כספית. מציאת מובאות לבדה אינה מוכיחה סתירה.';
 
     const RowComponent = (shouldAnimate ? motion.div : 'div') as React.ElementType;
     const rowAnimationProps = shouldAnimate
@@ -262,11 +263,7 @@ function ContradictionRadarFeedItem({
                             }`}>
                                 <ShieldAlert size={13} />
                                 <span className="text-xs font-bold">
-                                    {evidenceStatus === 'SOURCE_VERIFIED'
-                                        ? 'המובאות אומתו מול המקור'
-                                        : evidenceStatus === 'QUOTES_REQUIRE_SOURCE_CHECK'
-                                            ? 'יש מובאות · נדרש אימות במקור'
-                                            : 'חסר בסיס מסמכי מלא'}
+                                    {evidenceStatusLabel(evidenceStatus)}
                                 </span>
                             </div>
 
@@ -460,6 +457,7 @@ function ContradictionRadarFeedItem({
                             </div>
                         </div>
 
+                        <RadarFindingAssessment value={evidenceData} />
                         <RadarIssueHistory value={evidenceData?.issue_history} openDocument={onRadarOpenDocument} />
                         <RadarLinkedRecords projectId={c.project_id} findingId={c.id} value={evidenceData?.issue_reconciliation}
                             openDocument={onRadarOpenDocument} />

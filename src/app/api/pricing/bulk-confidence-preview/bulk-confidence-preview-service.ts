@@ -5,6 +5,7 @@ import {
 } from '@/utils/pricing-confidence';
 import { normalizePricingQueueIds } from '@/utils/pricing-queue-ids';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { canAutomaticallyPriceFinding } from '@/utils/radar-review-disposition';
 
 export interface BulkConfidencePreviewInput {
     projectId: string;
@@ -21,6 +22,7 @@ export interface BulkConfidencePreviewResult {
 
 interface BulkConfidenceContradictionRow extends PricingConfidenceEvidenceCarrier {
     id: string;
+    status?: string;
 }
 
 export class BulkConfidencePreviewService {
@@ -44,7 +46,7 @@ export class BulkConfidencePreviewService {
 
         const { data: contradictions, error } = await this.supabase
             .from('contradictions')
-            .select('id, evidence_data')
+            .select('id, status, evidence_data')
             .eq('project_id', projectId)
             .in('id', uniqueRequestedIds);
 
@@ -56,6 +58,7 @@ export class BulkConfidencePreviewService {
         const foundIds = new Set(rows.map((item) => item.id));
         const stagedIds = rows
             .filter((item) => {
+                if (!canAutomaticallyPriceFinding(item)) return false;
                 const score = getPricingEvidenceConfidenceScore(item);
                 return score !== null && score > AI_BULK_APPROVE_CONFIDENCE_THRESHOLD;
             })

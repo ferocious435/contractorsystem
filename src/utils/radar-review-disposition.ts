@@ -7,3 +7,7 @@ export function isTechnicalRadarExclusion(item: { evidence_data?: unknown }) {
         ? evidence.review_disposition as Record<string, unknown> : {};
     return disposition.type === 'INVALID_AUTOMATIC_FINDING' || disposition.type === 'DUPLICATE';
 }
+
+export function canAutomaticallyPriceFinding(item: { evidence_data?: unknown; status?: unknown }) {
+    return !isTechnicalRadarExclusion(item) && !['ARCHIVED','AUTO_RESOLVED','IGNORED','RESOLVED'].includes(String(item.status));
+}

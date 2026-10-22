@@ -735,6 +735,9 @@ function verifyServerLetterEvidenceBehavior() {
       evidence_status: "VERIFIED",
       contract_quote: "server contract quote",
       work_quote: "server work quote",
+      semantic_assessment: { version: 'evidence-relation-v1', relation: 'INCOMPATIBLE', resultType: 'CONTRADICTION' },
+      source_verification: { contract_quote_matched: true, work_quote_matched: true, quality_gate_passed: true,
+        source_reading_complete: true, comparison_context_complete: true },
     },
   };
 
@@ -3370,7 +3373,7 @@ assertNotIncludes(
 );
 assertIncludes(
   "src/app/api/pricing/bulk-confidence-preview/bulk-confidence-preview-service.ts",
-  ".select('id, evidence_data')",
+  ".select('id, status, evidence_data')",
   "bulk confidence preview service must rely on existing contradiction evidence_data columns"
 );
 assertNotIncludes(

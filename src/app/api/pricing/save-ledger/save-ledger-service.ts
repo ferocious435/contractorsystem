@@ -13,6 +13,7 @@ import {
 } from './ledger-write';
 import { verifyProjectOwnership } from './project-access';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { canAutomaticallyPriceFinding } from '@/utils/radar-review-disposition';
 
 interface SaveLedgerServiceResult {
     body: Record<string, unknown>;
@@ -70,6 +71,12 @@ export async function saveLedgerItem(
 
     if (activeContradictionId) {
         const existingLedgerItem = await findLedgerRowByContradiction(supabase, projectId, activeContradictionId);
+        const { data: finding, error: findingError } = await supabase.from('contradictions').select('id,status,evidence_data')
+            .eq('id',activeContradictionId).eq('project_id',projectId).maybeSingle();
+        if (findingError) throw findingError;
+        if (!finding) return serviceResult({ error: 'Finding not found in project' },404);
+        const eligible = canAutomaticallyPriceFinding(finding);
+        if (!eligible && !existingLedgerItem) return serviceResult({ error: 'הממצא הוחרג או נסגר; לא ניתן ליצור ממנו חישוב חדש.' },409);
 
         if (isReadOnlyBaseContractRow(existingLedgerItem)) {
             return serviceResult({ error: 'Base contract rows are read-only' }, 400);
@@ -82,7 +89,7 @@ export async function saveLedgerItem(
             ledgerMutationPayload,
         );
 
-        await markContradictionAsPriced(supabase, activeContradictionId, projectId);
+        if (eligible) await markContradictionAsPriced(supabase, activeContradictionId, projectId);
 
         return serviceResult({ success: true, item: savedLedgerItem });
     }

@@ -17,7 +17,7 @@ test('two stored quotes alone do not claim source verification', () => {
     }), 'QUOTES_REQUIRE_SOURCE_CHECK');
 });
 
-test('explicit matches to both sources allow a verified label', () => {
+test('explicit source matches still require a semantic assessment of the conclusion', () => {
     assert.ok(evidenceModule, 'evidence verification helper must exist');
     assert.equal(evidenceModule.getEvidenceDisplayStatus({
         evidence_status: 'VERIFIED',
@@ -27,7 +27,7 @@ test('explicit matches to both sources allow a verified label', () => {
             contract_quote_matched: true,
             work_quote_matched: true,
         },
-    }), 'SOURCE_VERIFIED');
+    }), 'MATCHED_QUOTES_REQUIRE_ASSESSMENT');
 });
 
 test('missing one quote is reported as incomplete evidence', () => {

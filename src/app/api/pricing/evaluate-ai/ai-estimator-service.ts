@@ -1,4 +1,5 @@
 import { geminiFlashModel } from '@/lib/gemini';
+import { canAutomaticallyPriceFinding } from '@/utils/radar-review-disposition';
 import { syncProjectContractBase } from '@/utils/project-contract-base-server';
 import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
 import { isTrustedBaseContractRow } from '@/utils/project-financials';
@@ -113,9 +114,6 @@ export class AiEstimatorService {
         projectId,
         contractorId,
     }: AiEstimatorServiceInput): Promise<AiEstimatorContext> {
-        await syncProjectContractBase(this.supabase, projectId);
-        await syncContractBoqToLedger(this.supabase, projectId, { contractorId });
-
         const { data: contradiction, error: cError } = await this.supabase
             .from('contradictions')
             .select(CONTRADICTION_CONTEXT_SELECT_COLUMNS)
@@ -128,6 +126,11 @@ export class AiEstimatorService {
         }
 
         const contradictionRecord = contradiction as unknown as AnyRecord;
+        if (!canAutomaticallyPriceFinding(contradictionRecord)) {
+            throw new PricingEvaluationHttpError(409, 'הממצא הוחרג מהבדיקה או נסגר. החישובים הקודמים זמינים בהיסטוריית הנושא.');
+        }
+        await syncProjectContractBase(this.supabase, projectId);
+        await syncContractBoqToLedger(this.supabase, projectId, { contractorId });
 
         const { data: contractDocs } = await this.supabase
             .from('documents')

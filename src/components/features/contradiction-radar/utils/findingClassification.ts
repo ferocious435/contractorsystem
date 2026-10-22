@@ -1,5 +1,6 @@
 import type { ContradictionItem } from '@/types';
 import { isTechnicalRadarExclusion } from '../../../../utils/radar-review-disposition.ts';
+import { getEvidenceDisplayStatus } from './evidenceVerification.ts';
 
 export type RadarFindingFilter =
     | 'ALL'
@@ -10,6 +11,11 @@ export type RadarFindingFilter =
     | 'NO_DIRECT_MATCH';
 
 export type RadarStatusFilter = 'OPEN' | 'MOVED_TO_PRICING' | 'ARCHIVED';
+
+export function getRadarStatus(item: { status?: string | null }): RadarStatusFilter {
+    if (['ARCHIVED','AUTO_RESOLVED','IGNORED','RESOLVED'].includes(String(item.status))) return 'ARCHIVED';
+    return item.status === 'MOVED_TO_PRICING' ? 'MOVED_TO_PRICING' : 'OPEN';
+}
 
 export interface RadarStatusFilterOption {
     id: RadarStatusFilter;
@@ -40,11 +46,21 @@ function includesAny(value: string, patterns: string[]) {
 export function getRadarFindingKind(item: ContradictionItem): Exclude<RadarFindingFilter, 'ALL'> {
     const category = String(item.category || '').toLowerCase();
     const comparisonType = String(item.evidence_data?.comparison_type || '').toLowerCase();
+    const semantic = item.evidence_data?.semantic_assessment as Record<string, unknown> | undefined;
+    if (semantic?.version === 'evidence-relation-v1') {
+        if (semantic.resultType === 'KNOWN_CHANGE') return 'VARIATION';
+        if (semantic.resultType === 'EVENT') return 'SITE_EVENT';
+        if (semantic.resultType === 'NEEDS_VERIFICATION') return 'MISSING_INFO';
+        if (semantic.resultType === 'CONTRADICTION') return getEvidenceDisplayStatus(item.evidence_data) === 'SOURCE_VERIFIED'
+            ? 'CONTRADICTION' : 'MISSING_INFO';
+        if (semantic.resultType === 'NO_CONFLICT') return getEvidenceDisplayStatus(item.evidence_data) === 'NO_CONFLICT'
+            ? 'NO_DIRECT_MATCH' : 'MISSING_INFO';
+    }
 
     if (
         includesAny(category, ['סתירה', 'contradiction'])
     ) {
-        return 'CONTRADICTION';
+        return 'MISSING_INFO';
     }
 
     if (includesAny(category, ['שינוי', 'חריג', 'change', 'extra', 'variation'])) {
@@ -112,7 +128,7 @@ export function filterRadarFindings(
     statusFilter?: RadarStatusFilter
 ) {
     const visible = items.filter(item => !isTechnicalRadarExclusion(item));
-    const itemsWithStatus = statusFilter ? visible.filter((item) => item.status === statusFilter) : visible;
+    const itemsWithStatus = statusFilter ? visible.filter((item) => getRadarStatus(item) === statusFilter) : visible;
 
     if (filter === 'ALL') return itemsWithStatus;
     return itemsWithStatus.filter((item) => getRadarFindingKind(item) === filter);
@@ -121,11 +137,7 @@ export function filterRadarFindings(
 export function buildRadarStatusFilterOptions(items: ContradictionItem[]): RadarStatusFilterOption[] {
     const countByStatus = items.reduce<Record<RadarStatusFilter, number>>((counts, item) => {
         if (isTechnicalRadarExclusion(item)) return counts;
-        if (item.status === 'MOVED_TO_PRICING' || item.status === 'ARCHIVED') {
-            counts[item.status] += 1;
-        } else {
-            counts.OPEN += 1;
-        }
+        counts[getRadarStatus(item)] += 1;
         return counts;
     }, {
         OPEN: 0,

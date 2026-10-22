@@ -1,3 +1,5 @@
+import { getEvidenceDisplayStatus } from './radar-evidence-status.ts';
+
 export type LetterEvidenceRecord = Record<string, unknown> & {
   document_title?: string | number | null;
   page?: string | number | null;
@@ -36,7 +38,7 @@ export function isVerifiedEvidence(evidenceData: unknown) {
     return false;
   }
 
-  return evidenceData.evidence_status === "VERIFIED" || Boolean(evidenceData.contract_quote && evidenceData.work_quote);
+  return getEvidenceDisplayStatus(evidenceData) === 'SOURCE_VERIFIED';
 }
 
 export function formatEvidenceForLetter(evidenceData: unknown) {

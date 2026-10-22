@@ -1,6 +1,7 @@
 "use client";
 
 import React from 'react';
+import { getEvidenceDisplayStatus } from '@/utils/radar-evidence-status';
 import {
     Activity,
     Brain,
@@ -119,9 +120,7 @@ function getEvidenceSummary(evidenceData: unknown) {
     const hasQuoteEvidence = Boolean(evidenceRecord?.contract_quote || evidenceRecord?.work_quote);
     const missingCount = Array.isArray(evidenceRecord?.missing_evidence) ? evidenceRecord.missing_evidence.length : 0;
     const hasPricingTrace = Boolean(pricingEvaluation?.match_quality || pricingEvaluation?.source);
-    const comparisonType = String(evidenceRecord?.comparison_type || '').toLowerCase();
-    const isVerified = !comparisonType.includes('missing_data')
-        && (evidenceRecord?.evidence_status === 'VERIFIED' || Boolean(evidenceRecord?.contract_quote && evidenceRecord?.work_quote));
+    const isVerified = getEvidenceDisplayStatus(evidenceRecord) === 'SOURCE_VERIFIED';
 
     return {
         hasEvidence: hasQuoteEvidence || missingCount > 0 || hasPricingTrace || linkedIds.length > 0,

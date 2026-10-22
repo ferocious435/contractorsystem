@@ -70,7 +70,7 @@ test('a new verified message updates an existing issue without a new finding, mo
 test('history refresh is performed before candidate filtering and the explicit action exits before scanning', () => {
   const route = fs.readFileSync('src/app/api/scan/route.ts', 'utf8');
   const action = route.slice(route.indexOf('if (body.revalidateSavedOnly === true)'), route.indexOf('if (background && !workDocId)'));
-  assert.ok(action.includes('body.issueHistoryOnly === true ? 0'));
+  assert.ok(action.includes('if (body.issueHistoryOnly === true)'));
   assert.ok(action.includes('historyUpdated: history.updated, scanned: 0'));
   assert.ok(!/generateScan|extract|ollama|scanProject/.test(action));
   const refresh = route.indexOf('await refreshSavedIssueHistories(supabase, projectId, issueHistoryDocuments)');
