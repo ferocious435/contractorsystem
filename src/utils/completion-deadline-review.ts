@@ -15,6 +15,13 @@ export type CompletionDeadlineReview = {
 const ADVANCE_REFERENCE = /(?:הסכם\s+(?:ה)?מקדמה|תנאי\s+קבלת\s+(?:ה)?מקדמה|(?:קבלת|חתימתך על)\s+(?:ה)?מקדמה)/gu;
 const COMPLETION = /להשל[ימ]|השלמת|מועד\s+סיום|סיום\s+(?:כלל|כל|העבודות)/u;
 
+export function mayReferenceAdvanceDeadline(document: DocumentSourceInput) {
+    // A fast conservative prefilter avoids building per-character source maps
+    // for unrelated specifications. Preserve spaced/OCR Hebrew spellings.
+    return /מ[\s\u200e\u200f]*ק[\s\u200e\u200f]*ד[\s\u200e\u200f]*מ[\s\u200e\u200f]*ה/u
+        .test(`${document.title || ''} ${document.extracted_text || ''}`.normalize('NFKC'));
+}
+
 function explicitDate(value: string) {
     const match = value.match(/(?:עד\s+(?:ל)?(?:תאריך|יום)|לא יאוחר מיום|מועד סיום מעודכן\s*\(?)\s*(\d{1,2})[./](\d{1,2})[./](\d{2,4})/u);
     if (!match) return null;
@@ -40,6 +47,7 @@ export function reviewCompletionDeadlineBasis(input: { currentWorkDocument: Revi
     const current = normalizeEvidenceSource(String(input.currentWorkDocument.extracted_text || ''));
     const applicable = /מקדמה/u.test(current) && COMPLETION.test(current);
     if (applicable) for (const document of documents) {
+        if (!mayReferenceAdvanceDeadline(document)) continue;
         const source = normalizeEvidenceSource(String(document.extracted_text || ''));
         const title = normalizeEvidenceSource(String(document.title || ''));
         const primaryAgreement = /הסכם\s+(?:ה)?מקדמה/u.test(title) && ['CONTRACT', 'CHANGE_ORDER'].includes(String(document.category));

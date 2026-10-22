@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { refreshSavedIssueHistories, savedIssueHistory } from '@/utils/radar-issue-history-server';
 import { requireOwnedProject } from "@/app/api/_utils/auth";
 import {
     CONTRACT_DOCUMENT_HIERARCHY_GUIDE,
@@ -913,9 +914,13 @@ export async function POST(req: NextRequest) {
             if (background || force || retrySkipped || backgroundScanJobs.has(projectId)) {
                 return NextResponse.json({ success: false, error: 'Saved-evidence review cannot run together with scanning' }, { status: 409 });
             }
-            const excluded = await deleteUnsupportedAutomaticFindings(supabase, projectId, { reviewOnly: true });
-            return NextResponse.json({ success: true, excluded, scanned: 0,
-                message: `בדיקת הממצאים השמורים הושלמה. ${excluded} השוואות שגויות הוצאו מהתצוגה.` });
+            const excluded = body.issueHistoryOnly === true ? 0
+                : await deleteUnsupportedAutomaticFindings(supabase, projectId, { reviewOnly: true });
+            const history = await refreshSavedIssueHistories(supabase, projectId);
+            return NextResponse.json({ success: true, excluded, historyUpdated: history.updated, scanned: 0,
+                message: body.issueHistoryOnly === true
+                    ? `היסטוריית MTM עודכנה מהמסמכים השמורים. סריקה חדשה לא הופעלה. עודכנו ${history.updated} כרטיסים.`
+                    : `בדיקת הממצאים השמורים הושלמה. ${excluded} השוואות שגויות הוצאו מהתצוגה.` });
         }
 
         if (background && !workDocId) {
@@ -1304,6 +1309,10 @@ async function analyzeDirectly(
     }
 
     const scannableWorkDocs = workDocs.filter(hasUsefulText);
+    // Update known issues even when the changed message produces no new candidate.
+    // This precedes model generation, candidate filtering and source-memory skips.
+    const issueHistoryDocuments = [...contractDocs, ...projectWorkDocs];
+    await refreshSavedIssueHistories(supabase, projectId, issueHistoryDocuments);
     let processedWorkDocs = batchProgress?.offset || 0;
     const totalWorkDocs = batchProgress?.total || scannableWorkDocs.length;
 
@@ -1506,6 +1515,7 @@ async function analyzeDirectly(
                 .filter((groundedFinding) => !findingIsSupersededByLaterEvidence({
                     finding: groundedFinding,
                     currentWorkDocument: workDoc,
+                    contractDocuments: comparisonDocuments,
                     relatedWorkDocuments: [...relatedWorkDocumentIds]
                         .map((documentId) => projectWorkDocumentsById.get(documentId))
                         .filter((document): document is ScanDocument => Boolean(document)),
@@ -1551,6 +1561,8 @@ async function analyzeDirectly(
                     status: "OPEN",
                     scan_signature: scanSignature,
                     evidence_data: {
+                        issue_history: savedIssueHistory({ id: '', title: String(cleanAiText(assessment.presentation.title) || ''),
+                            evidence_data: { work_quote: String(p.work_quote || '') } }, issueHistoryDocuments),
                         evidence_status: assessment.evidenceStatus,
                         comparison: p.comparison || null,
                         comparison_span_repairs: p.comparison_span_repairs || [],

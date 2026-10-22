@@ -94,9 +94,9 @@ const EMPTY_SUPPORT_SOURCES: RadarSupportSources = {
     standards: [],
 };
 
-export async function revalidateRadarSavedEvidence(projectId: string): Promise<{ message: string; excluded: number }> {
+export async function revalidateRadarSavedEvidence(projectId: string, issueHistoryOnly = false): Promise<{ message: string; excluded: number }> {
     const response = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId, revalidateSavedOnly: true }) });
+        body: JSON.stringify({ projectId, revalidateSavedOnly: true, issueHistoryOnly }) });
     const result = await response.json();
     if (!response.ok || !result.success) throw new Error(result.error || 'בדיקת הראיות נכשלה');
     return { message: String(result.message), excluded: Number(result.excluded) };

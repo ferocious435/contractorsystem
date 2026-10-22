@@ -3,13 +3,15 @@ import { findEvidenceAnchor, normalizeEvidenceSource, evidenceMeaningMarkers, as
     type EvidenceClaimExtraction, type EvidenceRelationAssessment } from './radar-evidence-assessment.ts';
 import type { ComparisonContextSelection } from './contract-context-selection.ts';
 import { EVIDENCE_CLAIM_SCHEMA, STATEMENT_ROLES, COMPARISON_ATTRIBUTES, readEvidenceMeaning } from './radar-evidence-meaning.ts';
+import { buildIssueHistory, documentEventDate, isMtmIssueText, issueAspectsInText, MTM_ISSUE } from './radar-issue-history.ts';
+import { reviewIssueTiming } from './radar-issue-timing.ts';
 export { reviewCompletionDeadlineBasis } from './completion-deadline-review.ts';
 
 export const CONTRACT_SCAN_INSTRUCTION_VERSION = 'evidence-comparison-v17';
 // Reassessing saved quotes does not require generating them again. Retain the
 // existing source-memory identity; the new instruction applies to future inputs.
 export const CONTRACT_SCAN_MEMORY_VERSION = 'project-timeline-timeline-evidence-v14-compact-whitespace-v2';
-export const CONTRACT_SCAN_QUALITY_VERSION = 'evidence-relation-v5';
+export const CONTRACT_SCAN_QUALITY_VERSION = 'evidence-relation-v6-aspect-history';
 
 export const CONTRACT_SCAN_RESPONSE_SCHEMA = {
     type: 'array',
@@ -363,11 +365,33 @@ export function findSupersedingWorkEvidence(params: {
     finding: ContractScanFinding;
     currentWorkDocument: ContractScanDocument;
     relatedWorkDocuments: ContractScanDocument[];
+    contractDocuments?: ContractScanDocument[];
 }) {
     const { finding, currentWorkDocument, relatedWorkDocuments } = params;
     if (assessContractualReplyDeadline({
         contractQuote: cleanText(finding.contract_quote), workQuote: cleanText(finding.work_quote),
     }).proven) return null;
+    const citedWorkQuote = cleanText(finding.work_quote);
+    if (isMtmIssueText(citedWorkQuote)) {
+        if (!findEvidenceAnchor(currentWorkDocument, citedWorkQuote)
+            || !assessDocumentSourceReadiness(currentWorkDocument).canCompare) return null;
+        const currentDate = documentEventDate(currentWorkDocument).date;
+        if (!currentDate) return null;
+        const location = citedWorkQuote.match(/(?:ברחוב|רחוב)\s+([\p{L}״"'-]+)/u)?.[1] || MTM_ISSUE.location;
+        const history = buildIssueHistory({ issue: { subject: 'MTM', location },
+            documents: [currentWorkDocument, ...relatedWorkDocuments], asOf: new Date().toISOString().slice(0, 10) });
+        if (!history.closed) return null;
+        if (reviewIssueTiming({ issue: { subject: 'MTM', location },
+            documents: [currentWorkDocument, ...relatedWorkDocuments, ...(params.contractDocuments || [])],
+            asOf: history.asOf }).confirmedConflicts.length) return null;
+        const relevant = issueAspectsInText(citedWorkQuote).map(aspect => history.aspects[aspect]);
+        if (!relevant.every(aspect => aspect.date && aspect.date > currentDate
+            && ['APPROVED', 'AGREED', 'SIGNED'].includes(aspect.state))) return null;
+        const resolutions = relevant.flatMap(aspect => history.events.filter(event => aspect.eventIds.includes(event.id)));
+        if (!resolutions.length || resolutions.some(event => !event.location)) return null;
+        const last = resolutions.at(-1)!;
+        return { documentId: last.anchor.documentId, documentTitle: last.documentTitle, quote: last.anchor.quote };
+    }
     const currentDate = documentDateFromTitle(String(currentWorkDocument.title || ''));
     if (currentDate === null) return null;
 

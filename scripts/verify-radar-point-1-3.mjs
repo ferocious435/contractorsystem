@@ -100,31 +100,31 @@ test('[SYNTHETIC UI] high importance does not change an MTM variation into a con
 
 test('[SYNTHETIC MTM aspect] approval of the method alone does not close the price issue', () => {
   const work = { id: 'synthetic-price', title: 'פרוטוקול 01.01.2025',
-    extracted_text: 'קידוח MTM ברחוב יהלום: ניתוח המחיר טרם אושר.' };
+    extracted_text: 'תאריך: 01.01.2025\nקידוח MTM ברחוב יהלום: ניתוח המחיר טרם אושר.' };
   assert.equal(quality.findingIsSupersededByLaterEvidence({
     finding: { work_quote: work.extracted_text }, currentWorkDocument: work,
     relatedWorkDocuments: [{ id: 'synthetic-method', title: 'פרוטוקול 02.01.2025',
-      extracted_text: 'קידוח MTM ברחוב יהלום אושר לביצוע.' }],
+      extracted_text: 'תאריך: 02.01.2025\nקידוח MTM ברחוב יהלום אושר לביצוע.' }],
   }), false);
 });
 
 test('[SYNTHETIC MTM conditional] a future conditional approval does not close the issue', () => {
   const work = { id: 'synthetic-open', title: 'פרוטוקול 01.01.2025',
-    extracted_text: 'קידוח MTM ברחוב יהלום טרם אושר.' };
+    extracted_text: 'תאריך: 01.01.2025\nקידוח MTM ברחוב יהלום טרם אושר.' };
   assert.equal(quality.findingIsSupersededByLaterEvidence({
     finding: { work_quote: work.extracted_text }, currentWorkDocument: work,
     relatedWorkDocuments: [{ id: 'synthetic-conditional', title: 'פרוטוקול 02.01.2025',
-      extracted_text: 'קידוח MTM ברחוב יהלום יאושר לאחר חתימת הנספח.' }],
+      extracted_text: 'תאריך: 02.01.2025\nקידוח MTM ברחוב יהלום יאושר לאחר חתימת הנספח.' }],
   }), false);
 });
 
 test('[SYNTHETIC MTM resolution] a definite decision on the same issue still closes it', () => {
   const work = { id: 'synthetic-open', title: 'פרוטוקול 01.01.2025',
-    extracted_text: 'קידוח MTM ברחוב יהלום טרם אושר.' };
+    extracted_text: 'תאריך: 01.01.2025\nקידוח MTM ברחוב יהלום טרם אושר.' };
   assert.equal(quality.findingIsSupersededByLaterEvidence({
-    finding: { work_quote: work.extracted_text }, currentWorkDocument: work,
+    finding: { work_quote: 'קידוח MTM ברחוב יהלום טרם אושר.' }, currentWorkDocument: work,
     relatedWorkDocuments: [{ id: 'synthetic-resolution', title: 'פרוטוקול 02.01.2025',
-      extracted_text: 'קידוח MTM ברחוב יהלום אושר לביצוע.' }],
+      extracted_text: 'תאריך: 02.01.2025\nקידוח MTM ברחוב יהלום אושר לביצוע.' }],
   }), true);
 });
 

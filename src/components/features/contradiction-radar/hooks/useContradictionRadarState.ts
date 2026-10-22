@@ -423,12 +423,12 @@ export function useContradictionRadarState({
         }
     }, [contradictions, resolvedProjectName]);
 
-    const reviewSavedEvidence = useCallback(async () => {
+    const reviewSavedEvidence = useCallback(async (issueHistoryOnly = false) => {
         setIsReviewing(true);
         setReviewMessage(null);
         setReviewError(false);
         try {
-            const result = await revalidateRadarSavedEvidence(projectId);
+            const result = await revalidateRadarSavedEvidence(projectId, issueHistoryOnly);
             await fetchContradictions();
             setReviewMessage(result.message);
             window.dispatchEvent(new CustomEvent(RADAR_FINDINGS_UPDATED_EVENT, { detail: { projectId } }));

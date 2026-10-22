@@ -352,7 +352,7 @@ export async function deleteUnsupportedAutomaticFindings(
             || !isDeepStrictEqual(evidence.contract_reference_authority || null, sourcePointers.referenceAuthority);
         const categoryChanged = assessment.category !== row.category;
         if (options.reviewOnly || sourceChanged || categoryChanged || assessment.verificationReasons.includes('unrelated_optional_contract_source')) delete nextEvidence.support_analysis;
-        const resolution = !options.reviewOnly && sourceReadingComplete ? findSupersedingWorkEvidence({ finding, currentWorkDocument, relatedWorkDocuments }) : null;
+        const resolution = !options.reviewOnly && sourceReadingComplete ? findSupersedingWorkEvidence({ finding, currentWorkDocument, relatedWorkDocuments, contractDocuments }) : null;
         if (resolution) {
             await archiveContradictionRows(supabase, [{ ...row, evidence_data: nextEvidence }], {
                 archive_reason: 'Resolved by later documented project evidence.',

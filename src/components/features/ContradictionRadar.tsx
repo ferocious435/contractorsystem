@@ -91,9 +91,13 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
             />
 
             <div className="flex flex-wrap items-center gap-4 -mt-5">
-                <button onClick={reviewSavedEvidence} disabled={isReviewing || isScanning}
+                <button onClick={() => reviewSavedEvidence()} disabled={isReviewing || isScanning}
                     className="px-5 py-3 rounded-2xl border border-blue-400/30 text-blue-200 text-sm font-bold disabled:opacity-40 hover:bg-blue-500/10">
                     {isReviewing ? 'בודק ראיות בממצאים...' : 'בדיקת ראיות בממצאים שמורים'}
+                </button>
+                <button onClick={() => reviewSavedEvidence(true)} disabled={isReviewing || isScanning}
+                    className="px-5 py-3 rounded-2xl border border-violet-400/30 text-violet-200 text-sm font-bold disabled:opacity-40 hover:bg-violet-500/10">
+                    עדכון היסטוריית MTM מהמסמכים השמורים
                 </button>
                 {reviewMessage && <p role={reviewError ? 'alert' : 'status'} className={`text-sm ${reviewError ? 'text-red-300' : 'text-emerald-300'}`}>{reviewMessage}</p>}
             </div>

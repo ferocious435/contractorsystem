@@ -21,6 +21,7 @@
     "verify:scan-memory": "node --experimental-strip-types --test scripts/verify-scan-memory.mjs scripts/verify-scan-ai-response.mjs scripts/verify-scan-retry-queue.mjs",
     "verify:radar-quality": "node --experimental-strip-types --test scripts/verify-contract-scan-quality.mjs scripts/verify-radar-evidence-relation.mjs scripts/verify-semantic-scan-response.mjs scripts/verify-completion-deadline-review.mjs",
     "verify:radar-model": "node --experimental-strip-types scripts/verify-local-radar-model.mjs",
+    "verify:radar-history": "node --experimental-strip-types --test scripts/verify-radar-issue-history.mjs scripts/verify-radar-issue-history-persistence.mjs scripts/verify-mtm-timing.mjs scripts/verify-issue-timing-display.mjs",
     "verify:document-duplicates": "node --experimental-strip-types --test scripts/verify-document-duplicates.mjs",
     "verify:local-ocr": "node --experimental-strip-types scripts/verify-local-ocr.mjs",
     "verify:local-ocr-bundle": "node scripts/verify-local-ocr-bundle.mjs",

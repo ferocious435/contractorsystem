@@ -1,4 +1,5 @@
 import React from 'react';
+import { RadarIssueHistory } from './contradiction-radar/RadarIssueHistory';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     AlertTriangle,
@@ -457,6 +458,8 @@ function ContradictionRadarFeedItem({
                                 </p>
                             </div>
                         </div>
+
+                        <RadarIssueHistory value={evidenceData?.issue_history} openDocument={onRadarOpenDocument} />
 
                         {completionDeadlineReferences.length > 0 && (
                             <div className="p-5 rounded-2xl border border-amber-400/20 bg-amber-500/5 space-y-3">

@@ -1,4 +1,5 @@
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
+import { documentEventDate } from './radar-issue-history.ts';
 import { meaningfulRetrievalTerms, contractRetrievalWeights, selectContractContext, contractContextText,
     type ContractContextSelection, type ComparisonContextSelection } from './contract-context-selection.ts';
 
@@ -261,7 +262,7 @@ export function selectRelevantProjectChunks(
     }
     const rankedDocuments = [...bestChunkByDocument.values()];
     const strongChronological = [...rankedDocuments]
-        .sort((left, right) => documentDateFromTitle(left.chunk.title) - documentDateFromTitle(right.chunk.title)
+        .sort((left, right) => chunkEventDate(left.chunk).localeCompare(chunkEventDate(right.chunk))
             || right.score - left.score);
     const priorityCandidates = [
         ...strongChronological.slice(0, 3),
@@ -286,15 +287,6 @@ export function selectRelevantProjectChunks(
     return selected;
 }
 
-function documentDateFromTitle(title: string) {
-    const normalizedTitle = title.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
-    const match = normalizedTitle.match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/);
-    if (!match) return Number.MAX_SAFE_INTEGER;
-    const yearValue = Number(match[3]);
-    const year = yearValue < 100 ? 2000 + yearValue : yearValue;
-    return Date.UTC(year, Number(match[2]) - 1, Number(match[1]));
-}
-
 function relevantExcerpt(text: string, queryText: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     const searchable = normalizePdfLetterSpacing(text).toLowerCase();
@@ -305,16 +297,23 @@ function relevantExcerpt(text: string, queryText: string, maxChars: number) {
     return `${start > 0 ? '…' : ''}${text.slice(start, start + maxChars).trim()}${start + maxChars < text.length ? '…' : ''}`;
 }
 
+function chunkEventDate(chunk: DocumentScanChunk) {
+    return documentEventDate({ id: chunk.documentId, extracted_text: chunk.sourceText || chunk.text }).date || '9999';
+}
+
 export function formatRelatedWorkTimeline(
     chunks: DocumentScanChunk[],
     queryText: string,
     excerptChars = 700,
 ) {
-    return [...chunks]
-        .sort((left, right) => documentDateFromTitle(left.title) - documentDateFromTitle(right.title)
-            || left.title.localeCompare(right.title))
-        .map((chunk) => `--- Related work document ID: ${chunk.documentId}
+    return chunks.map(chunk => ({ chunk, date: documentEventDate({ id: chunk.documentId,
+        extracted_text: chunk.sourceText || chunk.text, title: chunk.title }) }))
+        .sort((left, right) => (left.date.date || '9999').localeCompare(right.date.date || '9999')
+            || left.chunk.title.localeCompare(right.chunk.title))
+        .map(({ chunk, date }) => `--- Related work document ID: ${chunk.documentId}
 Title: ${chunk.title}
+Event date from document content: ${date.date || 'UNCONFIRMED; filename is not evidence of chronology'}
+${date.dateAnchor ? `Date source: ${date.dateAnchor.quote}\n` : ''}Method approval, annex signature and price agreement are separate events. Preserve conditions and negations.
 Category: ${chunk.category}
 Relevant excerpt from chunk ${chunk.index + 1}/${chunk.total} ---
 ${relevantExcerpt(chunk.text, queryText, excerptChars)}`)
