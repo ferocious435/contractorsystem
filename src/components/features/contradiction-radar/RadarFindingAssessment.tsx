@@ -8,6 +8,7 @@ export function RadarFindingAssessment({ value }: { value: unknown }) {
     const evidence = record(value), semantic = record(evidence.semantic_assessment), review = record(evidence.finding_review);
     const work = record(semantic.work), baseline = record(semantic.baseline), history = record(evidence.issue_history);
     const verification = record(evidence.source_verification);
+    const sourceContext = record(review.sourceContext);
     const reasons = [...new Set([...(Array.isArray(review.reasons) ? review.reasons : []),
         ...(Array.isArray(semantic.reasons) ? semantic.reasons : [])].filter((r): r is string => typeof r === 'string').map(evidenceReasonLabel))];
     const kind: Record<string,string> = { CONTRADICTION:'דרישות שאינן מתיישבות', KNOWN_CHANGE:'שינוי מתועד לבירור',
@@ -23,6 +24,12 @@ export function RadarFindingAssessment({ value }: { value: unknown }) {
         {reasons.length > 0 && <ul className="list-disc list-inside text-sm text-amber-100 space-y-2">{reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
         {(text(work.statement) || text(baseline.statement)) && <details className="text-sm text-gray-300">
             <summary className="cursor-pointer">הדרישות וההקשר שנבדקו</summary>
+            {sourceContext.selectionReason === 'existing_record_source_links' && <p className="mt-3 text-xs text-gray-400">
+                נבדקו המקורות שכבר קושרו לכרטיס, לפי הטקסטים השמורים שלהם.
+            </p>}
+            {sourceContext.originalModelContextRecorded === false && <p className="mt-2 text-xs text-amber-100">
+                ההקשר מהבדיקה המקורית לא נשמר. ההקשר המוצג כאן שייך לבדיקה הנוכחית.
+            </p>}
             {text(work.statement) && <p className="mt-3 leading-7">מסמך הביצוע: {text(work.statement)}</p>}
             {text(baseline.statement) && <p className="mt-3 leading-7">הבסיס להשוואה: {text(baseline.statement)}</p>}
             {[['מקום',work.location],['הצד המחויב',work.party],['תנאי',work.condition],['תקופה',work.period]].map(([label,val]) => text(val)

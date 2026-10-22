@@ -82,13 +82,27 @@ export function planSavedFindingReview(input: { finding: SavedReviewFinding; doc
             : 'REQUIRES_REVIEW';
     const manual = Boolean(evidence.manual_review || evidence.user_review || evidence.approved_by_user || !row.scan_signature);
     const protectedContent = manual || findingNeedsHistory(row);
+    const originalContext = reviewRecord(evidence.context_selection);
+    const originalModelContextRecorded = Object.keys(originalContext).length > 0;
     const nextEvidence: Record<string, unknown> = { ...evidence,
         ...(assessment && grounded ? buildRadarEvidenceAssessment(grounded, assessment, evidence)
             : { evidence_status: 'REQUIRES_VERIFICATION', source_verification: { ...reviewRecord(evidence.source_verification),
                 quality_gate_passed: false, work_quote_matched: false, verification_reasons: reasons } }),
         finding_review: { version: SAVED_FINDING_REVIEW_VERSION, outcome, reasons, canonicalId, inputCategory,
             evidenceDate: work ? documentEventDate(work).date : null,
-            retainedUserContent: protectedContent },
+            retainedUserContent: protectedContent,
+            sourceContext: {
+                version: 'saved-source-context-v1', selectionReason: 'existing_record_source_links',
+                workDocumentId: row.source_execution_doc_id || null, baselineDocumentId: baselineId || null,
+                originalModelContextRecorded,
+                anchors: assessment?.evidenceRelation.sourceAnchors || [],
+                limitations: [...new Set([
+                    ...(assessment?.verificationReasons || ['work_document_not_found']),
+                    ...(Array.isArray(originalContext.limitations)
+                        ? originalContext.limitations.filter((value): value is string => typeof value === 'string') : []),
+                    ...(!originalModelContextRecorded ? ['original_model_context_not_recorded'] : []),
+                ])],
+            } },
     };
     if (outcome !== 'CONFIRMED') nextEvidence.evidence_status = 'REQUIRES_VERIFICATION';
     const disposition = reviewRecord(evidence.review_disposition);

@@ -75,3 +75,38 @@ test('the review summary does not count excluded records with incomplete reading
   const result=await run(db,'project');
   assert.equal(result.confirmed,1);assert.equal(result.excluded,1);assert.equal(result.requiresReview,0);
 });
+test('a saved review persists the reason for using its bound sources and the actual source ranges',async()=>{
+  const db=database(),before=structuredClone(db.state);
+  const preview=await run(db,'project',{findingIds:['finding']});
+  await run(db,'project',{findingIds:['finding'],apply:true,reviewToken:preview.reviewToken});
+  const evidence=db.state.contradictions[0].evidence_data,context=evidence.finding_review.sourceContext;
+  assert.ok(context,'the actual saved review must retain its source selection');
+  assert.equal(context.selectionReason,'existing_record_source_links');
+  assert.equal(context.workDocumentId,'work');assert.equal(context.baselineDocumentId,'base');
+  assert.equal(context.originalModelContextRecorded,false);
+  assert.ok(context.limitations.includes('original_model_context_not_recorded'));
+  assert.deepEqual([...new Set(context.anchors.map(anchor=>anchor.documentId))].sort(),['base','work']);
+  for(const anchor of context.anchors){
+    const source=before.documents.find(document=>document.id===anchor.documentId);
+    assert.equal(source.extracted_text.slice(anchor.start,anchor.end),anchor.quote);
+  }
+  assert.equal(evidence.context_selection,undefined,'current review cannot invent the old model request');
+  assert.deepEqual(db.state.documents,before.documents);
+  assert.equal(evidence.work_quote,workText);assert.equal(evidence.contract_quote,baseText);
+});
+test('saved source provenance retains reading gaps and any recorded original model context',async()=>{
+  const db=database(),work=db.state.documents[0];
+  Object.assign(work,{title:'work.pdf',storage_path:'work.pdf',ocr_status:'COMPLETED',parsed_json:{}});
+  const originalContext={version:'source-context-v1',complete:false,limitations:['clause_truncated:57.03'],sources:[]};
+  db.state.contradictions[0].evidence_data.context_selection=structuredClone(originalContext);
+  const preview=await run(db,'project',{findingIds:['finding']});
+  await run(db,'project',{findingIds:['finding'],apply:true,reviewToken:preview.reviewToken});
+  const evidence=db.state.contradictions[0].evidence_data,context=evidence.finding_review.sourceContext;
+  assert.ok(context,'a reading gap must retain the reason and range of the attempted check');
+  assert.equal(context.originalModelContextRecorded,true);
+  assert.ok(context.limitations.includes('source_reading_incomplete'));
+  assert.ok(context.limitations.includes('comparison_context_incomplete'));
+  assert.ok(!context.limitations.includes('original_model_context_not_recorded'));
+  assert.deepEqual(evidence.context_selection,originalContext);
+  assert.equal(evidence.finding_review.outcome,'REQUIRES_REVIEW');
+});
