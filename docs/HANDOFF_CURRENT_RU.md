@@ -31,7 +31,7 @@
 
 Проект и выполненный план: `docs/superpowers/specs/2026-10-25-reference-applicability-and-price-coverage-design.md`, `docs/superpowers/plans/2026-10-25-reference-default-policy.md`. Локальные подтверждения: `data/point1-audit/point14-default-installed-20261025.json`, `point14-default-preservation-20261025.json`, `point14-default-source-manifest-20261025.json` и `point14-default-installed-20261025.png`.
 
-Для повторения тестов истории: установить `RADAR_MTM_SNAPSHOT=data/point1-audit/point14-current-mtm-verification-20261025.json`. Старый временный корпус удалён при прежней очистке; новая отдельная SELECT-выборка содержит 21 полный сохранённый MTM-текст, без восстановления выдуманного исторического снимка. Условия тестов не ослаблены.
+Для повторения тестов истории: установить `RADAR_MTM_SNAPSHOT=data/point1-audit/point14-current-mtm-verification-20261025.json`. Старый временный корпус удалён при прежней очистке; новый единственный проверочный вход содержит полные сохранённые тексты всех 173 документов проекта (6,68 МБ), включая документы без слова MTM. Исторический снимок не восстанавливался догадкой, условия тестов не ослаблены.
 
 Отдельное наблюдение: при параллельных первых входах один `verify:open-workspace-runtime` упал на `/login`; журнал Supabase показал `/verify 403 otp_expired`. Полный последовательный повтор и установленная версия прошли. Коллизия одновременных первых входов этим исправлением не закрыта; исходники входа владельца не менялись.
 
