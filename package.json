@@ -33,7 +33,7 @@
     "setup:ocr-mcp": "node scripts/setup-local-ocr-mcp.mjs",
     "verify:source-readiness": "node --experimental-strip-types --test scripts/verify-document-source-readiness.mjs",
     "verify:support-sources": "node --experimental-strip-types --test scripts/verify-support-source-inventory.mjs",
-    "verify:document-references": "node --experimental-strip-types --test scripts/verify-document-reference-authority.mjs scripts/verify-document-reference-loader.mjs scripts/verify-bound-reference-comparison.mjs scripts/verify-reference-page-preview.mjs",
+    "verify:document-references": "node --experimental-strip-types --test scripts/verify-document-reference-authority.mjs scripts/verify-document-reference-loader.mjs scripts/verify-bound-reference-comparison.mjs scripts/verify-reference-page-preview.mjs scripts/verify-support-source-route.mjs",
     "verify:support-enrichment": "node --experimental-strip-types --test scripts/verify-support-source-enrichment.mjs",
     "verify:support-model": "node --experimental-strip-types scripts/verify-local-support-model.mjs",
     "verify:scan-retention": "node --experimental-strip-types --test scripts/verify-scan-finding-retention.mjs scripts/verify-issue-reconciliation.mjs scripts/verify-issue-reconciliation-persistence.mjs",

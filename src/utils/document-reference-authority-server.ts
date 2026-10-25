@@ -6,6 +6,8 @@ import { buildDocumentReferenceGraph, referenceEditionFromText,
 import { buildBoundReferenceDocuments, type BoundReferenceDocument } from '@/utils/bound-reference-comparison';
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
 
+export const REFERENCE_AUTHORITY_DOCUMENT_COLUMNS = 'id, title, category, doc_type, extracted_text, parsed_json, ocr_status, storage_path';
+
 export type AuthorityProjectDocument = {
     id: string;
     title?: string | null;
@@ -86,7 +88,7 @@ export async function loadProjectReferenceAuthority(params: {
     const { supabase, projectId } = params;
     const [documents, references, incorporations] = await Promise.all([
         params.documents || readAllRows<AuthorityProjectDocument>((start, end) => supabase.from('documents')
-            .select('id, title, category, doc_type, extracted_text, parsed_json, ocr_status, storage_path').eq('project_id', projectId).order('id').range(start, end)),
+            .select(REFERENCE_AUTHORITY_DOCUMENT_COLUMNS).eq('project_id', projectId).order('id').range(start, end)),
         params.references || readAllRows<AuthorityReferenceDocument>((start, end) => supabase.from('reference_documents')
             .select('id, title, reference_type, source_document_id, text_hash, status')
             .or(`project_id.eq.${projectId},project_id.is.null`).eq('status', 'READY').order('id').range(start, end)),

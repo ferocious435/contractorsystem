@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireOwnedProject } from '@/app/api/_utils/auth';
 import { createClient } from '@/utils/supabase/server';
-import { loadProjectReferenceAuthority } from '@/utils/document-reference-authority-server';
+import { loadProjectReferenceAuthority, REFERENCE_AUTHORITY_DOCUMENT_COLUMNS } from '@/utils/document-reference-authority-server';
 import { buildDocumentReferenceCheckReport } from '@/utils/document-reference-authority';
 import { buildBoundReferenceDocuments } from '@/utils/bound-reference-comparison';
 import {
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
         const [documentsResult, referencesResult, priceListsResult] = await Promise.all([
             supabase
                 .from('documents')
-                .select('id, title, category, doc_type, parsed_json, extracted_text')
+                .select(REFERENCE_AUTHORITY_DOCUMENT_COLUMNS)
                 .eq('project_id', projectId),
             supabase
                 .from('reference_documents')
