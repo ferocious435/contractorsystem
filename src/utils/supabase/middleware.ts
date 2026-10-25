@@ -1,27 +1,16 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
-import { LOCAL_ACCESS_COOKIE, isValidLocalAccessCookie } from '../local-access'
+import { signInOpenWorkspace, workspaceEntryRedirectUrl } from '../open-workspace'
+import { createAdminClient } from './admin'
 
-
-function getRequestHostname(request: NextRequest) {
-    const host = request.headers.get('host') || request.nextUrl.host || request.nextUrl.hostname;
-    if (host.startsWith('[')) {
-        const bracketEnd = host.indexOf(']');
-        return bracketEnd > 0 ? host.slice(1, bracketEnd) : request.nextUrl.hostname;
-    }
-    return host.split(':')[0] || request.nextUrl.hostname;
-}
 
 export async function updateSession(request: NextRequest) {
     let supabaseResponse = NextResponse.next({
         request,
     })
 
-    const localAccessCookie = request.cookies.get(LOCAL_ACCESS_COOKIE)?.value
-    const hasLocalAccess = isValidLocalAccessCookie(localAccessCookie, getRequestHostname(request))
-
-    if (request.nextUrl.pathname.startsWith('/local-access') || request.nextUrl.pathname.startsWith('/api/local')) {
-        return supabaseResponse
+    if (request.nextUrl.pathname.startsWith('/local-access')) {
+        return NextResponse.redirect(workspaceEntryRedirectUrl(request))
     }
 
 
@@ -49,31 +38,26 @@ export async function updateSession(request: NextRequest) {
     // IMPORTANT: Avoid writing any logic between createServerClient and
     // supabase.auth.getUser().
     const {
-        data: { user },
+        data: { user: sessionUser },
     } = await supabase.auth.getUser()
+    let user = sessionUser
 
-    if (user && request.nextUrl.pathname.startsWith('/login')) {
-        const url = request.nextUrl.clone()
-        url.pathname = '/'
-        return NextResponse.redirect(url)
+    try {
+        user = await signInOpenWorkspace(supabase, user, createAdminClient)
+        supabaseResponse.headers.set('Cache-Control', 'private, no-store')
+    } catch {
+        return new NextResponse('לא ניתן לפתוח את המערכת כרגע. נסו לרענן את העמוד.', {
+            status: 503,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'private, no-store' },
+        })
     }
 
-    if (hasLocalAccess && !request.nextUrl.pathname.startsWith('/login')) {
-        return supabaseResponse
+    if (user && (request.nextUrl.pathname.startsWith('/login') || request.nextUrl.pathname.startsWith('/auth'))) {
+        const response = NextResponse.redirect(workspaceEntryRedirectUrl(request))
+        supabaseResponse.cookies.getAll().forEach((cookie) => response.cookies.set(cookie))
+        response.headers.set('Cache-Control', 'private, no-store')
+        return response
     }
-
-    // TEMPORARY BYPASS FOR DEBUGGING
-    if (
-        !user &&
-        !request.nextUrl.pathname.startsWith('/login') &&
-        !request.nextUrl.pathname.startsWith('/auth')
-    ) {
-        // no user, potentially respond by redirecting the user to the login page
-        const url = request.nextUrl.clone()
-        url.pathname = '/login'
-        return NextResponse.redirect(url)
-    }
-
 
     return supabaseResponse
 }

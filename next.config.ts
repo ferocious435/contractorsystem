@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  skipMiddlewareUrlNormalize: true,
   serverExternalPackages: [
     "officeparser",
     "pdf-parse",

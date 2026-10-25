@@ -9,6 +9,8 @@
     "verify:financials": "node scripts/verify-financial-invariants.mjs",
     "verify:auth-login": "node scripts/verify-auth-login.mjs",
     "verify:local-access": "node scripts/verify-local-access.mjs",
+    "verify:open-workspace": "node --experimental-strip-types --test scripts/verify-open-workspace.mjs",
+    "verify:open-workspace-runtime": "node scripts/verify-open-workspace-runtime.mjs",
     "verify:remote-financials": "node scripts/verify-remote-financial-state.mjs",
     "verify:boq-scale": "node scripts/verify-enterprise-boq-scale.mjs",
     "verify:documents": "node scripts/verify-document-workflow.mjs",
