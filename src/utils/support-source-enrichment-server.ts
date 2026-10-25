@@ -15,8 +15,9 @@ import {
     supportAnalysisTextIsGrounded,
     type SupportCandidate,
 } from '@/utils/support-source-enrichment';
-import { loadProjectReferenceAuthority } from '@/utils/document-reference-authority-server';
+import { loadProjectReferenceAuthority, REFERENCE_AUTHORITY_DOCUMENT_COLUMNS } from '@/utils/document-reference-authority-server';
 import { resolveDocumentReferenceAuthority, type DocumentReferenceGraph } from '@/utils/document-reference-authority';
+import { isTechnicalRadarExclusion } from '@/utils/radar-review-disposition';
 
 type AnyRecord = Record<string, unknown>;
 
@@ -37,6 +38,9 @@ type DocumentRow = {
     extracted_text?: string | null;
     extracted_text_hash?: string | null;
     parsed_json?: AnyRecord | null;
+    doc_type?: string | null;
+    ocr_status?: string | null;
+    storage_path?: string | null;
 };
 
 type ReferenceRow = {
@@ -175,6 +179,8 @@ async function findReferenceCandidates(params: {
                     edition: sourceClause?.edition,
                     requireEdition: true,
                 });
+                if (authority.reason === 'project_contract_exclusion'
+                    || (!sourceClause?.sectionCode && authority.contractEvidence?.length)) continue;
                 candidates.push({
                     id: chunk.id,
                     sourceId: reference.id,
@@ -204,6 +210,9 @@ async function findReferenceCandidates(params: {
         const authority = resolveDocumentReferenceAuthority(authorityGraph, {
             targetDocumentId: document.id, requireEdition: true,
         });
+        // This fallback has no verified section mapping. It cannot establish
+        // that an excerpt lies outside a scoped contractual restriction.
+        if (authority.reason === 'project_contract_exclusion' || authority.contractEvidence?.length) continue;
         candidates.push({
             id: `${document.id}:${chunk.index}`,
             sourceId: document.id,
@@ -315,7 +324,7 @@ export async function enrichProjectFindingsWithSupportSources(params: {
     const [documentsResult, findingsResult, references, priceLists] = await Promise.all([
         supabase
             .from('documents')
-            .select('id, title, category, extracted_text, extracted_text_hash, parsed_json')
+            .select(`${REFERENCE_AUTHORITY_DOCUMENT_COLUMNS}, extracted_text_hash`)
             .eq('project_id', projectId),
         supabase
             .from('contradictions')
@@ -332,7 +341,7 @@ export async function enrichProjectFindingsWithSupportSources(params: {
     if (findingsResult.error) throw findingsResult.error;
 
     const documents = (documentsResult.data || []) as DocumentRow[];
-    const findings = (findingsResult.data || []) as FindingRow[];
+    const findings = ((findingsResult.data || []) as FindingRow[]).filter(finding => !isTechnicalRadarExclusion(finding));
     const fallbackReferenceDocuments = documents.filter((document) => isReferenceDocument(document) && text(document.extracted_text));
     const authority = await loadProjectReferenceAuthority({ supabase, projectId, documents, references });
     const sourceSignature = supportSourceSignature([

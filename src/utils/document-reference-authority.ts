@@ -1,3 +1,5 @@
+import { resolveReferenceDefaultPolicy } from './reference-default-policy.ts';
+
 export type ReferenceAuthorityClause = {
     text: string;
     id?: string | null;
@@ -55,6 +57,15 @@ export type DocumentReferenceAuthority = {
     applicability: 'CONFIRMED' | 'REFERENCE_ONLY' | 'NEEDS_REVIEW';
     reason: string;
     chain: DocumentReferenceLink[];
+    contractEvidence?: ReferenceContractEvidence[];
+};
+
+export type ReferenceContractEvidence = { documentId: string; title: string; quote: string; sectionCode: string | null };
+export type ReferenceAuthorityQuery = {
+    targetDocumentId: string;
+    sectionCode?: string | null;
+    edition?: string | null;
+    requireEdition?: boolean;
 };
 
 function clean(value: string) {
@@ -223,12 +234,7 @@ export function buildDocumentReferenceGraph(params: {
     return graph;
 }
 
-export function resolveDocumentReferenceAuthority(graph: DocumentReferenceGraph, query: {
-    targetDocumentId: string;
-    sectionCode?: string | null;
-    edition?: string | null;
-    requireEdition?: boolean;
-}): DocumentReferenceAuthority {
+export function resolveDocumentReferenceAuthority(graph: DocumentReferenceGraph, query: ReferenceAuthorityQuery): DocumentReferenceAuthority {
     const byId = new Map(graph.documents.map((document) => [document.id, document]));
     const visit = (id: string, section: string | null, edition: string | null, requireEdition: boolean, visited: Set<string>): DocumentReferenceAuthority => {
         if (!id.trim()) return { applicability: 'REFERENCE_ONLY', reason: 'source_document_id_missing', chain: [] };
@@ -236,6 +242,8 @@ export function resolveDocumentReferenceAuthority(graph: DocumentReferenceGraph,
         const document = byId.get(id);
         if (!document || document.role === 'WORK_EVIDENCE') return { applicability: 'REFERENCE_ONLY', reason: 'no_contractual_root', chain: [] };
         if (document.role === 'PROJECT_CONTRACT') return { applicability: 'CONFIRMED', reason: 'project_contract_document', chain: [] };
+        const defaultPolicy = resolveReferenceDefaultPolicy(graph, { targetDocumentId: id, sectionCode: section, edition, requireEdition });
+        if (defaultPolicy && defaultPolicy.reason !== 'system_default_reference') return defaultPolicy;
         const nextVisited = new Set([...visited, id]);
         let uncertain: DocumentReferenceAuthority | null = null;
         let confirmed: DocumentReferenceAuthority | null = null;
@@ -260,9 +268,18 @@ export function resolveDocumentReferenceAuthority(graph: DocumentReferenceGraph,
             if (reason) uncertain ||= { applicability: 'NEEDS_REVIEW', reason, chain };
             else confirmed ||= { applicability: 'CONFIRMED', reason: 'grounded_incorporation_chain', chain };
         }
-        if (requiredEditions.size > 1) return { applicability: 'NEEDS_REVIEW', reason: 'conflicting_reference_editions',
-            chain: confirmed?.chain || uncertain?.chain || [] };
-        return confirmed || uncertain || { applicability: 'REFERENCE_ONLY', reason: 'no_applicable_contractual_chain', chain: [] };
+        if (requiredEditions.size > 1 && (requireEdition || section !== null || !defaultPolicy)) return {
+            applicability: 'NEEDS_REVIEW', reason: 'conflicting_reference_editions',
+            chain: confirmed?.chain || uncertain?.chain || [],
+            ...(defaultPolicy?.contractEvidence?.length ? { contractEvidence: defaultPolicy.contractEvidence } : {}),
+        };
+        if (confirmed) return defaultPolicy?.contractEvidence?.length
+            ? { ...confirmed, contractEvidence: defaultPolicy.contractEvidence } : confirmed;
+        if (defaultPolicy && !requireEdition) return defaultPolicy;
+        if (uncertain) return defaultPolicy?.contractEvidence?.length
+            ? { ...uncertain, contractEvidence: defaultPolicy.contractEvidence } : uncertain;
+        return defaultPolicy ? { ...defaultPolicy, applicability: 'NEEDS_REVIEW', reason: 'reference_clause_not_verified' }
+            : { applicability: 'REFERENCE_ONLY', reason: 'no_applicable_contractual_chain', chain: [] };
     };
     return visit(query.targetDocumentId, query.sectionCode || null, query.edition || null, Boolean(query.requireEdition), new Set());
 }
@@ -288,6 +305,7 @@ export function buildDocumentReferenceCheckReport(graph: DocumentReferenceGraph)
             const result = resolveDocumentReferenceAuthority(graph, { targetDocumentId: document.id });
             return { id: document.id, title: document.title, available: document.clauses.length > 0,
                 applicability: result.applicability, reason: result.reason, chain: result.chain,
+                ...(result.contractEvidence?.length ? { contractEvidence: result.contractEvidence } : {}),
                 editionAndSectionMustBeCheckedPerClause: true };
         }),
         missingRequiredDocuments: [...new Map(issues.filter((issue) => issue.reason === 'referenced_document_missing'

@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  distDir: process.env.CONTRACTOR_NEXT_DIST_DIR || '.next',
   skipMiddlewareUrlNormalize: true,
   serverExternalPackages: [
     "officeparser",

@@ -53,7 +53,8 @@ test('a later signature and method approval do not erase a previously proved mis
     currentWorkDocument: original, relatedWorkDocuments: [duty, lateStatus, laterAgreement], contractDocuments: [duty] }), false);
 });
 test('actual available corpus: signature status, response demands and completion reference remain distinct', () => {
-  const saved = JSON.parse(fs.readFileSync('data/point1-audit/point13-step4-mtm-corpus-before-20261022.json', 'utf8'));
+  const filename = process.env.RADAR_MTM_SNAPSHOT || 'data/point1-audit/point13-step4-mtm-corpus-before-20261022.json';
+  const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
   const documents = saved.documents.map(source => ({ ...source, parsed_json: { source_reading: source.source_reading } }));
   const result = review(documents);
   assert.equal(result.confirmedConflicts.length, 0);

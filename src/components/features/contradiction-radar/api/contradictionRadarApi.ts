@@ -62,6 +62,12 @@ export interface RadarSupportSources {
         error?: string;
         eligibleComparisonPages?: number;
         missingRequiredDocuments?: Array<{ targetLabel: string }>;
+        references?: Array<{
+            id: string;
+            title: string;
+            applicability: 'CONFIRMED' | 'REFERENCE_ONLY' | 'NEEDS_REVIEW';
+            contractEvidence?: Array<{ documentId: string; title: string; quote: string; sectionCode: string | null }>;
+        }>;
     };
     blueBook: {
         available: boolean;

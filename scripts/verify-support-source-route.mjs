@@ -121,6 +121,31 @@ test('the report agrees with normal loading of the same complete source rows', a
   }
 });
 
+test('the route distinguishes the default book basis from an unverified reference page', async () => {
+  const { body } = await responseFor(tables({ documents: [{ ...contract, extracted_text: 'עבודות פיתוח בפרויקט.' }],
+    reference_document_chunks: [{ ...page, text: 'תוכן שמספר הפרק ומהדורתו אינם ידועים.' }] }));
+  assert.equal(body.referenceChecks.references[0].applicability, 'CONFIRMED');
+  assert.equal(body.referenceChecks.references[0].reason, 'system_default_reference');
+  assert.equal(body.referenceChecks.eligibleComparisonPages, 0);
+});
+
+test('the route keeps a scoped project exclusion with its exact source evidence', async () => {
+  const quote = 'פרק 57 של המפרט הכללי לא יחול על העבודה.';
+  const { body } = await responseFor(tables({ documents: [{ ...contract, extracted_text: quote }] }));
+  assert.equal(body.referenceChecks.references[0].applicability, 'CONFIRMED');
+  assert.equal(body.referenceChecks.references[0].contractEvidence[0].quote, quote);
+  assert.equal(body.referenceChecks.eligibleComparisonPages, 0);
+});
+
+test('an unread or draft PDF cannot silently cancel the default reference base', async () => {
+  for (const document of [{ ...contract, parsed_json: {} }, { ...contract, title: 'טיוטה.pdf' }]) {
+    const { body } = await responseFor(tables({ documents: [{ ...document, extracted_text: 'המפרט הכללי לא יחול על העבודה.' }] }));
+    assert.equal(body.referenceChecks.references[0].applicability, 'CONFIRMED');
+    assert.equal(body.referenceChecks.eligibleComparisonPages, 0);
+    assert.equal(body.referenceChecks.projectContractDocuments, 0);
+  }
+});
+
 test('a PDF identified by its storage path cannot bypass incomplete page coverage', async () => {
   const document = { ...contract, title: 'מפרט מיוחד', parsed_json: { source_reading: {
     ...reading, complete: false, totalPages: 2, readPages: [1], unreadablePages: [2],

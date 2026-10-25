@@ -44,16 +44,16 @@ test('a reference cycle cannot create its own contractual root', () => {
   assert.ok(value.issues.some((issue) => issue.reason === 'reference_cycle'));
 });
 
-test('a chapter-specific reference does not authorize a different or unidentified chapter', () => {
+test('a chapter-specific citation does not prove a different or unidentified clause under the default base', () => {
   const value = graph([root(inclusion), specification, blueBook]);
-  assert.equal(resolve(value, { sectionCode: '34.02' }).applicability, 'REFERENCE_ONLY');
+  assert.equal(resolve(value, { sectionCode: '34.02' }).applicability, 'NEEDS_REVIEW');
   assert.equal(resolve(value, { sectionCode: null }).applicability, 'NEEDS_REVIEW');
 });
 
-test('an explicit chapter list authorizes its listed chapters and does not authorize an unlisted one', () => {
+test('an inclusive chapter list proves its listed chapters but leaves an unlisted clause unverified', () => {
   const value = graph([root('על העבודה יחולו הפרקים: 00 - מוקדמות 57 - קווי מים של המפרט הכללי מהדורת 2023.'), blueBook]);
   assert.equal(resolve(value).applicability, 'CONFIRMED');
-  assert.equal(resolve(value, { sectionCode: '34' }).applicability, 'REFERENCE_ONLY');
+  assert.equal(resolve(value, { sectionCode: '34' }).applicability, 'NEEDS_REVIEW');
 });
 
 test('an unresolved relative chapter reference cannot silently authorize the whole book', () => {
@@ -73,6 +73,15 @@ test('incompatible project edition references are reported instead of choosing w
   const result = resolve(value);
   assert.equal(result.applicability, 'NEEDS_REVIEW');
   assert.equal(result.reason, 'conflicting_reference_editions');
+});
+
+test('different editions of separate chapters preserve the document default and each verified chapter', () => {
+  const first = root('על העבודה יחול פרק 57 של המפרט הכללי מהדורת 2023.');
+  const second = { ...root('על העבודה יחול פרק 51 של המפרט הכללי מהדורת 2014.'), id: 'chapter-51-contract' };
+  const value = graph([first, second, blueBook]);
+  assert.equal(resolve(value, { sectionCode: null, edition: null, requireEdition: false }).applicability, 'CONFIRMED');
+  assert.equal(resolve(value).applicability, 'CONFIRMED');
+  assert.equal(resolve(value, { sectionCode: '51.01', edition: '2014' }).applicability, 'CONFIRMED');
 });
 
 test('a text mentioning several editions does not identify one verified edition', () => {
@@ -173,11 +182,14 @@ test('a quoted Israeli-standard abbreviation with a conjunction is still recogni
     ['תקן ישראלי 31', 'תקן ישראלי 893']);
 });
 
-test('a textbook example inside an incorporated library chapter cannot incorporate shelf contract 3210', () => {
+test('a textbook example does not fabricate an incorporation chain for the independently default shelf contract', () => {
   const ref = { ...blueBook, clauses: [clause('דוגמאות: החוזה הממשלתי מדף 3210 הוא נוסח סטנדרטי המחייב את משרדי הממשלה.', '57', '2023')] };
   const shelf = { id: 'shelf', title: 'חוזה מדף 3210', role: 'REFERENCE', referenceType: 'SHELF_CONTRACT_3210', clauses: [] };
   const value = graph([root('על העבודה יחול פרק 57 של המפרט הכללי מהדורת 2023.'), ref, shelf]);
-  assert.equal(resolve(value, { targetDocumentId: 'shelf', requireEdition: false }).applicability, 'REFERENCE_ONLY');
+  const result = resolve(value, { targetDocumentId: 'shelf', requireEdition: false });
+  assert.equal(result.applicability, 'CONFIRMED');
+  assert.equal(result.reason, 'system_default_reference');
+  assert.deepEqual(result.chain, []);
 });
 
 test('an explicitly cited missing standard is reported with its original source and quote', () => {
@@ -213,4 +225,131 @@ test('a project document precedence clause is retained as evidence without inven
   const quote = 'בכל מקרה של סתירה בין המפרט המיוחד והמפרט הכללי, יקבע המפרט המיוחד והנחיות המפקח.';
   const value = graph([root(`${inclusion} ${quote}`), specification, blueBook]);
   assert.ok(value.precedenceEvidence.some((evidence) => evidence.documentId === 'contract' && evidence.quote === quote));
+});
+
+test('both base reference families apply without a direct contract link and without a fabricated chain', () => {
+  const shelf = { id: 'shelf', title: 'חוזה מדף 3210', role: 'REFERENCE', referenceType: 'SHELF_CONTRACT_3210', clauses: [] };
+  const value = graph([blueBook, shelf]);
+  for (const targetDocumentId of ['blue-book', 'shelf']) {
+    const result = resolve(value, { targetDocumentId, sectionCode: null, edition: null, requireEdition: false });
+    assert.equal(result.applicability, 'CONFIRMED');
+    assert.equal(result.reason, 'system_default_reference');
+    assert.deepEqual(result.chain, []);
+    assert.equal(value.documents.find(d => d.id === targetDocumentId).role, 'REFERENCE');
+  }
+});
+
+test('a whole-book exclusion beats an otherwise confirmed incorporation chain', () => {
+  const quote = 'המפרט הכללי לא יחול על העבודה.';
+  const value = graph([root('על העבודה יחול המפרט הכללי מהדורת 2023.'),
+    { ...root(quote), id: 'special-condition' }, blueBook]);
+  const result = resolve(value, { requireEdition: false });
+  assert.equal(result.applicability, 'REFERENCE_ONLY');
+  assert.equal(result.reason, 'project_contract_exclusion');
+  assert.deepEqual(result.contractEvidence, [{ documentId: 'special-condition', title: 'הסכם הפרויקט', quote, sectionCode: null }]);
+});
+
+test('a whole shelf-contract exclusion overrides its system default', () => {
+  const shelf = { id: 'shelf', title: 'חוזה מדף 3210', role: 'REFERENCE', referenceType: 'SHELF_CONTRACT_3210', clauses: [] };
+  const value = graph([root('חוזה מדף 3210 לא יחול על העבודה.'), shelf]);
+  assert.equal(resolve(value, { targetDocumentId: 'shelf', requireEdition: false }).reason, 'project_contract_exclusion');
+});
+
+test('excluding one blue-book chapter preserves the book and other chapters as the default base', () => {
+  const quote = 'פרק 57 של המפרט הכללי לא יחול על העבודה.';
+  const value = graph([root(quote), blueBook]);
+  assert.equal(resolve(value, { sectionCode: '57.01', requireEdition: false }).applicability, 'REFERENCE_ONLY');
+  assert.equal(resolve(value, { sectionCode: '51.04', requireEdition: false }).applicability, 'CONFIRMED');
+  assert.equal(resolve(value, { sectionCode: null, edition: null, requireEdition: false }).applicability, 'CONFIRMED');
+  assert.equal(resolve(value, { sectionCode: '57.01', requireEdition: false }).contractEvidence[0].quote, quote);
+});
+
+test('shelf-contract exclusions match full section boundaries rather than short digit prefixes', () => {
+  const shelf = { id: 'shelf', title: 'חוזה מדף 3210', role: 'REFERENCE', referenceType: 'SHELF_CONTRACT_3210', clauses: [] };
+  const value = graph([root('סעיף 48 של חוזה מדף 3210 לא יחול על העבודה.'), shelf]);
+  for (const sectionCode of ['48', '48.1']) {
+    assert.equal(resolve(value, { targetDocumentId: 'shelf', sectionCode, requireEdition: false }).applicability, 'REFERENCE_ONLY');
+  }
+  for (const sectionCode of ['47', '480']) {
+    assert.equal(resolve(value, { targetDocumentId: 'shelf', sectionCode, requireEdition: false }).applicability, 'CONFIRMED');
+  }
+});
+
+test('a conditional chapter rule remains uncertain only for that chapter', () => {
+  const value = graph([root('פרק 57 של המפרט הכללי יחול רק אם המזמין יאשר זאת בעתיד.'), blueBook]);
+  assert.equal(resolve(value, { sectionCode: '57.01', requireEdition: false }).applicability, 'NEEDS_REVIEW');
+  assert.equal(resolve(value, { sectionCode: '51', requireEdition: false }).applicability, 'CONFIRMED');
+});
+
+test('an exclusion inside an unresolved condition is not treated as an unconditional cancellation', () => {
+  const value = graph([root('אם המזמין יאשר זאת בעתיד, פרק 57 של המפרט הכללי לא יחול על העבודה.'), blueBook]);
+  assert.equal(resolve(value, { sectionCode: '57', requireEdition: false }).applicability, 'NEEDS_REVIEW');
+});
+
+test('work evidence and library examples cannot cancel the default project base', () => {
+  const quote = 'המפרט הכללי לא יחול על העבודה.';
+  const value = graph([blueBook, { id: 'letter', title: 'מכתב', role: 'WORK_EVIDENCE', clauses: [clause(quote)] },
+    { id: 'guide', title: 'מדריך', role: 'REFERENCE', clauses: [clause(quote)] }]);
+  const result = resolve(value, { sectionCode: null, edition: null, requireEdition: false });
+  assert.equal(result.applicability, 'CONFIRMED');
+  assert.deepEqual(result.contractEvidence || [], []);
+});
+
+test('a project textbook example is not an operative exclusion', () => {
+  const value = graph([root('לדוגמה: המפרט הכללי לא יחול על העבודה.'), blueBook]);
+  assert.equal(resolve(value, { sectionCode: null, edition: null, requireEdition: false }).applicability, 'CONFIRMED');
+});
+
+test('not attaching a physical book does not exclude its contractual default', () => {
+  const value = graph([root('המפרט הכללי אינו מצורף לחוברת המכרז.'), blueBook]);
+  assert.equal(resolve(value, { sectionCode: null, edition: null, requireEdition: false }).applicability, 'CONFIRMED');
+});
+
+test('the default base does not prove an unidentified clause or edition', () => {
+  const result = resolve(graph([blueBook]), { sectionCode: null, edition: null, requireEdition: true });
+  assert.equal(result.applicability, 'NEEDS_REVIEW');
+  assert.equal(result.reason, 'reference_clause_not_verified');
+});
+
+test('the system default does not extend to unrelated standards or a missing document identity', () => {
+  const standard = { id: 'standard', title: 'תקן ישראלי 1205', role: 'REFERENCE', referenceType: 'ISRAELI_STANDARD', clauses: [] };
+  const value = graph([standard]);
+  assert.equal(resolve(value, { targetDocumentId: 'standard', requireEdition: false }).applicability, 'REFERENCE_ONLY');
+  assert.equal(resolve(value, { targetDocumentId: 'absent', requireEdition: false }).applicability, 'REFERENCE_ONLY');
+});
+
+test('an explicitly replaced shelf clause requires review rather than using the original provision', () => {
+  const shelf = { id: 'shelf', title: 'חוזה מדף 3210', role: 'REFERENCE', referenceType: 'SHELF_CONTRACT_3210', clauses: [] };
+  const value = graph([root('סעיף 48 של חוזה מדף 3210 יוחלף בתנאי החוזה המיוחדים.'), shelf]);
+  assert.equal(resolve(value, { targetDocumentId: 'shelf', sectionCode: '48', requireEdition: false }).applicability, 'NEEDS_REVIEW');
+  assert.equal(resolve(value, { targetDocumentId: 'shelf', sectionCode: '49', requireEdition: false }).applicability, 'CONFIRMED');
+});
+
+test('a narrower exclusion does not cancel the entire parent chapter', () => {
+  const value = graph([root('סעיף 57.01 של המפרט הכללי לא יחול על העבודה.'), blueBook]);
+  assert.equal(resolve(value, { sectionCode: '57', requireEdition: false }).applicability, 'NEEDS_REVIEW');
+  assert.equal(resolve(value, { sectionCode: '57.01.02', requireEdition: false }).applicability, 'REFERENCE_ONLY');
+  assert.equal(resolve(value, { sectionCode: '57.02', requireEdition: false }).applicability, 'CONFIRMED');
+});
+
+test('an explicitly exclusive chapter list limits the default without requiring a negation', () => {
+  const value = graph([root('על העבודה יחולו רק פרקים 51 ו57 של המפרט הכללי.'), blueBook]);
+  assert.equal(resolve(value, { sectionCode: '51', requireEdition: false }).applicability, 'CONFIRMED');
+  assert.equal(resolve(value, { sectionCode: '57.01', requireEdition: false }).applicability, 'CONFIRMED');
+  assert.equal(resolve(value, { sectionCode: '34', requireEdition: false }).applicability, 'REFERENCE_ONLY');
+});
+
+test('a mixed-family statement does not assign one family exclusion to both families', () => {
+  const shelf = { id: 'shelf', title: 'חוזה מדף 3210', role: 'REFERENCE', referenceType: 'SHELF_CONTRACT_3210', clauses: [] };
+  const quote = 'סעיף 48 של חוזה מדף 3210 לא יחול, ואילו פרק 57 של המפרט הכללי יחול.';
+  const value = graph([root(quote), blueBook, shelf]);
+  assert.equal(resolve(value, { sectionCode: '57', requireEdition: false }).applicability, 'NEEDS_REVIEW');
+});
+
+test('a real incorporation chain does not hide a scoped project exclusion in the family report', () => {
+  const quote = 'פרק 57 של המפרט הכללי לא יחול על העבודה.';
+  const value = graph([root('על העבודה יחול המפרט הכללי.'), { ...root(quote), id: 'special' }, blueBook]);
+  const report = authority.buildDocumentReferenceCheckReport(value);
+  assert.equal(report.references[0].applicability, 'CONFIRMED');
+  assert.deepEqual(report.references[0].contractEvidence, [{ documentId: 'special', title: 'הסכם הפרויקט', quote, sectionCode: '57' }]);
 });

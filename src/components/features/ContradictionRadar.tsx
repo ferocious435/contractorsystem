@@ -108,7 +108,7 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                         <BookOpen className="w-5 h-5 text-blue-400" />
                         <div>
                             <div className="text-base font-black text-white">מקורות והפניות במסמכי הפרויקט</div>
-                            <div className="text-xs text-gray-500 mt-1">ההפניות במסמכי הפרויקט קובעות אילו מקורות, פרקים ומהדורות משתתפים בבדיקה.</div>
+                            <div className="text-xs text-gray-500 mt-1">מקורות הבדיקה נבחנים לפי תנאי החוזה והסעיפים המתאימים לעבודה.</div>
                         </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
@@ -149,11 +149,20 @@ export default function ContradictionRadar({ projectId, projectName, onNavigate 
                             </div>
                         ))}
                     </div>
+                    <p className="text-xs text-gray-400 leading-6">הספר הכחול וחוזה 3210 משמשים בסיס כברירת מחדל, אלא אם נקבע אחרת בחוזה הפרויקט. כל סעיף נבדק בנפרד לפי העבודה, תנאי החוזה והמקור.</p>
                     {supportSources.referenceChecks?.error ? (
                         <p className="text-xs text-amber-300">בדיקת ההפניות לא הושלמה. תחולת המקורות עדיין לא אומתה.</p>
                     ) : supportSources.referenceChecks?.eligibleComparisonPages === 0 && (
-                        <p className="text-xs text-amber-300">בספריית הייחוס עדיין לא נמצאה אסמכתה מספקת שמקשרת סעיף לפרק ולמהדורה המחייבים בפרויקט.</p>
+                        <p className="text-xs text-amber-300">עדיין לא אומתו סעיפים מספריית הייחוס לשימוש בהשוואה. אין בכך ביטול של בסיס המקורות; נדרשת בדיקה של הסעיפים והמהדורות המתאימים.</p>
                     )}
+                    {supportSources.referenceChecks?.references?.filter(source => source.contractEvidence?.length).map(source => (
+                        <details key={source.id} className="text-xs text-amber-200 leading-6">
+                            <summary className="cursor-pointer">{source.title}: {source.applicability === 'REFERENCE_ONLY' ? 'הוחרג לפי החוזה' : 'תנאי חוזה שיש להביא בחשבון'}</summary>
+                            {source.contractEvidence?.map((evidence, index) => (
+                                <p key={`${evidence.documentId}:${index}`} className="mt-2"><strong>{evidence.title}</strong>: {evidence.quote}</p>
+                            ))}
+                        </details>
+                    ))}
                     {Boolean(supportSources.referenceChecks?.missingRequiredDocuments?.length) && (
                         <details className="text-xs text-amber-200 leading-6">
                             <summary className="cursor-pointer">מסמכי הפרויקט מפנים למקורות שהטקסט המלא שלהם חסר במערכת ({supportSources.referenceChecks?.missingRequiredDocuments?.length})</summary>
