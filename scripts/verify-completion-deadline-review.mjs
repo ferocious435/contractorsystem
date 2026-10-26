@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { quality } from './radar-point-1-3-harness.mjs';
+import { completeDocx } from './fixtures/docx-reading-verification.mjs';
 
-const letter = { id: 'letter', title: 'התראה.docx', category: 'EXECUTION',
+const letter = { ...completeDocx, ocr_status: 'COMPLETED', id: 'letter', title: 'התראה.docx', category: 'EXECUTION',
   extracted_text: 'במסגרת הסכם המקדמה התחייבתם להשלים את עבודות המים והביוב לא יאוחר מיום 01.06.2025.' };
-const contract = { id: 'contract', title: 'חוזה.docx', category: 'CONTRACT', extracted_text: 'תקופת הביצוע תהיה 19 חודשים.' };
+const contract = { ...completeDocx, ocr_status: 'COMPLETED', id: 'contract', title: 'חוזה.docx', category: 'CONTRACT', extracted_text: 'תקופת הביצוע תהיה 19 חודשים.' };
 function review(documents) {
   assert.equal(typeof quality.reviewCompletionDeadlineBasis, 'function');
   return quality.reviewCompletionDeadlineBasis({ currentWorkDocument: letter, documents });
@@ -22,7 +23,7 @@ test('an explicit deadline claim is linked to its missing agreement, not to tota
 });
 
 test('a named agreement is located by its own clause without declaring the claim proved', () => {
-  const agreement = { id: 'advance', title: 'הסכם מקדמה.docx', category: 'CONTRACT',
+  const agreement = { ...completeDocx, ocr_status: 'COMPLETED', id: 'advance', title: 'הסכם מקדמה.docx', category: 'CONTRACT',
     extracted_text: 'הקבלן מתחייב להשלים את עבודות המים והביוב עד ליום 01.06.2025.' };
   const result = review([letter, contract, agreement]);
   assert.equal(result.status, 'BASIS_LOCATED');

@@ -91,6 +91,20 @@ export async function ensureLocalOcrLanguageData() {
     return targetDirectory;
 }
 
+/** Read an embedded image with the same offline engine and language files as PDF OCR. */
+export async function extractImageTextLocally(imageBuffer: Buffer): Promise<{ text: string; confidence: number }> {
+    const languageDataPath = await ensureLocalOcrLanguageData();
+    const worker = await createWorker(LOCAL_OCR_LANGUAGES, 1, {
+        langPath: languageDataPath, cachePath: languageDataPath, logger: () => undefined,
+    });
+    try {
+        const result = await worker.recognize(imageBuffer);
+        return { text: String(result.data.text || '').trim(), confidence: result.data.confidence };
+    } finally {
+        await worker.terminate();
+    }
+}
+
 function getPageNumber(fileName: string) {
     return Number(fileName.match(/-(\d+)\.png$/i)?.[1] || Number.MAX_SAFE_INTEGER);
 }

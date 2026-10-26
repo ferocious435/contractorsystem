@@ -7,6 +7,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { replayExtractedDocxText } from './fixtures/docx-reading-verification.mjs';
 
 // Diagnostic code only. No database client, model adapter, route or OCR import.
 export const networkAttempts = [];
@@ -63,6 +64,14 @@ export function loadInput(snapshotPath) {
     documentById: new Map(documents.map(document => [document.id, document])),
     sourceMode: snapshotPath ? 'FULL_SAVED_TEXT_SNAPSHOT' : 'MINIMAL_DIAGNOSTIC_EXCERPTS',
   };
+}
+
+// Semantic replay does not verify reading of the original Word file.
+export function loadTextReplay(snapshotPath) {
+  const loaded = loadInput(snapshotPath);
+  const documents = loaded.documents.map(replayExtractedDocxText);
+  return { ...loaded, documents, documentById: new Map(documents.map(document => [document.id, document])),
+    sourceMode: 'SAVED_EXTRACTED_TEXT_REPLAY_NOT_DOCX_READING' };
 }
 
 export function inspectCard(row, documentById) {

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import { quality } from './radar-point-1-3-harness.mjs';
+import { completeDocx, replayExtractedDocxText } from './fixtures/docx-reading-verification.mjs';
 const timing = await import('../src/utils/radar-issue-timing.ts').catch(() => ({}));
-const doc = (id, date, text, category = 'EXECUTION') => ({ id, category, title: `${id}.docx`, extracted_text: `תאריך: ${date}\n${text}` });
+const doc = (id, date, text, category = 'EXECUTION') => ({ ...completeDocx, ocr_status: 'COMPLETED', id, category, title: `${id}.docx`, extracted_text: `תאריך: ${date}\n${text}` });
 function review(documents) {
   assert.equal(typeof timing.reviewIssueTiming, 'function');
   return timing.reviewIssueTiming({ issue: { subject: 'MTM', location: 'יהלום' }, documents, asOf: '2025-06-24' });
@@ -55,7 +56,7 @@ test('a later signature and method approval do not erase a previously proved mis
 test('actual available corpus: signature status, response demands and completion reference remain distinct', () => {
   const filename = process.env.RADAR_MTM_SNAPSHOT || 'data/point1-audit/point13-step4-mtm-corpus-before-20261022.json';
   const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
-  const documents = saved.documents.map(source => ({ ...source, parsed_json: { source_reading: source.source_reading } }));
+  const documents = saved.documents.map(source => replayExtractedDocxText({ ...source, parsed_json: { source_reading: source.source_reading } }));
   const result = review(documents);
   assert.equal(result.confirmedConflicts.length, 0);
   assert.ok(result.requirements.some(item => item.documentId.startsWith('935fb9ad') && item.action === 'RESPOND'));

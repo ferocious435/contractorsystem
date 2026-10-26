@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerHooks } from 'node:module';
-import { loadInput, networkAttempts } from './radar-point-1-3-harness.mjs';
+import { loadTextReplay as loadInput, networkAttempts } from './radar-point-1-3-harness.mjs';
+import { completeDocx } from './fixtures/docx-reading-verification.mjs';
 
 const hook = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier.startsWith('@/') ? new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href : specifier, context);
@@ -14,7 +15,7 @@ function fixture(quotes, patch = {}) {
     project_id: 'project', status: 'OPEN', category: 'שינוי/חריג', scan_signature: `scan-${index}`,
     source_execution_doc_id: `source-${index}`, evidence_data: { work_quote: quote },
     created_at: `2025-01-0${index + 1}T00:00:00Z`, ...patch })),
-  documents: quotes.map((quote, index) => ({ id: `source-${index}`, title: `פרוטוקול ${index + 1}.01.2025.docx`,
+  documents: quotes.map((quote, index) => ({ ...completeDocx, ocr_status: 'COMPLETED', id: `source-${index}`, title: `פרוטוקול ${index + 1}.01.2025.docx`,
     extracted_text: `תאריך: 0${index + 1}.01.2025\n${quote}` })), financialLinks: [] };
 }
 const method = [
@@ -67,7 +68,7 @@ test('a valid work passage survives an invalid contractual quotation as a source
   const input = fixture([method[0], method[0]]);
   input.findings[1].target_contract_doc_id = 'base';
   input.findings[1].evidence_data.contract_quote = 'invented norm';
-  input.documents.push({ id: 'base', title: 'חוזה.docx', extracted_text: 'נורמה אחרת.' });
+  input.documents.push({ ...completeDocx, ocr_status: 'COMPLETED', id: 'base', title: 'חוזה.docx', extracted_text: 'נורמה אחרת.' });
   const result = plan(input);
   assert.equal(result.attachHistory.length, 2);
   assert.equal(result.flagInvalidEvidence[0].reason, 'BASELINE_QUOTE_NOT_FOUND');
@@ -106,7 +107,7 @@ test('same_quote_different_basis_is_preserved', () => {
   for (const [index, row] of input.findings.entries()) {
     row.target_contract_doc_id = `contract-${index}`;
     row.evidence_data.contract_quote = `הוראות קידוח ברחוב יהלום: סעיף ${index + 1} מחייב אישור מראש.`;
-    input.documents.push({ id: row.target_contract_doc_id, title: 'חוזה.docx', extracted_text: row.evidence_data.contract_quote });
+    input.documents.push({ ...completeDocx, ocr_status: 'COMPLETED', id: row.target_contract_doc_id, title: 'חוזה.docx', extracted_text: row.evidence_data.contract_quote });
   }
   const result = plan(input);
   assert.equal(result.markDuplicates.length, 0, 'A new basis is not an identical repeat');

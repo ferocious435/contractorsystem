@@ -1,9 +1,11 @@
 import type { ProjectDocument } from './types';
+import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
 
 export type DocumentDisplayStateKey =
     | 'VALIDATED'
     | 'VALIDATED_WITH_AI_WARNING'
     | 'AI_INCOMPLETE'
+    | 'SOURCE_INCOMPLETE'
     | 'SCANNED'
     | 'PROCESSING'
     | 'TEXT_READ'
@@ -52,8 +54,14 @@ export function hasIncompleteAiAnalysis(doc: ProjectDocument) {
 
 export function getDocumentDisplayState(doc: ProjectDocument): DocumentDisplayState {
     const humanValidated = doc.ai_status === 'VALIDATED';
-    const textRead = Boolean(doc.extracted_text_hash || doc.extracted_text || doc.ocr_status === 'COMPLETED');
+    const textRead = assessDocumentSourceReadiness(doc).extractionComplete;
     const aiIncomplete = hasIncompleteAiAnalysis(doc);
+
+    const hasReadingAttempt = Boolean(doc.extracted_text_hash || doc.extracted_text
+        || doc.ocr_status === 'COMPLETED' || doc.ocr_status === 'REQUIRES_REVIEW');
+    if (hasReadingAttempt && !textRead && !['PROCESSING', 'EXTRACTING'].includes(String(doc.ai_status || ''))) {
+        return { key: 'SOURCE_INCOMPLETE', humanValidated, textRead: false, aiCompleted: false, needsAction: true };
+    }
 
     if (aiIncomplete) {
         return {

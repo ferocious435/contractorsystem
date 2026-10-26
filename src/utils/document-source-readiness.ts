@@ -5,22 +5,43 @@ export type DocumentSourceInput = {
     storage_path?: string | null;
     file_url?: string | null;
     parsed_json?: unknown;
+    content_hash?: string | null;
 };
 
 export const DOCUMENT_READING_VERSION = 'page-coverage-v1';
-export type DocumentReadingVerification = {
+export const DOCX_READING_VERSION = 'docx-image-coverage-v1';
+export type DocxReadingVerification = {
+    version: typeof DOCX_READING_VERSION;
+    complete: boolean;
+    sourceHash: string;
+    expectedImageReferences: number;
+    images: Array<{
+        anchor: string;
+        part: string;
+        mediaName: string;
+        sha256: string | null;
+        status: 'READ' | 'REQUIRES_REVIEW' | 'UNREADABLE';
+        confidence: number | null;
+        numericReviewRequired: boolean;
+        reason: string | null;
+    }>;
+    issues: string[];
+};
+export type PdfReadingVerification = {
     version: typeof DOCUMENT_READING_VERSION;
     complete: boolean;
     totalPages: number;
     readPages: number[];
     unreadablePages: number[];
 };
+export type DocumentReadingVerification = PdfReadingVerification | DocxReadingVerification;
 
 export type ExtractedPdfPage = { num: number; text: string };
 export type RecognizedPdfPage = { page: number; text: string; confidence: number; requiresVisualReview?: boolean };
 
 export function removeExtractionNoise(value: string) {
     return value
+        .replace(/\[(?:DOCX_(?:IMAGE|PART|ISSUE)\b[^\]\r\n]*|END_DOCX_(?:IMAGE|PART))\]/g, '')
         .replace(/^[ \t]*--\s*\d+\s+of\s+\d+\s*--[ \t]*$/gim, '')
         .replace(/^[ \t]*(?:page\s+)?\d+\s+(?:of|מתוך)\s+\d+[ \t]*$/gim, '')
         .replace(/^[ \t]*(?:עמוד|עמ')\s*\d+(?:\s*מתוך\s*\d+)?[ \t]*$/gm, '')
@@ -64,14 +85,31 @@ export function assessDocumentSourceReadiness(document: DocumentSourceInput) {
     const parsed = document.parsed_json && typeof document.parsed_json === 'object'
         ? document.parsed_json as Record<string, unknown> : {};
     const verification = parsed.source_reading as DocumentReadingVerification | undefined;
-    const verifiedPages = new Set(Array.isArray(verification?.readPages) ? verification.readPages : []);
+    const isDocx = verification?.version === DOCX_READING_VERSION || [document.title, document.storage_path, document.file_url]
+        .some((value) => /\.docx(?:$|[?#\s._()\d-])/iu.test(value || ''));
+    const pdf = verification?.version === DOCUMENT_READING_VERSION ? verification : undefined;
+    const verifiedPages = new Set(Array.isArray(pdf?.readPages) ? pdf.readPages : []);
     const completePageCoverage = verification?.version === DOCUMENT_READING_VERSION && verification.complete
         && Number.isInteger(verification.totalPages) && verification.totalPages > 0
         && Array.isArray(verification.unreadablePages) && verification.unreadablePages.length === 0
         && verifiedPages.size === verification.totalPages
         && [...verifiedPages].every((page) => Number.isInteger(page) && page >= 1 && page <= verification.totalPages);
+    const docx = verification?.version === DOCX_READING_VERSION ? verification : undefined;
+    const validHash = (hash: unknown) => typeof hash === 'string' && /^[a-f\d]{64}$/i.test(hash);
+    const completeDocxCoverage = Boolean(docx?.complete === true && validHash(docx.sourceHash)
+        && (!document.content_hash || document.content_hash === docx.sourceHash)
+        && Number.isInteger(docx.expectedImageReferences) && docx.expectedImageReferences >= 0
+        && Array.isArray(docx.issues) && docx.issues.length === 0 && Array.isArray(docx.images)
+        && docx.images.length === docx.expectedImageReferences
+        && new Set(docx.images.map((image) => image?.anchor)).size === docx.expectedImageReferences
+        && docx.images.every((image) => image && typeof image.part === 'string' && /^word\/.+\.xml$/.test(image.part)
+            && typeof image.anchor === 'string' && image.anchor.startsWith(`${image.part}#`)
+            && typeof image.mediaName === 'string' && image.mediaName.length > 0 && validHash(image.sha256)
+            && image.status === 'READ' && image.numericReviewRequired === false && image.reason === null
+            && typeof image.confidence === 'number' && Number.isFinite(image.confidence) && image.confidence >= 65 && image.confidence <= 100));
     const incomplete = ['REQUIRES_REVIEW', 'ERROR', 'PENDING', 'PROCESSING'].includes(String(document.ocr_status || ''))
         || (isPdf && (document.ocr_status !== 'COMPLETED' || !completePageCoverage))
+        || (isDocx && (document.ocr_status !== 'COMPLETED' || !completeDocxCoverage))
         || /\[Document text was truncated for AI analysis\./u.test(text);
     const status = !hasReadableText ? 'UNREADABLE' as const
         : incomplete ? 'EXTRACTION_INCOMPLETE' as const

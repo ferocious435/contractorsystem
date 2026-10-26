@@ -66,8 +66,8 @@ expect('Document cards show specific system error hints', documentsClient.includ
 expect('Document cards explain modern file format support', documentsClient.includes('GOOGLE_NATIVE_EXPORT_REQUIRED') && documentsClient.includes('BOQ_CONVERTER_REQUIRED') && documentsClient.includes('TLV/SKN'));
 expect('Document titles strip engineering and BOQ extensions', documentsClient.includes('tlv|skn|boq|bq|qty') && documentsClient.includes('dwg|dwf|dwfx'));
 expect('Document analysis is single-flight from the UI', documentsClient.includes('if (processingId) return') && documentsClient.includes('disabled={Boolean(processingId) ||'));
-expect('Document retry only pre-extracts PDF files', documentsClient.includes('const isPdfDocumentTitle') && documentsClient.includes('if (isPdfDocumentTitle(doc.title))'));
-expect('Document upload and retry share the PDF title guard', documentsClient.includes('const isPDF = isPdfDocumentTitle(file.name)') && documentsClient.includes('if (isPdfDocumentTitle(doc.title))'));
+expect('Document retry pre-extracts every readable uploaded file', documentsClient.includes("fetch('/api/documents/extract-text'") && !documentsClient.includes('if (isPdfDocumentTitle(doc.title))'));
+expect('Document upload extracts text for every readable file', documentsClient.includes('if (insertedDoc?.id)') && !documentsClient.includes('const isPDF = isPdfDocumentTitle(file.name)'));
 expect('Document card opens in-app review modal instead of raw signed URL', documentsClient.includes('onClick={() => setSelectedDocForVerification(doc)}') && !documentsClient.includes('window.open(data.signedUrl'));
 expect('Document cards hide mojibake document types', documentsClient.includes('looksCorruptText') && documentsClient.includes('inferDocumentType(doc)'));
 expect('Validation refreshes documents from the server', documentsClient.includes('const refreshRes = await fetch') && documentsClient.includes('refreshData.documents.map(normalizeDocument)'));
@@ -104,9 +104,9 @@ expect('Preview content type detects Office ZIP contents', read('src/utils/docum
 expect('Text extraction avoids bundled PDF worker path resolution', textExtraction.includes('requireFromHere("pdf-parse")') && !textExtraction.includes('requireFromHere.resolve("pdf-parse")') && !textExtraction.includes('pdf.worker.mjs'));
 expect('PDF files prefer server-side text extraction before multimodal AI', textExtraction.includes('pdf_text_extraction') && textExtraction.includes('falling back to Gemini multimodal'));
 expect('Text extraction detects Office ZIP contents', textExtraction.includes('detectOfficeParserFileTypeFromBuffer') && textExtraction.includes('word/document.xml') && textExtraction.includes('xl/workbook.xml') && textExtraction.includes('ppt/presentation.xml'));
-expect('PDF extract route uses the shared parser helper', extractTextRoute.includes('extractPdfText') && extractTextRoute.includes('pages: pdfData.pages'));
+expect('Text extract route uses the shared parser for PDF and Office files', extractTextRoute.includes('prepareDocumentAnalysisInput') && extractTextRoute.includes('prepared.extractedText'));
 expect('PDF extract route does not write NON-PDF placeholders', !extractTextRoute.includes('[NON-PDF:'));
-expect('PDF extract route skips non-PDF files without mutation', extractTextRoute.includes('skipped: true') && extractTextRoute.includes('skipping PDF extraction'));
+expect('Text extract route marks files without readable text for review', extractTextRoute.includes('prepared.kind === "direct"') && extractTextRoute.includes('REQUIRES_REVIEW'));
 expect('Next server keeps parser packages external', nextConfig.includes('serverExternalPackages') && nextConfig.includes('"pdf-parse"') && nextConfig.includes('"officeparser"'));
 expect('Document upload avoids fake numeric storage extensions', documentsRoute.includes('CONTENT_TYPE_EXTENSIONS') && documentsRoute.includes('getFileExtension(fileName)') && documentsRoute.includes('file.type || ""'));
 expect('Document upload removes storage object when insert fails', documentsRoute.includes('if (insertError) {') && documentsRoute.includes('.remove([storagePath])') && documentsRoute.includes('throw insertError'));

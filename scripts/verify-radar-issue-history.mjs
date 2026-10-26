@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
+import { completeDocx, replayExtractedDocxText } from './fixtures/docx-reading-verification.mjs';
 import './radar-point-1-3-harness.mjs';
 
 const history = await import('../src/utils/radar-issue-history.ts').catch(() => ({}));
 const issue = { subject: 'MTM', location: 'יהלום' };
-const document = (id, date, text) => ({ id, title: `פרוטוקול ${date}.docx`,
+const document = (id, date, text) => ({ ...completeDocx, ocr_status: 'COMPLETED', id, title: `פרוטוקול ${date}.docx`,
   extracted_text: `${date ? `תאריך: ${date}\n` : ''}${text}` });
 const assess = (documents, rest = {}) => {
   assert.equal(typeof history.buildIssueHistory, 'function', 'Product history builder must exist');
@@ -44,13 +45,13 @@ test('future_owner_note_does_not_change_past_state', () => {
 });
 
 test('date_from_filename_does_not_prove_resolution', () => {
-  const result = assess([{ id: 'method', title: 'פרוטוקול 02.01.2025.docx', extracted_text: 'קידוח MTM ברחוב יהלום אושר לביצוע.' }]);
+  const result = assess([{ ...completeDocx, ocr_status: 'COMPLETED', id: 'method', title: 'פרוטוקול 02.01.2025.docx', extracted_text: 'קידוח MTM ברחוב יהלום אושר לביצוע.' }]);
   assert.notEqual(result.aspects.METHOD.state, 'APPROVED');
   assert.ok(result.gaps.some(gap => gap.reason === 'EVENT_DATE_UNCONFIRMED'));
 });
 
 test('own date takes precedence over filename and referenced foreign letter', () => {
-  const doc = { id: 'header', title: 'מענה לפרוטוקול מיום 12.03.2025.docx',
+  const doc = { ...completeDocx, ocr_status: 'COMPLETED', id: 'header', title: 'מענה לפרוטוקול מיום 12.03.2025.docx',
     extracted_text: 'תאריך: 17.03.2025\nבהמשך למכתב מיום 12.03.2025.\nקידוח MTM ברחוב יהלום אושר לביצוע.' };
   const result = assess([doc]);
   assert.equal(result.events[0].date, '2025-03-17');
@@ -132,7 +133,7 @@ test('actual saved MTM corpus: verifiable anchors, June unsigned, filename misma
   const filename = process.env.RADAR_MTM_SNAPSHOT || 'data/point1-audit/point13-step4-mtm-corpus-before-20261022.json';
   assert.ok(fs.existsSync(filename), 'Full saved source corpus is required for this acceptance test');
   const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
-  const documents = saved.documents.map(doc => ({ ...doc, parsed_json: { source_reading: doc.source_reading } }));
+  const documents = saved.documents.map(doc => replayExtractedDocxText({ ...doc, parsed_json: { source_reading: doc.source_reading } }));
   const result = assess(documents);
   assert.equal(result.aspects.SIGNATURE.state, 'NOT_SIGNED');
   assert.equal(result.aspects.PRICE.state, 'PENDING');

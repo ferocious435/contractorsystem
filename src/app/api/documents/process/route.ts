@@ -284,9 +284,14 @@ export async function POST(req: Request) {
             parsedData = applyReferenceDocumentMetadata(parsedData, docTitle, docCategory);
             parsedData.extraction_source = analysisInput.extractionSource;
             parsedData.file_extension = getFileExtension(docTitle) || null;
+            if (analysisInput.kind === "text" && analysisInput.ocrConfidence !== undefined) {
+                parsedData.ocr_confidence = analysisInput.ocrConfidence;
+                parsedData.ocr_requires_review = Boolean(analysisInput.requiresReview);
+            }
 
-            if (analysisInput.kind === "text" && typeof parsedData.full_markdown !== "string") {
+            if (analysisInput.kind === "text") {
                 parsedData.full_markdown = analysisInput.extractedText;
+                if (analysisInput.readingVerification) parsedData.source_reading = analysisInput.readingVerification;
             }
 
             // Save extracted markdown/text for later evidence workflows.
@@ -298,7 +303,9 @@ export async function POST(req: Request) {
                     .from('documents')
                     .update({
                         extracted_text: fullMarkdown,
-                        ocr_status: 'COMPLETED'
+                        ocr_status: analysisInput.kind === 'text' && analysisInput.requiresReview
+                            ? 'REQUIRES_REVIEW'
+                            : 'COMPLETED'
                     })
                     .eq('id', documentId)
                     .eq('project_id', projectId);
@@ -319,7 +326,8 @@ export async function POST(req: Request) {
                         ai_status: 'SCANNED',
                         parsed_json: parsedData,
                         extracted_text: analysisInput.extractedText,
-                        ocr_status: 'COMPLETED'
+                        ...(analysisInput.readingVerification ? { parsed_json: { ...parsedData, source_reading: analysisInput.readingVerification } } : {}),
+                        ocr_status: analysisInput.requiresReview ? 'REQUIRES_REVIEW' : 'COMPLETED'
                     })
                     .eq('id', documentId)
                     .eq('project_id', projectId);

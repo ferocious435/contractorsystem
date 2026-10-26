@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { registerHooks } from 'node:module';
+import { completeDocx } from './fixtures/docx-reading-verification.mjs';
 
 const projectHook = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier.startsWith('@/') ? new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href : specifier, context);
@@ -10,12 +11,13 @@ const chunkModule = await import('../src/utils/document-scan-chunks.ts');
 projectHook.deregister();
 
 test('a complete instruction of one line is not dropped because of its length', () => {
-  assert.equal(chunkModule.hasUsefulDocumentScanText({ title: 'הנחיה.docx', ocr_status: 'COMPLETED',
+  assert.equal(chunkModule.hasUsefulDocumentScanText({ ...completeDocx, title: 'הנחיה.docx', ocr_status: 'COMPLETED',
     extracted_text: 'יש להשאיר את המעבר פתוח.' }), true);
 });
 
 test('a short readable letter reaches analysis after its complete extraction is confirmed', () => {
   const letter = {
+    ...completeDocx,
     title: 'מכתב נלווה לבקשה להיתר.docx',
     ocr_status: 'REQUIRES_REVIEW',
     extracted_text: 'נדון: בקשה לאישור עבודות הגנה על עמוד מתח עליון מס\' 10822/16\nלכבוד חח"י,\nבהתאם לתכנון וביצוע עבודות תשתית באזור תעשיה קרית גת תבע מזרחית הננו פונים אליכם בבקשה לאישור ביצוע עבודות הגנה על עמוד מתח עליון מס\' 10822/16.\nעבודות אלו נדרשות לשם הבטחת שלמות העמוד והמערכות הצמודות אליו, וזאת בהתאם להנחיות שקיבלנו מכם בפגישות משותפות. כמו כן, העבודות יתבצעו תוך תיאום מלא עם הגורמים המקצועיים הרלוונטיים בחברת החשמל ותוך שמירה על כל הכללים המחייבים.',

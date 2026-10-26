@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { requireOwnedDocument, requireOwnedProject } from "@/app/api/_utils/auth";
-import { downloadDocumentBuffer, isPdfDocument } from "@/utils/document-storage";
-import { extractPdfText } from "@/utils/document-text-extraction";
+import { downloadDocumentBuffer } from "@/utils/document-storage";
+import { prepareDocumentAnalysisInput } from "@/utils/document-text-extraction";
 import { syncProjectContractBase } from "@/utils/project-contract-base-server";
 import { createClient } from "@/utils/supabase/server";
-
-const MIN_USEFUL_TEXT_LENGTH = 1000;
+import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
 
 type OwnedDocumentForExtraction = {
     id: string;
@@ -18,6 +17,8 @@ type OwnedDocumentForExtraction = {
     extracted_text?: string | null;
     content_hash?: string | null;
     extracted_text_hash?: string | null;
+    ocr_status?: string | null;
+    parsed_json?: Record<string, unknown> | null;
 };
 
 function sha256(input: Buffer | string) {
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest) {
         const ownership = await requireOwnedDocument<OwnedDocumentForExtraction>(
             supabase,
             documentId,
-            "id, project_id, title, file_url, storage_bucket, storage_path, extracted_text, content_hash, extracted_text_hash"
+            "id, project_id, title, file_url, storage_bucket, storage_path, extracted_text, content_hash, extracted_text_hash, ocr_status, parsed_json"
         );
 
         if (!ownership.ok) {
@@ -60,46 +61,52 @@ export async function POST(req: NextRequest) {
         }
 
         // Если текст уже извлечён — вернуть длину
-        if (!force && doc.extracted_text && doc.extracted_text.length >= MIN_USEFUL_TEXT_LENGTH) {
+        if (!force && assessDocumentSourceReadiness(doc).extractionComplete) {
             return NextResponse.json({
                 success: true,
-                textLength: doc.extracted_text.length,
+                textLength: String(doc.extracted_text || '').length,
                 alreadyExtracted: true,
             });
         }
 
-        if (!isPdfDocument(doc)) {
-            // Для не-PDF файлов — пометить как "нет текста"
+        console.log(`[extract-text] Downloading document from private storage: ${doc.title}`);
+        const fileBuffer = await downloadDocumentBuffer(supabase, doc);
+        const contentHash = sha256(fileBuffer);
+
+        const prepared = await prepareDocumentAnalysisInput(fileBuffer, doc.title || "document");
+
+        if (prepared.kind === "direct") {
+            const { error: updateError } = await supabase
+                .from("documents")
+                .update({
+                    ocr_status: "REQUIRES_REVIEW",
+                    content_hash: contentHash,
+                    processed_at: new Date().toISOString(),
+                })
+                .eq("id", documentId)
+                .eq("project_id", projectId);
+
+            if (updateError) {
+                throw new Error(`Failed to save extraction status: ${updateError.message}`);
+            }
+
             return NextResponse.json({
-                success: true,
+                success: false,
                 skipped: true,
-                textLength: typeof doc.extracted_text === "string" ? doc.extracted_text.length : 0,
-                message: "Not a PDF file, skipping PDF extraction",
+                requiresReview: true,
+                textLength: 0,
+                contentHash,
+                message: "The document does not contain readable text for local extraction",
             });
         }
 
-        console.log(`[extract-text] Downloading PDF from private storage: ${doc.title}`);
-        const pdfBuffer = await downloadDocumentBuffer(supabase, doc);
-        const contentHash = sha256(pdfBuffer);
-
-        if (
-            !force &&
-            doc.content_hash === contentHash &&
-            doc.extracted_text &&
-            doc.extracted_text.length >= MIN_USEFUL_TEXT_LENGTH
-        ) {
-            return NextResponse.json({
-                success: true,
-                textLength: doc.extracted_text.length,
-                alreadyExtracted: true,
-                contentHash
-            });
-        }
-
-        // 3. Извлечь текст через pdf-parse
-        const pdfData = await extractPdfText(pdfBuffer);
-        const extractedText = pdfData.text || "";
+        const extractedText = prepared.extractedText;
         const extractedTextHash = sha256(extractedText);
+        const parsedJson = { ...doc.parsed_json, ...(prepared.readingVerification
+            ? { source_reading: prepared.readingVerification } : {}) };
+        const readiness = assessDocumentSourceReadiness({ ...doc, extracted_text: extractedText,
+            parsed_json: parsedJson, ocr_status: prepared.requiresReview ? 'REQUIRES_REVIEW' : 'COMPLETED' });
+        const requiresReview = Boolean(prepared.requiresReview) || !readiness.extractionComplete;
 
         console.log(`[extract-text] Extracted ${extractedText.length} chars from "${doc.title}"`);
 
@@ -108,9 +115,10 @@ export async function POST(req: NextRequest) {
             .from("documents")
             .update({
                 extracted_text: extractedText,
-                ocr_status: extractedText.length >= MIN_USEFUL_TEXT_LENGTH ? "COMPLETED" : "REQUIRES_REVIEW",
+                ocr_status: requiresReview ? "REQUIRES_REVIEW" : "COMPLETED",
                 content_hash: contentHash,
                 extracted_text_hash: extractedTextHash,
+                parsed_json: parsedJson,
                 processed_at: new Date().toISOString()
             })
             .eq("id", documentId)
@@ -135,9 +143,13 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
             success: true,
             textLength: extractedText.length,
-            pages: pdfData.pages || 0,
+            extractionSource: prepared.extractionSource,
             contentHash,
             extractedTextHash,
+            requiresReview,
+            ocrConfidence: prepared.ocrConfidence ?? null,
+            sourceReadiness: readiness.status,
+            readingVerification: prepared.readingVerification ?? null,
             preview: extractedText.substring(0, 200),
         });
 

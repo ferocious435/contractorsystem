@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { completeDocx } from './fixtures/docx-reading-verification.mjs';
 import { registerHooks } from 'node:module';
 import './radar-point-1-3-harness.mjs';
 const hook = registerHooks({ resolve(specifier, context, nextResolve) {
@@ -19,7 +20,7 @@ function database({ failId, concurrentId, invalidOld = false } = {}) {
       source_execution_doc_id: `document-${index}`, pricing_status: index && invalidOld ? 'PRICED' : 'PENDING',
       evidence_data: { work_quote: quote, ...(index && invalidOld ? { manual_review: { keep: 'human note' },
         archive_meta: { archived_at: 'keep' }, pricing_evaluation: { amount: 123 } } : { issue_owner_notes: [{ text: 'keep' }] }) } })),
-    documents: quotes.map((quote, index) => ({ id: `document-${index}`, project_id: 'project', title: 'פרוטוקול.docx',
+    documents: quotes.map((quote, index) => ({ ...completeDocx, ocr_status: 'COMPLETED', id: `document-${index}`, project_id: 'project', title: 'פרוטוקול.docx',
       extracted_text: index && invalidOld ? 'הגנת עמוד חשמל' : quote })),
     pricing_ledger: invalidOld ? [{ id: 'ledger', project_id: 'project', contradiction_id: 'finding-1', amount: 123 }] : [],
     vo_letter_items: invalidOld ? [{ id: 'item', ledger_item_id: 'ledger', letter_id: 'letter' }] : [],

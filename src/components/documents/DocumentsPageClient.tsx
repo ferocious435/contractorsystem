@@ -28,11 +28,6 @@ interface DocumentsPageClientProps {
     category?: DocumentCategory;
 }
 
-const isPdfDocumentTitle = (title?: string | null) => {
-    const normalized = String(title || '').trim().toLowerCase().split(/[?#]/)[0] || '';
-    return normalized.endsWith('.pdf');
-};
-
 function buildDemoDocuments(projectId: string, category?: DocumentCategory): ProjectDocument[] {
     if (!isDemoProjectId(projectId)) return [];
     const docs: ProjectDocument[] = [
@@ -146,8 +141,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 const insertedDoc = uploadData.document as ProjectDocument;
                 setDocuments(prev => [insertedDoc, ...prev]);
 
-                const isPDF = isPdfDocumentTitle(file.name);
-                if (isPDF && insertedDoc?.id) {
+                if (insertedDoc?.id) {
                     setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
 
                     try {
@@ -195,20 +189,18 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
 
             let extractedTextStr = doc.extracted_text;
-            if (isPdfDocumentTitle(doc.title)) {
-                try {
-                    const extractRes = await fetch('/api/documents/extract-text', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ projectId, documentId: doc.id }),
-                    });
-                    const extractData = await extractRes.json();
-                    if (extractData.success) {
+            try {
+                const extractRes = await fetch('/api/documents/extract-text', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ projectId, documentId: doc.id }),
+                });
+                const extractData = await extractRes.json();
+                if (extractData.success) {
                     extractedTextStr = `[${extractData.textLength} תווים]`;
-                    }
-                } catch (err) {
-                    console.warn('Failed to extract text:', err);
                 }
+            } catch (err) {
+                console.warn('Failed to extract text:', err);
             }
 
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'PROCESSING' } : d));
@@ -314,6 +306,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 return <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />;
             case 'VALIDATED_WITH_AI_WARNING':
             case 'AI_INCOMPLETE':
+            case 'SOURCE_INCOMPLETE':
                 return <AlertTriangle className="w-4 h-4 text-red-500" />;
             default:
                 return <Clock className="w-4 h-4 text-gray-500" />;
@@ -325,6 +318,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             VALIDATED: 'אושר ידנית',
             VALIDATED_WITH_AI_WARNING: 'אושר ידנית · AI לא הושלם',
             AI_INCOMPLETE: 'ניתוח AI לא הושלם',
+            SOURCE_INCOMPLETE: 'קריאת המקור לא הושלמה',
             SCANNED: 'ניתוח הושלם · נדרש אישור',
             PROCESSING: 'המערכת קוראת ומנתחת...',
             TEXT_READ: 'הטקסט נקרא · נדרש ניתוח',
@@ -430,6 +424,9 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     };
 
     const getActionHint = (doc: ProjectDocument) => {
+        if (getDocumentDisplayState(doc).key === 'SOURCE_INCOMPLETE') {
+            return 'הקובץ נשמר, אך קריאת כל התוכן עדיין לא אומתה. נדרש להשלים את הקריאה לפני בדיקת ההנחיות.';
+        }
         if (hasSystemError(doc)) {
             if (doc.ai_status === 'VALIDATED') {
                 return 'הקובץ והאישור הידני נשמרו, אך ניתוח ה-AI לא הושלם.';
@@ -442,7 +439,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         if (doc.ai_status === 'SCANNED') return 'בדוק את מה שהמערכת מצאה ואשר רק אם זה נכון.';
         if (doc.ai_status === 'VALIDATED') return 'ניתוח ה-AI הושלם והמסמך אושר ידנית.';
         if (doc.ai_status === 'PROCESSING' || doc.ai_status === 'EXTRACTING') return 'המערכת עובדת על המסמך עכשיו.';
-        if (doc.extracted_text_hash || doc.ocr_status === 'COMPLETED') return 'הטקסט נקרא, אבל עדיין צריך ניתוח AI.';
+        if (getDocumentDisplayState(doc).textRead) return 'הטקסט נקרא, אבל עדיין צריך ניתוח AI.';
         return 'המסמך הועלה ועדיין לא נותח.';
     };
 

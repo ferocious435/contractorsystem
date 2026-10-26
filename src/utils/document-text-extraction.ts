@@ -1,6 +1,7 @@
 const MAX_AI_TEXT_CHARS = 120_000;
 import { createRequire } from "node:module";
 import { extractPdfPagesWithLocalMcp } from '@/utils/local-ocr-mcp';
+import { extractDocxWithImages } from '@/utils/docx-image-extraction';
 
 import {
     extractScannedPdfTextLocally,
@@ -526,6 +527,12 @@ export async function prepareDocumentAnalysisInput(fileBuffer: Buffer, title: st
     }
 
     const officeParserFileType = OFFICE_PARSER_FILE_TYPES[extension] || detectOfficeParserFileTypeFromBuffer(fileBuffer);
+    if (officeParserFileType === 'docx') {
+        const result = await extractDocxWithImages(fileBuffer);
+        return makeTextInput(fileBuffer, 'docx_text_plus_local_image_ocr', result.text, {
+            requiresReview: result.requiresReview, readingVerification: result.readingVerification,
+        });
+    }
     if (officeParserFileType) {
         return makeTextInput(fileBuffer, `officeparser_${officeParserFileType}`, await extractWithOfficeParser(fileBuffer, officeParserFileType));
     }

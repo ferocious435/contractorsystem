@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { completeDocx } from './fixtures/docx-reading-verification.mjs';
 
 const readiness = await import('../src/utils/document-source-readiness.ts');
 const completePdf = { parsed_json: { source_reading: { version: readiness.DOCUMENT_READING_VERSION,
   complete: true, totalPages: 1, readPages: [1], unreadablePages: [] } } };
 
 test('a complete one-line document is readable without a minimum character count', () => {
-  const result = readiness.assessDocumentSourceReadiness({ title: 'הנחיה.docx', ocr_status: 'COMPLETED',
+  const result = readiness.assessDocumentSourceReadiness({ ...completeDocx, title: 'הנחיה.docx', ocr_status: 'COMPLETED',
     extracted_text: 'יש להשאיר את המעבר פתוח.' });
   assert.equal(result.canCompare, true);
   assert.equal(result.status, 'READABLE');
@@ -36,7 +37,7 @@ test('explicit draft markers prevent use as a current instruction even after suc
     { title: 'protocol.pdf', extracted_text: 'DRAFT — FOR REVIEW ONLY\nThe access road shall be closed.' },
     { title: 'protocol.docx', extracted_text: 'טיוטה לעיון בלבד\nהמעבר ייסגר ביום ראשון.' },
   ]) {
-    const result = readiness.assessDocumentSourceReadiness({ ...completePdf, ...document, ocr_status: 'COMPLETED' });
+    const result = readiness.assessDocumentSourceReadiness({ ...(document.title.endsWith('.docx') ? completeDocx : completePdf), ...document, ocr_status: 'COMPLETED' });
     assert.equal(result.canCompare, false);
     assert.equal(result.status, 'DRAFT');
     assert.ok(result.markerQuote);
@@ -44,12 +45,12 @@ test('explicit draft markers prevent use as a current instruction even after suc
 });
 
 test('a final letter discussing somebody else\'s draft is not itself a draft', () => {
-  assert.equal(readiness.assessDocumentSourceReadiness({ title: 'מענה על טיוטת ההסכם.docx', ocr_status: 'COMPLETED',
+  assert.equal(readiness.assessDocumentSourceReadiness({ ...completeDocx, title: 'מענה על טיוטת ההסכם.docx', ocr_status: 'COMPLETED',
     extracted_text: 'בהמשך לטיוטה ששלחתם, ההנחיה הסופית היא להשאיר את המעבר פתוח.' }).canCompare, true);
 });
 
 test('an explicitly identified fragment is retained for context but is not a complete current source', () => {
-  const result = readiness.assessDocumentSourceReadiness({ title: 'copy.docx', ocr_status: 'COMPLETED',
+  const result = readiness.assessDocumentSourceReadiness({ ...completeDocx, title: 'copy.docx', ocr_status: 'COMPLETED',
     extracted_text: 'קטע מתוך פרוטוקול ישיבה\nיש לסגור את המעבר.' });
   assert.equal(result.status, 'FRAGMENT');
   assert.equal(result.canCompare, false);

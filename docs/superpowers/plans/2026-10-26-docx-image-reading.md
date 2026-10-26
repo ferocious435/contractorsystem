@@ -1,0 +1,92 @@
+# Чтение изображений внутри DOCX — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Система сохраняет текст вложенных изображений Word и не объявляет неполное либо сомнительное чтение полностью проверенным.
+
+**Architecture:** DOCX получает отдельный обработчик перед общей веткой Office. Установленный `officeparser` сохраняет структуру и извлекает вложения; существующий локальный OCR читает их, а общий `source_reading` передаёт покрытие и ограничения дальше. Структурные ссылки сверяются с содержимым пакета DOCX, чтобы отсутствие узла в дереве парсера не стало ложным подтверждением полноты.
+
+**Tech Stack:** TypeScript, Node.js, установленный officeparser, Tesseract.js с локальными heb+eng, node:test, Next.js. Новые зависимости не устанавливаются.
+
+**Spec:** `docs/superpowers/specs/2026-10-26-docx-image-reading-design.md`.
+
+## Global Constraints
+
+- Без новых зависимостей, внешних OCR/AI-сервисов и изменения модели или режима рассуждения.
+- Не изменять оригиналы, финансовые строки, архив, правила смыслового сравнения и модельные подсказки. Не запускать общий скан или новые сравнения моделей.
+- Исполнение — в текущем чате; дополнительные исполнители не разрешены.
+- Приёмка реального MTM — чтение настоящими функциями продукта без записи в рабочую базу; частные тексты, картинки и контрольные суммы базы остаются в игнорируемой папке.
+- Чужие изменения и незавершённый подбор расценок сохраняются. Проверочная сборка сама по себе не разрешает установить незавершённый выпуск на рабочий адрес.
+
+## Review Focus
+
+1. Изображение в таблице, колонтитуле, примечании или старом VML: не теряется молча; Task 1 проверяет учёт ссылки и явный пробел при отсутствии поддержки.
+2. Одна картинка в нескольких местах, включая альтернативное представление DrawingML/VML: OCR не дублируется, реальные места сохраняются без удвоения одной ссылки; Task 1.
+3. Чёткий соседний текст и плохая денежная таблица: хороший общий confidence не разрешает деньги и полноту; Tasks 1–2.
+4. Старая запись `COMPLETED`, нулевое число картинок и поддельный/неполный перечень: отсутствие картинок должно быть проверено по пакету; Task 2.
+5. Документ из одних картинок, пустое/повреждённое вложение, внешняя ссылка: нет внешней загрузки и ложного содержимого из имени; Task 1.
+
+---
+
+## Карта файлов
+
+- Создать `src/utils/docx-image-extraction.ts`: инвентаризация DOCX, привязка и объединение текста/изображений.
+- Изменить `src/utils/local-document-ocr.ts`: небольшая общая функция OCR буфера изображения с прежними локальными данными; поведение PDF сохранить.
+- Изменить `src/utils/document-source-readiness.ts`: отдельный тип покрытия DOCX и проверка его достоверности; прежнее покрытие PDF сохранить.
+- Изменить `src/utils/document-text-extraction.ts`: направить DOCX в новый обработчик; возвращать прежний `PreparedDocumentAnalysisInput`.
+- Создать `scripts/fixtures/docx-image-fixtures.mjs` и `scripts/verify-docx-image-reading.mjs`: обезличенные DOCX и проверки настоящих функций; реальный OCR отделить от подстановки для ошибок/подсчёта вызовов.
+- Проверить настоящий обработчик сохранения в `scripts/verify-docx-extraction-route.mjs` с тестовой базой и настоящий собранный читатель в `scripts/verify-docx-built-reader.mjs`; реальные данные при этих проверках не используются.
+- Изменить `scripts/verify-document-source-readiness.mjs`; в затронутых существующих тестах обновлять только фикстуры, где требуется доказанное полное чтение DOCX, сохраняя смысл проверок.
+- API документов и `documentDisplayStatus.ts` уже сохраняют `source_reading` и показывают `SOURCE_INCOMPLETE` в рабочей папке. Первоначальное исключение прежних файлов из коммита уточнено владельцем после обнаружения зависимости в Git: «Да, включить необходимые изменения». Разрешены только связанные с чтением/сохранением/отображением изменения и их проверки; остальные прежние изменения не включать.
+
+### Task 1: Извлечение и локальное чтение изображений
+
+**Files:** создать `src/utils/docx-image-extraction.ts`, `scripts/fixtures/docx-image-fixtures.mjs`, `scripts/verify-docx-image-reading.mjs`; изменить `src/utils/local-document-ocr.ts` и добавить DOCX-тип в `src/utils/document-source-readiness.ts`.
+
+**Interfaces:**
+- `extractImageTextLocally(imageBuffer: Buffer): Promise<{ text: string; confidence: number }>` в `local-document-ocr.ts` использует прежний `ensureLocalOcrLanguageData`, корректно завершает worker.
+- `extractDocxWithImages(buffer: Buffer, options?: { recognizeImage?: typeof extractImageTextLocally }): Promise<{ text: string; requiresReview: boolean; readingVerification: DocxReadingVerification }>` в `docx-image-extraction.ts`.
+- `DocxReadingVerification`: `version: 'docx-image-coverage-v1'`, `complete: boolean`, `sourceHash: string`, `expectedImageReferences: number`, `images: Array<{ anchor: string; part: string; mediaName: string; sha256: string | null; status: 'READ' | 'REQUIRES_REVIEW' | 'UNREADABLE'; confidence: number | null; numericReviewRequired: boolean; reason: string | null }>`, `issues: string[]`.
+- `anchor` включает часть DOCX, relationship ID и номер места. SHA используется для повторного OCR внутри одного чтения; разные места не сливаются. `complete` требует учтённого текста и всех ссылок без незакрытых замечаний.
+
+- [x] **Step 1:** Написать тесты `native_and_image_text_keep_order`, `table_and_auxiliary_image_references_are_accounted_for`, `same_image_is_recognized_once`, `alternate_content_is_not_double_counted`, `image_only_docx_keeps_body`, `missing_unsupported_or_external_image_is_explicit`, `ocr_failure_keeps_native_text`, `high_confidence_does_not_verify_image_numbers`. Проверять полный исходный текст, порядок и anchor, реальное число ссылок, число вызовов OCR, `requiresReview=true` и причину для пробелов/цифр.
+- [x] **Step 2:** Выполнить `node --experimental-strip-types --test scripts/verify-docx-image-reading.mjs`; зафиксировать падение новых проверок до реализации, а не ошибку зависимостей.
+- [x] **Step 3:** Объявить `DOCX_READING_VERSION` и `DocxReadingVerification` в `document-source-readiness.ts`, реализовать объявленные функции. Использовать AST и `onNode` генератора Office для вставки OCR рядом с изображением; проверить relationship-ссылки основного текста и дополнительных частей через уже установленный ZIP/XML-механизм officeparser. Непривязанный объект сохранять с точной частью и причиной, без выдуманного места. Внешние ссылки не загружать. Денежные/числовые OCR-блоки консервативно оставлять на сверку; confidence не снимает этот признак.
+- [x] **Step 4:** Повторить команду Step 2 до PASS. Реальный OCR проверить отдельной синтетической картинкой с текстом и числом: текст сохранён, число не признано проверенным. Никаких копий проекта в публичных фикстурах.
+
+### Task 2: Общий подготовитель, сохранение и запрет ложной полноты
+
+**Files:** изменить `src/utils/document-text-extraction.ts`, `src/utils/document-source-readiness.ts`, `scripts/verify-document-source-readiness.mjs`; дополнить `scripts/verify-docx-image-reading.mjs`.
+
+**Interfaces:**
+- Существующий `prepareDocumentAnalysisInput(fileBuffer: Buffer, title: string): Promise<PreparedDocumentAnalysisInput>` не меняет вызов; DOCX возвращает полный `extractedText`, ограниченный `aiText`, `requiresReview` и новый `readingVerification`.
+- `DocumentReadingVerification` становится объединением прежнего PDF-типа и `DocxReadingVerification`; `DOCUMENT_READING_VERSION = 'page-coverage-v1'` остаётся для PDF. Новый `DOCX_READING_VERSION = 'docx-image-coverage-v1'` используется только для DOCX.
+- `assessDocumentSourceReadiness(document)` сохраняет интерфейс; проверяет соответствие перечня, уникальные anchors, хеши, статусы и отсутствие issues. Для DOCX без нового подтверждения полноты `extractionComplete=false`, записи в базе при этом не меняются.
+
+- [x] **Step 1:** Добавить падающие проверки `legacy_completed_docx_needs_coverage`, `verified_zero_image_docx_is_complete`, `false_count_or_missing_image_blocks_comparison`, `numeric_review_blocks_comparison`, `service_markers_are_not_document_body`, `full_docx_text_is_not_cut_to_ai_limit`, `api_metadata_and_display_keep_incomplete_state`. Короткий проверенный документ, черновик и фрагмент по-прежнему различаются.
+- [x] **Step 2:** Выполнить `node --experimental-strip-types --test scripts/verify-docx-image-reading.mjs scripts/verify-document-source-readiness.mjs` и сохранить RED новых проверок.
+- [x] **Step 3:** Подключить новый обработчик в `document-text-extraction.ts` до общей ветки Office. Расширить проверку готовности с раздельными PDF/DOCX-типами; служебные маркеры исключить из признака читаемого тела. Для проверенного неизменённого источника сохранить существующий ранний возврат API. Ошибки/сомнения не заменять пустым успешным результатом. Для покрытия без пробелов не запускать модель заново из-за одной миграции метаданных.
+- [x] **Step 4:** Повторить Step 2 до PASS; выполнить `npm run verify:source-readiness`, `npm run verify:audit-ui`, `npm run verify:document-references`, `npm run verify:scan-coverage` и профильные проверки PDF/OCR. Если старая синтетическая фикстура DOCX обозначает полное чтение, снабдить её полным новым подтверждением; запреты и ожидаемые статусы не ослаблять.
+
+### Task 3: Приёмка на MTM, сборка и сохранение
+
+**Files:** обновить `docs/HANDOFF_CURRENT_RU.md` и отметки выполнения этого плана; приватные результаты — только `.superpowers/sdd/2026-10-26-price-scope-and-source-check/mtm-full-review/`.
+
+**Interfaces:** Реальные материалы берутся только из ранее проверенного read-only пакета; общий `prepareDocumentAnalysisInput` и `assessDocumentSourceReadiness` выполняются без модельных вызовов и без POST в рабочие документы/финансы.
+
+- [x] **Step 1:** Зафиксировать текущие SHA файлов владельца и protected-оригиналов, Git status и 13 контрольных секций базы. Обновить приватное воспроизведение `mtm-full-review/reproduce-docx-gap.mjs` под новые метаданные, не меняя прежние исходные ответы и результаты сравнения моделей.
+- [x] **Step 2:** Прочитать настоящим обработчиком три исследованные редакции DOCX MTM. Сверить число ссылок и SHA вложений с прежней независимой инвентаризацией. Проверить, что встроенная смета и оферты представлены в тексте с правильным источником; потерянные или сомнительные цифры явно блокируют полноту. Не вставлять вручную известные правильные суммы и не путать разные приложения.
+- [x] **Step 3:** Выполнить `npx tsc --noEmit`, ESLint изменённых файлов, `npm run verify:financials`, `git diff --check`, профильные тесты Tasks 1–2. Сохранить логи и точный перечень проверенного кода приватно.
+- [x] **Step 4:** Собрать изолированную production-сборку с `CONTRACTOR_NEXT_DIST_DIR=.next-docx-image-reading`; при автоправке tsconfig вернуть только добавленные этой сборкой пути. Запустить её скрыто на свободном контрольном порту, проверить вход, документы, радар и финансы в IAB без обработки/расчётов. Повторить TypeScript после сборки и сравнить сохранность данных. Рабочий 3002 не заменять сборкой с незавершённым подбором расценок.
+- [x] **Step 5:** Самостоятельно проверить итоговый diff против Spec, сохранить свежие результаты и фактический статус в `docs/HANDOFF_CURRENT_RU.md`. Исправление исходников и проверочная сборка не означают установку на рабочий адрес; содержательная приёмка расчёта остаётся отдельным незавершённым шагом.
+- [ ] **Step 6:** После успешных проверок закоммитить и отправить только принадлежащие этому исправлению файлы/изменения с сообщением `fix: read embedded DOCX images locally and track gaps`. Проверить staged diff перед коммитом: без частных материалов, чужих изменений, результатов сборки и незавершённого pricing-патча. Проверить remote commit после push.
+
+## Самопроверка плана
+
+Сверены цель и все пункты Spec: контекст/полнота/цифры — Tasks 1–2; сохранность/MTM/рабочие экраны — Task 3. Пять Review Focus имеют отдельные проверки. PDF-версия не заменяется DOCX-версией, интерфейс API не меняется. Владелец ответил «Да» на выполнение этого плана в текущем чате. При выполнении добавлена обязательная проверка `node scripts/verify-docx-built-reader.mjs .next-docx-image-reading`: обычные исходные тесты не обнаруживали подмену загрузчика библиотек внутри production-сборки.
+
+## Фактическое выполнение и зависимость сохранения
+
+Tasks 1–2 реализованы и проверены; Task 3 частичен. Код, MTM, сборка, собранный читатель, TypeScript, ESLint, вход/экраны и сохранность проверены. Общий офлайн-прогон: 668 успешных, 0 ошибок, 4 прежние условные проверки архивного корпуса не выполнялись. Новые профильные проверки — 25/25. Самостоятельная проверка кода выявила и устранила пропуск дополнительной ссылки на изображение внутри drawing.
+
+Перед коммитом сверка с Git HEAD показала: предположение карты файлов «API уже сохраняют source_reading» верно для рабочей папки, но не для отправленной версии. Нужны прежние локальные изменения чтения в двух API, отображения в двух компонентах документов и связанные проверки. Их автоматическое включение противоречило бы первоначальному исключению. Владелец отдельно ответил «Да, включить необходимые изменения»; включаются только необходимые фрагменты. Новые модельные прогоны и установка незавершённого подбора расценок этим исправлением не разрешаются.

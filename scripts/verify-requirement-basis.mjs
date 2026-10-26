@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
+import { completeDocx, replayExtractedDocxText } from './fixtures/docx-reading-verification.mjs';
 import { registerHooks } from 'node:module';
 const hook = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier.startsWith('@/') ? new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href : specifier, context);
@@ -11,14 +12,14 @@ const { savedIssueHistory } = await import('../src/utils/radar-issue-history-ser
 const { assessEvidenceRelation } = await import('../src/utils/radar-evidence-assessment.ts');
 const { reviewIssueTiming } = await import('../src/utils/radar-issue-timing.ts');
 hook.deregister();
-const doc = (id, text, category = 'EXECUTION') => ({ id, title: `${id}.docx`, category, extracted_text: text });
+const doc = (id, text, category = 'EXECUTION') => ({ ...completeDocx, ocr_status: 'COMPLETED', id, title: `${id}.docx`, category, extracted_text: text });
 const work = text => doc('request', `תאריך: 12.05.2025\nקידוח MTM ברחוב יהלום:\n${text}`);
 function review(documents, referenceGraph) {
   assert.equal(typeof product.reviewIssueRequirements, 'function');
   return product.reviewIssueRequirements({ issue: { subject: 'MTM', location: 'יהלום' }, documents, referenceGraph, asOf: '2025-06-24' });
 }
 const rule = text => doc('special', text, 'SPECS');
-const savedMtmPath = 'data/point1-audit/point13-step4-mtm-corpus-before-20261022.json';
+const savedMtmPath = process.env.RADAR_MTM_SNAPSHOT || 'data/point1-audit/point13-step4-mtm-corpus-before-20261022.json';
 const savedMtmOptions = { skip: !fs.existsSync(savedMtmPath) && 'Private project material is not part of a public checkout' };
 const response = 'המפקח דורש להעביר תשובה בתוך 3 ימי עבודה ממועד המכתב.';
 const responseRule = 'אין לדרוש מהקבלן תשובה בתוך פחות מ-7 ימי עבודה ממועד המכתב.';
@@ -92,7 +93,7 @@ test('a source applying after the available period cannot decide an earlier requ
 });
 test('actual saved MTM material keeps unsigned-price proposals and exact quotes', savedMtmOptions, () => {
   const saved = JSON.parse(fs.readFileSync(savedMtmPath, 'utf8'));
-  const documents = saved.documents.map(source => ({ ...source, parsed_json: { source_reading: source.source_reading } }));
+  const documents = saved.documents.map(source => replayExtractedDocxText({ ...source, parsed_json: { source_reading: source.source_reading } }));
   const result = review(documents);
   assert.equal(result.confirmedConflicts.length, 0);
   assert.ok(result.requirements.some(item => item.kind === 'NO_EXTRA_PAYMENT'));
@@ -199,7 +200,7 @@ test('an explicit project priority rule resolves the special/general conflict wi
 test('the actual May signing request is linked through its named drilling annex', savedMtmOptions, () => {
   const saved = JSON.parse(fs.readFileSync(savedMtmPath, 'utf8'));
   const source = saved.documents.find(source => source.id.startsWith('ef74c34f'));
-  const result = review([{ ...source, parsed_json: { source_reading: source.source_reading } }]);
+  const result = review([replayExtractedDocxText({ ...source, parsed_json: { source_reading: source.source_reading } })]);
   assert.ok(result.requirements.some(item => item.kind === 'SIGN_ANNEX' && item.anchor.quote.includes('לחתום על נספח הקידוחים')));
   const price = result.requirements.find(item => item.kind === 'SUBMIT_PRICE' && item.anchor.quote.includes('ניתוח מחיר מפורט'));
   assert.equal(price.requestedObject, 'UNSPECIFIED');
@@ -219,7 +220,7 @@ test('contractor alternative, submitted papers and price negotiation are compati
 test('the February fallback to the tender method is a conditional choice, not an MTM execution duty', savedMtmOptions, () => {
   const saved = JSON.parse(fs.readFileSync(savedMtmPath, 'utf8'));
   const source = saved.documents.find(source => source.id === '70d0f7d6-1244-426f-95fd-f77016b3901e');
-  const documents = [{ ...source, parsed_json: { source_reading: source.source_reading } }];
+  const documents = [replayExtractedDocxText({ ...source, parsed_json: { source_reading: source.source_reading } })];
   const requirements = review(documents);
   assert.ok(requirements.requirements.filter(item => item.kind === 'METHOD_CHANGE').every(item => item.assessment === 'PROPOSED_CHANGE'));
   const timing = reviewIssueTiming({ issue: { subject: 'MTM', location: 'יהלום' }, documents, requirementReview: requirements, asOf: '2025-06-24' });

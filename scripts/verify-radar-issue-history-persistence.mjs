@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
+import { completeDocx } from './fixtures/docx-reading-verification.mjs';
 import './radar-point-1-3-harness.mjs';
 import { registerHooks } from 'node:module';
 const hook = registerHooks({ resolve(specifier, context, nextResolve) {
@@ -43,11 +44,11 @@ test('a new verified message updates an existing issue without a new finding, mo
     { id: 'archived', project_id: 'project', status: 'ARCHIVED', title: 'MTM', evidence_data: { amount: 456 } },
     { id: 'excluded', project_id: 'project', status: 'OPEN', title: 'MTM', evidence_data: { review_disposition: { type: 'INVALID_AUTOMATIC_FINDING' } } }];
   const untouched = structuredClone(rows.slice(1));
-  const documents = [{ id: 'first', project_id: 'project', title: 'ישיבה.docx', extracted_text: 'תאריך: 01.01.2025\nקידוח MTM ברחוב יהלום אושר לביצוע.' }];
+  const documents = [{ ...completeDocx, ocr_status: 'COMPLETED', id: 'first', project_id: 'project', title: 'ישיבה.docx', extracted_text: 'תאריך: 01.01.2025\nקידוח MTM ברחוב יהלום אושר לביצוע.' }];
   const beforeDocuments = structuredClone(documents), db = database(rows, documents);
   assert.deepEqual(await refreshSavedIssueHistories(db, 'project'), { updated: 1 });
   assert.equal(rows[0].evidence_data.issue_history.aspects.METHOD.state, 'APPROVED');
-  documents.push({ id: 'new-signature', project_id: 'project', title: 'מכתב.docx',
+  documents.push({ ...completeDocx, ocr_status: 'COMPLETED', id: 'new-signature', project_id: 'project', title: 'מכתב.docx',
     extracted_text: 'נכון למועד מכתבנו זה, 24.06.2025, טרם חתמתם על מסמך מעבר לשיטת קידוח מיקרוטאנלינג ברחוב יהלום.' });
   const addedDocuments = structuredClone(documents);
   assert.deepEqual(await refreshSavedIssueHistories(db, 'project'), { updated: 1 });

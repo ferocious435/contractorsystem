@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerHooks } from 'node:module';
+import { completeDocx } from './fixtures/docx-reading-verification.mjs';
 
 const projectHook = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -45,7 +46,7 @@ function memoryDatabase(tables) {
   } };
 }
 
-const openWork = { id: 'work', project_id: 'project', title: 'פרוטוקול 01.01.2025', category: 'EXECUTION', extracted_text: 'תכנית הניקוז שנמסרה אינה תואמת את הוראות המתכנן.' };
+const openWork = { ...completeDocx, ocr_status: 'COMPLETED', id: 'work', project_id: 'project', title: 'פרוטוקול 01.01.2025', category: 'EXECUTION', extracted_text: 'תכנית הניקוז שנמסרה אינה תואמת את הוראות המתכנן.' };
 const openCard = {
   id: 'issue', project_id: 'project', title: 'תכנית ניקוז אינה תואמת להוראות המתכנן', description: openWork.extracted_text,
   category: 'אירוע שטח', strategy_advice: 'לבדוק את אי ההתאמה.', source_execution_doc_id: openWork.id,
@@ -119,7 +120,7 @@ test('revalidation retains context limits and original source anchors without mo
   const quote = 'עטיפת הצינור תבוצע בחול מצומנט בשיעור 4%.';
   const clause = 'עטיפת הצינור תבוצע בחול מצומנט בשיעור 8%.';
   const work = { ...openWork, title: 'הוראה.docx', extracted_text: `\u200fהוראת המפקח:\n${quote}` };
-  const base = { id: 'base', project_id: 'project', title: 'מפרט.docx', category: 'CONTRACT', extracted_text: `57.02 ${clause}\n57.03 תנאי אספקה.` };
+  const base = { ...completeDocx, ocr_status: 'COMPLETED', id: 'base', project_id: 'project', title: 'מפרט.docx', category: 'CONTRACT', extracted_text: `57.02 ${clause}\n57.03 תנאי אספקה.` };
   const context = { version: 'source-context-v1', complete: false, limitations: ['clause_truncated:57.03'],
     sources: [{ documentId: base.id, selection: { reason: 'matched_subject_with_local_context', matched_terms: ['הצינור'],
       complete: false, limitations: ['clause_truncated:57.03'], source_anchors: [{ documentId: base.id, quote: clause,
@@ -143,7 +144,7 @@ test('revalidation in memory persists semantic proof and a source-based title ev
   const quote = 'המפקח דורש עטיפת הצינור בחול מצומנט בשיעור 4%.';
   const clause = 'עטיפת הצינור תבוצע בחול מצומנט בשיעור 8%.';
   const work = { ...openWork, title: 'הוראה.docx', extracted_text: quote };
-  const base = { id: 'base', project_id: 'project', title: 'מפרט.docx', category: 'CONTRACT', extracted_text: clause };
+  const base = { ...completeDocx, ocr_status: 'COMPLETED', id: 'base', project_id: 'project', title: 'מפרט.docx', category: 'CONTRACT', extracted_text: clause };
   const card = { ...openCard, title: 'הוסכם על 4%', description: 'untrusted automatic description', category: 'פעולה לביצוע',
     target_contract_doc_id: base.id, evidence_data: { work_quote: quote, contract_quote: clause } };
   const db = memoryDatabase({ contradictions: [card], documents: [work, base], document_scan_state: [] });
@@ -175,7 +176,7 @@ test('revalidation in memory persists semantic proof and a source-based title ev
 
 test('an explicit saved-evidence review excludes an invalid comparison without deleting or archiving its sources and records', async () => {
   const work = { ...openWork, title: 'הוראה.docx', extracted_text: 'הקבלן יגיש לוח זמנים מעודכן בכל חודש.' };
-  const base = { id: 'base', project_id: 'project', title: 'חוזה.docx', category: 'CONTRACT',
+  const base = { ...completeDocx, ocr_status: 'COMPLETED', id: 'base', project_id: 'project', title: 'חוזה.docx', category: 'CONTRACT',
     extracted_text: 'הקבלן יגיש לוח זמנים מפורט בתוך 14 ימים מצו התחלת העבודה.' };
   const card = { ...openCard, category: 'סתירה', title: 'הגשת לוח זמנים', target_contract_doc_id: base.id,
     evidence_data: { work_quote: work.extracted_text, contract_quote: base.extracted_text } };
@@ -200,7 +201,7 @@ test('an explicit saved-evidence review excludes an invalid comparison without d
 test('a saved warning receives the actual agreement search result rather than an unassigned generic check', async () => {
   const quote = 'במסגרת הסכם המקדמה התחייבתם להשלים את ביצוע הפרויקט לא יאוחר מיום 01.06.2025. נכון ליום 24.06.2025 העבודות לא הושלמו.';
   const work = { ...openWork, title: 'התראה.docx', extracted_text: quote };
-  const base = { id: 'base', project_id: 'project', title: 'חוזה.docx', category: 'CONTRACT', extracted_text: 'תקופת הביצוע תהיה 19 חודשים.' };
+  const base = { ...completeDocx, ocr_status: 'COMPLETED', id: 'base', project_id: 'project', title: 'חוזה.docx', category: 'CONTRACT', extracted_text: 'תקופת הביצוע תהיה 19 חודשים.' };
   const card = { ...openCard, title: 'מועד השלמת העבודות', description: quote, category: 'סתירה', target_contract_doc_id: base.id,
     evidence_data: { work_quote: quote, contract_quote: base.extracted_text } };
   const db = memoryDatabase({ contradictions: [card], documents: [work, base], document_scan_state: [] });
@@ -218,7 +219,7 @@ test('a saved warning receives the actual agreement search result rather than an
 
 test('a repaired review restores a real unresolved warning and its cached count without scanning', async () => {
   const work = { ...openWork, title: 'התראה.docx', extracted_text: 'במסגרת הסכם המקדמה התחייבתם להשלים את ביצוע הפרויקט לא יאוחר מיום 01.06.2025. נכון ליום 24.06.2025 העבודות לא הושלמו.' };
-  const base = { id: 'base', project_id: 'project', title: 'חוזה.docx', category: 'CONTRACT', extracted_text: 'תקופת הביצוע תהיה 19 חודשים.' };
+  const base = { ...completeDocx, ocr_status: 'COMPLETED', id: 'base', project_id: 'project', title: 'חוזה.docx', category: 'CONTRACT', extracted_text: 'תקופת הביצוע תהיה 19 חודשים.' };
   const card = { ...openCard, category: 'חוסר נתונים', target_contract_doc_id: base.id,
     title: 'לוח הזמנים — בסיס מועד השלמת העבודות — נדרש ביסוס להשוואה',
     evidence_data: { work_quote: work.extracted_text, contract_quote: base.extracted_text,

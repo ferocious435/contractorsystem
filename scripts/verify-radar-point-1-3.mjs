@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import {
-  loadInput, inspectInput, quality, retention, classification,
+  loadTextReplay as loadInput, inspectInput, quality, retention, classification,
   networkAttempts, productionHashes, normalize,
 } from './radar-point-1-3-harness.mjs';
 
