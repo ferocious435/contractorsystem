@@ -18,6 +18,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { ContradictionItem } from '@/types';
+const WorkChangeReviewPanel = React.lazy(() => import('./WorkChangeReviewPanel'));
 
 interface PendingQueueTableProps {
     items: ContradictionItem[];
@@ -206,6 +207,8 @@ const PendingQueueRow = React.memo(function PendingQueueRow({
     onSelectForEstimation,
     onRescan,
 }: PendingQueueRowProps) {
+    const [caseReviewOpen, setCaseReviewOpen] = React.useState(false);
+    const closeCaseReview = React.useCallback(() => setCaseReviewOpen(false), []);
     const evidenceSummary = getEvidenceSummary(item.evidence_data);
     const evidenceRecord = getEvidenceRecord(item.evidence_data);
     const pricingEvaluation = getEvidenceRecord(evidenceRecord?.pricing_evaluation);
@@ -337,6 +340,9 @@ const PendingQueueRow = React.memo(function PendingQueueRow({
 
             <td className="px-4 z-10">
                 <div className="flex items-center justify-end gap-3 opacity-50 group-hover:opacity-100 transition-all">
+                    <button type="button" aria-label={`בדיקת מסמכי השינוי: ${item.title}`}
+                        className="rounded-xl border border-blue-400/30 px-3 py-2 text-xs text-blue-200 hover:bg-blue-400/10"
+                        onClick={event => { event.stopPropagation(); setCaseReviewOpen(true); }}>בדיקת מסמכי השינוי</button>
                     <button
                         className={`p-2 rounded-xl transition-all ${isScanning ? 'text-blue-400 bg-blue-400/10' : 'text-gray-600 hover:text-white hover:bg-white/10'}`}
                         onClick={(e) => {
@@ -362,6 +368,9 @@ const PendingQueueRow = React.memo(function PendingQueueRow({
                         <Zap size={12} className="fill-current group-hover/btn:animate-bounce" />
                     </button>
                 </div>
+                {caseReviewOpen && <React.Suspense fallback={<span role="status">טוען בדיקת מקורות...</span>}>
+                    <WorkChangeReviewPanel findingId={item.id} projectId={item.project_id} onClose={closeCaseReview} />
+                </React.Suspense>}
             </td>
         </RowComponent>
     );
