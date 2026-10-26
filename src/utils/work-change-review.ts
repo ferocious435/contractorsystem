@@ -1,6 +1,7 @@
 import { anchorSourceRange, findEvidenceAnchor, normalizeEvidenceSource, type EvidenceAnchor } from './radar-evidence-assessment.ts';
 import { hasDocumentBodyText } from './document-source-readiness.ts';
 import type { WorkChangePacket } from './work-change-sources.ts';
+import { validateWorkChangeScopes, type WorkChangeScopeComparison } from './work-change-scope.ts';
 
 export const WORK_CHANGE_VERSION = 'work-change-v1';
 export const WORK_CHANGE_FACT_KINDS = ['BASELINE_WORK', 'PROPOSED_WORK', 'BASELINE_TOTAL', 'PROPOSAL_TOTAL',
@@ -23,7 +24,8 @@ export type WorkChangeReview = {
     version: typeof WORK_CHANGE_VERSION; findingId: string; title: string;
     sources: Array<{ id: string; title: string; role: string; connection: string; readingStatus: string;
         canCompare: boolean; documentStatus: string; selectionComplete: boolean; readingGaps: string[] }>;
-    facts: WorkChangeFact[]; tableRows: WorkChangeTableRow[]; comparisons: WorkChangeComparison[]; limitations: string[];
+    facts: WorkChangeFact[]; tableRows: WorkChangeTableRow[]; comparisons: WorkChangeComparison[];
+    scopeComparisons: WorkChangeScopeComparison[]; scopeUnmatchedIds: string[]; limitations: string[];
     ownerNotes: WorkChangePacket['ownerNotes']; requiresReview: boolean; paymentEntitlementConfirmed: false;
 };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
@@ -151,6 +153,7 @@ export function validateWorkChangeReview(packet: WorkChangePacket, draft: unknow
         if (seen.has(key)) continue;
         seen.add(key);
         const issues: string[] = [];
+        if (kind === 'PROPOSED_WORK' && source!.role === 'CONTRACT') issues.push('work_role_unverified');
         if (!source!.readiness.canCompare) issues.push('source_reading_unverified');
         const observedAmount = numberInQuote(anchor.quote, value.amountExclVat) ? value.amountExclVat as number : null;
         if (value.amountExclVat !== null && value.amountExclVat !== undefined && observedAmount === null) issues.push('amount_unverified');
@@ -190,7 +193,16 @@ export function validateWorkChangeReview(packet: WorkChangePacket, draft: unknow
     }
     if (!facts.length) limitations.push('no_grounded_facts');
     if (!comparisons.length) limitations.push('work_comparison_missing');
-    const uniqueLimitations = [...new Set(limitations)], extractedRows = tableRows(packet);
+    const extractedRows = tableRows(packet), scope = validateWorkChangeScopes(packet, extractedRows, input.scopeComparisons);
+    if (scope.comparisons.length) {
+        const missing = limitations.indexOf('work_comparison_missing');
+        if (missing >= 0) limitations.splice(missing, 1);
+        const empty = limitations.indexOf('no_grounded_facts');
+        if (empty >= 0) limitations.splice(empty, 1);
+        limitations.push('financial_scope_not_established');
+    }
+    limitations.push(...scope.limitations);
+    const uniqueLimitations = [...new Set(limitations)];
     return { version: WORK_CHANGE_VERSION, findingId: packet.findingId, title: packet.title,
         sources: packet.sources.map(source => {
             const proof = object(object(source.parsed_json).source_reading), readingGaps: string[] = [];
@@ -203,7 +215,8 @@ export function validateWorkChangeReview(packet: WorkChangePacket, draft: unknow
                 connection: source.connection.kind, readingStatus: source.readiness.status, canCompare: source.readiness.canCompare,
                 documentStatus: source.readiness.documentStatus, selectionComplete: source.selection.complete, readingGaps };
         }),
-        facts, tableRows: extractedRows, comparisons, ownerNotes: packet.ownerNotes, limitations: uniqueLimitations,
+        facts, tableRows: extractedRows, comparisons, scopeComparisons: scope.comparisons, scopeUnmatchedIds: scope.unmatchedIds,
+        ownerNotes: packet.ownerNotes, limitations: uniqueLimitations,
         requiresReview: uniqueLimitations.length > 0 || facts.some(fact => !fact.confirmed) || extractedRows.some(row => row.requiresReview)
             || comparisons.some(pair => pair.status === 'NOT_COMPARABLE'),
         paymentEntitlementConfirmed: false };

@@ -38,3 +38,19 @@ test('table quantities and unit prices are displayed separately from totals and 
  assert.match(html,/נתונים מעמודות הטבלאות/);assert.match(html,/מחיר יחידה במקור/);assert.match(html,/71\.02\.0008/);
  assert.match(html,/תוצאת כמות כפול מחיר יחידה נבדקה/);assert.match(html,/לא אושרה דרישת תשלום/);
 });
+
+test('the scope comparison shows both physical works and their units before payment is known',()=>{
+ const result=review(),evidence=result.facts[0].evidence;
+ result.tableRows=[
+  {id:'T1',sourceId:'boq',itemCode:'62.04.0012',quantity:100,unit:'m',evidence,unitPrice:2000,total:200000,arithmeticVerified:true,requiresReview:false,vatBasis:'EXCL'},
+  {id:'T2',sourceId:'proposal',itemCode:'71.02.0002',quantity:80,unit:'pcs',evidence,unitPrice:3000,total:240000,arithmeticVerified:true,requiresReview:false,vatBasis:'EXCL'},
+ ];
+ result.scopeComparisons=[{id:'S1',component:'MATERIAL_SUPPLY',baselineIds:['T1'],proposalIds:['T2'],composition:'DIFFERENT',evidence:[evidence],issues:['unit_differs','financial_scope_not_established'],arithmeticDeltaExclVat:null}];
+ const html=renderToStaticMarkup(React.createElement(WorkChangeReviewContent,{review:result,projectId:'project'}));
+ const visible=html.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ');
+ assert.match(visible,/התאמת הרכב העבודות/);
+ assert.match(visible,/בכתב הכמויות המקורי/);assert.match(visible,/בהצעת החלופה/);
+ assert.match(visible,/100\s*m/);assert.match(visible,/80\s*pcs/);
+ assert.match(visible,/תוספת כספית מאומתת\s*—/);
+ assert.match(html,/documentId=boq/);assert.match(html,/documentId=proposal/);
+});

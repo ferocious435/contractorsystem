@@ -21,7 +21,19 @@ const labels: Record<string, string> = {
     source_fact_requires_review: 'אחד מפרטי ההשוואה עדיין דורש בדיקה', design_scope_unverified: 'נדרש לאמת שמדובר בתשלום עבור תכנון',
     unit_price_not_total: 'זהו מחיר ליחידה; הוא אינו סכום כולל של העבודה',
     comparison_context_requires_review: 'לא כל קטעי העבודה הושוו; נדרשת בדיקה של הקטעים המפורטים במקורות',
+    work_role_unverified: 'סיווג העבודה כחלופה אינו נתמך בתפקיד מסמך המקור',
+    scope_roles_unverified: 'כיוון ההחלפה בין המקור להצעה לא אומת',
+    scope_component_unverified: 'לא אומת ששתי השורות מתארות את אותו רכיב עבודה',
+    scope_basis_unverified: 'לא נמצא ציטוט הקושר את העבודות לשינוי הנדון',
+    scope_composition_unverified: 'הרכב ההשוואה שהוצע לא הובהר',
+    financial_scope_not_established: 'התאמת רכיבי העבודה אינה קובעת תוספת כספית; נדרשים היקף, תנאים ובסיס מחיר בני השוואה',
+    document_status_unverified: 'המעמד המחייב של אחד המקורות לא הובהר; מוצג תוכן המקור בלבד',
+    ambiguous_item_scope: 'מספר סעיף חוזר בכמה מקומות; אין לחבר את הכמויות בלי אימות המבנה והפרק',
+    printed_rounding_requires_review: 'בשורת המקור יש עיגול או הפרש שעדיין טעון אימות',
+    quantities_not_reconciled: 'יש כמה שורות או מבנים; הכמויות הוצגו בנפרד ולא חוברו',
+    scope_rows_unmatched: 'יש שורות מועמדות שטרם נקשרו להשוואה; הן מוצגות בנפרד ואינן מוכיחות את היקף ההחלפה',
 };
+const components: Record<string, string> = { METHOD_WORK: 'ביצוע העבודה', MATERIAL_SUPPLY: 'אספקת חומרים וצנרת', SHAFT: 'פירים ושוחות', ANCILLARY: 'עבודות נלוות' };
 const money = (value: number | null) => value === null ? '—' : new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 2 }).format(value);
 const explain = (issue: string) => labels[issue] || 'נדרשת בדיקה נוספת של פרט במקורות';
 const sourceUrl = (projectId: string, documentId: string, page: number | null = null) =>
@@ -57,6 +69,41 @@ export const WorkChangeReviewContent: React.FC<ContentProps> = ({ review, projec
             בדיקת מקורות והשוואת עבודה. לא אושרה דרישת תשלום ולא שונו הסכומים בפרויקט.
         </div>
         <p className="text-sm text-gray-300">נכללו {review.sources.length} מסמכים. {review.sources.filter(source => !source.canCompare).length} מהם דורשים השלמת קריאה או אימות. הפרטים והציטוטים נפתחים לפי הצורך.</p>
+        {review.scopeComparisons?.length > 0 && <section className="space-y-3"><h3 className="font-bold text-blue-200">התאמת הרכב העבודות</h3>
+            <p className="text-sm text-gray-300">אלה רכיבים שנקשרו לשינוי המתואר במקורות. קריאות ומעמד מחייב נבדקים בנפרד. שורות ממסמכים או מבנים שונים לא חוברו.</p>
+            {review.scopeComparisons[0].evidence[0] && <blockquote className="whitespace-pre-wrap break-words text-sm leading-7 border-r-2 border-blue-400/60 pr-3">{review.scopeComparisons[0].evidence[0].quote}</blockquote>}
+            <p className="text-sm">תוספת כספית מאומתת <strong>—</strong></p>
+            {review.scopeComparisons.map(pair => <article key={pair.id} className="rounded-xl border border-blue-400/25 p-4 space-y-4">
+                <h4 className="font-bold text-blue-200">{components[pair.component]}</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{[
+                    { title: 'בכתב הכמויות המקורי', ids: pair.baselineIds }, { title: 'בהצעת החלופה', ids: pair.proposalIds },
+                ].map(side => <div key={side.title} className="space-y-2"><h5 className="font-bold text-sm">{side.title}</h5>
+                    {side.ids.map(id => { const row = review.tableRows.find(row => row.id === id); if (!row) return null;
+                        const source = review.sources.find(source => source.id === row.sourceId);
+                        return <details key={id} className="rounded-xl border border-white/10 p-3 text-sm space-y-2">
+                            <summary className="cursor-pointer text-blue-200">{row.itemCode} · {row.quantity} {row.unit}</summary>
+                            <blockquote className="whitespace-pre-wrap break-words text-xs leading-6">{row.evidence.quote}</blockquote>
+                            <a className="text-blue-300 underline text-xs" href={sourceUrl(projectId, row.sourceId, row.evidence.page)} target="_blank" rel="noreferrer">[{review.sources.findIndex(source => source.id === row.sourceId) + 1}] {source?.title} · מקור</a>
+                        </details>; })}
+                </div>)}</div>
+                <details className="text-sm space-y-2"><summary className="cursor-pointer text-blue-200">הקשר בין המקור לחלופה</summary>
+                    {pair.evidence.map((evidence, index) => <div key={index} className="space-y-2">
+                        <blockquote className="whitespace-pre-wrap break-words text-xs leading-6">{evidence.quote}</blockquote>
+                        <a className="text-blue-300 underline text-xs" href={sourceUrl(projectId, evidence.documentId, evidence.page)} target="_blank" rel="noreferrer">{review.sources.find(source => source.id === evidence.documentId)?.title} · מקור ההקשר</a>
+                    </div>)}
+                </details>
+                <p className="text-xs text-amber-200">{pair.composition === 'DIFFERENT' ? 'הרכב או מאפייני העבודה שונים; אין להסיק תוספת מהפרש הסכומים.' : 'הקשר בין הרכיבים הוצג; שקילות מלאה של ההיקף והכלול במחיר לא נקבעה.'}</p>
+                <ul className="text-xs text-amber-200 list-disc pr-4 space-y-1">{pair.issues.map(issue => <li key={issue}>{explain(issue)}</li>)}</ul>
+            </article>)}
+        </section>}
+        {review.scopeUnmatchedIds?.length > 0 && <details className="rounded-xl border border-amber-400/25 p-4 space-y-3">
+            <summary className="cursor-pointer font-bold text-amber-200">שורות שטרם הותאמו להרכב השינוי · {review.scopeUnmatchedIds.length}</summary>
+            {review.scopeUnmatchedIds.map(id => { const row = review.tableRows.find(row => row.id === id); if (!row) return null;
+                return <div key={id} className="text-sm space-y-2"><p>{row.itemCode} · {row.quantity} {row.unit}</p>
+                    <blockquote className="whitespace-pre-wrap break-words text-xs leading-6">{row.evidence.quote}</blockquote>
+                    <a className="text-blue-300 underline text-xs" href={sourceUrl(projectId, row.sourceId, row.evidence.page)} target="_blank" rel="noreferrer">{review.sources.find(source => source.id === row.sourceId)?.title} · מקור</a>
+                </div>; })}
+        </details>}
         {designFees.length > 0 && <section className="rounded-xl border border-blue-400/25 p-4 space-y-2"><h3 className="font-bold text-blue-200">שכר טרחה בהצעת המתכנן</h3>
             {designFees.map(fact => <p key={fact.id} className="text-sm"><strong>{money(fact.amountExclVat)} לפני מע״מ</strong> · <a className="text-blue-300 underline" href={sourceUrl(projectId, fact.sourceId, fact.evidence.page)} target="_blank" rel="noreferrer">{review.sources.find(source => source.id === fact.sourceId)?.title} · מקור</a></p>)}
             <p className="text-xs text-gray-300">זהו תכנון, בנפרד מביצוע. אין בכך קביעה מי חייב לשלם אותו.</p>
@@ -81,7 +128,7 @@ export const WorkChangeReviewContent: React.FC<ContentProps> = ({ review, projec
                     </tr>)}</tbody></table></div>
                 </details> : null; })}
         </section>}
-        {review.facts.length === 0 && <div className="rounded-xl border border-white/10 p-5 text-gray-300">לא נמצאו עדיין פרטים עם ציטוט מאומת. פתחו את המקורות המפורטים מטה לבדיקת התוכן החסר.</div>}
+        {review.facts.length === 0 && !review.scopeComparisons?.length && <div className="rounded-xl border border-white/10 p-5 text-gray-300">לא נמצאו עדיין פרטים עם ציטוט מאומת. פתחו את המקורות המפורטים מטה לבדיקת התוכן החסר.</div>}
         {groups.map(group => { const facts = review.facts.filter(group.matches);
             return facts.length > 0 ? <details key={group.title} aria-label={group.title} className="rounded-xl border border-white/10 p-4 space-y-3"><summary className="font-bold text-blue-200 cursor-pointer">{group.title} · {facts.length} קטעים</summary><div className="space-y-3">{facts.map(renderFact)}</div></details> : null; })}
         {review.comparisons.length > 0 && <section className="space-y-3"><h3 className="font-bold text-blue-200">השוואת היקף ועלות</h3>{review.comparisons.map(pair =>

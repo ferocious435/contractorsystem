@@ -12,6 +12,7 @@ const modelUrl='data:text/javascript,'+encodeURIComponent(`
   const line=prompt.match(/^WORK_CHANGE_INPUT (.+)$/m);if(line){const input=JSON.parse(line[1]);return JSON.stringify({facts:(options.facts?.[input.sourceId]||[]).map(fact=>{
    const {quote,...rest}=fact;return{...rest,quoteIds:options.badQuoteId?['not-provided']:(input.quotes||[]).filter(item=>quote.includes(item.text)||item.text.includes(quote)).map(item=>item.id)};
   })});}
+  if(prompt.startsWith('WORK_CHANGE_SCOPE_COMPARE'))return JSON.stringify({matches:options.scopeMatches||[]});
   return JSON.stringify({comparisons:[{baselineId:'F1',proposalId:'F2',composition:'SAME'}]});
  }
 `);
@@ -103,4 +104,35 @@ test('a work fact with an unverified financial field is not sent as an establish
  model.reset(options);const result=await run();
  assert.equal(model.calls.filter(prompt=>prompt.startsWith('WORK_CHANGE_COMPARE')).length,0);
  assert.ok(result.review.limitations.includes('work_comparison_missing'));
+});
+
+test('scope review uses structured rows with locked sides and keeps an unknown financial result',async()=>{
+ const {db,options,run}=setup();
+ db.tables.contradictions[0].target_contract_doc_id='old';
+ db.tables.documents.find(doc=>doc.id==='old').extracted_text=baseline+'\n62.04.0002 דחיקת צנרת GRP מתוך פיר\nמטר 100 2000 200000';
+ db.tables.documents.find(doc=>doc.id==='offer').extracted_text='הצעת מחיר לקידוח אופקי ברחוב הרימון\n'+proposal+'\n71.02.0002 קידוח אופקי ומשיכת צינורות\nמטר 80 3000 240000';
+ options.scopeMatches=[{baselineIds:['T1'],proposalIds:['T2'],basisIds:['R1'],composition:'DIFFERENT'}];
+ model.reset(options);const result=await run();
+ assert.equal(result.review.scopeComparisons.length,1);
+ assert.deepEqual(result.review.scopeComparisons[0].baselineIds,['T1']);
+ assert.deepEqual(result.review.scopeComparisons[0].proposalIds,['T2']);
+ assert.equal(result.review.scopeComparisons[0].arithmeticDeltaExclVat,null);
+ assert.equal(db.writes.length,0);
+ const count=model.calls.length,again=await run();
+ assert.equal(again.cached,true);assert.equal(model.calls.length,count);
+});
+
+test('new scope context reuses unchanged source jobs and analyses only the changed combination',async()=>{
+ const {db,options,run}=setup();
+ db.tables.contradictions[0].target_contract_doc_id='old';
+ db.tables.documents.find(doc=>doc.id==='old').extracted_text=baseline+'\n62.04.0002 דחיקת צנרת GRP מתוך פיר\nמטר 100 2000 200000';
+ db.tables.documents.find(doc=>doc.id==='offer').extracted_text='הצעת מחיר לקידוח אופקי ברחוב הרימון\n'+proposal+'\n71.02.0002 קידוח אופקי ומשיכת צינורות\nמטר 80 3000 240000';
+ options.scopeMatches=[{baselineIds:['T1'],proposalIds:['T2'],basisIds:['R1'],composition:'DIFFERENT'}];
+ model.reset(options);await run();const count=model.calls.length;
+ db.tables.contradictions[0].evidence_data.issue_owner_notes=[{origin:'OWNER_NOTE',text:'יש לבדוק את אספקת הצנרת בנפרד.'}];
+ const result=await run(),newCalls=model.calls.slice(count);
+ assert.equal(result.cached,false);
+ assert.equal(newCalls.filter(prompt=>prompt.startsWith('WORK_CHANGE_SOURCE_FACTS')).length,0);
+ assert.equal(newCalls.filter(prompt=>prompt.startsWith('WORK_CHANGE_SCOPE_COMPARE')).length,1);
+ assert.equal(result.review.scopeComparisons.length,1);
 });
