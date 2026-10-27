@@ -209,6 +209,24 @@
 .ti-source-financial { min-width: 560px; }
 .ti-source-validation { display: flex; flex-direction: column; gap: 16px; padding-top: 20px; border-top: 1px solid var(--ti-border); }
 .ti-documents-route { min-height: 100%; padding: 16px; background: var(--ti-canvas); }
+.ti-overview { container: ti-overview / inline-size; }
+.ti-overview-kpis { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; }
+.ti-overview-kpi .ti-panel__body { display: flex; flex-direction: column; gap: 8px; padding: 18px; }
+.ti-overview-kpi .ti-panel__body > * { width: fit-content; max-width: 100%; border-radius: 5px; background: #141a23de; padding: 1px 4px; }
+.ti-overview-kpi strong { display: block; font-size: 1.5rem; font-weight: 500; line-height: 1.5; overflow-x: auto; }
+.ti-overview-grid { display: grid; grid-template-columns: repeat(12,minmax(0,1fr)); gap: 20px; align-items: stretch; }
+.ti-overview-issues { grid-column: span 8; }.ti-overview-documents { grid-column: span 4; }.ti-overview-basis,.ti-overview-context { grid-column: span 6; }
+.ti-overview-grid .ti-panel__body { display: flex; flex-direction: column; gap: 16px; height: 100%; min-height: 288px; }
+.ti-overview-grid .ti-button { margin-top: auto; align-self: flex-start; }
+.ti-overview-counts { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+.ti-overview-counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-top: 12px; border-top: 1px solid var(--ti-border); min-width: 0; }
+.ti-overview-counts dt { color: var(--ti-secondary); }.ti-overview-counts dd { margin: 0; font-size: 1.125rem; font-weight: 500; overflow-x: auto; }
+.ti-risk-value { color: var(--ti-warning); }.ti-overview-big-count { font-size: 2rem; line-height: 1.5; margin: 0; }
+.ti-kpi-strip { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 16px; }.ti-kpi-strip .ti-panel__body { display: flex; flex-direction: column; gap: 8px; }.ti-kpi-strip strong { overflow-x: auto; font-size: 1.5rem; font-weight: 500; }
+@container ti-overview (max-width: 959px) { .ti-overview-grid { grid-template-columns: minmax(0,1fr); }.ti-overview-grid > .ti-panel { grid-column: auto; }.ti-overview-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@container ti-overview (max-width: 539px) { .ti-overview-kpis { grid-template-columns: minmax(0,1fr); }.ti-overview-counts > div { flex-wrap: wrap; gap: 8px; } }
+@media (max-width: 1023px) { .ti-kpi-strip { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 539px) { .ti-kpi-strip { grid-template-columns: minmax(0,1fr); } }
 @container ti-documents (min-width: 1080px) { .ti-documents-layout { grid-template-columns: minmax(600px,1fr) 360px; } .ti-document-source-panel { display: block; position: sticky; top: 16px; } .ti-document-inline-source { display: none; } }
 @media (max-width: 767px) { .ti-document-row { grid-template-columns: minmax(0,1fr); padding-inline: 10px; } .ti-document-row > .ti-chip { justify-self: start; } .ti-source-dialog__columns { grid-template-columns: minmax(0,1fr); } .ti-source-metadata { grid-template-columns: minmax(0,1fr); } }
 @container ti-projects (min-width: 760px) { .ti-project-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

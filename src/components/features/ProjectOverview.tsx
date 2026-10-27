@@ -1,18 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState, type SVGProps } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { motion } from "framer-motion";
-import { 
-    AlertTriangle, FileCheck, Clock, ArrowUpRight, Target, Activity,
-    ShieldAlert, Zap, Sparkles, Building2
-} from "lucide-react";
-import { VAT_RATE } from "@/utils/constants";
-import { getAmountInclVat, getAmountVat, getLedgerRowAmount, getMoneySum, getPreferredProjectAmount, isVisibleLedgerRow } from "@/utils/project-financials";
+import { getLedgerRowAmount, getMoneySum, getPreferredProjectAmount, isVisibleLedgerRow, isTrustedBaseContractRow } from "@/utils/project-financials";
 import { isLocalProjectId } from "@/utils/local-projects";
 import { getLocalDemoProjectProfile } from "@/utils/local-demo-data";
 import { useAiReadiness } from '@/hooks/useAiReadiness';
 import { summarizeOpenContradictions } from './projectOverviewStats';
+import { OverviewView, emptyOverviewStats, type OverviewStats } from './overview/OverviewView';
 
 interface ProjectOverviewProps {
     projectId: string;
@@ -21,19 +16,12 @@ interface ProjectOverviewProps {
 
 export default function ProjectOverview({ projectId, onNavigate }: ProjectOverviewProps) {
     const aiStatus = useAiReadiness();
-    const [stats, setStats] = useState({
-        originalBudget: 0,
-        approvedVO: 0,
-        pendingVO: 0,
-        criticalCount: 0,
-        totalDiscrepancies: 0,
-        documentCount: 0,
-        evidenceCoverage: 0,
-        clientName: ""
-    });
+    const [stats, setStats] = useState<OverviewStats>(emptyOverviewStats);
+    const [loadError, setLoadError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const fetchProjectStats = useCallback(async () => {
         setIsLoading(true);
+        setLoadError(null);
         try {
             if (isLocalProjectId(projectId)) {
                 const demoProfile = getLocalDemoProjectProfile(projectId);
@@ -52,10 +40,10 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
 
             const supabase = createClient();
             const [
-                { data: project },
-                { data: ledger },
-                { data: contradictions },
-                { count: docCount },
+                { data: project, error: projectError },
+                { data: ledger, error: ledgerError },
+                { data: contradictions, error: contradictionError },
+                { count: docCount, error: documentsError },
             ] = await Promise.all([
                 supabase
                     .from('projects')
@@ -76,6 +64,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                     .eq('project_id', projectId),
             ]);
 
+            if (projectError || ledgerError || contradictionError || documentsError || !project || !ledger) throw new Error('OVERVIEW_READ_FAILED');
             if (ledger) {
                 const visibleLedgerRows = ledger.filter(isVisibleLedgerRow);
 
@@ -93,16 +82,19 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                 const contradictionSummary = summarizeOpenContradictions(contradictions);
 
                 setStats({
-                    originalBudget: getPreferredProjectAmount(project?.budget, ledger),
+                    originalBudget: project?.budget !== null && project?.budget !== undefined || ledger.some(isTrustedBaseContractRow) ? getPreferredProjectAmount(project?.budget, ledger) : null,
                     approvedVO: approved,
                     pendingVO: pending,
                     criticalCount: contradictionSummary.highRiskOpenCount,
                     totalDiscrepancies: contradictionSummary.openCount,
-                    documentCount: docCount || 0,
+                    documentCount: docCount ?? null,
                     evidenceCoverage: coverage,
                     clientName: project?.client_name || "לקוח לא ידוע"
                 });
             }
+        } catch (error) {
+            console.error('Project overview read failed:', error);
+            setLoadError('לא ניתן לקרוא את נתוני הפרויקט כרגע. הנתונים אינם מוצגים כסכומי אפס.');
         } finally {
             setIsLoading(false);
         }
@@ -112,212 +104,5 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
         void fetchProjectStats();
     }, [fetchProjectStats]);
 
-    const formatILS = (val: number) => {
-        return new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(val);
-    };
-
-    if (isLoading) {
-        return (
-            <div className="flex items-center justify-center h-96">
-                <motion.div 
-                    animate={{ rotate: 360 }}
-                    transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                >
-                    <LoaderIcon className="w-10 h-10 text-blue-500 opacity-50" />
-                </motion.div>
-            </div>
-        );
-    }
-
-    const totalProjected = stats.originalBudget + stats.approvedVO + stats.pendingVO;
-    const progressPercent = stats.originalBudget > 0 ? Math.min(100, (stats.approvedVO / stats.originalBudget) * 100) : 0;
-
-    return (
-        <div className="space-y-8 pb-20" dir="rtl">
-            {/* Header / Client Info */}
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-                <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                        <Building2 className="w-4 h-4 text-blue-500" />
-                        <span className="text-[10px] font-mono font-black text-gray-500 uppercase tracking-widest">{stats.clientName}</span>
-                    </div>
-                    <h2 className="text-2xl sm:text-3xl font-black text-white font-mono tracking-tighter uppercase">לוח בקרה פרויקטלי</h2>
-                </div>
-            </div>
-
-            {/* Financial Status Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Main Budget Card */}
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="lg:col-span-2 bg-[#151C24]/50 border border-white/5 rounded-[2rem] lg:rounded-[2.5rem] p-5 sm:p-8 relative overflow-hidden group"
-                >
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 rounded-full blur-[80px] -translate-y-1/2 translate-x-1/2" />
-                    
-                    <div className="relative z-10 space-y-10">
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500 border border-blue-500/20">
-                                    <Target size={24} />
-                                </div>
-                                <div>
-                                    <h3 className="text-sm font-bold text-gray-400">ניתוח פיננסי כולל</h3>
-                                    <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">חוזה מקורי מול צפי סופי</p>
-                                </div>
-                            </div>
-                            <div className="text-right">
-                                <p className="text-[10px] font-mono text-gray-500 uppercase font-black tracking-widest">צפי סופי (כולל חריגים)</p>
-                                <p className="text-3xl font-black text-white font-mono">{formatILS(totalProjected)}</p>
-                            </div>
-                        </div>
-
-                        {/* Progress Bars */}
-                        <div className="space-y-6">
-                            <div className="space-y-2">
-                                <div className="flex justify-between text-[11px] font-bold uppercase tracking-tight">
-                                    <span className="text-gray-500">תקציב בסיס</span>
-                                    <span className="text-white">{formatILS(stats.originalBudget)}</span>
-                                </div>
-                                <div className="h-4 bg-white/5 rounded-full overflow-hidden border border-white/5">
-                                    <motion.div 
-                                        initial={{ width: 0 }}
-                                        animate={{ width: '100%' }}
-                                        className="h-full bg-blue-500/40"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="space-y-2">
-                                <div className="flex justify-between text-[11px] font-bold uppercase tracking-tight">
-                                    <span className="text-emerald-500">חריגים מאושרים (+{progressPercent.toFixed(1)}%)</span>
-                                    <span className="text-emerald-500">{formatILS(stats.approvedVO)}</span>
-                                </div>
-                                <div className="h-4 bg-white/5 rounded-full overflow-hidden border border-white/5">
-                                    <motion.div 
-                                        initial={{ width: 0 }}
-                                        animate={{ width: `${progressPercent}%` }}
-                                        className="h-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 pt-6 border-t border-white/5">
-                            <div>
-                                <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">חריגים בהמתנה</p>
-                                <p className="text-lg font-black text-orange-500 font-mono">{formatILS(stats.pendingVO)}</p>
-                            </div>
-                            <div>
-                                <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">מע&quot;מ ({(VAT_RATE * 100).toFixed(0)}%)</p>
-                                <p className="text-lg font-black text-gray-400 font-mono">{formatILS(getAmountVat(totalProjected, VAT_RATE))}</p>
-                            </div>
-                            <div className="text-left">
-                                <p className="text-[9px] font-mono text-gray-600 uppercase font-black tracking-widest">סה&quot;כ כולל מע&quot;מ</p>
-                                <p className="text-lg font-black text-white font-mono">{formatILS(getAmountInclVat(totalProjected, VAT_RATE))}</p>
-                            </div>
-                        </div>
-                    </div>
-                </motion.div>
-
-                {/* Risk & Coverage Card */}
-                <motion.div 
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.1 }}
-                    className="bg-[#151C24]/50 border border-white/5 rounded-[2rem] lg:rounded-[2.5rem] p-5 sm:p-8 flex flex-col justify-between group"
-                >
-                    <div className="space-y-6">
-                        <div className="w-12 h-12 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 border border-red-500/20">
-                            <ShieldAlert size={24} />
-                        </div>
-                        <h3 className="text-xl font-black text-white font-mono tracking-tighter uppercase">אבחון הנדסי (בינה מלאכותית)</h3>
-                        <p className="text-sm text-gray-500 leading-relaxed">
-                            מערכת המכ&quot;ם זיהתה <span className="text-red-500 font-bold">{stats.criticalCount}</span> סתירות מהותיות הדורשות בחינה הנדסית מיידית.
-                        </p>
-                    </div>
-
-                    <div className="space-y-4 mt-8">
-                        <div className="p-4 bg-white/5 rounded-2xl border border-white/5 flex items-center justify-between group-hover:border-blue-500/30 transition-all">
-                            <div className="flex items-center gap-3">
-                                <Sparkles size={16} className="text-blue-400" />
-                                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">פריטי תמחור עם הסבר</span>
-                            </div>
-                            <span className="text-xl font-black text-blue-400 font-mono">{stats.evidenceCoverage}%</span>
-                        </div>
-                        <div className="p-4 bg-white/5 rounded-2xl border border-white/5 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <FileCheck size={16} className="text-emerald-500" />
-                                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">מסמכי פרויקט</span>
-                            </div>
-                            <span className="text-xl font-black text-white font-mono">{stats.documentCount}</span>
-                        </div>
-                    </div>
-                </motion.div>
-            </div>
-
-            {/* Quick Actions & Recent Activity Placeholder */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                {[
-                    { label: 'בקרת סתירות', icon: <AlertTriangle size={20} />, value: stats.totalDiscrepancies, sub: 'ממצאים פתוחים', color: 'blue', view: 'בקרת סתירות' },
-                    { label: 'תמחור חריגים', icon: <Zap size={20} />, value: stats.pendingVO > 0 ? 'פעיל' : 'נקי', sub: 'סטטוס תמחור', color: 'orange', view: 'תמחור' },
-                    { label: 'מסמכים', icon: <Clock size={20} />, value: stats.documentCount, sub: 'קבצים במערכת', color: 'purple', view: 'מסמכי חוזה' },
-                    {
-                        label: 'יועץ בינה מלאכותית',
-                        icon: <Activity size={20} />,
-                        value: aiStatus === null ? 'בודק...' : aiStatus.available ? 'זמין' : 'לא מוגדר',
-                        sub: aiStatus?.provider || 'Gemini 3.5 Flash',
-                        color: aiStatus?.available ? 'emerald' : 'orange',
-                        view: 'יועץ בינה מלאכותית',
-                    },
-                ].map((item, i) => (
-                    <motion.div 
-                        key={i}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.2 + i * 0.1 }}
-                        onClick={() => onNavigate(item.view)}
-                        className="bg-[#151C24]/50 border border-white/5 p-6 rounded-3xl hover:bg-white/[0.03] transition-all cursor-pointer group"
-                    >
-                        <div className="flex items-center justify-between mb-4">
-                            <div className={`p-2 rounded-xl bg-${item.color}-500/10 text-${item.color}-500 border border-${item.color}-500/20`}>
-                                {item.icon}
-                            </div>
-                            <ArrowUpRight size={16} className="text-gray-600 group-hover:text-white transition-colors" />
-                        </div>
-                        <p className="text-[9px] font-mono text-gray-500 uppercase font-black tracking-widest mb-1">{item.label}</p>
-                        <p className="text-xl font-black text-white font-mono uppercase">{item.value}</p>
-                        <p className="text-[10px] text-gray-600 mt-1">{item.sub}</p>
-                    </motion.div>
-                ))}
-            </div>
-
-        </div>
-    );
-}
-
-function LoaderIcon(props: SVGProps<SVGSVGElement>) {
-    return (
-        <svg
-            {...props}
-            xmlns="http://www.w3.org/2000/svg"
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <path d="M12 2v4" />
-            <path d="m16.2 7.8 2.9-2.9" />
-            <path d="M18 12h4" />
-            <path d="m19.1 14.9 2.9 2.9" />
-            <path d="M12 18v4" />
-            <path d="m4.9 19.1 2.9-2.9" />
-            <path d="M2 12h4" />
-            <path d="m2.1 7.8 2.9-2.9" />
-        </svg>
-    )
+    return <OverviewView stats={stats} loading={isLoading} error={loadError} aiStatus={aiStatus} onNavigate={onNavigate} />;
 }
