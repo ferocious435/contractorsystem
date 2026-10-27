@@ -34,12 +34,7 @@ export default async function DocumentsPage({ params }: { params: Promise<{ id: 
             .order('created_at', { ascending: false });
 
     return (
-        <div className="p-6 h-full flex flex-col">
-            <header className="mb-8">
-                <h1 className="text-2xl font-rubik font-semibold text-gray-100">מרכז מסמכים וחוזים</h1>
-                <p className="text-sm text-gray-400 mt-1">ניהול מסמכים, ניתוח AI וסנכרון נתונים למערכת</p>
-            </header>
-
+        <div className="titanium-theme ti-documents-route">
             <DocumentsPageClient projectId={projectId} initialDocuments={documents || []} />
         </div>
     );
