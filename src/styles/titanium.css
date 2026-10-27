@@ -111,6 +111,83 @@
 .ti-tab[aria-selected=true], .ti-tab[aria-pressed=true] { background: var(--ti-selection); color: var(--ti-text); border-color: var(--ti-control); }
 @keyframes ti-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes ti-spin { to { transform: rotate(360deg); } }
+.ti-app { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 14px; width: 100%; height: 100dvh; padding: 12px; background: var(--ti-canvas); border: 1px solid var(--ti-border); border-radius: 22px; overflow: hidden; }
+.ti-app__workspace { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 16px; padding: 12px 12px 0; }
+.ti-app__main { min-width: 0; min-height: 0; flex: 1; padding: 0 0 24px; scroll-padding: 24px; }
+.ti-app__main > .ti-page { padding: 8px 0 24px; }
+.ti-skip-link { position: fixed; inset-block-start: -100px; inset-inline-start: 24px; z-index: 90; padding: 12px 20px; background: var(--ti-accent); color: var(--ti-canvas); border-radius: 10px; }
+.ti-skip-link:focus { inset-block-start: 16px; }
+.ti-sidebar { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid #77869d; border-radius: 16px; background: linear-gradient(105deg, #4e5969 0%, #151c26 31%, #273240 56%, #414c5a 64%, #222a35 69%, #090d13 100%); box-shadow: inset 0 1px #c7d1e859, 0 8px 20px #0004; overflow: hidden; }
+.ti-sidebar-brand { display: flex; align-items: center; min-height: 98px; margin: 4px 12px 0; padding: 16px 0; border-bottom: 1px solid var(--ti-border); }
+.ti-sidebar-brand__mark { display: none; font-size: 1.125rem; font-weight: 600; }
+.ti-sidebar-brand__text { width: 100%; padding: 8px 4px; border-radius: 8px; background: #141a23f0; text-align: center; }
+.ti-sidebar-brand__title { margin: 0; font-size: 1rem; font-weight: 500; line-height: 1.5; }
+.ti-sidebar-brand p { margin: 4px 0 0; font-size: .8125rem; color: var(--ti-secondary); }
+.ti-project-navigation { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 7px; padding: 16px 12px; }
+.ti-nav-item { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; width: 100%; min-height: 46px; padding: 10px 12px; text-align: start; color: var(--ti-secondary); background: #141a23f0; border: 1px solid transparent; border-radius: 10px; cursor: pointer; transition: background var(--ti-select), color var(--ti-fast), border-color var(--ti-fast); }
+.ti-nav-item > svg { flex: 0 0 19px; }
+.ti-nav-label { font-size: .875rem; line-height: 1.57; white-space: normal; overflow-wrap: anywhere; }
+.ti-nav-item:hover { color: var(--ti-text); border-color: var(--ti-border); }
+.ti-nav-item[aria-current=page] { background: var(--ti-selection); color: var(--ti-text); border-color: var(--ti-focus); box-shadow: inset 0 1px #cad2ff4d, 0 4px 12px #0005; }
+.ti-nav-item--section { margin-top: 12px; }
+.ti-nav-item--last { margin-top: auto; border-top-color: var(--ti-border); }
+.ti-nav-count { display: inline-flex; justify-content: center; min-width: 24px; margin-inline-start: auto; padding: 1px 6px; background: var(--ti-surface); color: var(--ti-danger); border: 1px solid currentColor; border-radius: 999px; font-size: .8125rem; }
+.ti-sidebar-footer { padding: 12px; border-top: 1px solid var(--ti-border); }
+.ti-sidebar-status { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 8px; background: #141a23f0; font-size: .8125rem; line-height: 1.54; }
+.ti-sidebar-status > svg { flex: 0 0 18px; }
+.ti-sidebar-status__text { display: flex; min-width: 0; flex-direction: column; overflow-wrap: anywhere; }
+.ti-topbar { display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; gap: 16px; min-width: 0; min-height: 72px; padding: 10px 16px; border: 1px solid #66788f; border-radius: 10px; background: linear-gradient(178deg, #4e5969 0%, #151c26 20%, #273240 53%, #090d13 100%); box-shadow: inset 0 1px #c7d1e85c, 0 4px 12px #0004; }
+.ti-topbar__identity { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.ti-topbar__title { min-width: 0; padding: 4px 10px; background: #141a23f0; border-radius: 8px; }
+.ti-topbar__title h2 { margin: 0; font-size: 1.125rem; line-height: 1.56; font-weight: 500; overflow-wrap: anywhere; }
+.ti-topbar__tools { display: flex; align-items: center; flex: 0 0 auto; gap: 12px; }
+.ti-topbar__role { display: flex; flex-direction: column; gap: 2px; padding: 0 6px; border-radius: 6px; background: #141a23f0; color: var(--ti-secondary); font-size: .8125rem; line-height: 1.54; }
+.ti-topbar__role > select { min-height: 36px; padding: 5px 10px; min-width: 142px; }
+.ti-menu-toggle { display: none; }
+.ti-nav-dialog { inset-block: 12px; inset-inline: 12px auto; width: min(360px, calc(100vw - 24px)); height: calc(100dvh - 24px); max-height: calc(100dvh - 24px); margin: 0; border-radius: 16px; }
+.ti-nav-dialog > .ti-dialog__body { height: 100%; padding: 16px 0 0; }
+.ti-nav-dialog__content { display: flex; height: 100%; min-height: 0; flex-direction: column; }
+.ti-nav-dialog__content > .ti-dialog__header { padding-inline: 16px; margin-bottom: 0; }
+.ti-portfolio-shell { display: flex; flex-direction: column; gap: 16px; height: 100dvh; padding: 24px; background: var(--ti-canvas); overflow: hidden; }
+.ti-portfolio { flex: 1; min-height: 0; container: ti-projects / inline-size; }
+.ti-portfolio-shell > .ti-portfolio { padding: 16px 0 24px; }
+.ti-portfolio__search { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.ti-portfolio__search > .ti-field { width: min(520px, 100%); }
+.ti-project-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.ti-project-card { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--ti-border); border-radius: 16px; background: var(--ti-glass); box-shadow: inset 0 1px #bbc5d766, 0 8px 24px #0004; }
+.ti-project-card__edge { height: 30px; margin: 3px; border-radius: 13px 13px 0 0; background: var(--ti-metal); border-bottom: 1px solid #8396bc66; }
+.ti-project-card__body { display: flex; flex: 1; flex-direction: column; gap: 18px; padding: 16px 20px 20px; }
+.ti-project-name { display: block; width: 100%; text-align: start; padding: 0; border: 0; background: transparent; color: var(--ti-text); cursor: pointer; overflow-wrap: anywhere; font-weight: 500; }
+.ti-project-name:hover { color: var(--ti-accent); }
+.ti-project-client { display: flex; align-items: center; gap: 8px; color: var(--ti-secondary); margin: 0; overflow-wrap: anywhere; }
+.ti-project-client > svg { flex: 0 0 auto; }
+.ti-project-amount { display: flex; flex-direction: column; gap: 4px; margin-top: auto; overflow-x: auto; scrollbar-width: thin; }
+.ti-project-amount > .ti-bidi, .ti-project-amount > span[aria-label] { font-size: 1.5rem; line-height: 1.5; max-width: 100%; overflow-wrap: normal; }
+.ti-project-card__footer { display: flex; justify-content: flex-end; border-top: 1px solid var(--ti-border); padding-top: 16px; }
+.ti-project-actions { position: relative; }
+.ti-project-action-menu { position: absolute; inset-inline-end: 0; inset-block-start: calc(100% + 4px); z-index: 5; display: flex; flex-direction: column; gap: 8px; min-width: 192px; padding: 10px; background: var(--ti-surface); border: 1px solid var(--ti-control); border-radius: 12px; box-shadow: 0 10px 24px #0008; }
+.ti-project-action-menu .ti-button { justify-content: flex-start; }
+.ti-project-form-dialog { width: min(560px, calc(100vw - 32px)); }
+.ti-unavailable { display: grid; place-items: center; min-height: 100dvh; padding: 24px; background: var(--ti-canvas); }
+.ti-unavailable > .ti-panel { width: min(680px, 100%); }
+.ti-unavailable--embedded { min-height: 320px; height: 100%; }
+@container ti-projects (min-width: 760px) { .ti-project-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container ti-projects (min-width: 1200px) { .ti-project-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .ti-app { grid-template-columns: 72px minmax(0, 1fr); gap: 12px; }
+  .ti-sidebar .ti-sidebar-brand { margin-inline: 4px; justify-content: center; }
+  .ti-sidebar .ti-sidebar-brand__mark { display: inline; }
+  .ti-sidebar .ti-sidebar-brand__text, .ti-sidebar .ti-sidebar-status__text, .ti-sidebar .ti-nav-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .ti-sidebar .ti-project-navigation { padding-inline: 5px; }
+  .ti-sidebar .ti-nav-item { justify-content: center; padding-inline: 0; position: relative; }
+  .ti-sidebar .ti-nav-count { position: absolute; inset-block-start: 0; inset-inline-end: 0; min-width: 18px; padding: 0 3px; }
+  .ti-sidebar .ti-sidebar-footer { padding-inline: 5px; }
+  .ti-sidebar .ti-sidebar-status { justify-content: center; padding-inline: 0; }
+  .ti-menu-toggle { display: inline-flex; }
+}
+@media (max-width: 1023px) { .ti-app { grid-template-columns: minmax(0, 1fr); padding: 8px; gap: 0; border-radius: 16px; } .ti-sidebar { display: none; } .ti-menu-toggle { display: inline-flex; } .ti-app__workspace { padding: 8px 8px 0; } }
+@media (max-width: 767px) { .ti-topbar { flex-wrap: wrap; padding: 10px; gap: 10px; } .ti-topbar__identity { flex-basis: 100%; } .ti-topbar__tools { margin-inline-start: auto; } .ti-back-label { display: none; } .ti-portfolio-shell { padding: 16px; } .ti-portfolio-shell > .ti-portfolio { padding: 8px 0 16px; } .ti-portfolio__search { flex-direction: column; align-items: stretch; gap: 8px; } .ti-project-card__body { padding-inline: 16px; } }
+@media (max-width: 479px) { .ti-dev-label { display: none; } .ti-dev-link { min-width: 44px; padding-inline: 12px; } .ti-topbar__identity { gap: 8px; } .ti-topbar__title { padding-inline: 4px; } }
 @media (pointer: coarse) { .ti-button, .ti-tab, .ti-table :where(button, input[type=checkbox]) { min-height: 44px; } }
 @media (max-width: 767px) { .ti-page { padding: 16px; gap: 16px; } .ti-title { font-size: 1.5rem; } .ti-dialog__body { padding: 16px; } .ti-panel__body { padding: 16px; } }
 @media (prefers-reduced-motion: reduce) {

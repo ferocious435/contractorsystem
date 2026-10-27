@@ -1,4 +1,4 @@
-import { registerHooks } from 'node:module';
+import { registerHooks, createRequire } from 'node:module';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -21,7 +21,13 @@ registerHooks({
       if(file)return next(pathToFileURL(file).href,context);
     }
     try {return next(specifier,context);} catch(error) {
-      if(error.code!=='ERR_MODULE_NOT_FOUND'||!specifier.startsWith('.'))throw error;
+      if(error.code!=='ERR_MODULE_NOT_FOUND')throw error;
+      if(!specifier.startsWith('.')) {
+        if(!context.parentURL)throw error;
+        let file;
+        try {file=createRequire(context.parentURL).resolve(specifier);} catch {throw error;}
+        return next(pathToFileURL(file).href,context);
+      }
       const base=fileURLToPath(new URL(specifier,context.parentURL));
       const file=['.ts','.tsx','.mjs','/index.ts','/index.tsx'].map(suffix=>base+suffix).find(p=>existsSync(p));
       if(!file)throw error;

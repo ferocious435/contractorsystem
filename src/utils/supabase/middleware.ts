@@ -2,6 +2,7 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { signInOpenWorkspace, workspaceEntryRedirectUrl } from '../open-workspace'
 import { createAdminClient } from './admin'
+import { renderWorkspaceEntryError } from '../workspace-entry-error'
 
 
 export async function updateSession(request: NextRequest) {
@@ -46,9 +47,9 @@ export async function updateSession(request: NextRequest) {
         user = await signInOpenWorkspace(supabase, user, createAdminClient)
         supabaseResponse.headers.set('Cache-Control', 'private, no-store')
     } catch {
-        return new NextResponse('לא ניתן לפתוח את המערכת כרגע. נסו לרענן את העמוד.', {
+        return new NextResponse(renderWorkspaceEntryError(), {
             status: 503,
-            headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'private, no-store' },
+            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' },
         })
     }
 
