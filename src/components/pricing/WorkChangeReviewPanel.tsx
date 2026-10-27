@@ -1,7 +1,9 @@
 "use client";
 
 import React from 'react';
-import { createPortal } from 'react-dom';
+import {Dialog} from '@/components/ui/titanium/Dialog';
+import {Button} from '@/components/ui/titanium/Button';
+import {Feedback} from '@/components/ui/titanium/Feedback';
 import type { WorkChangeFact, WorkChangeReview } from '@/utils/work-change-review';
 import { requestWorkChangeReview } from './workChangeReviewApi';
 import { WorkChangeFinancialReadiness } from './WorkChangeFinancialReadiness';
@@ -65,7 +67,7 @@ export const WorkChangeReviewContent: React.FC<ContentProps> = ({ review, projec
         { title: 'הסכמות, תנאים ושאלות פתוחות', matches: (fact: WorkChangeFact) => ['AGREEMENT', 'OPEN_QUESTION'].includes(fact.kind) },
         { title: 'קטעי עבודה שטרם סווגו באופן מאומת', matches: (fact: WorkChangeFact) => fact.kind.endsWith('_WORK') && !fact.confirmed },
     ];
-    return <div className="space-y-6" dir="rtl">
+    return <div className="ti-work-change" dir="rtl">
         <div className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-4 text-sm text-amber-100">
             בדיקת מקורות והשוואת עבודה. לא אושרה דרישת תשלום ולא שונו הסכומים בפרויקט.
         </div>
@@ -159,7 +161,6 @@ const WorkChangeReviewPanel: React.FC<PanelProps> = ({ findingId, projectId, onC
     const [review, setReview] = React.useState<WorkChangeReview | null>(null);
     const [error, setError] = React.useState<string | null>(null);
     const [attempt, setAttempt] = React.useState(0);
-    const panelRef = React.useRef<HTMLElement>(null);
     React.useEffect(() => {
         const controller = new AbortController(); let active = true;
         setReview(null); setError(null);
@@ -167,35 +168,13 @@ const WorkChangeReviewPanel: React.FC<PanelProps> = ({ findingId, projectId, onC
             .catch(cause => { if (active && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'הבדיקה לא הושלמה.'); });
         return () => { active = false; controller.abort(); };
     }, [projectId, findingId, attempt]);
-    React.useEffect(() => {
-        const panel = panelRef.current; if (!panel) return;
-        const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        const overflow = document.body.style.overflow; document.body.style.overflow = 'hidden';
-        (panel.querySelector<HTMLElement>('button') || panel).focus();
-        const handle = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
-            if (event.key !== 'Tab') return;
-            const targets = [...panel.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], summary, [tabindex]:not([tabindex="-1"])')]
-                .filter(element => element.getClientRects().length > 0);
-            const first = targets[0], last = targets.at(-1);
-            if (!first) { event.preventDefault(); panel.focus(); }
-            else if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
-            else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
-        };
-        document.addEventListener('keydown', handle);
-        return () => { document.removeEventListener('keydown', handle); document.body.style.overflow = overflow;
-            if (previous?.isConnected) previous.focus(); };
-    }, [onClose]);
+
     const retry = React.useCallback(() => setAttempt(value => value + 1), []);
-    return createPortal(<div className="fixed inset-0 z-[1000] bg-black/80 p-3 sm:p-8 flex items-center justify-center" onClick={event => event.stopPropagation()}>
-        <section ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="work-change-review-heading" className="bg-[#101821] text-white rounded-2xl border border-white/15 w-full max-w-5xl max-h-[90dvh] overflow-auto p-4 sm:p-7" dir="rtl">
-            <header className="flex items-start justify-between gap-4 mb-6"><div><h2 id="work-change-review-heading" className="font-bold text-xl">בדיקת מסמכי השינוי</h2><p className="text-gray-400 text-sm mt-1">העבודות המקוריות, החלופה והבסיס לסכומים</p></div>
-                <button type="button" onClick={onClose} className="rounded-lg border border-white/20 px-3 py-2 text-sm">סגירה</button></header>
-            {!review && !error && <div role="status" aria-live="polite" className="space-y-4"><p className="text-blue-200">קורא את מקורות השינוי ובודק את ההשוואה. הבדיקה הראשונה עשויה להימשך מספר דקות.</p>
-                <div className="h-24 rounded-xl bg-white/5 animate-pulse motion-reduce:animate-none" /><div className="h-40 rounded-xl bg-white/5 animate-pulse motion-reduce:animate-none" /></div>}
-            {error && <div role="alert" className="rounded-xl border border-red-400/30 bg-red-400/5 p-5 space-y-4"><p>{error}</p><button type="button" onClick={retry} className="rounded-lg bg-blue-500 px-4 py-2 text-white">נסו שוב</button></div>}
-            {review && <><p role="status" className="text-sm text-gray-300 mb-4">תוצאת הבדיקה זמינה. פרטים שאינם מאומתים מסומנים במפורש.</p><WorkChangeReviewContent review={review} projectId={projectId} /></>}
-        </section>
-    </div>, document.body);
+    return <Dialog open labelledBy="work-change-review-heading" className="ti-dialog--wide ti-work-change-dialog" onClose={onClose}>
+        <header className="ti-dialog__header"><div><h2 id="work-change-review-heading" className="ti-title">בדיקת מסמכי השינוי</h2><p className="ti-subtitle">העבודות המקוריות, החלופה והבסיס לסכומים</p></div><Button onClick={onClose}>סגירה</Button></header>
+        {!review&&!error&&<Feedback aria-live="polite"><span className="ti-spinner" aria-hidden="true"/><p>קורא את מקורות השינוי ובודק את ההשוואה. הבדיקה הראשונה עשויה להימשך מספר דקות.</p></Feedback>}
+        {error&&<Feedback tone="danger"><p>{error}</p><Button onClick={retry}>נסו שוב</Button></Feedback>}
+        {review&&<><p role="status" className="ti-copy">תוצאת הבדיקה זמינה. פרטים שאינם מאומתים מסומנים במפורש.</p><WorkChangeReviewContent review={review} projectId={projectId}/></>}
+    </Dialog>;
 };
 export default WorkChangeReviewPanel;

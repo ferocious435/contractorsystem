@@ -9,12 +9,20 @@ import { DocumentSourceView } from './DocumentSourceView';
 import { X } from 'lucide-react';
 import type { ParsedDocumentJson, ParsedFinancialItem, ParsedSystemError, ProjectDocument } from './types';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
+import { normalizeDocumentPage } from '@/components/features/contradiction-radar/utils/documentPage';
 
 export interface ScreenOfTruthModalProps {
     document: ProjectDocument;
     projectId: string;
     onClose: () => void;
     onValidate: (id: string, updatedJSON: ParsedDocumentJson) => Promise<void>;
+    readOnly?: boolean;
+    sourceContext?: { page?: number | null; quote?: string | null } | null;
+}
+
+export function withSourcePage(url: string | null, page: unknown, pdf: boolean): string | null {
+    const value = normalizeDocumentPage(typeof page === 'string' || typeof page === 'number' ? page : null);
+    return url && pdf && value ? url.split('#')[0] + '#page=' + value : url;
 }
 
 const moneyFormatter = new Intl.NumberFormat('he-IL');
@@ -190,7 +198,7 @@ function isDocumentWarning(warning: string) {
     return !/GoogleGenerativeAI|Gemini|API key|Forbidden|fetching from|AI processing warning|reported as leaked|generateContent|quota|rate.?limit|429|RESOURCE_EXHAUSTED/i.test(warning);
 }
 
-export default function ScreenOfTruthModal({ document: doc, projectId, onClose, onValidate }: ScreenOfTruthModalProps) {
+export default function ScreenOfTruthModal({ document: doc, projectId, onClose, onValidate, readOnly = false, sourceContext }: ScreenOfTruthModalProps) {
     const [isValidating, setIsValidating] = useState(false);
     const [validationError, setValidationError] = useState<string | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -223,7 +231,7 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
     const hasWarnings = warnings.length > 0;
     const isAlreadyValidated = doc.ai_status === 'VALIDATED';
     const isStructured = Boolean(documentType || summary || hasFinancialItems || totalAmount || jsonData.date);
-    const canValidate = !isAlreadyValidated && !hasSystemError && isStructured;
+    const canValidate = !isAlreadyValidated && !hasSystemError && isStructured && !readOnly;
 
     useEffect(() => {
         let cancelled = false;
@@ -275,6 +283,8 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
         : null;
     const previewKind = previewMeta?.previewKind || 'unsupported';
     const sourceUrl = previewMeta?.inlineUrl || previewMeta?.signedUrl || null;
+    const contextPage = normalizeDocumentPage(sourceContext?.page);
+    const pdfSource = previewKind === 'pdf' || /\.pdf$/i.test(doc.title || '');
 
     const handleValidate = async () => {
         if (!canValidate) return;
@@ -293,8 +303,9 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
 
     return <Dialog open labelledBy="source-dialog-title" onClose={onClose} className="ti-source-dialog">
         <header className="ti-dialog__header"><div><h2 id="source-dialog-title" className="ti-section-title"><BidiText kind="file" value={doc.title || 'מסמך ללא שם'} /></h2><p className="ti-meta">סקירת המקור והנתונים שנשמרו</p></div><Button aria-label="סגירה" onClick={onClose}><X size={18} aria-hidden="true" /></Button></header>
+        {sourceContext && <section className="ti-source-reference" aria-label="ההפניה למקור"><p className="ti-meta">{contextPage ? <>עמוד בהפניה: <BidiText kind="code" value={String(contextPage)}/></> : 'לא צוין עמוד בהפניה.'}</p>{sourceContext.quote && <details><summary>ציטוט שהועבר מההערכה</summary><blockquote>{sourceContext.quote}</blockquote></details>}</section>}
         <div className="ti-source-dialog__columns">
-            <DocumentSourceView document={doc} fullText={readablePreviewText} previewUrl={previewUrl} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון תצוגה מקדימה. הטקסט השמור עדיין זמין.' : null} sourceUrl={sourceUrl} />
+            <DocumentSourceView document={doc} fullText={readablePreviewText} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון תצוגה מקדימה. הטקסט השמור עדיין זמין.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
             <section className="ti-source-analysis" aria-label="תוצאת הניתוח"><h3 className="ti-section-title">מה המערכת הבינה מהמסמך</h3>
                 {hasSystemError && <Feedback tone="warning" title={isAlreadyValidated ? 'האישור הידני נשמר; ניתוח AI לא הושלם' : 'ניתוח AI לא הושלם'}>{getSystemErrorText(systemErrors, jsonData.system_error)}</Feedback>}
                 {isStructured && !hasSystemError && <>
@@ -305,7 +316,7 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
                 </>}
                 {!isStructured && !hasSystemError && <Feedback title="אין עדיין תוצאה שאפשר לבדוק">נדרש ניתוח מסמך לפני אישורו כמקור עבודה.</Feedback>}
                 {validationError && <Feedback tone="danger">{validationError}</Feedback>}
-                <footer className="ti-source-validation"><p className="ti-copy">{isAlreadyValidated ? 'האישור הידני נשמר. שלמות הקריאה ומצב הניתוח מוצגים בנפרד.' : 'בדוק את המקור ואת תוצאת הניתוח לפני אישור.'}</p><div className="ti-actions"><Button onClick={onClose}>סגירה</Button>{!isAlreadyValidated && <Button variant="primary" onClick={handleValidate} pending={isValidating} busyLabel="שומר…" disabled={!canValidate} disabledReason={!canValidate ? 'אי אפשר לאשר עד שיש ניתוח תקין וברור.' : undefined}>אישור כמקור</Button>}</div></footer>
+                <footer className="ti-source-validation"><p className="ti-copy">{readOnly ? 'תצוגת מקור בלבד. סגירה אינה מאשרת מסמך או סכום.' : isAlreadyValidated ? 'האישור הידני נשמר. שלמות הקריאה ומצב הניתוח מוצגים בנפרד.' : 'בדוק את המקור ואת תוצאת הניתוח לפני אישור.'}</p><div className="ti-actions"><Button onClick={onClose}>סגירה</Button>{!readOnly && !isAlreadyValidated && <Button variant="primary" onClick={handleValidate} pending={isValidating} busyLabel="שומר…" disabled={!canValidate} disabledReason={!canValidate ? 'אי אפשר לאשר עד שיש ניתוח תקין וברור.' : undefined}>אישור כמקור</Button>}</div></footer>
             </section>
         </div>
     </Dialog>;

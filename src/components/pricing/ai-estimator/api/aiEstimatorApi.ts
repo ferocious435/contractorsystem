@@ -25,6 +25,8 @@ const AI_ESTIMATOR_SOURCE_DOCUMENT_SELECT_COLUMNS = [
     'ai_status',
     'ocr_status',
     'extracted_text_hash',
+    'extracted_text',
+    'parsed_json',
     'created_at',
 ].join(', ');
 

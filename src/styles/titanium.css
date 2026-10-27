@@ -385,6 +385,77 @@
   .ti-app:has(.ti-pricing-root) .ti-app__workspace { gap: 12px; }
   .ti-pricing-root, .ti-ledger-workspace { gap: 8px; }
 }
+.ti-dialog--estimator { width: min(1280px, calc(100% - 32px)); }
+.ti-estimator { container: ti-estimator / inline-size; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.ti-estimator > .ti-dialog__header { margin-bottom: 0; }
+.ti-estimator-context .ti-panel__body { display: flex; flex-direction: column; gap: 10px; }
+.ti-estimator-context__sources { display: flex; gap: 12px 24px; flex-wrap: wrap; }
+.ti-estimator-grid { display: grid; grid-template-areas: "evidence" "finance"; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.ti-estimator-evidence { grid-area: evidence; }
+.ti-estimator-finance { grid-area: finance; container: ti-estimator-finance / inline-size; }
+.ti-estimator-evidence, .ti-estimator-finance { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.ti-estimator :where(.ti-panel__body) { display: flex; flex-direction: column; gap: 16px; }
+.ti-estimator :where(p, h3, h4, ul, ol, dl) { margin: 0; }
+.ti-estimator :where(ul) { padding-inline-start: 22px; }
+.ti-estimator li { overflow-wrap: anywhere; }
+.ti-estimator-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.ti-estimator-form__wide { grid-column: 1 / -1; min-width: 0; }
+.ti-estimator-form .ti-textarea { min-height: 112px; resize: vertical; }
+.ti-estimator-form .ti-meta { margin-top: 8px; }
+.ti-estimator-form .ti-actions { gap: 6px; }
+.ti-estimator-form .ti-button[aria-pressed=true] { background: var(--ti-selection); border-color: var(--ti-focus); color: var(--ti-text); }
+.ti-estimator-sources { display: flex; flex-direction: column; gap: 12px; }
+.ti-estimator-sources ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; list-style: none; padding: 0; }
+.ti-estimator-sources li { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--ti-border); border-radius: 12px; background: var(--ti-surface); color: var(--ti-secondary); }
+.ti-estimator-sources li[data-active] { background: var(--ti-selection); border-color: var(--ti-control); color: var(--ti-text); }
+.ti-estimator-sources li strong, .ti-estimator-sources li .ti-meta { display: block; }
+.ti-estimator-sources li strong { font-size: .875rem; line-height: 1.57; font-weight: 500; }
+.ti-estimator-amounts { display: flex; flex-direction: column; gap: 16px; }
+.ti-estimator-amounts dt { font-size: .875rem; color: var(--ti-secondary); }
+.ti-estimator-amounts dd { margin: 6px 0 0; white-space: nowrap; overflow-x: auto; font-size: 1.5rem; line-height: 1.42; font-weight: 500; }
+.ti-estimator-total { border-top: 1px solid var(--ti-border); padding-top: 16px; }
+.ti-estimator-table-scroll { overflow-x: auto; min-width: 0; }
+.ti-estimator-table-scroll table { min-width: 840px; }
+.ti-estimator-table-scroll td:nth-child(2) { min-width: 260px; }
+.ti-estimator-table-scroll :where(td:nth-child(4), td:nth-child(5), td:nth-child(6)) { white-space: nowrap; }
+.ti-estimator-matched, .ti-estimator-quote-details { border: 1px solid var(--ti-border); padding: 12px; border-radius: 10px; }
+.ti-estimator-matched > p { margin-top: 12px; }
+.ti-estimator summary { cursor: pointer; color: var(--ti-accent); font-size: .875rem; line-height: 1.57; }
+.ti-estimator-warning { color: var(--ti-warning); }
+.ti-estimator-loading > div { display: flex; flex-direction: column; gap: 10px; }
+.ti-estimator-evidence-trace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ti-estimator-evidence-trace :where(div, p, span, summary, button) { font-family: inherit; letter-spacing: normal; font-size: .875rem; line-height: 1.57; }
+.ti-estimator-evidence-trace :where(details, .rounded-3xl) { min-width: 0; border: 1px solid var(--ti-border); border-radius: 12px; background: var(--ti-surface); padding: 14px; }
+.ti-estimator-evidence-trace .grid { min-width: 0; }
+.ti-estimator-evidence-trace :where(.flex-1) { min-width: 0; overflow-wrap: anywhere; }
+.ti-estimator-evidence-trace :where(.justify-between) { flex-wrap: wrap; gap: 12px; }
+.ti-estimator-evidence-trace .ti-action-with-reason { flex: 0 1 auto; }
+.ti-estimator-evidence-trace blockquote { margin: 12px 0; padding: 16px; background: var(--ti-paper); color: var(--ti-ink); border: 0; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 1rem; line-height: 1.625; }
+.ti-estimator-evidence-trace :where(.text-gray-600, .text-gray-500, .text-gray-400, .text-gray-300) { color: var(--ti-secondary); }
+.ti-estimator-evidence-trace :where(.text-blue-300, .text-blue-400) { color: var(--ti-accent); }
+.ti-estimator-evidence-trace :where(.text-amber-300, .text-amber-400) { color: var(--ti-warning); }
+.ti-estimator-evidence-trace .text-emerald-300 { color: var(--ti-text); }
+.ti-work-change { display: flex; flex-direction: column; gap: 20px; min-width: 0; font-size: .875rem; line-height: 1.57; }
+.ti-work-change :where(p, li, summary, a, dt, dd, td, th) { font-size: .875rem; line-height: 1.57; }
+.ti-work-change :where(h3, h4) { font-size: 1.125rem; line-height: 1.56; font-weight: 500; }
+.ti-work-change :where(section, article, details, div) { min-width: 0; overflow-wrap: anywhere; }
+.ti-work-change > details, .ti-work-change :where(article, .ti-work-change-readiness) { border: 1px solid var(--ti-border); border-radius: 12px; padding: 16px; background: var(--ti-surface); }
+.ti-work-change summary { cursor: pointer; }
+.ti-work-change blockquote { margin: 12px 0; padding: 16px; background: var(--ti-paper); color: var(--ti-ink); border: 0; border-radius: 10px; white-space: pre-wrap; font-size: 1rem; line-height: 1.625; }
+.ti-work-change :where(.text-gray-400, .text-gray-300, .text-gray-200) { color: var(--ti-secondary); }
+.ti-work-change :where(.text-blue-200, .text-blue-300) { color: var(--ti-accent); }
+.ti-work-change :where(.text-amber-100, .text-amber-200) { color: var(--ti-warning); }
+.ti-work-change .text-emerald-300 { color: var(--ti-success); }
+.ti-work-change table { min-width: 760px; border-collapse: collapse; }
+.ti-work-change th, .ti-work-change td { padding: 10px 12px; border-bottom: 1px solid var(--ti-border); }
+.ti-work-change th { background: var(--ti-raised); color: var(--ti-secondary); font-weight: 500; }
+.ti-work-change-readiness { display: flex; flex-direction: column; gap: 16px; }
+.ti-source-reference { margin-bottom: 20px; padding: 14px; border: 1px solid var(--ti-border); border-radius: 12px; background: var(--ti-surface); }
+.ti-source-reference summary { margin-top: 10px; color: var(--ti-accent); cursor: pointer; }
+.ti-source-reference blockquote { margin-top: 12px; padding: 16px; border-radius: 10px; background: var(--ti-paper); color: var(--ti-ink); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 1rem; line-height: 1.625; }
+@container ti-estimator (min-width: 900px) { .ti-estimator-grid { grid-template-columns: repeat(2,minmax(0,1fr)); grid-template-areas: "finance evidence"; } }
+@container ti-estimator-finance (min-width: 400px) { .ti-estimator-form { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 599px) { .ti-estimator > .ti-dialog__header { flex-direction: column; } .ti-estimator > .ti-dialog__header > .ti-actions { width: 100%; justify-content: space-between; } }
 @media (pointer: coarse) { .ti-button, .ti-tab, .ti-table :where(button, input[type=checkbox]) { min-height: 44px; } }
 @media (pointer: coarse) { .ti-radar-workspace details > summary, .ti-radar-expand, .ti-radar-finding__details button, .ti-evidence-marker__button { min-height: 44px; } }
 @media (max-width: 767px) { .ti-page { padding: 16px; gap: 16px; } .ti-title { font-size: 1.5rem; } .ti-dialog__body { padding: 16px; } .ti-panel__body { padding: 16px; } }

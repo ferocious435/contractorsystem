@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerHooks } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import ts from 'typescript';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -19,7 +19,11 @@ registerHooks({ load(url, context, nextLoad) {
   };
   return nextLoad(url, context);
 }, resolve(specifier, context, nextResolve) {
-  if (specifier.startsWith('@/')) return nextResolve(new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href, context);
+  if (specifier.startsWith('@/')) {
+    const base = new URL(`../src/${specifier.slice(2)}`, import.meta.url);
+    const target = existsSync(new URL(base.href + '.tsx')) ? base.href + '.tsx' : base.href + '.ts';
+    return nextResolve(target, context);
+  }
   try { return nextResolve(specifier, context); }
   catch (error) { if (error.code === 'ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !/\.[cm]?[jt]sx?$/u.test(specifier)) return nextResolve(`${specifier}.ts`, context); throw error; }
 } });

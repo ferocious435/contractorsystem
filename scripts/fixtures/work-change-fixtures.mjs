@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { existsSync } from 'node:fs';
 
 // These are synthetic program checks, not model-quality scores or real project cases.
 export const finding = () => ({ id: 'change', project_id: 'project', title: 'שינוי שיטת ביצוע ברחוב הרימון',
@@ -50,7 +51,10 @@ export const storageModuleUrl = 'data:text/javascript,' + encodeURIComponent(`
 export function registerWorkChangeModules(overrides = {}) {
   return registerHooks({ resolve(specifier, context, next) {
     if (overrides[specifier]) return { url: overrides[specifier], shortCircuit: true };
-    if (specifier.startsWith('@/')) return next(new URL(`../../src/${specifier.slice(2)}.ts`, import.meta.url).href, context);
+    if (specifier.startsWith('@/')) {
+      const base = new URL(`../../src/${specifier.slice(2)}`, import.meta.url);
+      return next(existsSync(new URL(base.href + '.tsx')) ? base.href + '.tsx' : base.href + '.ts', context);
+    }
     try { return next(specifier, context); }
     catch(error) {
       if(error.code==='ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !/\.[cm]?[jt]sx?$/u.test(specifier)) {

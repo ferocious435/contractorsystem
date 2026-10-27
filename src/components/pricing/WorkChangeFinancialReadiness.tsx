@@ -27,7 +27,7 @@ export const WorkChangeFinancialReadiness: React.FC<{ review: WorkChangeReview; 
     const evidence = (anchors: EvidenceAnchor[]) => anchors.map((anchor, index) => <div key={index} className="space-y-2">
         <blockquote className="whitespace-pre-wrap break-words text-xs leading-6">{anchor.quote}</blockquote>{sourceLink(anchor.documentId, anchor.page)}
     </div>);
-    return <section className="rounded-xl border border-blue-400/25 p-4 space-y-4" aria-label="מוכנות להשוואה כספית">
+    return <section className="ti-work-change-readiness" aria-label="מוכנות להשוואה כספית">
         <h3 className="font-bold text-blue-200">מוכנות להשוואה כספית</h3>
         <p className="text-sm text-gray-300">הנתונים הבאים אינם תוספת מאושרת. סכומי מסמכים שלמים אינם מחיר ההיקף שהוחלף; לא חושב הפרש בין היקפים שונים.</p>
         {result.sourceTotals.filter(total => review.sources.some(source => source.id === total.sourceId && source.role !== 'CONTRACT')).map((total, index) =>

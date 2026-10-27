@@ -1,10 +1,19 @@
 "use client";
 
 import React from 'react';
-import { Shield } from 'lucide-react';
-import { motion } from 'framer-motion';
+import {Button} from '@/components/ui/titanium/Button';
+
 import type { ContradictionItem } from '@/types';
 import type { AIPricingEvaluationResponse, AIPricingEvidenceReference, AIPricingGoverningNote } from '../types';
+import { normalizeDocumentPage } from '@/components/features/contradiction-radar/utils/documentPage';
+
+type Scope = NonNullable<AIPricingEvaluationResponse['scope_review']>;
+export function scopeSourceReference(scope: Scope, position: Scope['positions'][number], anchor: { documentId: string; quote: string; page?: number | null }, finding: Pick<ContradictionItem, 'target_contract_doc_id'>): AIPricingEvidenceReference {
+    const direct = scope.requirements.some(item => item.evidence.some(evidence => evidence.documentId === anchor.documentId)) || anchor.documentId === finding.target_contract_doc_id;
+    const documentId = direct ? anchor.documentId : position.documentId || undefined;
+    const page = normalizeDocumentPage(anchor.page) ?? (documentId && documentId === position.documentId ? normalizeDocumentPage(position.page) : null);
+    return { document_id: documentId, quote: anchor.quote, page };
+}
 
 interface EstimatorEvidenceTraceProps {
     contradiction: ContradictionItem;
@@ -22,6 +31,8 @@ const GOVERNING_NOTE_LABELS: Record<string, string> = {
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+function noteValue(value:unknown){return typeof value==='object'&&value!==null?JSON.stringify(value):String(value??'—');}
 
 function toOptionalString(value: unknown): string | undefined {
     if (value === null || value === undefined) return undefined;
@@ -91,7 +102,7 @@ function EstimatorEvidenceTrace({
     const scopeLabels = { FULL: 'התאמה מלאה', PARTIAL: 'כיסוי חלקי', REJECTED: 'הסעיף אינו מתאים', NEEDS_REVIEW: 'נדרשת בדיקה' };
 
     return (
-        <div className="space-y-6">
+        <div className="ti-estimator-evidence-trace">
             {scope && (
                 <div className="rounded-3xl border border-blue-500/20 bg-blue-500/5 p-5 space-y-4">
                     <div className="font-bold text-blue-300">בדיקת התאמה והרכב העבודה · {scopeLabels[scope.status]}</div>
@@ -117,11 +128,7 @@ function EstimatorEvidenceTrace({
                                     {(scope.requirements.some(item => item.evidence.some(evidence => evidence.documentId === anchor.documentId))
                                         || anchor.documentId === contradiction.target_contract_doc_id
                                         || (position.documentId && (anchor.documentId === position.candidateId || anchor.documentId === position.documentId))) && (
-                                        <button className="mt-2 text-xs text-blue-300" onClick={() => onViewSource({
-                                            document_id: scope.requirements.some(item => item.evidence.some(evidence => evidence.documentId === anchor.documentId)) || anchor.documentId === contradiction.target_contract_doc_id
-                                                ? anchor.documentId : position.documentId || undefined,
-                                            quote: anchor.quote, page: anchor.page || position.page,
-                                        })}>פתח מקור</button>
+                                        <Button variant="text" className="mt-2 text-xs text-blue-300" onClick={() => onViewSource(scopeSourceReference(scope, position, anchor, contradiction))}>פתח מקור</Button>
                                     )}
                                 </div>
                             ))}
@@ -136,11 +143,8 @@ function EstimatorEvidenceTrace({
 
             <div className="grid grid-cols-1 gap-4">
                 {estimateData?.governing_notes?.map((note: AIPricingGoverningNote, idx: number) => (
-                    <motion.div
+                    <div
                         key={`note-${idx}`}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: idx * 0.1 }}
                         className="flex gap-6 p-6 bg-white/[0.02] border border-white/5 rounded-3xl hover:bg-white/[0.04] hover:border-white/10 transition-all group"
                     >
                         <div className="w-10 h-10 rounded-2xl bg-gray-900 border border-white/5 flex items-center justify-center shrink-0 group-hover:border-blue-500/30 transition-colors">
@@ -157,19 +161,19 @@ function EstimatorEvidenceTrace({
                                             <span className="text-blue-400 font-bold ml-1">
                                                 {GOVERNING_NOTE_LABELS[key] || key}:
                                             </span>
-                                            <span>{String(value)}</span>
+                                            <span>{noteValue(value)}</span>
                                         </div>
                                     ))
                                 )}
                             </div>
                         </div>
-                    </motion.div>
+                    </div>
                 ))}
 
                 {contradiction.evidence_data && (directEvidence || !estimateData?.scope_review?.lines.some(line => line.unitPriceExclVat.value !== null)) && (
                     <div className="mt-4 p-6 bg-blue-500/5 border border-blue-500/20 rounded-3xl space-y-4">
                         <div className="flex items-center gap-3 mb-2">
-                            <Shield className="w-4 h-4 text-blue-400" />
+
                             <span className="text-[11px] font-mono font-black text-blue-400 uppercase tracking-widest">
                                 ראיות דיגיטליות
                             </span>
@@ -190,16 +194,16 @@ function EstimatorEvidenceTrace({
                                                     עמוד: {evidence.page || 'לא זמין'} | סימוכין: {evidence.reference || 'סימוכין מערכת'}
                                                 </span>
                                                 {evidence.quote && (
-                                                    <span className="mt-2 text-xs text-gray-500 line-clamp-2">{evidence.quote}</span>
+                                                    <details className="ti-estimator-quote-details"><summary>ציטוט המקור</summary><blockquote>{evidence.quote}</blockquote></details>
                                                 )}
                                             </div>
                                         </div>
-                                        <button
-                                            onClick={() => onViewSource(evidence)}
+                                        <Button variant="text"
+                                            disabled={!evidence.document_id&&!evidence.document_title} disabledReason={!evidence.document_id&&!evidence.document_title?'לא נמסר קובץ מקור לפתיחה':undefined} onClick={() => onViewSource(evidence)}
                                             className={`px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-xl text-[10px] font-black transition-all ${evidence.quote ? 'shrink-0' : ''}`}
                                         >
                                             הצג מקור
-                                        </button>
+                                        </Button>
                                     </div>
                                 ))
                             ) : (
