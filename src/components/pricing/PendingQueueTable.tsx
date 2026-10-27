@@ -1,26 +1,16 @@
 "use client";
-
 import React from 'react';
+import { ChevronDown, FileText, RefreshCw, Trash2, Eye } from 'lucide-react';
 import { getEvidenceDisplayStatus } from '@/utils/radar-evidence-status';
-import {
-    Activity,
-    Brain,
-    CheckCircle,
-    ChevronDown,
-    FileText,
-    Play,
-    RefreshCw,
-    Shield,
-    Trash2,
-    X,
-    Zap,
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-
-import { ContradictionItem } from '@/types';
+import type { ContradictionItem } from '@/types';
+import { Button } from '@/components/ui/titanium/Button';
+import { BidiText } from '@/components/ui/titanium/BidiText';
+import { Dialog } from '@/components/ui/titanium/Dialog';
+import { Feedback } from '@/components/ui/titanium/Feedback';
+import { StatusChip } from '@/components/ui/titanium/StatusChip';
 const WorkChangeReviewPanel = React.lazy(() => import('./WorkChangeReviewPanel'));
-
 interface PendingQueueTableProps {
+    compactTools?: React.ReactNode;
     items: ContradictionItem[];
     selectedIds?: string[];
     onToggleSelection?: (id: string) => void;
@@ -32,89 +22,73 @@ interface PendingQueueTableProps {
     scanningItems?: string[];
     getConfidencePercent?: (item: ContradictionItem) => string | null;
 }
-
-const QUEUE_ROW_MOTION_THRESHOLD = 200;
 const QUEUE_ROW_VIRTUALIZATION_THRESHOLD = 500;
 const QUEUE_ITEM_ROW_HEIGHT = 80;
-const QUEUE_GROUP_ROW_HEIGHT = 40;
+const QUEUE_GROUP_ROW_HEIGHT = 44;
 const QUEUE_VIRTUAL_OVERSCAN = 8;
-
 type EvidenceRecord = Record<string, unknown>;
-
 function isEvidenceRecord(value: unknown): value is EvidenceRecord {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 function getEvidenceRecord(value: unknown): EvidenceRecord | undefined {
     return isEvidenceRecord(value) ? value : undefined;
 }
-type PendingQueueRenderRow =
-    | {
-        kind: 'group';
-        sourceTitle: string;
-        groupItems: ContradictionItem[];
-        groupIdx: number;
-        height: number;
-    }
-    | {
-        kind: 'item';
-        item: ContradictionItem;
-        groupIdx: number;
-        itemIdx: number;
-        height: number;
-    };
-
+type PendingQueueRenderRow = {
+    kind: 'group';
+    sourceTitle: string;
+    groupItems: ContradictionItem[];
+    groupIdx: number;
+    height: number;
+} | {
+    kind: 'item';
+    item: ContradictionItem;
+    groupIdx: number;
+    itemIdx: number;
+    height: number;
+};
 interface PendingQueueVirtualMetric {
     row: PendingQueueRenderRow;
     offset: number;
     height: number;
 }
-
 function findFirstVirtualRowIndex(metrics: PendingQueueVirtualMetric[], targetOffset: number) {
     let low = 0;
     let high = metrics.length;
-
     while (low < high) {
         const mid = Math.floor((low + high) / 2);
         const rowBottom = metrics[mid].offset + metrics[mid].height;
-
         if (rowBottom < targetOffset) {
             low = mid + 1;
-        } else {
+        }
+        else {
             high = mid;
         }
     }
-
     return low;
 }
-
 function findFirstVirtualRowAfterOffset(metrics: PendingQueueVirtualMetric[], targetOffset: number) {
     let low = 0;
     let high = metrics.length;
-
     while (low < high) {
         const mid = Math.floor((low + high) / 2);
-
         if (metrics[mid].offset <= targetOffset) {
             low = mid + 1;
-        } else {
+        }
+        else {
             high = mid;
         }
     }
-
     return low;
 }
-
 function getEvidenceSummary(evidenceData: unknown) {
     if (Array.isArray(evidenceData)) {
         return {
             hasEvidence: evidenceData.length > 0,
-            verified: evidenceData.length > 0,
-            label: `הוכחות: ${evidenceData.length}`,
+            verified: false,
+            label: `קישורי מקור: ${evidenceData.length}`,
             detail: 'נמצאו קישורי מקור לפריט הזה.'
         };
     }
-
     const evidenceRecord = getEvidenceRecord(evidenceData);
     const pricingEvaluation = getEvidenceRecord(evidenceRecord?.pricing_evaluation);
     const linkedIds = Array.isArray(evidenceRecord?.linked_ids) ? evidenceRecord.linked_ids : [];
@@ -122,7 +96,6 @@ function getEvidenceSummary(evidenceData: unknown) {
     const missingCount = Array.isArray(evidenceRecord?.missing_evidence) ? evidenceRecord.missing_evidence.length : 0;
     const hasPricingTrace = Boolean(pricingEvaluation?.match_quality || pricingEvaluation?.source);
     const isVerified = getEvidenceDisplayStatus(evidenceRecord) === 'SOURCE_VERIFIED';
-
     return {
         hasEvidence: hasQuoteEvidence || missingCount > 0 || hasPricingTrace || linkedIds.length > 0,
         verified: isVerified,
@@ -134,271 +107,45 @@ function getEvidenceSummary(evidenceData: unknown) {
                 : 'קיים קישור למקור או לתמחור.'
     };
 }
-
-interface PendingQueueGroupHeaderProps {
+const PendingQueueGroupHeader = React.memo(function PendingQueueGroupHeader({ sourceTitle, itemCount, isCollapsed, onToggle }: {
     sourceTitle: string;
     itemCount: number;
     isCollapsed: boolean;
-    onToggle: (sourceTitle: string) => void;
-}
-
-const PendingQueueGroupHeader = React.memo(function PendingQueueGroupHeader({
-    sourceTitle,
-    itemCount,
-    isCollapsed,
-    onToggle,
-}: PendingQueueGroupHeaderProps) {
-    return (
-        <tr
-            className="bg-[#1A222C]/30 h-10 border-y border-white/5 cursor-pointer hover:bg-[#1A222C]/50 transition-colors group/header"
-            onClick={() => onToggle(sourceTitle)}
-        >
-            <td colSpan={6} className="px-6">
-                <div className="flex items-center justify-between w-full">
-                    <div className="flex items-center gap-4">
-                        <motion.div
-                            animate={{ rotate: isCollapsed ? -90 : 0 }}
-                            transition={{ duration: 0.2 }}
-                        >
-                            <ChevronDown className="w-4 h-4 text-gray-500" />
-                        </motion.div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6]" />
-                        <span className="text-[11px] font-black text-gray-400 uppercase tracking-widest font-mono flex items-center gap-3">
-                            <FileText className="w-3.5 h-3.5 text-blue-500" />
-                            {sourceTitle}
-                            <span className="text-gray-600 font-mono text-[9px] bg-white/5 px-2 py-0.5 rounded-full border border-white/5">
-                                פריטים: {itemCount}
-                            </span>
-                        </span>
-                    </div>
-                    <div className="opacity-0 group-hover/header:opacity-100 transition-opacity">
-                        <span className="text-[9px] font-mono text-gray-600 uppercase tracking-[0.2em]">
-                            {isCollapsed ? 'הרחב מקור' : 'צמצם מקור'}
-                        </span>
-                    </div>
-                </div>
-            </td>
-        </tr>
-    );
+    onToggle: (title: string) => void;
+}) {
+    return <tr className="ti-queue-group"><td colSpan={6}><button type="button" aria-expanded={!isCollapsed} onClick={() => onToggle(sourceTitle)}><ChevronDown size={16} aria-hidden="true" style={{ transform: isCollapsed ? 'rotate(-90deg)' : undefined }}/><FileText size={16} aria-hidden="true"/><BidiText kind="file" value={sourceTitle}/><span className="ti-meta">({itemCount})</span><span className="ti-sr-only">{isCollapsed ? 'הרחב מקור' : 'צמצם מקור'}</span></button></td></tr>;
 });
-
-interface PendingQueueRowProps {
+interface QueueRowProps {
     item: ContradictionItem;
     groupIdx: number;
     itemIdx: number;
     isSelected: boolean;
     isScanning: boolean;
-    shouldAnimateRows: boolean;
-    confidencePercent?: string | null;
+    confidencePercent: string | null;
     onToggleSelection?: (id: string) => void;
     onSelectForEstimation: (item: ContradictionItem) => void;
-    onRescan?: (item: ContradictionItem) => Promise<void>;
+    onRescan?: (item: ContradictionItem) => void;
+    onDetails: (item: ContradictionItem) => void;
+    onReview: (item: ContradictionItem) => void;
 }
-
-const PendingQueueRow = React.memo(function PendingQueueRow({
-    item,
-    groupIdx,
-    itemIdx,
-    isSelected,
-    isScanning,
-    shouldAnimateRows,
-    confidencePercent,
-    onToggleSelection,
-    onSelectForEstimation,
-    onRescan,
-}: PendingQueueRowProps) {
-    const [caseReviewOpen, setCaseReviewOpen] = React.useState(false);
-    const closeCaseReview = React.useCallback(() => setCaseReviewOpen(false), []);
-    const evidenceSummary = getEvidenceSummary(item.evidence_data);
-    const evidenceRecord = getEvidenceRecord(item.evidence_data);
-    const pricingEvaluation = getEvidenceRecord(evidenceRecord?.pricing_evaluation);
-    const linkedIds = Array.isArray(evidenceRecord?.linked_ids) ? evidenceRecord.linked_ids : [];
-    const linkedIdCount = linkedIds.length;
-    const evidenceDetail = pricingEvaluation?.match_quality === 'ZERO_MATCH'
-        ? 'לא נמצא סעיף ישיר, אבל המערכת יכולה לבנות טיוטת תמחור לפי ההקשר. בודקים רק פרטים שמשנים את הסכום.'
-        : evidenceSummary.detail;
-
-    const rowClassName = `group h-20 cursor-pointer transition-all relative overflow-hidden
-                ${isScanning ? 'bg-blue-500/5' : ''}
-                ${isSelected ? 'bg-emerald-500/10 shadow-[inset_0_0_40px_rgba(16,185,129,0.05)] border-r-2 border-emerald-500' : 'hover:bg-white/[0.03]'}`;
-    const RowComponent = (shouldAnimateRows ? motion.tr : 'tr') as React.ElementType;
-    const rowAnimationProps = shouldAnimateRows
-        ? {
-            initial: { opacity: 0, x: -10 },
-            animate: { opacity: 1, x: 0 },
-            transition: { delay: Math.min(itemIdx, 10) * 0.03 },
-        }
-        : {};
-
-    return (
-        <RowComponent
-            key={item.id}
-            {...rowAnimationProps}
-            className={rowClassName}
-            onClick={() => onSelectForEstimation(item)}
-        >
-            {isScanning && (
-                <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
-                    <div className="w-full h-full bg-gradient-to-r from-transparent via-blue-500/10 to-transparent animate-scan" />
-                </div>
-            )}
-
-            <td className="px-4 text-center z-10" onClick={(e) => e.stopPropagation()}>
-                <input
-                    type="checkbox"
-                    className="w-4 h-4 rounded border-white/10 bg-white/5 checked:bg-blue-500 transition-all cursor-pointer"
-                    checked={isSelected}
-                    onChange={() => onToggleSelection?.(item.id)}
-                />
-            </td>
-
-            <td className="px-4 text-center z-10">
-                <span className="text-[10px] font-mono font-black text-gray-600 uppercase tracking-widest group-hover:text-blue-500 transition-colors">
-                    #{groupIdx + 1}-{itemIdx + 1}
-                </span>
-            </td>
-
-            <td className="px-4 z-10">
-                <div className="flex flex-col gap-1.5">
-                    {item.severity === 'HIGH' ? (
-                        <div className="flex items-center gap-2 px-2 py-1 bg-red-500/10 border border-red-500/20 rounded-lg w-fit shadow-[0_0_15px_rgba(239,68,68,0.05)]">
-                            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_#ef4444]" />
-                            <span className="text-[9px] font-black text-red-500 uppercase tracking-widest font-mono">סיכון קריטי</span>
-                        </div>
-                    ) : item.severity === 'MEDIUM' ? (
-                        <div className="flex items-center gap-2 px-2 py-1 bg-amber-500/10 border border-amber-500/20 rounded-lg w-fit">
-                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]" />
-                            <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest font-mono">השפעה בינונית</span>
-                        </div>
-                    ) : (
-                        <div className="flex items-center gap-2 px-2 py-1 bg-blue-500/5 border border-white/5 rounded-lg w-fit">
-                            <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
-                            <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest font-mono">תיעוד סטנדרטי</span>
-                        </div>
-                    )}
-                    {confidencePercent && (
-                        <div className="flex items-center gap-2 px-2 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-lg w-fit">
-                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
-                            <span className="text-[9px] font-black text-emerald-300 uppercase tracking-widest font-mono">
-                                AI {confidencePercent}
-                            </span>
-                        </div>
-                    )}
-                </div>
-            </td>
-
-            <td className="px-4 py-4 z-10">
-                <div className="flex flex-col gap-1">
-                    <span className="text-xs font-bold text-white line-clamp-1">{item.title}</span>
-                    <span className="text-[10px] text-gray-500 line-clamp-2 leading-relaxed">
-                        {item.description}
-                    </span>
-                </div>
-            </td>
-
-            <td className="px-4 text-center z-10">
-                <div className="flex items-center justify-center gap-2">
-                    {linkedIdCount > 0 && (
-                        <div className="inline-flex items-center justify-center w-8 h-8 bg-purple-500/10 border border-purple-500/20 rounded-xl hover:bg-purple-500/20 transition-all group/links relative">
-                            <Brain className="w-4 h-4 text-purple-400" />
-                            <div className="absolute bottom-full right-0 mb-3 w-56 p-4 bg-[#151C24] border border-purple-500/30 rounded-2xl shadow-2xl opacity-0 invisible group-hover/links:opacity-100 group-hover/links:visible transition-all z-[60] backdrop-blur-2xl">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-[10px] font-mono font-black text-purple-400 uppercase tracking-widest">סנכרון חכם</span>
-                                    <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                                </div>
-                                <p className="text-[10px] text-gray-400 leading-relaxed text-right">
-                                    קונפליקטים מקושרים: <span className="text-white font-mono">{linkedIdCount}</span>
-                                    <br />
-                                    השפעה: <span className="text-purple-300 font-bold">תמחור רוחבי משולב</span>
-                                </p>
-                            </div>
-                        </div>
-                    )}
-
-                    {evidenceSummary.hasEvidence && (
-                        <div className="inline-flex items-center justify-center w-8 h-8 bg-blue-500/10 border border-blue-500/20 rounded-xl hover:bg-blue-500/20 transition-all group/evidence relative">
-                            <Shield className="w-4 h-4 text-blue-400" />
-                            <div className="absolute bottom-full right-0 mb-3 w-56 p-4 bg-[#151C24] border border-blue-500/30 rounded-2xl shadow-2xl opacity-0 invisible group-hover/evidence:opacity-100 group-hover/evidence:visible transition-all z-[60] backdrop-blur-2xl">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-[10px] font-mono font-black text-blue-400 uppercase tracking-widest">פרוטוקול הוכחות</span>
-                                    <Shield className="w-3 h-3 text-blue-400" />
-                                </div>
-                                <p className="text-[10px] text-gray-400 leading-relaxed text-right">
-                                    {evidenceDetail}
-                                    <br />
-                                    <span className="text-blue-300 font-bold">{evidenceSummary.verified ? 'מוכן לתמחור עם סימוכין.' : 'לא להציג כדרישה ודאית לפני בדיקה.'}</span>
-                                </p>
-                            </div>
-                        </div>
-                    )}
-
-                    {!evidenceSummary.hasEvidence && (
-                        <span className="text-gray-800 font-mono text-[10px]">--</span>
-                    )}
-                </div>
-            </td>
-
-            <td className="px-4 z-10">
-                <div className="flex items-center justify-end gap-3 opacity-50 group-hover:opacity-100 transition-all">
-                    <button type="button" aria-label={`בדיקת מסמכי השינוי: ${item.title}`}
-                        className="rounded-xl border border-blue-400/30 px-3 py-2 text-xs text-blue-200 hover:bg-blue-400/10"
-                        onClick={event => { event.stopPropagation(); setCaseReviewOpen(true); }}>בדיקת מסמכי השינוי</button>
-                    <button
-                        className={`p-2 rounded-xl transition-all ${isScanning ? 'text-blue-400 bg-blue-400/10' : 'text-gray-600 hover:text-white hover:bg-white/10'}`}
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            if (onRescan && !isScanning) onRescan(item);
-                        }}
-                        disabled={isScanning}
-                    >
-                        <RefreshCw className={`w-4 h-4 ${isScanning ? 'animate-spin' : ''}`} />
-                    </button>
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            onSelectForEstimation(item);
-                        }}
-                        className={`flex items-center gap-3 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all shadow-xl shadow-black/20 group/btn
-                        ${item.severity === 'HIGH'
-                            ? 'bg-amber-500 text-black hover:bg-white'
-                            : 'bg-emerald-500 text-black hover:bg-white'
-                        }`}
-                    >
-                        <span>{item.severity === 'HIGH' ? 'מצב הגנה משפטית' : 'תמחור חריג AI'}</span>
-                        <Zap size={12} className="fill-current group-hover/btn:animate-bounce" />
-                    </button>
-                </div>
-                {caseReviewOpen && <React.Suspense fallback={<span role="status">טוען בדיקת מקורות...</span>}>
-                    <WorkChangeReviewPanel findingId={item.id} projectId={item.project_id} onClose={closeCaseReview} />
-                </React.Suspense>}
-            </td>
-        </RowComponent>
-    );
-}, (prev, next) => (
-    prev.item === next.item
-    && prev.groupIdx === next.groupIdx
-    && prev.itemIdx === next.itemIdx
-    && prev.isSelected === next.isSelected
-    && prev.isScanning === next.isScanning
-    && prev.shouldAnimateRows === next.shouldAnimateRows
-    && prev.confidencePercent === next.confidencePercent
-    && prev.onToggleSelection === next.onToggleSelection
-    && prev.onSelectForEstimation === next.onSelectForEstimation
-    && prev.onRescan === next.onRescan
-));
-
-function PendingQueueTable({
-    items,
-    selectedIds = [],
-    onToggleSelection,
-    onSelectAll,
-    onSelectForEstimation,
-    onRescan,
-    onBulkRescan,
-    onBulkDelete,
-    scanningItems = [],
-    getConfidencePercent,
-}: PendingQueueTableProps) {
+const PendingQueueRow = React.memo(function PendingQueueRow({ item, groupIdx, itemIdx, isSelected, isScanning, confidencePercent, onToggleSelection, onSelectForEstimation, onRescan, onDetails, onReview }: QueueRowProps) {
+    const summary = getEvidenceSummary(item.evidence_data);
+    return <tr data-queue-row={item.id} data-selected={isSelected || undefined} aria-busy={isScanning || undefined}>
+  <td><input type="checkbox" aria-label={'בחירת פריט: ' + item.title} checked={isSelected} disabled={!onToggleSelection} onChange={() => onToggleSelection?.(item.id)}/></td>
+  <td><BidiText kind="code" value={(groupIdx + 1) + '-' + (itemIdx + 1)}/></td>
+  <td><div className="ti-queue-priority"><StatusChip tone={item.severity === 'HIGH' ? 'danger' : item.severity === 'MEDIUM' ? 'warning' : 'neutral'}>{item.severity === 'HIGH' ? 'עדיפות גבוהה' : item.severity === 'MEDIUM' ? 'עדיפות בינונית' : 'עדיפות רגילה'}</StatusChip>{confidencePercent && <span className="ti-meta">Confidence <BidiText kind="percent" value={confidencePercent}/></span>}</div></td>
+  <td><button type="button" className="ti-queue-description" aria-label={'פרטי פריט: ' + item.title} onClick={() => onDetails(item)}><strong>{item.title}</strong><span>{item.description}</span></button></td>
+  <td><Button variant="text" aria-label={'מקורות: ' + item.title} onClick={() => onDetails(item)}><Eye size={16} aria-hidden="true"/>{summary.verified ? 'מקור מאומת' : summary.hasEvidence ? 'לבדיקה' : 'אין מקור'}</Button></td>
+  <td><div className="ti-queue-row-actions"><Button aria-label={'בדיקת מסמכי השינוי: ' + item.title} onClick={() => onReview(item)}>בדיקת שינוי</Button><Button variant="text" aria-label={'סריקה חוזרת: ' + item.title} pending={isScanning} busyLabel="סורק…" disabled={!onRescan} onClick={() => onRescan?.(item)}><RefreshCw size={16} aria-hidden="true"/></Button><Button variant="primary" aria-label={'תמחור: ' + item.title} onClick={() => onSelectForEstimation(item)}>תמחור</Button></div></td>
+ </tr>;
+});
+function QueueSourceDetails({ item }: {
+    item: ContradictionItem;
+}) {
+    const evidence = getEvidenceRecord(item.evidence_data), summary = getEvidenceSummary(item.evidence_data), linkedIds = Array.isArray(evidence?.linked_ids) ? evidence.linked_ids : [], missing = Array.isArray(evidence?.missing_evidence) ? evidence.missing_evidence : [];
+    return <div className="ti-ledger-source"><h3 className="ti-section-title">{item.title}</h3><p className="ti-copy ti-preserve-lines">{item.description}</p><p className="ti-copy">מסמך מקור: <BidiText kind="file" value={item.source_execution_doc?.title || 'לא צוין'}/></p><Feedback tone={summary.verified ? 'info' : 'warning'}>{summary.label} · {summary.detail}</Feedback><p className="ti-meta">קונפליקטים מקושרים: {linkedIds.length}</p>{linkedIds.length > 0 && <p className="ti-copy">{linkedIds.map(String).join(' · ')}</p>}{missing.length > 0 && <div><h4 className="ti-section-title">בדיקות ומקורות חסרים</h4>{missing.map((value, index) => <p className="ti-copy" key={index}>{typeof value === 'string' ? value : JSON.stringify(value)}</p>)}</div>}{[['contract_quote', 'ציטוט חוזה'], ['work_quote', 'ציטוט ביצוע']].map(([key, label]) => typeof evidence?.[key] === 'string' && evidence[key] ? <div key={key} className="ti-ledger-quote"><h4>{label}</h4><blockquote>{String(evidence[key])}</blockquote></div> : null)}{!summary.verified && <p className="ti-copy">קישור למקור אינו אישור כספי. יש לבדוק את המקורות ואת המחיר לפני דרישה.</p>}</div>;
+}
+function PendingQueueTable({ items, selectedIds = [], onToggleSelection, onSelectAll, onSelectForEstimation, onRescan, onBulkRescan, onBulkDelete, scanningItems = [], getConfidencePercent,compactTools }: PendingQueueTableProps) {
     const scrollContainerRef = React.useRef<HTMLDivElement | null>(null);
     const scrollFrameRef = React.useRef<number | null>(null);
     const [scrollTop, setScrollTop] = React.useState(0);
@@ -407,14 +154,10 @@ function PendingQueueTable({
     const selectedIdSet = React.useMemo(() => new Set(selectedIds), [selectedIds]);
     const scanningItemIdSet = React.useMemo(() => new Set(scanningItems), [scanningItems]);
     const collapsedGroupSet = React.useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
-    const shouldAnimateRows = items.length <= QUEUE_ROW_MOTION_THRESHOLD;
     const shouldVirtualizeRows = items.length > QUEUE_ROW_VIRTUALIZATION_THRESHOLD;
     const toggleGroup = React.useCallback((title: string) => {
-        setCollapsedGroups(prev =>
-            prev.includes(title) ? prev.filter(t => t !== title) : [...prev, title]
-        );
+        setCollapsedGroups(prev => prev.includes(title) ? prev.filter(t => t !== title) : [...prev, title]);
     }, []);
-
     const groupedItems = React.useMemo(() => items.reduce((acc, item) => {
         const sourceTitle = item.source_execution_doc?.title || 'מסמכים כלליים';
         if (!acc[sourceTitle]) {
@@ -423,41 +166,31 @@ function PendingQueueTable({
         acc[sourceTitle].push(item);
         return acc;
     }, {} as Record<string, ContradictionItem[]>), [items]);
-
-    const groupedEntries = React.useMemo(
-        () => Object.entries(groupedItems),
-        [groupedItems]
-    );
-    const queueRenderRows = React.useMemo<PendingQueueRenderRow[]>(() => (
-        groupedEntries.flatMap(([sourceTitle, groupItems], groupIdx) => {
-            const rows: PendingQueueRenderRow[] = [{
+    const groupedEntries = React.useMemo(() => Object.entries(groupedItems), [groupedItems]);
+    const queueRenderRows = React.useMemo<PendingQueueRenderRow[]>(() => (groupedEntries.flatMap(([sourceTitle, groupItems], groupIdx) => {
+        const rows: PendingQueueRenderRow[] = [{
                 kind: 'group',
                 sourceTitle,
                 groupItems,
                 groupIdx,
                 height: QUEUE_GROUP_ROW_HEIGHT,
             }];
-
-            if (collapsedGroupSet.has(sourceTitle)) {
-                return rows;
-            }
-
-            groupItems.forEach((item, itemIdx) => {
-                rows.push({
-                    kind: 'item',
-                    item,
-                    groupIdx,
-                    itemIdx,
-                    height: QUEUE_ITEM_ROW_HEIGHT,
-                });
-            });
-
+        if (collapsedGroupSet.has(sourceTitle)) {
             return rows;
-        })
-    ), [collapsedGroupSet, groupedEntries]);
+        }
+        groupItems.forEach((item, itemIdx) => {
+            rows.push({
+                kind: 'item',
+                item,
+                groupIdx,
+                itemIdx,
+                height: QUEUE_ITEM_ROW_HEIGHT,
+            });
+        });
+        return rows;
+    })), [collapsedGroupSet, groupedEntries]);
     const queueVirtualRowMetrics = React.useMemo<PendingQueueVirtualMetric[]>(() => {
         let offset = 0;
-
         return queueRenderRows.map((row) => {
             const metric = {
                 row,
@@ -471,9 +204,7 @@ function PendingQueueTable({
     const totalVirtualHeight = React.useMemo(() => {
         const lastMetric = queueVirtualRowMetrics[queueVirtualRowMetrics.length - 1];
         return lastMetric ? lastMetric.offset + lastMetric.height : 0;
-    },
-        [queueVirtualRowMetrics]
-    );
+    }, [queueVirtualRowMetrics]);
     const virtualWindow = React.useMemo(() => {
         if (!shouldVirtualizeRows) {
             return {
@@ -482,7 +213,6 @@ function PendingQueueTable({
                 bottomPadding: 0,
             };
         }
-
         const effectiveViewportHeight = viewportHeight || QUEUE_ITEM_ROW_HEIGHT * 10;
         const minVisibleOffset = Math.max(0, scrollTop - QUEUE_ITEM_ROW_HEIGHT * QUEUE_VIRTUAL_OVERSCAN);
         const maxVisibleOffset = scrollTop + effectiveViewportHeight + QUEUE_ITEM_ROW_HEIGHT * QUEUE_VIRTUAL_OVERSCAN;
@@ -491,7 +221,6 @@ function PendingQueueTable({
         const visibleMetrics = queueVirtualRowMetrics.slice(startIndex, endIndex);
         const firstVisibleMetric = visibleMetrics[0] || null;
         const lastVisibleMetric = visibleMetrics[visibleMetrics.length - 1] || null;
-
         return {
             visibleRows: visibleMetrics.map((metric) => metric.row),
             topPadding: firstVisibleMetric?.offset || 0,
@@ -511,95 +240,48 @@ function PendingQueueTable({
         if (!getConfidencePercent) {
             return new Map<string, string | null>();
         }
-
         return new Map(items.map((item) => [item.id, getConfidencePercent(item)]));
     }, [getConfidencePercent, items]);
-
-    const queueRowsContent = React.useMemo(() => (
-        <>
-            {virtualWindow.topPadding > 0 && (
-                <tr key="virtual-top-spacer" aria-hidden="true">
-                    <td colSpan={6} style={{ height: virtualWindow.topPadding, padding: 0 }} />
-                </tr>
-            )}
-
-            {virtualWindow.visibleRows.map((row) => {
-                if (row.kind === 'group') {
-                    return (
-                        <PendingQueueGroupHeader
-                            key={`group-${row.sourceTitle}`}
-                            sourceTitle={row.sourceTitle}
-                            itemCount={row.groupItems.length}
-                            isCollapsed={collapsedGroupSet.has(row.sourceTitle)}
-                            onToggle={toggleGroup}
-                        />
-                    );
-                }
-
-                return (
-                    <PendingQueueRow
-                        key={row.item.id}
-                        item={row.item}
-                        groupIdx={row.groupIdx}
-                        itemIdx={row.itemIdx}
-                        isSelected={selectedIdSet.has(row.item.id)}
-                        isScanning={scanningItemIdSet.has(row.item.id)}
-                        shouldAnimateRows={shouldAnimateRows}
-                        confidencePercent={confidencePercentById.get(row.item.id) ?? null}
-                        onToggleSelection={onToggleSelection}
-                        onSelectForEstimation={onSelectForEstimation}
-                        onRescan={onRescan}
-                    />
-                );
-            })}
-
-            {virtualWindow.bottomPadding > 0 && (
-                <tr key="virtual-bottom-spacer" aria-hidden="true">
-                    <td colSpan={6} style={{ height: virtualWindow.bottomPadding, padding: 0 }} />
-                </tr>
-            )}
-        </>
-    ), [
-        collapsedGroupSet,
-        confidencePercentById,
-        onRescan,
-        onSelectForEstimation,
-        onToggleSelection,
-        scanningItemIdSet,
-        selectedIdSet,
-        shouldAnimateRows,
-        toggleGroup,
-        virtualWindow,
-    ]);
-
+    const [selectionToolsOpen,setSelectionToolsOpen]=React.useState(false);
+    const [detailItem, setDetailItem] = React.useState<ContradictionItem | null>(null);
+    const [reviewItem, setReviewItem] = React.useState<ContradictionItem | null>(null);
+    const [operationError, setOperationError] = React.useState<string | null>(null);
+    const [bulkScanning, setBulkScanning] = React.useState(false);
+    const reviewOrigin = React.useRef<HTMLElement | null>(null), wasReviewOpen = React.useRef(false);
+    React.useEffect(() => { if (wasReviewOpen.current && !reviewItem) {
+        const origin = reviewOrigin.current;
+        requestAnimationFrame(() => { if (origin?.isConnected)
+            origin.focus();
+        else
+            scrollContainerRef.current?.focus(); });
+    } wasReviewOpen.current = Boolean(reviewItem); }, [reviewItem]);
+    const closeReview = React.useCallback(() => setReviewItem(null), []);
+    const openReview = React.useCallback((item: ContradictionItem) => { reviewOrigin.current = document.activeElement as HTMLElement; setReviewItem(item); }, []);
+    const openDetails = React.useCallback((item: ContradictionItem) => setDetailItem(item), []);
+    const rescan = React.useCallback((item: ContradictionItem) => { setOperationError(null); void onRescan?.(item).catch(() => setOperationError('הסריקה לא הושלמה. אפשר לנסות שוב.')); }, [onRescan]);
+    const queueRowsContent = React.useMemo(() => <>
+  {virtualWindow.topPadding > 0 && <tr aria-hidden="true"><td colSpan={6} style={{ height: virtualWindow.topPadding, padding: 0 }}/></tr>}
+  {virtualWindow.visibleRows.map(row => row.kind === 'group' ? <PendingQueueGroupHeader key={'group-' + row.sourceTitle} sourceTitle={row.sourceTitle} itemCount={row.groupItems.length} isCollapsed={collapsedGroupSet.has(row.sourceTitle)} onToggle={toggleGroup}/> : <PendingQueueRow key={row.item.id} item={row.item} groupIdx={row.groupIdx} itemIdx={row.itemIdx} isSelected={selectedIdSet.has(row.item.id)} isScanning={scanningItemIdSet.has(row.item.id)} confidencePercent={confidencePercentById.get(row.item.id) ?? null} onToggleSelection={onToggleSelection} onSelectForEstimation={onSelectForEstimation} onRescan={onRescan ? rescan : undefined} onDetails={openDetails} onReview={openReview}/>)}
+  {virtualWindow.bottomPadding > 0 && <tr aria-hidden="true"><td colSpan={6} style={{ height: virtualWindow.bottomPadding, padding: 0 }}/></tr>}
+ </>, [virtualWindow, collapsedGroupSet, toggleGroup, selectedIdSet, scanningItemIdSet, confidencePercentById, onToggleSelection, onSelectForEstimation, onRescan, rescan, openDetails, openReview]);
     const allItemIds = React.useMemo(() => items.map((item) => item.id), [items]);
-    const allSelected = React.useMemo(
-        () => allItemIds.length > 0 && allItemIds.every((id) => selectedIdSet.has(id)),
-        [allItemIds, selectedIdSet]
-    );
-
+    const allSelected = React.useMemo(() => allItemIds.length > 0 && allItemIds.every((id) => selectedIdSet.has(id)), [allItemIds, selectedIdSet]);
     const handleSelectAllChange = React.useCallback(() => {
         onSelectAll?.(allSelected ? [] : allItemIds);
     }, [allItemIds, allSelected, onSelectAll]);
-
     React.useEffect(() => {
         const container = scrollContainerRef.current;
-
         if (!container) {
             return;
         }
-
         const updateViewportHeight = () => {
             setViewportHeight(container.clientHeight || QUEUE_ITEM_ROW_HEIGHT * 10);
         };
-
         updateViewportHeight();
-
         const resizeObserver = typeof ResizeObserver === 'undefined'
             ? null
             : new ResizeObserver(updateViewportHeight);
         resizeObserver?.observe(container);
-
         return () => {
             resizeObserver?.disconnect();
             if (scrollFrameRef.current !== null) {
@@ -607,153 +289,38 @@ function PendingQueueTable({
             }
         };
     }, []);
-
     const handleScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
         if (!shouldVirtualizeRows) {
             return;
         }
-
         const nextScrollTop = event.currentTarget.scrollTop;
-
         if (scrollFrameRef.current !== null) {
             cancelAnimationFrame(scrollFrameRef.current);
         }
-
         scrollFrameRef.current = requestAnimationFrame(() => {
             setScrollTop(nextScrollTop);
             scrollFrameRef.current = null;
         });
     }, [shouldVirtualizeRows]);
-
-    if (items.length === 0) {
-        return (
-            <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="h-full flex flex-col items-center justify-center p-20 text-center bg-[#0B0F14]/50 rounded-[2.5rem] border border-white/5"
-                dir="rtl"
-            >
-                <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mb-6 shadow-[0_0_50px_rgba(16,185,129,0.1)]">
-                    <CheckCircle className="w-10 h-10 text-emerald-500" />
-                </div>
-                <h3 className="text-xl font-black text-white font-mono uppercase tracking-widest">התור נקי</h3>
-                <p className="mt-2 text-gray-500 text-sm font-medium max-w-xs">אין חריגים פתוחים שממתינים לתמחור כרגע. אם נוספו מסמכים חדשים, יש להריץ סנכרון חכם לפני מסקנה סופית.</p>
-            </motion.div>
-        );
+    const bulkActions=<><Button pending={bulkScanning} busyLabel="סורק…" disabled={!onBulkRescan} onClick={async () => { setBulkScanning(true); setOperationError(null); try {
+        await onBulkRescan?.(selectedIds);
     }
-
-    return (
-        <div className="flex flex-col h-full bg-[#0B0F14] rounded-[2rem] border border-white/5 overflow-hidden shadow-2xl relative" dir="rtl">
-            {/* Table Header Section */}
-            <div
-                ref={scrollContainerRef}
-                onScroll={handleScroll}
-                className="overflow-x-auto overflow-y-auto custom-scrollbar flex-1 relative"
-            >
-                <table className="w-full text-right border-collapse table-fixed">
-                    <thead className="sticky top-0 bg-[#151C24] z-20 border-b border-white/5">
-                        <tr className="h-14">
-                            <th className="px-4 w-12 text-center">
-                                <input
-                                    type="checkbox"
-                                    className="w-4 h-4 rounded border-white/10 bg-white/5 checked:bg-blue-500 transition-all cursor-pointer"
-                                    checked={allSelected}
-                                    onChange={handleSelectAllChange}
-                                />
-                            </th>
-                            <th className="px-4 text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] font-mono w-20 text-center">מזהה_צומת</th>
-                            <th className="px-4 text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] font-mono w-28">עדיפות</th>
-                            <th className="px-4 text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] font-mono">ניתוח_חריגה</th>
-                            <th className="px-4 text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] font-mono w-24 text-center">קישורים_למקור</th>
-                            <th className="px-4 text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] font-mono w-40 text-center">פעולת בינה מלאכותית</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                        {queueRowsContent}
-                    </tbody>
-                </table>
-            </div>
-
-            {/* Bulk Actions Floating Bar */}
-            <AnimatePresence>
-                {selectedIds.length > 0 && (
-                    <motion.div
-                        initial={{ opacity: 0, y: 100, x: '-50%' }}
-                        animate={{ opacity: 1, y: 0, x: '-50%' }}
-                        exit={{ opacity: 0, y: 100, x: '-50%' }}
-                        className="fixed bottom-10 left-1/2 flex items-center gap-6 px-10 py-5 bg-[#151C24]/90 backdrop-blur-3xl border border-blue-500/20 rounded-[2rem] shadow-[0_30px_100px_rgba(0,0,0,0.8)] z-[100]"
-                    >
-                        <div className="flex items-center gap-4 border-l border-white/5 pl-6">
-                            <div className="w-10 h-10 rounded-2xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20">
-                                <Zap className="w-5 h-5 text-blue-500" />
-                            </div>
-                            <div className="flex flex-col">
-                                <span className="text-white font-mono text-lg font-black leading-none">{selectedIds.length}</span>
-                                <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest font-black">פריטים נבחרו</span>
-                            </div>
-                        </div>
-
-                        <div className="flex items-center gap-4">
-                             <motion.button
-                                 whileHover={{ scale: 1.05 }}
-                                 whileTap={{ scale: 0.95 }}
-                                 onClick={() => onBulkRescan?.(selectedIds)}
-                                 className="flex items-center gap-3 px-6 py-3 bg-blue-500 text-black rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-[0_10px_20px_rgba(59,130,246,0.3)] hover:bg-white"
-                             >
-                                 <Play className="w-4 h-4 fill-current" />
-                                 סנכרון סריקה חכם
-                             </motion.button>
-                             <motion.button
-                                 whileHover={{ scale: 1.05 }}
-                                 whileTap={{ scale: 0.95 }}
-                                 onClick={() => onBulkDelete?.(selectedIds)}
-                                 className="flex items-center gap-3 px-6 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"
-                             >
-                                 <Trash2 className="w-4 h-4" />
-                                 ניקוי בחירה
-                             </motion.button>
-
-                            <button
-                                onClick={() => onSelectAll?.([])}
-                                className="p-2 text-gray-500 hover:text-white transition-colors"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-
-            {/* System Bar Integration - Terminal Style */}
-            <div className="px-6 py-2 bg-[#151C24] border-t border-white/5 flex items-center justify-between z-30">
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                        <Activity size={12} className="text-emerald-500" />
-                        <span className="text-[9px] font-mono text-emerald-500 font-black uppercase tracking-[0.2em]">מערכת תמחור פעילה</span>
-                    </div>
-                    <div className="w-[1px] h-3 bg-white/5" />
-                    <div className="flex items-center gap-2">
-                        <Shield size={12} className="text-gray-500" />
-                        <span className="text-[9px] font-mono text-gray-600 font-black uppercase tracking-widest">הגנה פיננסית פעילה</span>
-                    </div>
-                </div>
-                <div className="flex items-center gap-6 text-[9px] font-mono font-black uppercase tracking-widest">
-                    <div className="flex items-center gap-2 text-gray-600">
-                        <span>פריטים:</span>
-                        <span className="text-blue-500">{selectedIds.length}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-gray-600">
-                        <span>מעבד:</span>
-                        <span className="text-white">תמחור לפי מקורות מאומתים</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-gray-600">
-                        <span>מע&quot;מ:</span>
-                        <span className="text-emerald-500">18.00%</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
+    catch {
+        setOperationError('הסריקה המרוכזת לא הושלמה.');
+    }
+    finally {
+        setBulkScanning(false);
+    } }}>סריקה חוזרת לבחירה</Button><Button variant="danger" disabled={!onBulkDelete} onClick={() => { void onBulkDelete?.(selectedIds); }}><Trash2 size={16} aria-hidden="true"/>מחיקת הבחירה</Button><Button variant="text" onClick={() => onSelectAll?.([])}>ביטול בחירה</Button></>;
+    return <div className="ti-queue-table-frame" dir="rtl" data-virtualized={String(shouldVirtualizeRows)}>
+  <div className="ti-queue-tools-compact">{compactTools}{selectedIds.length>0&&<Button onClick={()=>setSelectionToolsOpen(true)}>בחירה ({selectedIds.length})</Button>}</div>
+  {operationError && <Feedback tone="danger">{operationError}</Feedback>}
+  {selectedIds.length > 0 && <div className="ti-queue-bulk ti-queue-bulk--wide" aria-label="פעולות בבחירה"><span className="ti-meta">נבחרו {selectedIds.length}</span>{bulkActions}</div>}
+  <div ref={scrollContainerRef} className="ti-ledger-scroll" onScroll={handleScroll} role="region" tabIndex={0} aria-label="תור התמחור · גלילה אופקית ואנכית">
+   <table className="ti-table ti-queue-table" style={{ minWidth: 1152 }}><colgroup>{[48, 72, 160, 320, 200, 352].map((width, index) => <col key={index} style={{ width }}/>)}</colgroup><thead><tr><th><input type="checkbox" aria-label="בחירת כל הפריטים בתור" checked={allSelected} disabled={!onSelectAll || !items.length} onChange={handleSelectAllChange}/></th><th>פריט</th><th>עדיפות</th><th>תיאור השינוי</th><th>מקורות</th><th>פעולות</th></tr></thead><tbody>{items.length ? queueRowsContent : <tr><td colSpan={6}><p className="ti-copy">אין פריטים שממתינים לתמחור כרגע. אם נוספו מסמכים, יש לבצע סנכרון לפני מסקנה סופית.</p></td></tr>}</tbody></table>
+  </div>
+  <Dialog open={selectionToolsOpen} labelledBy="queue-selection-title" onClose={()=>setSelectionToolsOpen(false)}><header className="ti-dialog__header"><h2 id="queue-selection-title" className="ti-section-title">פעולות בבחירה ({selectedIds.length})</h2><Button onClick={()=>setSelectionToolsOpen(false)}>סגירה</Button></header><div className="ti-ledger-tool-list">{bulkActions}</div></Dialog>
+  <Dialog open={Boolean(detailItem)} labelledBy="queue-source-title" onClose={() => setDetailItem(null)}><header className="ti-dialog__header"><h2 id="queue-source-title" className="ti-section-title">פרטי השינוי והמקורות</h2><Button onClick={() => setDetailItem(null)}>סגירה</Button></header>{detailItem && <QueueSourceDetails item={detailItem}/>}</Dialog>
+  {reviewItem && <React.Suspense fallback={<Feedback>טוען בדיקת מקורות…</Feedback>}><WorkChangeReviewPanel findingId={reviewItem.id} projectId={reviewItem.project_id} onClose={closeReview}/></React.Suspense>}
+ </div>;
 }
-
 export default React.memo(PendingQueueTable);

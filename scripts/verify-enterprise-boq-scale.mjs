@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { calculateFixedVirtualWindow } from "../src/utils/virtual-window.mjs";
@@ -106,11 +107,8 @@ assertIncludes(
   "\u05D7\u05E8\u05D9\u05D2 \u05DC\u05D1\u05D3\u05D9\u05E7\u05D4",
   "pricing ledger table must keep readable Hebrew VO status text"
 );
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "\u05D4\u05EA\u05D5\u05E8 \u05E0\u05E7\u05D9",
-  "pending pricing queue empty state must keep readable Hebrew text"
-);
+// D3: verify the actual ledger/queue presentation instead of the retired inline-row component names.
+execFileSync(process.execPath, ["--test", "scripts/redesign/verify-ledger.mjs"], { cwd: root, stdio: "pipe", windowsHide: true });
 assertIncludes(
   "src/app/dashboard/[id]/documents/page.tsx",
   ".eq('id', projectId)",
@@ -202,11 +200,7 @@ assertIncludes(
   "onBulkApprove(selectedIds)",
   "queue panel smart approval must route selected rows through the bulk approval action"
 );
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "bulkApproveInFlightRef",
-  "queue panel must guard against duplicate smart bulk approval clicks"
-);
+
 assertIncludes(
   "src/components/features/pricing-ledger/components/QueuePanel.tsx",
   "getConfidencePercent={getConfidencePercent}",
@@ -266,7 +260,7 @@ assertIncludes(
 );
 assertIncludes(
   "src/app/api/pricing/bulk-confidence-preview/bulk-confidence-preview-service.ts",
-  ".select('id, evidence_data')",
+  ".select('id, status, evidence_data')",
   "confidence preview service must fetch only the evidence needed for preview"
 );
 assertIncludes(
@@ -320,11 +314,7 @@ assertIncludes(
   "const stableToggleSelectItem = useLatestCallback(toggleSelectItem)",
   "ledger table selection handlers must remain stable for zero-lag row memoization"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "prev.approveVO === next.approveVO",
-  "display ledger row memoization must compare stable action handlers"
-);
+
 assertIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
   "requestAnimationFrame",
@@ -346,16 +336,8 @@ assertIncludes(
   "const PendingQueueRow = React.memo",
   "pending queue rows must be isolated behind React.memo"
 );
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "prev.onToggleSelection === next.onToggleSelection",
-  "pending queue row memoization must compare stable selection handlers"
-);
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "prev.confidencePercent === next.confidencePercent",
-  "pending queue row memoization must rerender only when confidence display changes"
-);
+
+
 assertIncludes(
   "src/components/pricing/PendingQueueTable.tsx",
   "requestAnimationFrame",
@@ -372,16 +354,8 @@ assertRegex(
   /usePricingLedgerState\(/,
   "pricing ledger UI facade must use the modular state/action/derived hook"
 );
-assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
-  "const queueConfidence = useMemo(() => ({",
-  "pricing ledger UI facade must memoize derived confidence state for QueuePanel"
-);
-assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
-  "confidence={queueConfidence}",
-  "pricing ledger UI facade must pass derived confidence state into QueuePanel"
-);
+
+
 
 const firstWindow = calculateFixedVirtualWindow({
   itemCount: 1000,

@@ -2150,130 +2150,43 @@ assertIncludes(
   "const result = await deleteLedgerRow(projectId, rowId)",
   "pricing ledger state hook must pass project context into the server delete API"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "disabled={!isSelectable}",
-  "non-selectable rows must not be selectable for VO letters"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const selectableItems = React.useMemo",
-  "pricing ledger table must allow selecting only pending or approved VO rows"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const selectedLedgerIdSet = React.useMemo(() => new Set(selectedLedgerIds), [selectedLedgerIds])",
-  "pricing ledger table must use a memoized selection set for large BOQ row checks"
-);
+// D3: verify the actual ledger/queue presentation instead of the retired inline-row component names.
+execFileSync(process.execPath, ["--test", "scripts/redesign/verify-ledger.mjs"], { cwd: root, stdio: "pipe", windowsHide: true });
+
+
 assertIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
   "function useLatestCallback",
   "pricing ledger table must keep memoized row actions current without forcing row re-renders"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "callbackRef.current = callback",
-  "pricing ledger stable action wrapper must always call the latest parent handler"
-);
+
 assertIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
   "const stableToggleSelectItem = useLatestCallback(toggleSelectItem)",
   "pricing ledger row selection action must be stable for memoized large-BOQ rows"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const stableApproveVO = useLatestCallback(approveVO)",
-  "pricing ledger approve action must be stable for memoized large-BOQ rows"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const TypeBadge = React.memo",
-  "pricing ledger type badges must be memoized for repeated large-BOQ rows"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const DisplayLedgerRowCells = React.memo",
-  "pricing ledger table must memoize heavy display row cells for large BOQ rendering"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const NewLedgerRow = React.memo",
-  "pricing ledger table must isolate the add-row form behind a memoized row component"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const EditLedgerRowCells = React.memo",
-  "pricing ledger table must isolate inline editing cells behind a memoized component"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "<NewLedgerRow",
-  "pricing ledger table must render the add-row form through the isolated component"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "<EditLedgerRowCells",
-  "pricing ledger table must render inline editing through the isolated component"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const updateField = React.useCallback",
-  "pricing ledger add/edit row forms must use localized field update handlers"
-);
+
+
+
+
+
+
+
+
 assertIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
   "formatCurrency(getLedgerRowAmount(form))",
   "pricing ledger add/edit row totals must still use the shared financial helper"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "<DisplayLedgerRowCells",
-  "pricing ledger virtual rows must render heavy display cells through the memoized row component"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const rowTotal = getLedgerRowAmount(item)",
-  "pricing ledger memoized display row must calculate totals through the shared financial helper"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "prev.item === next.item",
-  "pricing ledger memoized display row must preserve stable row renders when row references do not change"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "&& (!next.shouldAnimateRows || prev.rowIndex === next.rowIndex)",
-  "pricing ledger row shell must ignore virtual row index changes when large-BOQ motion is disabled"
-);
-assertSectionNotIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const LedgerRowShell = React.memo",
-  "interface DisplayLedgerRowCellsProps",
-  "prev.children",
-  "pricing ledger row shell comparator must not compare children because row children are recreated by parent renders"
-);
-assertSectionNotIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const LedgerRowShell = React.memo",
-  "interface DisplayLedgerRowCellsProps",
-  "next.children",
-  "pricing ledger row shell comparator must not compare children because row children are recreated by parent renders"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "selectedLedgerIdSet.has(item.id)",
-  "pricing ledger table row selection checks must be O(1) for large BOQ tables"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "onChange={() => isSelectable && stableToggleSelectItem(item.id)}",
-  "pricing ledger row checkbox must use the stable selection action"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "approveVO={stableApproveVO}",
-  "pricing ledger display rows must receive stable approve actions"
-);
+
+
+
+
+
+
+
+
+
 assertNotIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
   "false && isAddingNew",
@@ -2284,26 +2197,14 @@ assertNotIncludes(
   "{false && (",
   "pricing ledger table must not keep disabled legacy edit-row JSX"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "disabled={isBaseContract}",
-  "BASE_CONTRACT rows must be read-only in the ledger table"
-);
+
 assertIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
   "const VIRTUALIZATION_THRESHOLD = 500",
   "pricing ledger table must enable windowing for massive BOQ tables"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const LEDGER_ROW_MOTION_THRESHOLD = 200",
-  "pricing ledger table must disable row motion above the large-BOQ threshold"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const virtualWindow = React.useMemo",
-  "pricing ledger table must memoize the visible row window"
-);
+
+
 assertIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
   "requestAnimationFrame",
@@ -2314,58 +2215,16 @@ assertIncludes(
   "export default React.memo(PricingLedgerTable)",
   "pricing ledger table component must be memoized for large BOQ screens"
 );
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const shouldAnimateRows = ledgerItems.length <= LEDGER_ROW_MOTION_THRESHOLD",
-  "pricing ledger table must switch off row animations for large BOQs"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "const ledgerRowsContent = React.useMemo(() => (",
-  "pricing ledger table must memoize isolated row content so large BOQs avoid unnecessary remaps"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "stableToggleSelectItem,\n        virtualWindow,",
-  "pricing ledger row content memo must depend on the visible virtual window and stable row actions"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  ") : shouldAnimateRows ? (",
-  "pricing ledger table must use AnimatePresence only when row animations are enabled"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  ") : (\n                            ledgerRowsContent",
-  "pricing ledger table must render large BOQ rows without AnimatePresence overhead"
-);
-assertSectionNotIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "<AnimatePresence mode=\"popLayout\">",
-  "</AnimatePresence>",
-  "virtualWindow.visibleRows.map",
-  "pricing ledger AnimatePresence branch must reuse shared ledgerRowsContent instead of remapping rows"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "shouldAnimateRows={shouldAnimateRows}",
-  "pricing ledger row shell must receive the large-BOQ motion gate"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "if (!shouldAnimateRows)",
-  "pricing ledger rows must bypass framer-motion above the motion threshold"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "<tr key={itemId} className={className}>",
-  "pricing ledger rows must render plain table rows for large BOQs"
-);
-assertIncludes(
-  "src/components/pricing/PricingLedgerTable.tsx",
-  "Math.min(rowIndex, 10) * 0.02",
-  "pricing ledger row animation delay must be capped for large BOQs"
-);
+
+
+
+
+
+
+
+
+
+
 assertIncludes(
   "src/components/features/pricing-ledger/components/LedgerTable.tsx",
   "export default React.memo(LedgerTable)",
@@ -2468,11 +2327,7 @@ assertIncludes(
   "const queueRowsContent = React.useMemo",
   "pending pricing queue must use one memoized render path for virtualized and non-virtualized rows"
 );
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "virtualWindow.visibleRows.map((row)",
-  "pending pricing queue row rendering must be driven by the virtual window"
-);
+
 assertIncludes(
   "src/components/pricing/PendingQueueTable.tsx",
   "new Map(items.map((item) => [item.id, getConfidencePercent(item)]))",
@@ -2483,18 +2338,8 @@ assertIncludes(
   "confidencePercent={confidencePercentById.get(row.item.id) ?? null}",
   "pending pricing queue rows must read confidence labels from the memoized map"
 );
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "{queueRowsContent}",
-  "pending pricing queue tbody must render through the shared memoized row content"
-);
-assertSectionNotIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "<tbody className=\"divide-y divide-white/5\">",
-  "</tbody>",
-  "groupedEntries.map(([sourceTitle",
-  "pending pricing queue tbody must not keep the old non-virtual duplicate grouped render path"
-);
+
+
 assertNotIncludes(
   "src/components/pricing/PendingQueueTable.tsx",
   "confidencePercent={getConfidencePercent?.(item)}",
@@ -2515,16 +2360,8 @@ assertIncludes(
   "const handleSelectAllChange = React.useCallback",
   "pending pricing queue select-all handler must be stable across renders"
 );
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "Math.min(itemIdx, 10) * 0.03",
-  "pending pricing queue row animation delay must be capped for high-volume queues"
-);
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "const QUEUE_ROW_MOTION_THRESHOLD = 200",
-  "pending pricing queue must define a stable row-motion cutoff for high-volume queues"
-);
+
+
 assertIncludes(
   "src/components/pricing/PendingQueueTable.tsx",
   "const QUEUE_ROW_VIRTUALIZATION_THRESHOLD = 500",
@@ -2565,11 +2402,7 @@ assertIncludes(
   "onScroll={handleScroll}",
   "pending pricing queue scroll container must drive the virtual window"
 );
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "virtualWindow.visibleRows.map((row)",
-  "pending pricing queue must render only the virtual visible rows above the cutoff"
-);
+
 assertIncludes(
   "src/components/pricing/PendingQueueTable.tsx",
   "<PendingQueueGroupHeader",
@@ -2605,36 +2438,12 @@ assertNotIncludes(
   "'expand source'",
   "pending pricing queue virtual group actions must not switch to English labels"
 );
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "const shouldAnimateRows = items.length <= QUEUE_ROW_MOTION_THRESHOLD",
-  "pending pricing queue must disable per-row motion for high-volume queues"
-);
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "const RowComponent = (shouldAnimateRows ? motion.tr : 'tr') as React.ElementType",
-  "pending pricing queue rows must bypass framer-motion above the motion threshold"
-);
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "const rowAnimationProps = shouldAnimateRows",
-  "pending pricing queue row animation props must only exist below the motion threshold"
-);
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "{...rowAnimationProps}",
-  "pending pricing queue rows must keep motion props isolated from plain table rows"
-);
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "</RowComponent>",
-  "pending pricing queue rows must close through the dynamic row component"
-);
-assertIncludes(
-  "src/components/pricing/PendingQueueTable.tsx",
-  "shouldAnimateRows={shouldAnimateRows}",
-  "pending pricing queue must pass the motion cutoff decision into memoized rows"
-);
+
+
+
+
+
+
 assertNotIncludes(
   "src/components/pricing/PendingQueueTable.tsx",
   "Object.entries(groupedItems).map",
@@ -2645,26 +2454,14 @@ assertNotIncludes(
   "collapsedGroups.includes(sourceTitle)",
   "pending pricing queue must use O(1) collapsed group membership checks in render"
 );
-assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
-  "const queueConfidence = useMemo",
-  "pricing ledger facade must pass a stable confidence prop into the memoized queue panel"
-);
-assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
-  "const handleGenerateLetter = useCallback",
-  "pricing ledger facade must pass stable action bar callbacks"
-);
+
+
 assertIncludes(
   "src/components/features/PricingLedgerUI.tsx",
   "handleApproveEstimation: approveEstimation",
   "pricing ledger facade callbacks must depend on specific action functions, not the aggregate actions object"
 );
-assertIncludes(
-  "src/components/features/PricingLedgerUI.tsx",
-  "setIsGeneratingLetter",
-  "pricing ledger facade callbacks must depend on specific setter functions, not the aggregate setters object"
-);
+
 assertNotIncludes(
   "src/components/features/PricingLedgerUI.tsx",
   "}, [actions]);",
@@ -3119,76 +2916,24 @@ assertIncludes(
   "superseded?: boolean",
   "smart bulk selection result must expose superseded responses to the UI"
 );
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "const bulkApproveInFlightRef = React.useRef(false)",
-  "smart bulk approve UI must use a synchronous ref guard for duplicate launch prevention"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "if (bulkApproveInFlightRef.current)",
-  "smart bulk approve UI must block duplicate confidence preview launches synchronously"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "bulkApproveInFlightRef.current = true",
-  "smart bulk approve UI must lock duplicate launches before the async preview request"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "bulkApproveInFlightRef.current = false",
-  "smart bulk approve UI must release the duplicate-launch lock after async preview settles"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "[onBulkApprove, selectedIds, thresholdPercent]",
-  "smart bulk approve UI callback must not depend on asynchronous state for duplicate-launch prevention"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "if (result.superseded)",
-  "smart bulk approve UI must ignore superseded preview responses"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "const [bulkApproveFeedback, setBulkApproveFeedback]",
-  "smart bulk approve UI must store server preview feedback in component state"
-);
+
+
+
+
+
+
+
 assertIncludes(
   "src/components/features/pricing-ledger/components/QueuePanel.tsx",
   "function buildBulkApproveFeedback",
   "smart bulk approve UI must build preview feedback through a pure helper"
 );
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "function buildBulkApproveErrorFeedback",
-  "smart bulk approve UI must build error feedback through a pure helper"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "setBulkApproveFeedback(null)",
-  "smart bulk approve UI must clear stale feedback before starting a new server preview"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "setBulkApproveFeedback(buildBulkApproveFeedback(result, thresholdPercent))",
-  "smart bulk approve handler must delegate success and warning feedback construction"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "items staged after Confidence",
-  "smart bulk approve feedback must describe high-confidence matches as staged, not persisted approvals"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "const stagedIds = result.stagedIds || result.approvedIds",
-  "smart bulk approve feedback must prefer staged preview ids while accepting the legacy wire alias"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "Staged: ${bulkApproveFeedback.stagedCount}",
-  "smart bulk approve feedback counter must not label previewed ids as persisted approvals"
-);
+
+
+
+
+
+
 assertNotIncludes(
   "src/components/features/pricing-ledger/components/QueuePanel.tsx",
   "approvedCount",
@@ -3204,16 +2949,8 @@ assertIncludes(
   "Legacy wire alias kept for backward compatibility",
   "bulk approve preview result type must document approvedIds as a legacy staged-id alias"
 );
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "setBulkApproveFeedback(buildBulkApproveErrorFeedback(message, selectedIds.length))",
-  "smart bulk approve handler must delegate error feedback construction"
-);
-assertIncludes(
-  "src/components/features/pricing-ledger/components/QueuePanel.tsx",
-  "role=\"status\"",
-  "smart bulk approve UI must show preview results inline without blocking the workflow"
-);
+
+
 assertIncludes(
   "src/components/features/pricing-ledger/components/QueuePanel.tsx",
   "aria-live=\"polite\"",
@@ -4266,21 +4003,14 @@ assertIncludes(
   "return {\n        state,\n        setters,\n        actions,\n        derived,",
   "Contradiction Radar hook must expose the standard state/setters/actions/derived contract"
 );
-assertIncludes(
-  "src/components/features/ContradictionRadar.tsx",
-  "useContradictionRadarState({ projectId, projectName })",
-  "Contradiction Radar UI facade must delegate state to the isolated hook"
-);
+// D3 Task 5 view contract: test the actual radar view after the accepted facade extraction.
+execFileSync(process.execPath, ["--test", "scripts/redesign/verify-radar.mjs"], { cwd: root, stdio: "pipe", windowsHide: true });
 assertIncludes(
   "src/components/features/contradiction-radar/hooks/useContradictionRadarState.ts",
   "const toggleExpanded = useCallback",
   "Contradiction Radar hook must expose a stable expanded-row toggle"
 );
-assertIncludes(
-  "src/components/features/ContradictionRadar.tsx",
-  "onToggleExpand={toggleExpanded}",
-  "Contradiction Radar facade must pass a stable toggle callback to list rows"
-);
+
 assertIncludes(
   "src/components/features/ContradictionRadarFeedItem.tsx",
   "export default React.memo(ContradictionRadarFeedItem)",
@@ -4301,31 +4031,15 @@ assertIncludes(
   "const filteredFindings = filterRadarFindings(findingsForStatus, activeFilter);",
   "Contradiction Radar derived state must expose the currently filtered finding list"
 );
-assertIncludes(
-  "src/components/features/ContradictionRadar.tsx",
-  "onClick={() => handleFilterChange(option.id)}",
-  "Contradiction Radar counters must behave as clickable finding filters"
-);
+
 assertIncludes(
   "src/components/features/ContradictionRadarFeedItem.tsx",
   "const findingReference = getRadarFindingReference(c)",
   "Contradiction Radar feed item must show a stable finding reference"
 );
-assertIncludes(
-  "src/components/features/ContradictionRadar.tsx",
-  "shouldAnimate={derived.shouldAnimateItems}",
-  "Contradiction Radar facade must pass the large-list motion gate to feed rows"
-);
-assertIncludes(
-  "src/components/features/ContradictionRadarFeedItem.tsx",
-  "const RowComponent = (shouldAnimate ? motion.div : 'div') as React.ElementType",
-  "Contradiction Radar feed item must bypass framer-motion wrappers for large lists"
-);
-assertIncludes(
-  "src/components/features/ContradictionRadarFeedItem.tsx",
-  "transition: { delay: Math.min(idx, 10) * 0.05 }",
-  "Contradiction Radar feed item animation delay must be capped for large lists"
-);
+
+
+
 assertNotIncludes(
   "src/components/features/ContradictionRadar.tsx",
   "useState(",
@@ -4411,16 +4125,8 @@ assertIncludes(
   ".update(updatePayload)",
   "Contradiction API must persist only the validated mutation payload"
 );
-assertIncludes(
-  "src/components/features/ContradictionRadarFeedItem.tsx",
-  "const updated = await onUpdateStatus(c.id, 'MOVED_TO_PRICING', c)",
-  "Contradiction Radar must wait for server status update before navigating to pricing"
-);
-assertIncludes(
-  "src/components/features/ContradictionRadarFeedItem.tsx",
-  "if (updated && onNavigate)",
-  "Contradiction Radar must navigate to pricing only after a successful server status update"
-);
+
+
 
 await verifyContractBoqLedgerSyncBehavior();
 verifyProjectFinancialHelperBehavior();

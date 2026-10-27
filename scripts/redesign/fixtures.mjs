@@ -21,3 +21,6 @@ export const radarFindings=[
  radarFixture('pricing',{status:'MOVED_TO_PRICING',category:'variation'}),radarFixture('closed',{status:'RESOLVED'}),
  radarFixture('technical',{status:'ARCHIVED',title:'EXCLUDED_TECHNICAL_RECORD',evidence_data:{review_disposition:{type:'INVALID_AUTOMATIC_FINDING'}}}),
 ];
+
+export function ledgerFixture(id,type='PENDING_VO',overrides={}){return{id,project_id:'demo-ledger-redesign',type,source:type==='BASE_CONTRACT'?'BOQ':'CUSTOM_ANALYSIS',item_code:'40.020.0015',description:`תיאור עבודה ${id} · C-CE6070`,unit:'מ׳',quantity:2,unit_price_excl_vat:120,total_price_excl_vat:240,markup_percentage:0,vat_rate:.18,evidence_data:type==='BASE_CONTRACT'?{source:'pricelist_items',pricelist_item_id:'synthetic-boq-item'}:null,...overrides};}
+export const ledgerRows=['BASE_CONTRACT','PENDING_VO','APPROVED_VO','SENT_VO'].map((type,index)=>ledgerFixture(`ledger-${index}`,type));

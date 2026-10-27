@@ -1,62 +1,24 @@
 import { createClient } from '@/utils/supabase/server';
 import PricingLedgerUI from '@/components/features/PricingLedgerUI';
 import { redirect } from 'next/navigation';
-
-export default async function PricingPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function PricingPage({ params }: {
+    params: Promise<{
+        id: string;
+    }>;
+}) {
     const { id } = await params;
     const supabase = await createClient();
-
     // Auth Check
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) redirect('/login');
-
+    if (!user)
+        redirect('/login');
     const { data: project } = await supabase
         .from('projects')
         .select('id')
         .eq('id', id)
         .eq('contractor_id', user.id)
         .maybeSingle();
-
-    if (!project) redirect('/login');
-
-    return (
-        <div className="p-8 pb-0 pt-6 flex-1 flex flex-col max-w-[1600px] w-full mx-auto relative overflow-hidden" dir="rtl">
-            {/* Background Decorative Elements */}
-            <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-emerald-500/5 to-transparent pointer-events-none"></div>
-            
-            <header className="mb-8 flex justify-between items-end shrink-0 relative z-10">
-                <div>
-                    <div className="flex items-center gap-2 mb-1">
-                        <div className="w-1.5 h-1.5 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
-                        <span className="text-[10px] font-mono font-bold text-emerald-500 uppercase tracking-[0.2em]">מסוף_פיננסי_v4.1</span>
-                    </div>
-                    <h1 className="text-4xl font-black text-white tracking-tighter flex items-center gap-3 font-mono uppercase">
-                        ספר_תמחור
-                        <span className="text-gray-600 font-sans text-xl font-light">/ תמחור וניהול חריגים</span>
-                    </h1>
-                    <p className="text-gray-400 text-sm mt-3 max-w-3xl leading-relaxed">
-                        בדיקת מקורות, התאמת סעיפים וכיסוי העבודה לפני אישור סכום.
-                        כאן מתבצע ניתוח הנדסי של סתירות חוזיות ותרגומן לערך כספי (V.O). 
-                        <span className="block mt-1 text-[11px] text-gray-500 uppercase font-mono tracking-wider">הערה: כל הסכומים אינם כוללים מע&quot;מ (18%)</span>
-                    </p>
-                </div>
-                
-                <div className="flex gap-4 mb-1">
-                    <div className="px-4 py-2 border border-white/5 bg-white/5 rounded-sm flex flex-col items-end">
-                        <span className="text-[9px] text-gray-500 uppercase font-mono">סטטוס</span>
-                        <span className="text-xs font-bold text-emerald-500 flex items-center gap-1.5">
-                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                            מערכת_מוכנה
-                        </span>
-                    </div>
-                </div>
-            </header>
-
-            {/* Client App Container */}
-            <div className="flex-1 min-h-0 relative z-10">
-                <PricingLedgerUI projectId={id} />
-            </div>
-        </div>
-
-    );
+    if (!project)
+        redirect('/login');
+    return <div className="titanium-theme ti-pricing-route" dir="rtl"><PricingLedgerUI projectId={id} /></div>;
 }

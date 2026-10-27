@@ -1,776 +1,151 @@
-import React from 'react';
-import {
-    Brain,
-    Check,
-    CheckCircle,
-    Cpu,
-    Edit2,
-    FileText,
-    Layers,
-    Shield,
-    Trash2,
-    X,
-} from 'lucide-react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { LedgerItem } from '@/types';
+"use client";
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Eye, MoreHorizontal, Edit2, Trash2, CheckCircle2 } from 'lucide-react';
+import type { LedgerItem } from '@/types';
 import { getLedgerRowAmount } from '@/utils/project-financials';
 import { calculateFixedVirtualWindow } from '@/utils/virtual-window.mjs';
-
+import { SELECTABLE_VARIATION_ORDER_TYPES, LEDGER_ROW_TYPES } from '@/components/features/pricing-ledger/constants';
+import { LedgerSourceDetails } from '@/components/features/pricing-ledger/components/LedgerSourceDetails';
+import type { PricingLedgerItem } from '@/components/features/pricing-ledger/types';
+import { Button } from '@/components/ui/titanium/Button';
+import { BidiText } from '@/components/ui/titanium/BidiText';
+import { Field } from '@/components/ui/titanium/Field';
+import { Dialog } from '@/components/ui/titanium/Dialog';
+import { Feedback } from '@/components/ui/titanium/Feedback';
+import { StatusChip } from '@/components/ui/titanium/StatusChip';
 export type LedgerFormState = Partial<Omit<LedgerItem, 'evidence_data'>> & {
     evidence_data?: unknown;
 };
-
-function toReactText(value: unknown): string {
-    if (value === null || value === undefined) return '';
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-
-    try {
-        return JSON.stringify(value);
-    } catch {
-        return String(value);
-    }
-}
-
-function getDisplayNotes(value: unknown): string[] {
-    if (Array.isArray(value)) {
-        return value.map(toReactText).filter(Boolean);
-    }
-
-    const singleNote = toReactText(value);
-    return singleNote ? [singleNote] : [];
-}
-
-
-
 interface PricingLedgerTableProps {
     ledgerItems: LedgerItem[];
     isLoading: boolean;
     isAddingNew: boolean;
     isEditing: string | null;
     newItemForm: LedgerFormState;
-    setNewItemForm: (form: LedgerFormState) => void;
+    setNewItemForm(form: LedgerFormState): void;
     editForm: LedgerFormState;
-    setEditForm: (form: LedgerFormState) => void;
+    setEditForm(form: LedgerFormState): void;
     selectedLedgerIds: string[];
-    toggleSelectItem: (id: string) => void;
-    toggleSelectAll: () => void;
-    handleAddNew: () => void;
-    setIsAddingNew: (val: boolean) => void;
-    handleSaveEdit: () => void;
-    handleCancelEdit: () => void;
-    approveVO: (id: string) => void;
-    handleEditClick: (item: LedgerItem) => void;
-    handleDelete: (id: string) => void;
-    formatCurrency: (val: number) => string;
+    toggleSelectItem(id: string): void;
+    toggleSelectAll(): void;
+    handleAddNew(): unknown;
+    setIsAddingNew(value: boolean): void;
+    handleSaveEdit(): unknown;
+    handleCancelEdit(): void;
+    approveVO(id: string): unknown;
+    handleEditClick(item: LedgerItem): void;
+    handleDelete(id: string): unknown;
+    formatCurrency(value: number): string;
+    errorMessage?: string | null;
 }
-
-const EDITABLE_TYPES: Array<{ value: LedgerItem['type']; label: string }> = [
-    { value: 'PENDING_VO', label: 'חריג לבדיקה' },
-    { value: 'APPROVED_VO', label: 'חריג מאושר' },
-];
-
+export const isLedgerRowSelectable = (item: Pick<LedgerItem, 'type'>) => SELECTABLE_VARIATION_ORDER_TYPES.some(type => type === item.type);
+function knownNumber(value: unknown): number | null { if (value === null || value === undefined || value === '')
+    return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null; }
+function totalKnown(item: LedgerFormState) { return knownNumber(item.total_price_excl_vat) !== null || (knownNumber(item.quantity) !== null && knownNumber(item.unit_price_excl_vat) !== null); }
 const VIRTUALIZATION_THRESHOLD = 500;
-const VIRTUAL_ROW_HEIGHT = 80;
-const VIRTUAL_OVERSCAN = 8;
-const LEDGER_ROW_MOTION_THRESHOLD = 200;
-
-const isSelectableVariationOrder = (item: LedgerItem) =>
-    item.type === 'PENDING_VO' || item.type === 'APPROVED_VO';
-
-function useLatestCallback<T extends (...args: never[]) => unknown>(callback: T): T {
-    const callbackRef = React.useRef(callback);
-
-    React.useEffect(() => {
-        callbackRef.current = callback;
-    }, [callback]);
-
-    const stableCallback = React.useCallback((...args: Parameters<T>) => callbackRef.current(...args), []);
-    return stableCallback as T;
-}
-
-const TypeBadge = React.memo(function TypeBadge({ type }: { type: LedgerItem['type'] }) {
-    if (type === 'BASE_CONTRACT') {
-        return (
-            <div className="px-3 py-1 rounded-full bg-slate-500/10 border border-slate-400/20 text-slate-300 text-xs font-bold">
-                חוזה בסיס
-            </div>
-        );
-    }
-
-    if (type === 'APPROVED_VO') {
-        return (
-            <div className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-bold">
-                חריג מאושר
-            </div>
-        );
-    }
-
-    if (type === 'SENT_VO') {
-        return (
-            <div className="px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/20 text-sky-300 text-xs font-bold">
-                נשלח לדרישה
-            </div>
-        );
-    }
-
-    return (
-        <div className="px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-bold">
-            חריג לבדיקה
-        </div>
-    );
-});
-
-function TypeSelect({
-    value,
-    onChange,
-}: {
-    value?: string;
-    onChange: (value: string) => void;
+const widths = [48, 136, 136, 320, 72, 104, 144, 168, 128];
+const labels = ['בחירה', 'סוג שורה', 'קוד סעיף', 'תיאור העבודה', 'יחידה', 'כמות', 'מחיר יחידה', 'סה״כ ללא מע״מ', 'פעולות'];
+export function LedgerActionControls({ item, pending = false, onEdit, onDelete, onApprove }: {
+    item: LedgerItem;
+    pending?: boolean;
+    onEdit(): void;
+    onDelete(): void;
+    onApprove(): void;
 }) {
-    return (
-        <select
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm focus:border-blue-500 outline-none text-right text-gray-200"
-            dir="rtl"
-        >
-            {EDITABLE_TYPES.map((option) => (
-                <option key={option.value} value={option.value}>
-                    {option.label}
-                </option>
-            ))}
-        </select>
-    );
+    const protectedBase = item.type === 'BASE_CONTRACT';
+    return <div className="ti-ledger-action-controls">{protectedBase && <Feedback>חוזה הבסיס מוגן מעריכה וממחיקה. עדכונו מתבצע דרך מקורות כתב הכמויות.</Feedback>}{item.type === 'PENDING_VO' && <Button variant="primary" onClick={onApprove} disabled={pending}><CheckCircle2 size={16} aria-hidden="true"/>אישור חריג</Button>}<Button onClick={onEdit} disabled={protectedBase || pending} disabledReason={protectedBase ? 'חוזה הבסיס מוגן' : undefined} aria-label="ערוך"><Edit2 size={16} aria-hidden="true"/>ערוך</Button><Button variant="danger" onClick={onDelete} disabled={protectedBase || pending} disabledReason={protectedBase ? 'חוזה הבסיס מוגן' : undefined} aria-label="מחק"><Trash2 size={16} aria-hidden="true"/>מחק</Button></div>;
 }
-
-interface LedgerRowShellProps {
-    item: LedgerItem;
-    itemId: string;
-    rowIndex: number;
-    shouldAnimateRows: boolean;
-    isSelected: boolean;
-    isEditingRow: boolean;
-    children: React.ReactNode;
-}
-
-const LedgerRowShell = React.memo(function LedgerRowShell({
-    itemId,
-    rowIndex,
-    shouldAnimateRows,
-    isSelected,
-    children,
-}: LedgerRowShellProps) {
-    const className = `hover:bg-white/[0.02] transition-colors group border-b border-white/5 last:border-0 min-h-16 ${
-        isSelected ? 'bg-blue-500/5' : ''
-    }`;
-
-    if (!shouldAnimateRows) {
-        return (
-            <tr key={itemId} className={className}>
-                {children}
-            </tr>
-        );
-    }
-
-    return (
-        <motion.tr
-            key={itemId}
-            layout
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ duration: 0.2, delay: Math.min(rowIndex, 10) * 0.02 }}
-            className={className}
-        >
-            {children}
-        </motion.tr>
-    );
-}, (prev, next) => {
-    if (prev.isEditingRow || next.isEditingRow) {
-        return false;
-    }
-
-    return prev.item === next.item
-        && prev.itemId === next.itemId
-        && prev.shouldAnimateRows === next.shouldAnimateRows
-        && prev.isSelected === next.isSelected
-        && (!next.shouldAnimateRows || prev.rowIndex === next.rowIndex);
-});
-
-interface DisplayLedgerRowCellsProps {
-    item: LedgerItem;
-    approveVO: (id: string) => void;
-    handleEditClick: (item: LedgerItem) => void;
-    handleDelete: (id: string) => void;
-    formatCurrency: (val: number) => string;
-}
-
-const DisplayLedgerRowCells = React.memo(function DisplayLedgerRowCells({
-    item,
-    approveVO,
-    handleEditClick,
-    handleDelete,
-    formatCurrency,
-}: DisplayLedgerRowCellsProps) {
-    const rowTotal = getLedgerRowAmount(item);
-    const governingNotes = getDisplayNotes(item.governing_notes);
-    const isBaseContract = item.type === 'BASE_CONTRACT';
-
-    return (
-        <>
-            <td className="px-6 py-4">
-                <TypeBadge type={item.type} />
-            </td>
-            <td className="px-6 py-4 text-sm text-gray-400">{item.item_code || '---'}</td>
-            <td className="px-6 py-4">
-                <div className="flex flex-col gap-2">
-                    <div className="flex items-start gap-2">
-                        <span className="text-sm font-medium text-gray-100 leading-6" dir="rtl">
-                            {item.description}
-                        </span>
-                        {item.ai_rationale && (
-                            <div className="relative group/rationale shrink-0 mt-0.5">
-                                <Brain className="h-4 w-4 text-blue-400 opacity-50 group-hover/rationale:opacity-100 transition-opacity cursor-help" />
-                                <div className="absolute bottom-full right-0 mb-4 w-80 opacity-0 group-hover/rationale:opacity-100 pointer-events-none transition-all z-50 translate-y-2 group-hover/rationale:translate-y-0">
-                                    <div className="bg-[#1A222C] border border-blue-500/30 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.5)] backdrop-blur-xl relative">
-                                        <div className="flex items-center gap-2 mb-3">
-                                            <div className="w-6 h-6 bg-blue-500/10 rounded-lg flex items-center justify-center border border-blue-500/20">
-                                                <Cpu className="h-3.5 w-3.5 text-blue-400" />
-                                            </div>
-                                            <span className="text-xs font-bold text-blue-300">איך המערכת בנתה את הסעיף</span>
-                                        </div>
-                                        <p className="text-sm leading-6 text-gray-300" dir="rtl">
-                                            {item.ai_rationale}
-                                        </p>
-                                        {governingNotes.length > 0 && (
-                                            <div className="pt-3 mt-3 border-t border-white/5 space-y-2">
-                                                <span className="text-xs font-bold text-gray-400">הערות והסתמכויות</span>
-                                                <div className="flex flex-col gap-2">
-                                                    {governingNotes.map((note, i) => (
-                                                        <div key={i} className="flex items-start gap-2 text-xs text-gray-400" dir="rtl">
-                                                            <Shield size={12} className="text-blue-500 shrink-0 mt-0.5" />
-                                                            <span>{note}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        )}
-                                        <div className="absolute -bottom-2 right-6 w-4 h-4 bg-[#1A222C] border-r border-b border-blue-500/30 rotate-45" />
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-
-                    {item.source_execution_doc && (
-                        <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                            <FileText size={12} className="text-gray-600" />
-                            <span className="truncate max-w-[240px]">מסמך מקור: {item.source_execution_doc}</span>
-                        </div>
-                    )}
-                </div>
-            </td>
-            <td className="px-6 py-4 text-sm text-gray-300 text-center">{item.unit || '---'}</td>
-            <td className="px-6 py-4 text-sm text-gray-300 text-center">{item.quantity || 0}</td>
-            <td className="px-6 py-4 text-sm text-gray-300 text-left">{formatCurrency(item.unit_price_excl_vat || 0)}</td>
-            <td className="px-6 py-4 text-base font-bold text-white text-left">{formatCurrency(rowTotal)}</td>
-            <td className="px-6 py-4 text-center">
-                <div className="flex justify-center gap-3 opacity-0 group-hover:opacity-100 transition-all scale-95 group-hover:scale-100">
-                    {item.type === 'PENDING_VO' && (
-                        <button
-                            onClick={() => approveVO(item.id)}
-                            className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-xl transition-all border border-transparent hover:border-emerald-500/20"
-                            title="אשר חריג"
-                        >
-                            <CheckCircle size={16} />
-                        </button>
-                    )}
-                    <button
-                        onClick={() => !isBaseContract && handleEditClick(item)}
-                        disabled={isBaseContract}
-                        className="p-2 text-gray-500 hover:text-white hover:bg-white/5 rounded-xl transition-all border border-transparent hover:border-white/10 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-gray-500 disabled:hover:bg-transparent"
-                        title="ערוך"
-                    >
-                        <Edit2 size={16} />
-                    </button>
-                    <button
-                        onClick={() => !isBaseContract && handleDelete(item.id)}
-                        disabled={isBaseContract}
-                        className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-xl transition-all border border-transparent hover:border-red-500/20 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-gray-500 disabled:hover:bg-transparent"
-                        title="מחק"
-                    >
-                        <Trash2 size={16} />
-                    </button>
-                </div>
-            </td>
-        </>
-    );
-}, (prev, next) => (
-    prev.item === next.item
-    && prev.approveVO === next.approveVO
-    && prev.handleEditClick === next.handleEditClick
-    && prev.handleDelete === next.handleDelete
-    && prev.formatCurrency === next.formatCurrency
-));
-
-interface EditableLedgerFormProps {
+export function LedgerForm({ form, setForm, onSave, onCancel, formatCurrency, pending, error }: {
     form: LedgerFormState;
-    setForm: (form: LedgerFormState) => void;
-    formatCurrency: (val: number) => string;
+    setForm(form: LedgerFormState): void;
+    onSave(): void;
+    onCancel(): void;
+    formatCurrency(value: number): string;
+    pending: boolean;
+    error?: string | null;
+}) {
+    const typeId = useId(), update = (field: string, value: unknown) => setForm({ ...form, [field]: value });
+    return <div className="ti-ledger-form"><div className="ti-field"><label className="ti-field__label" htmlFor={typeId}>סוג שורה</label><select id={typeId} className="ti-select" value={form.type || 'PENDING_VO'} onChange={event => update('type', event.target.value)}>{form.type === 'SENT_VO' && <option value="SENT_VO" disabled>נשלח לדרישה</option>}<option value="PENDING_VO">חריג לבדיקה</option><option value="APPROVED_VO">חריג מאושר</option></select></div><Field label="קוד סעיף" value={form.item_code ?? ''} onChange={event => update('item_code', event.target.value)} dir="ltr"/><Field label="תיאור העבודה" value={form.description ?? ''} onChange={event => update('description', event.target.value)}/><Field label="יחידה" value={form.unit ?? ''} onChange={event => update('unit', event.target.value)}/><Field label="כמות" type="number" step="any" value={form.quantity ?? ''} onChange={event => update('quantity', parseFloat(event.target.value) || 0)}/><Field label="מחיר יחידה ללא מע״מ" type="number" step="any" value={form.unit_price_excl_vat ?? ''} onChange={event => update('unit_price_excl_vat', parseFloat(event.target.value) || 0)}/><p className="ti-copy">סכום לפי הנתונים בטופס: <BidiText kind="money" value={totalKnown(form) ? formatCurrency(getLedgerRowAmount(form)) : '—'}/></p>{error && <Feedback tone="danger">{error}</Feedback>}<div className="ti-dialog__footer"><Button onClick={onCancel} disabled={pending}>ביטול</Button><Button variant="primary" onClick={onSave} pending={pending} busyLabel="שומר…" disabled={!form.description?.trim()} disabledReason={!form.description?.trim() ? 'נדרש תיאור עבודה' : undefined}>שמירת שורה</Button></div></div>;
 }
-
-interface NewLedgerRowProps extends EditableLedgerFormProps {
-    onSave: () => void;
-    onCancel: () => void;
+function useLatestCallback<Args extends unknown[], Result>(callback: (...args: Args) => Result) {
+    const latest = useRef(callback);
+    useEffect(() => { latest.current = callback; }, [callback]);
+    return React.useCallback((...args: Args) => latest.current(...args), []);
 }
-
-const NewLedgerRow = React.memo(function NewLedgerRow({
-    form,
-    setForm,
-    onSave,
-    onCancel,
-    formatCurrency,
-}: NewLedgerRowProps) {
-    const updateField = React.useCallback(
-        (field: string, value: unknown) => setForm({ ...form, [field]: value }),
-        [form, setForm]
-    );
-
-    return (
-        <tr className="bg-primary/5 animate-in slide-in-from-top-1">
-            <td className="px-4 py-3 text-center" />
-            <td className="px-4 py-3">
-                <TypeSelect
-                    value={form.type}
-                    onChange={(value) => updateField('type', value)}
-                />
-            </td>
-            <td className="px-4 py-3">
-                <input
-                    type="text"
-                    value={form.item_code}
-                    onChange={(e) => updateField('item_code', e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm focus:border-primary outline-none text-right text-gray-200"
-                    dir="rtl"
-                />
-            </td>
-            <td className="px-4 py-3">
-                <input
-                    type="text"
-                    value={form.description}
-                    onChange={(e) => updateField('description', e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm focus:border-primary outline-none text-right text-gray-200"
-                    dir="rtl"
-                />
-            </td>
-            <td className="px-4 py-3 text-center">
-                <input
-                    type="text"
-                    value={form.unit}
-                    onChange={(e) => updateField('unit', e.target.value)}
-                    className="w-16 mx-auto bg-black/40 border border-white/10 rounded-xl px-2 py-2 text-sm text-center focus:border-primary outline-none text-gray-200"
-                />
-            </td>
-            <td className="px-4 py-3 text-center">
-                <input
-                    type="number"
-                    value={form.quantity}
-                    onChange={(e) => updateField('quantity', parseFloat(e.target.value) || 0)}
-                    className="w-20 mx-auto bg-black/40 border border-white/10 rounded-xl px-2 py-2 text-sm text-center focus:border-primary outline-none text-gray-200"
-                />
-            </td>
-            <td className="px-4 py-3 text-left">
-                <input
-                    type="number"
-                    value={form.unit_price_excl_vat}
-                    onChange={(e) => updateField('unit_price_excl_vat', parseFloat(e.target.value) || 0)}
-                    className="w-28 px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-sm text-left focus:border-primary outline-none text-gray-200"
-                />
-            </td>
-            <td className="px-4 py-3 text-left text-sm font-bold text-emerald-300">
-                {formatCurrency(getLedgerRowAmount(form))}
-            </td>
-            <td className="px-4 py-3 text-center">
-                <div className="flex justify-center gap-2">
-                    <button
-                        onClick={onSave}
-                        className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-xl transition-colors"
-                    >
-                        <Check className="h-4 w-4" />
-                    </button>
-                    <button
-                        onClick={onCancel}
-                        className="p-2 text-gray-500 hover:bg-white/10 rounded-xl transition-colors"
-                    >
-                        <X className="h-4 w-4" />
-                    </button>
-                </div>
-            </td>
-        </tr>
-    );
-});
-
-interface EditLedgerRowCellsProps extends EditableLedgerFormProps {
-    onSave: () => void;
-    onCancel: () => void;
+interface LedgerRowProps {
+    item: LedgerItem;
+    rowIndex: number;
+    isSelected: boolean;
+    onToggleSelect: (id: string) => void;
+    formatCurrency: (value: number) => string;
+    onDetails: (item: LedgerItem) => void;
+    onAction: (id: string, origin: HTMLElement) => void;
 }
-
-const EditLedgerRowCells = React.memo(function EditLedgerRowCells({
-    form,
-    setForm,
-    onSave,
-    onCancel,
-    formatCurrency,
-}: EditLedgerRowCellsProps) {
-    const updateField = React.useCallback(
-        (field: string, value: unknown) => setForm({ ...form, [field]: value }),
-        [form, setForm]
-    );
-
-    return (
-        <>
-            <td className="px-4 py-3">
-                <TypeSelect
-                    value={form.type}
-                    onChange={(value) => updateField('type', value)}
-                />
-            </td>
-            <td className="px-4 py-3">
-                <input
-                    type="text"
-                    value={form.item_code}
-                    onChange={(e) => updateField('item_code', e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm focus:border-blue-500 outline-none text-right text-gray-200"
-                    dir="rtl"
-                />
-            </td>
-            <td className="px-4 py-3">
-                <input
-                    type="text"
-                    value={form.description}
-                    onChange={(e) => updateField('description', e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm focus:border-blue-500 outline-none text-right text-gray-200"
-                    dir="rtl"
-                />
-            </td>
-            <td className="px-4 py-3 text-center">
-                <input
-                    type="text"
-                    value={form.unit}
-                    onChange={(e) => updateField('unit', e.target.value)}
-                    className="w-16 mx-auto bg-black/40 border border-white/10 rounded-xl px-2 py-2 text-sm text-center focus:border-blue-500 outline-none text-gray-200"
-                />
-            </td>
-            <td className="px-4 py-3 text-center">
-                <input
-                    type="number"
-                    value={form.quantity}
-                    onChange={(e) => updateField('quantity', parseFloat(e.target.value) || 0)}
-                    className="w-20 mx-auto bg-black/40 border border-white/10 rounded-xl px-2 py-2 text-sm text-center focus:border-blue-500 outline-none text-gray-200"
-                />
-            </td>
-            <td className="px-4 py-3 text-left">
-                <input
-                    type="number"
-                    value={form.unit_price_excl_vat}
-                    onChange={(e) => updateField('unit_price_excl_vat', parseFloat(e.target.value) || 0)}
-                    className="w-28 px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-sm text-left focus:border-blue-500 outline-none text-gray-200"
-                />
-            </td>
-            <td className="px-4 py-3 text-left text-sm font-bold text-gray-300">
-                {formatCurrency(getLedgerRowAmount(form))}
-            </td>
-            <td className="px-4 py-3 text-center">
-                <div className="flex justify-center gap-2">
-                    <button
-                        onClick={onSave}
-                        className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-xl transition-all"
-                    >
-                        <Check size={14} />
-                    </button>
-                    <button
-                        onClick={onCancel}
-                        className="p-2 text-gray-500 hover:bg-white/10 rounded-xl transition-all"
-                    >
-                        <X size={14} />
-                    </button>
-                </div>
-            </td>
-        </>
-    );
-});
-
-function PricingLedgerTable({
-    ledgerItems,
-    isLoading,
-    isAddingNew,
-    isEditing,
-    newItemForm,
-    setNewItemForm,
-    editForm,
-    setEditForm,
-    selectedLedgerIds,
-    toggleSelectItem,
-    toggleSelectAll,
-    handleAddNew,
-    setIsAddingNew,
-    handleSaveEdit,
-    handleCancelEdit,
-    approveVO,
-    handleEditClick,
-    handleDelete,
-    formatCurrency,
-}: PricingLedgerTableProps) {
-    const scrollContainerRef = React.useRef<HTMLDivElement | null>(null);
-    const scrollFrameRef = React.useRef<number | null>(null);
-    const [scrollTop, setScrollTop] = React.useState(0);
-    const [viewportHeight, setViewportHeight] = React.useState(0);
-    const stableToggleSelectItem = useLatestCallback(toggleSelectItem);
-    const stableToggleSelectAll = useLatestCallback(toggleSelectAll);
-    const stableHandleAddNew = useLatestCallback(handleAddNew);
-    const stableSetIsAddingNew = useLatestCallback(setIsAddingNew);
-    const stableHandleSaveEdit = useLatestCallback(handleSaveEdit);
-    const stableHandleCancelEdit = useLatestCallback(handleCancelEdit);
-    const stableApproveVO = useLatestCallback(approveVO);
-    const stableHandleEditClick = useLatestCallback(handleEditClick);
-    const stableHandleDelete = useLatestCallback(handleDelete);
-
-    const selectedLedgerIdSet = React.useMemo(() => new Set(selectedLedgerIds), [selectedLedgerIds]);
-    const selectableItems = React.useMemo(
-        () => ledgerItems.filter(isSelectableVariationOrder),
-        [ledgerItems]
-    );
-    const allSelectableSelected = React.useMemo(
-        () => selectableItems.length > 0
-            && selectableItems.every(item => selectedLedgerIdSet.has(item.id)),
-        [selectableItems, selectedLedgerIdSet]
-    );
-    const shouldVirtualize = ledgerItems.length > VIRTUALIZATION_THRESHOLD;
-    const shouldAnimateRows = ledgerItems.length <= LEDGER_ROW_MOTION_THRESHOLD;
-
-    React.useEffect(() => {
-        const container = scrollContainerRef.current;
-
-        if (!container) {
-            return;
-        }
-
-        const updateViewportHeight = () => {
-            setViewportHeight(container.clientHeight || VIRTUAL_ROW_HEIGHT * 12);
-        };
-
-        updateViewportHeight();
-
-        const resizeObserver = typeof ResizeObserver === 'undefined'
-            ? null
-            : new ResizeObserver(updateViewportHeight);
-        resizeObserver?.observe(container);
-
-        return () => {
-            resizeObserver?.disconnect();
-            if (scrollFrameRef.current !== null) {
-                cancelAnimationFrame(scrollFrameRef.current);
-            }
-        };
-    }, []);
-
-    const handleScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
-        const nextScrollTop = event.currentTarget.scrollTop;
-
-        if (scrollFrameRef.current !== null) {
-            cancelAnimationFrame(scrollFrameRef.current);
-        }
-
-        scrollFrameRef.current = requestAnimationFrame(() => {
-            setScrollTop(nextScrollTop);
-            scrollFrameRef.current = null;
-        });
-    }, []);
-
-    const virtualWindow = React.useMemo(() => {
-        if (!shouldVirtualize) {
-            return {
-                visibleRows: ledgerItems.map((item, index) => ({ item, index })),
-                topPadding: 0,
-                bottomPadding: 0,
-            };
-        }
-
-        const windowMetrics = calculateFixedVirtualWindow({
-            itemCount: ledgerItems.length,
-            scrollTop,
-            viewportHeight,
-            rowHeight: VIRTUAL_ROW_HEIGHT,
-            overscan: VIRTUAL_OVERSCAN,
-            fallbackVisibleRows: 12,
-        });
-
-        return {
-            visibleRows: ledgerItems
-                .slice(windowMetrics.startIndex, windowMetrics.endIndex)
-                .map((item, index) => ({ item, index: windowMetrics.startIndex + index })),
-            topPadding: windowMetrics.topPadding,
-            bottomPadding: windowMetrics.bottomPadding,
-        };
-    }, [ledgerItems, scrollTop, shouldVirtualize, viewportHeight]);
-
-    const ledgerRowsContent = React.useMemo(() => (
-        <>
-            {shouldVirtualize && virtualWindow.topPadding > 0 && (
-                <tr key="virtual-top-spacer" aria-hidden="true">
-                    <td colSpan={9} style={{ height: virtualWindow.topPadding, padding: 0 }} />
-                </tr>
-            )}
-
-            {virtualWindow.visibleRows.map(({ item, index }, visibleIndex) => {
-                const isSelectable = isSelectableVariationOrder(item);
-
-                return (
-                    <LedgerRowShell
-                        key={item.id}
-                        item={item}
-                        itemId={item.id}
-                        rowIndex={shouldVirtualize ? visibleIndex : index}
-                        shouldAnimateRows={shouldAnimateRows}
-                        isEditingRow={isEditing === item.id}
-                        isSelected={selectedLedgerIdSet.has(item.id)}
-                    >
-                        <td className="px-6 py-4 text-center">
-                            <input
-                                type="checkbox"
-                                checked={selectedLedgerIdSet.has(item.id)}
-                                onChange={() => isSelectable && stableToggleSelectItem(item.id)}
-                                disabled={!isSelectable}
-                                title={isSelectable ? undefined : 'חוזה בסיס אינו נכנס לדרישת חריג'}
-                                className="w-4 h-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
-                            />
-                        </td>
-
-                        {isEditing === item.id ? (
-                            <EditLedgerRowCells
-                                form={editForm}
-                                setForm={setEditForm}
-                                onSave={stableHandleSaveEdit}
-                                onCancel={stableHandleCancelEdit}
-                                formatCurrency={formatCurrency}
-                            />
-                        ) : (
-                            <DisplayLedgerRowCells
-                                item={item}
-                                approveVO={stableApproveVO}
-                                handleEditClick={stableHandleEditClick}
-                                handleDelete={stableHandleDelete}
-                                formatCurrency={formatCurrency}
-                            />
-                        )}
-                    </LedgerRowShell>
-                );
-            })}
-
-            {shouldVirtualize && virtualWindow.bottomPadding > 0 && (
-                <tr key="virtual-bottom-spacer" aria-hidden="true">
-                    <td colSpan={9} style={{ height: virtualWindow.bottomPadding, padding: 0 }} />
-                </tr>
-            )}
-        </>
-    ), [
-        editForm,
-        formatCurrency,
-        isEditing,
-        selectedLedgerIdSet,
-        setEditForm,
-        shouldAnimateRows,
-        shouldVirtualize,
-        stableApproveVO,
-        stableHandleCancelEdit,
-        stableHandleDelete,
-        stableHandleEditClick,
-        stableHandleSaveEdit,
-        stableToggleSelectItem,
-        virtualWindow,
-    ]);
-
-    return (
-        <div className="flex-1 min-h-[420px] bg-[#151C24]/40 border border-white/5 rounded-[2rem] lg:rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl relative">
-            <div className="absolute top-0 right-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500/20 to-transparent" />
-
-            <div
-                ref={scrollContainerRef}
-                onScroll={shouldVirtualize ? handleScroll : undefined}
-                className="flex-1 overflow-auto custom-scrollbar"
-            >
-                <table className="min-w-[920px] w-full text-right border-collapse" dir="rtl">
-                    <thead className="sticky top-0 bg-[#1A222C] z-30 border-b border-white/5">
-                        <tr className="h-16">
-                            <th className="px-6 py-4 text-center w-16">
-                                <input
-                                    type="checkbox"
-                                    checked={allSelectableSelected}
-                                    onChange={stableToggleSelectAll}
-                                    disabled={selectableItems.length === 0}
-                                    className="w-4 h-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                                />
-                            </th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400 w-36">סוג שורה</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400 w-28">קוד סעיף</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400">תיאור העבודה</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400 text-center w-20">יחידה</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400 text-center w-24">כמות</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400 text-left w-32">מחיר יחידה</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400 text-left w-40">סה&quot;כ ללא מע&quot;מ</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-400 text-center w-36">פעולות</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                        {isAddingNew && (
-                            <NewLedgerRow
-                                form={newItemForm}
-                                setForm={setNewItemForm}
-                                onSave={stableHandleAddNew}
-                                onCancel={() => stableSetIsAddingNew(false)}
-                                formatCurrency={formatCurrency}
-                            />
-                        )}
-
-                        {isLoading ? (
-                            <tr>
-                                <td colSpan={9} className="px-6 py-24 text-center">
-                                    <div className="flex flex-col items-center gap-6">
-                                        <div className="relative">
-                                            <div className="w-16 h-16 rounded-full border-2 border-blue-500/20 border-t-blue-500 animate-spin" />
-                                            <Cpu size={24} className="absolute inset-0 m-auto text-blue-500 animate-pulse" />
-                                        </div>
-                                        <div className="flex flex-col gap-2">
-                                            <span className="text-sm font-bold text-blue-400">טוען נתוני תמחור...</span>
-                                            <span className="text-xs text-gray-500">המערכת מרכזת את הנתונים הכספיים לפרויקט</span>
-                                        </div>
-                                    </div>
-                                </td>
-                            </tr>
-                        ) : ledgerItems.length === 0 && !isAddingNew ? (
-                            <tr>
-                                <td colSpan={9} className="px-6 py-24 text-center">
-                                    <div className="flex flex-col items-center gap-4 opacity-50">
-                                        <Layers size={48} className="text-gray-700" />
-                                        <p className="text-sm font-medium text-gray-400" dir="rtl">
-                                            עדיין אין סעיפים מתומחרים. אפשר להוסיף סעיף חדש או לתמחר סתירה קיימת.
-                                        </p>
-                                    </div>
-                                </td>
-                            </tr>
-                        ) : shouldAnimateRows ? (
-                            <AnimatePresence mode="popLayout">
-                                {ledgerRowsContent}
-                            </AnimatePresence>
-                        ) : (
-                            ledgerRowsContent
-                        )}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
+const LedgerRowShell = React.memo(function LedgerRowShell({ item, rowIndex, isSelected, onToggleSelect, formatCurrency, onDetails, onAction }: LedgerRowProps) { const definition = LEDGER_ROW_TYPES.find(type => type.value === item.type), base = item.type === 'BASE_CONTRACT', quantity = knownNumber(item.quantity), price = knownNumber(item.unit_price_excl_vat); return <tr key={item.id} aria-rowindex={rowIndex} data-ledger-row={item.id} data-ledger-type={item.type} data-selected={isSelected || undefined} data-base-protected={base || undefined} style={{ height: 80 }}><td><input type="checkbox" aria-label={`בחירת שורה ${item.item_code || item.id}`} checked={isSelected} disabled={!isLedgerRowSelectable(item)} onChange={() => { if (isLedgerRowSelectable(item))
+    onToggleSelect(item.id); }}/></td><td><StatusChip tone={base ? 'neutral' : item.type === 'APPROVED_VO' ? 'success' : item.type === 'PENDING_VO' ? 'warning' : 'info'}>{definition?.label || 'סוג לא צוין'}</StatusChip></td><td><BidiText kind="code" value={item.item_code || '—'}/></td><td><span className="ti-ledger-description" title={item.description}>{item.description}</span>{item.ai_rationale && <span className="ti-meta">יש הסבר שמור</span>}</td><td>{item.unit || '—'}</td><td><BidiText kind="code" value={quantity === null ? '—' : String(quantity)}/></td><td><BidiText kind="money" value={price === null ? '—' : formatCurrency(price)}/></td><td><BidiText kind="money" value={totalKnown(item) ? formatCurrency(getLedgerRowAmount(item)) : '—'}/></td><td><div className="ti-ledger-row-actions"><Button variant="text" aria-label={`מקור ופרטים ${item.item_code || item.id}`} onClick={() => { onDetails(item); }}><Eye size={16} aria-hidden="true"/></Button><Button variant="text" aria-label={`פעולות שורה ${item.item_code || item.id}`} onClick={event => { onAction(item.id, event.currentTarget); }}><MoreHorizontal size={16} aria-hidden="true"/></Button></div></td></tr>; });
+function PricingLedgerTable(props: PricingLedgerTableProps) {
+    const { ledgerItems, isLoading, isAddingNew, isEditing, newItemForm, setNewItemForm, editForm, setEditForm, selectedLedgerIds, toggleSelectItem, toggleSelectAll, handleAddNew, setIsAddingNew, handleSaveEdit, handleCancelEdit, approveVO, handleEditClick, handleDelete, formatCurrency, errorMessage } = props;
+    const scroll = useRef<HTMLDivElement>(null), frame = useRef<number | null>(null), [scrollTop, setScrollTop] = useState(0), [height, setHeight] = useState(0), [actionId, setActionId] = useState<string | null>(null), [detailItem, setDetailItem] = useState<LedgerItem | null>(null), [pending, setPending] = useState(false), [actionError, setActionError] = useState<string | null>(null), [sourceError, setSourceError] = useState<string | null>(null);
+    const actionOrigin = useRef<HTMLElement | null>(null), wasEditing = useRef(false);
+    useEffect(() => { if (wasEditing.current && !isEditing) {
+        const origin = actionOrigin.current;
+        requestAnimationFrame(() => { if (origin?.isConnected)
+            origin.focus();
+        else
+            scroll.current?.focus(); });
+    } wasEditing.current = Boolean(isEditing); }, [isEditing]);
+    const stableToggleSelectItem = useLatestCallback(toggleSelectItem), stableFormatCurrency = useLatestCallback(formatCurrency);
+    const showDetails = useLatestCallback((item: LedgerItem) => { setSourceError(null); setDetailItem(item); });
+    const showActions = useLatestCallback((id: string, origin: HTMLElement) => { actionOrigin.current = origin; setActionError(null); setActionId(id); });
+    const selected = useMemo(() => new Set(selectedLedgerIds), [selectedLedgerIds]), selectable = useMemo(() => ledgerItems.filter(isLedgerRowSelectable), [ledgerItems]);
+    const allSelected = selectable.length > 0 && selectable.every(item => selected.has(item.id)), virtualized = ledgerItems.length > VIRTUALIZATION_THRESHOLD;
+    useEffect(() => { const node = scroll.current; if (!node)
+        return; const update = () => setHeight(node.clientHeight || 960); update(); const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update); observer?.observe(node); return () => { observer?.disconnect(); if (frame.current !== null)
+        cancelAnimationFrame(frame.current); }; }, []);
+    useEffect(() => { if (scroll.current)
+        setScrollTop(scroll.current.scrollTop); }, [ledgerItems.length]);
+    const windowMetrics = useMemo(() => virtualized ? calculateFixedVirtualWindow({ itemCount: ledgerItems.length, scrollTop, viewportHeight: height, rowHeight: 80, overscan: 8, fallbackVisibleRows: 12 }) : { startIndex: 0, endIndex: ledgerItems.length, topPadding: 0, bottomPadding: 0 }, [ledgerItems.length, scrollTop, height, virtualized]);
+    const visible = ledgerItems.slice(windowMetrics.startIndex, windowMetrics.endIndex), actionItem = ledgerItems.find(item => item.id === actionId), editingItem = ledgerItems.find(item => item.id === isEditing), canEdit = Boolean(isEditing && editingItem && editingItem.type !== 'BASE_CONTRACT');
+    const execute = async (operation: () => unknown) => { setPending(true); setActionError(null); try {
+        await operation();
+    }
+    catch {
+        setActionError('הפעולה לא הושלמה. בדוק את הנתונים ונסה שוב.');
+    }
+    finally {
+        setPending(false);
+    } };
+    const openSource = async (documentId: string, page: number | null) => { if (!detailItem?.project_id) {
+        setSourceError('לא נמצא פרויקט משויך למקור הזה.');
+        return;
+    } setSourceError(null); try {
+        const params = new URLSearchParams({ projectId: detailItem.project_id, documentId });
+        const response = await fetch('/api/documents/signed-url?' + params.toString()), data = await response.json();
+        if (!response.ok || !data.signedUrl)
+            throw Error('SOURCE_UNAVAILABLE');
+        const suffix = page ? (data.previewKind === 'reference' ? '&page=' : '#page=') + page : '';
+        window.open(data.signedUrl + suffix, '_blank', 'noopener,noreferrer');
+    }
+    catch {
+        setSourceError('לא ניתן לפתוח את המקור כרגע. הרישום הכספי לא השתנה.');
+    } };
+    return <div className="ti-ledger-table-frame" data-virtualized={String(virtualized)}><div ref={scroll} className="ti-ledger-scroll" tabIndex={0} role="region" aria-label="טבלת התמחור · גלילה אופקית ואנכית" onScroll={event => { if (!virtualized)
+        return; const top = event.currentTarget.scrollTop; if (frame.current !== null)
+        cancelAnimationFrame(frame.current); frame.current = requestAnimationFrame(() => { setScrollTop(top); frame.current = null; }); }}><table className="ti-table ti-ledger-table" aria-rowcount={ledgerItems.length + 1} dir="rtl" style={{ minWidth: 1256 }}><colgroup>{widths.map((width, index) => <col key={index} style={{ width }}/>)}</colgroup><thead><tr>{labels.map((label, index) => <th key={label}>{index === 0 ? <input type="checkbox" aria-label="בחירת השורות המוצגות המותרות לבחירה" checked={allSelected} disabled={!selectable.length} onChange={toggleSelectAll}/> : label}</th>)}</tr></thead><tbody>{isLoading ? <tr><td colSpan={9}><p role="status">טוען נתוני תמחור…</p></td></tr> : !ledgerItems.length ? <tr><td colSpan={9}><p className="ti-copy">אין שורות בסינון הנוכחי. אפשר לשנות סינון או להוסיף שורה.</p></td></tr> : <>{windowMetrics.topPadding > 0 && <tr aria-hidden="true"><td colSpan={9} style={{ height: windowMetrics.topPadding, padding: 0 }}/></tr>}{visible.map((item, index) => <LedgerRowShell key={item.id} item={item} rowIndex={windowMetrics.startIndex + index + 2} isSelected={selected.has(item.id)} onToggleSelect={stableToggleSelectItem} formatCurrency={stableFormatCurrency} onDetails={showDetails} onAction={showActions}/>)}{windowMetrics.bottomPadding > 0 && <tr aria-hidden="true"><td colSpan={9} style={{ height: windowMetrics.bottomPadding, padding: 0 }}/></tr>}</>}</tbody></table></div>
+ <Dialog open={Boolean(actionItem)} labelledBy="ledger-actions-title" onClose={() => { if (!pending)
+        setActionId(null); }}><h2 id="ledger-actions-title" className="ti-section-title">פעולות שורה <BidiText kind="code" value={actionItem?.item_code || '—'}/></h2><p className="ti-copy">{actionItem?.description}</p>{(actionError || errorMessage) && <Feedback tone="danger">{actionError || errorMessage}</Feedback>}{actionItem && <LedgerActionControls item={actionItem} pending={pending} onEdit={() => { if (actionItem.type === 'BASE_CONTRACT')
+        return; setActionId(null); handleEditClick(actionItem); }} onDelete={() => { if (actionItem.type === 'BASE_CONTRACT')
+        return; void execute(() => handleDelete(actionItem.id)); }} onApprove={() => { if (actionItem.type !== 'PENDING_VO')
+        return; void execute(() => approveVO(actionItem.id)); }}/>}<div className="ti-dialog__footer"><Button onClick={() => setActionId(null)} disabled={pending}>סגירה</Button></div></Dialog>
+ <Dialog open={isAddingNew || Boolean(canEdit)} labelledBy="ledger-form-title" onClose={() => { if (pending)
+        return; if (isAddingNew)
+        setIsAddingNew(false);
+    else
+        handleCancelEdit(); }}><h2 id="ledger-form-title" className="ti-section-title">{isAddingNew ? 'הוספת שורה' : 'עריכת שורה'}</h2><LedgerForm form={isAddingNew ? newItemForm : editForm} setForm={isAddingNew ? setNewItemForm : setEditForm} onSave={() => void execute(isAddingNew ? handleAddNew : handleSaveEdit)} onCancel={() => { if (isAddingNew)
+        setIsAddingNew(false);
+    else
+        handleCancelEdit(); }} formatCurrency={formatCurrency} pending={pending} error={actionError || errorMessage}/></Dialog>
+ <Dialog open={Boolean(detailItem)} labelledBy="ledger-source-title" onClose={() => setDetailItem(null)}><header className="ti-dialog__header"><h2 id="ledger-source-title" className="ti-section-title">מקורות ופרטי השורה</h2><Button onClick={() => setDetailItem(null)}>סגירה</Button></header>{sourceError && <Feedback tone="warning">{sourceError}</Feedback>}{detailItem && <LedgerSourceDetails item={detailItem as PricingLedgerItem} onOpenSource={openSource}/>}</Dialog>
+ </div>;
 }
-
 export default React.memo(PricingLedgerTable);
