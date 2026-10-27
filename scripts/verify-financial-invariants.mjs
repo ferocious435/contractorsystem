@@ -1839,7 +1839,7 @@ const filesToScanForInlineTotals = [
   "src/components/features/AIPanel.tsx",
   "src/components/features/LedgerTable.tsx",
   "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
-  "src/components/features/SmartLetterGenerator.tsx",
+  "src/components/features/smart-letter/LetterWorkspaceView.tsx",
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
   "src/components/pricing/ai-estimator/pricingScopeForm.ts",
   "src/components/pricing/PricingLedgerTable.tsx",
@@ -1926,7 +1926,7 @@ assertNotIncludes(
 );
 [
   "src/components/pricing/PrintableLetter.tsx",
-  "src/components/features/SmartLetterGenerator.tsx",
+  "src/components/features/smart-letter/LetterWorkspaceView.tsx",
 ].forEach((file) => {
   assertIncludes(
     file,
@@ -3130,7 +3130,7 @@ assertIncludes(
   "smart letter UI facade must delegate state to the isolated hook"
 );
 assertIncludes(
-  "src/components/features/SmartLetterGenerator.tsx",
+  "src/components/features/smart-letter/LetterWorkspaceView.tsx",
   "derived.totalInclVat",
   "smart letter UI facade must read selected totals from derived hook state"
 );
@@ -3880,7 +3880,7 @@ assertNotIncludes(
   "Smart letter save must not update ledger status directly from the client"
 );
 assertIncludes(
-  "src/components/features/SmartLetterGenerator.tsx",
+  "src/components/features/smart-letter/LetterWorkspaceView.tsx",
   "items={printableItems}",
   "Smart letter UI must pass normalized printable ledger items into PrintableLetter"
 );

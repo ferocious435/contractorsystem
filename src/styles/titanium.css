@@ -497,3 +497,60 @@
 .ti-pricelist-inspection__footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 1100px) { .ti-pricelist-card .ti-panel__body { grid-template-columns: 28px minmax(0, 1fr); gap: 12px; } .ti-pricelist-card__counts, .ti-pricelist-card .ti-actions { grid-column: 2; } }
 @media (max-width: 599px) { .ti-pricelist-card .ti-panel__body { grid-template-columns: minmax(0, 1fr); } .ti-pricelist-card > .ti-panel__body > svg { display: none; } .ti-pricelist-card__counts, .ti-pricelist-card .ti-actions { grid-column: 1; } .ti-pricelist-card .ti-actions { align-items: stretch; } .ti-pricelist-card .ti-button { flex: 1 1 100%; } .ti-pricelist-inspection__footer { align-items: stretch; flex-direction: column; } }
+
+/* D3: one letter editor for S09/S10 and O09. */
+.ti-letter-workspace { container-type: inline-size; container-name: letter-workspace; }
+.ti-letter-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; min-width: 0; align-items: start; }
+.ti-letter-parameters .ti-panel__body, .ti-letter-editor .ti-panel__body, .ti-letter-history .ti-panel__body { display: grid; gap: 20px; }
+.ti-letter-types { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ti-letter-types legend { margin-bottom: 8px; }
+.ti-letter-type { display: flex; gap: 8px; padding: 10px 12px; border: 1px solid var(--ti-control); border-radius: 10px; color: var(--ti-secondary); cursor: pointer; align-items: center; min-width: 0; }
+.ti-letter-type:has(input:checked) { background: var(--ti-selection); border-color: var(--ti-focus); color: var(--ti-text); }
+.ti-letter-workspace input:is([type=radio], [type=checkbox]) { accent-color: var(--ti-accent); width: 18px; height: 18px; flex: 0 0 18px; }
+.ti-letter-types:disabled .ti-letter-type { color: var(--ti-muted); cursor: not-allowed; }
+.ti-letter-selection { display: grid; gap: 12px; min-width: 0; }
+.ti-letter-ledger { max-height: 320px; overflow: auto; border: 1px solid var(--ti-border); border-radius: 12px; }
+.ti-letter-row { display: flex; gap: 12px; padding: 12px; align-items: flex-start; cursor: pointer; border-bottom: 1px solid var(--ti-border); min-width: 0; }
+.ti-letter-row:last-child { border-bottom: 0; }
+.ti-letter-row:has(input:checked) { background: var(--ti-selection); }
+.ti-letter-row > span { min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.ti-letter-totals { display: grid; gap: 8px; border-top: 1px solid var(--ti-border); padding-top: 12px; }
+.ti-letter-totals > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.ti-letter-totals dd { margin: 0; font-weight: 500; }
+.ti-letter-totals > div:last-child { font-weight: 600; }
+.ti-letter-result { min-width: 0; }
+.ti-letter-editor__heading, .ti-letter-history__meta { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ti-letter-text { background: var(--ti-paper); color: var(--ti-ink); min-height: 560px; font-family: var(--font-ui), Arial, sans-serif; font-size: 16px; line-height: 28px; padding: 20px; }
+.ti-letter-text::placeholder { color: #4c5a6b; }
+.ti-letter-text:disabled { color: var(--ti-ink); background: var(--ti-paper); }
+.ti-letter-history__list { display: grid; gap: 12px; }
+.ti-letter-history__item { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--ti-border); border-radius: 12px; min-width: 0; overflow-wrap: anywhere; background: var(--ti-surface); }
+.ti-letter-history__meta { color: var(--ti-secondary); font-size: 13px; line-height: 20px; }
+.ti-letter-workspace[data-view=history] .ti-letter-parameters { display: none; }
+.ti-letter-workspace[data-view=history] .ti-letter-grid { grid-template-columns: minmax(0, 1fr); }
+.ti-letter-modal .ti-letter-workspace { padding: 0; }
+@container letter-workspace (min-width: 1080px) { .ti-letter-grid { grid-template-columns: minmax(480px, 1fr) minmax(480px, 1fr); } }
+@media (max-width: 599px) { .ti-letter-types { grid-template-columns: minmax(0, 1fr); } .ti-letter-text { min-height: 440px; padding: 12px; } .ti-letter-editor .ti-actions { align-items: stretch; } .ti-letter-editor .ti-actions > .ti-button, .ti-letter-editor .ti-actions > .ti-action-with-reason { flex: 1 1 100%; } }
+
+/* Web controls stay outside the unchanged printable A4 body. */
+.ti-dialog.ti-print-dialog { width: min(1060px, calc(100vw - 32px)); background: var(--ti-canvas); }
+.ti-print-dialog > .ti-dialog__body { padding: 0; }
+.ti-print-toolbar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 20px 24px; border-bottom: 1px solid var(--ti-border); background: var(--ti-surface); }
+.ti-print-scroll { overflow: auto; }
+.ti-print-scroll > div { width: 210mm; }
+@media (max-width: 599px) { .ti-print-toolbar { padding: 16px; } .ti-print-toolbar .ti-actions { width: 100%; } }
+@media print {
+  body:has(.ti-print-dialog[open]) { height: auto !important; overflow: visible !important; background: white !important; }
+  body:has(.ti-print-dialog[open]) > :not(.ti-print-dialog) { display: none !important; }
+  .ti-dialog.ti-print-dialog[open] { position: static !important; display: block !important; inset: auto; width: auto; max-width: none; height: auto; max-height: none; margin: 0; padding: 0; border: 0; border-radius: 0; overflow: visible !important; box-shadow: none; background: white; animation: none; }
+  .ti-print-dialog::backdrop, .ti-print-toolbar { display: none !important; }
+  .ti-print-dialog > .ti-dialog__body, .ti-print-scroll { display: block; overflow: visible !important; padding: 0; height: auto; max-height: none; }
+  .ti-print-scroll > div { width: auto; }
+}
+
+@media print {
+  .ti-print-scroll > div > .flex.justify-end, .ti-print-scroll > div > .grid.grid-cols-2 { break-inside: avoid; page-break-inside: avoid; }
+  .ti-print-scroll .bg-slate-900.text-white { color: #0b1220 !important; background: white !important; box-shadow: none; border: 1px solid #64748b; }
+  .ti-print-scroll thead { color: #334155 !important; }
+  .ti-print-scroll tr, .ti-print-scroll .space-y-8 > .bg-slate-50 { break-inside: avoid; page-break-inside: avoid; }
+}

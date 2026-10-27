@@ -1,0 +1,11 @@
+{
+  "fixedDate": "2026-10-27T12:00:00.000Z",
+  "cases": {
+    "short": {
+      "sha256": "ba4391618218ef990a54c03883ab03eee699cce03f82579d84fd23756bb818b6"
+    },
+    "long": {
+      "sha256": "f227ad698960ba41e4cd0cea2d6be239225afde2923f545b823e4814f9f6aa19"
+    }
+  }
+}

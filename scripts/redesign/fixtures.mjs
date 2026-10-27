@@ -24,3 +24,12 @@ export const radarFindings=[
 
 export function ledgerFixture(id,type='PENDING_VO',overrides={}){return{id,project_id:'demo-ledger-redesign',type,source:type==='BASE_CONTRACT'?'BOQ':'CUSTOM_ANALYSIS',item_code:'40.020.0015',description:`תיאור עבודה ${id} · C-CE6070`,unit:'מ׳',quantity:2,unit_price_excl_vat:120,total_price_excl_vat:240,markup_percentage:0,vat_rate:.18,evidence_data:type==='BASE_CONTRACT'?{source:'pricelist_items',pricelist_item_id:'synthetic-boq-item'}:null,...overrides};}
 export const ledgerRows=['BASE_CONTRACT','PENDING_VO','APPROVED_VO','SENT_VO'].map((type,index)=>ledgerFixture(`ledger-${index}`,type));
+
+export const letterItems = [
+    ledgerFixture('letter-pending','PENDING_VO',{project_id:'demo-letters-redesign',item_type:'ITEM',item_code:'51.03.0110',description:'אספקה ופיזור חומר C · C-CE6070',quantity:2,unit_price_excl_vat:75,total_price_excl_vat:150,governing_notes:['מקור סינתטי A.pdf · עמוד 7 · C-CE6070'],ai_rationale:'נימוק סינתטי לצורך בדיקת הדפסה בלבד.'}),
+    ledgerFixture('letter-approved','APPROVED_VO',{project_id:'demo-letters-redesign',item_type:'ITEM',item_code:'51.03.0111',description:'השלמת עבודה סינתטית',quantity:1,unit_price_excl_vat:23.45,total_price_excl_vat:23.45}),
+    ledgerFixture('letter-negative','PENDING_VO',{project_id:'demo-letters-redesign',item_type:'ITEM',item_code:'51.03.0112',description:'זיכוי סינתטי',quantity:1,unit_price_excl_vat:-5.01,total_price_excl_vat:-5.01}),
+    ledgerFixture('letter-base','BASE_CONTRACT',{project_id:'demo-letters-redesign',item_type:'ITEM',description:'EXCLUDED_BASE_CONTRACT',quantity:1,unit_price_excl_vat:999999,total_price_excl_vat:999999}),
+];
+export const letterPaperProps = {projectName:'פרויקט סינתטי C-CE6070',recipient:'נמען לבדיקה בלבד',subject:'מכתב בדיקה · C-CE6070',legalText:'טקסט סינתטי לבדיקה בלבד. אין כאן דרישת תשלום אמיתית.\nEND_LETTER_TEXT',items:letterItems};
+export const longLetterPaperProps = {...letterPaperProps,legalText:('פסקה ארוכה לצורך בדיקת עימוד בלבד. המידע סינתטי ואינו הוראה או דרישה.\n'.repeat(90))+'END_LONG_LETTER_TEXT',items:Array.from({length:45},(_,index)=>({...letterItems[index%3],id:'long-letter-'+index,item_code:'UI-LETTER-'+String(index+1).padStart(3,'0')}))};

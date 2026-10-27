@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { VAT_RATE } from "@/utils/constants";
 import {
@@ -16,6 +16,7 @@ import {
   fetchContradictionsByIds,
   fetchLedgerItems as apiFetchLedgerItems,
   fetchProjectName,
+  fetchLetterPrintContext,
   fetchSavedLetters as apiFetchSavedLetters,
   generateLetter as apiGenerateLetter,
   saveVoLetter,
@@ -27,7 +28,9 @@ import type {
   UseSmartLetterStateParams,
   UseSmartLetterStateResult,
   LetterTypeValue,
+  SmartLetterState,
 } from "../types";
+import {blockedLetterPrintContext, type LetterPrintContext} from '../letterPrintContext';
 
 export function useSmartLetterState({
   projectId,
@@ -50,8 +53,36 @@ export function useSmartLetterState({
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const [projectName, setProjectName] = useState("");
+  const [operationError, setOperationError] = useState<SmartLetterState['operationError']>(null);
+  const [isLoadingLedger, setIsLoadingLedger] = useState(true);
+  const [ledgerReadFailed, setLedgerReadFailed] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [isLoadingPrintContext, setIsLoadingPrintContext] = useState(false);
+  const [printContext, setPrintContext] = useState<LetterPrintContext | null>(null);
+  const printRequest = useRef(0);
 
   const supabase = useMemo(() => createClient(), []);
+
+  const loadPrintContext = useCallback(async (letterId: string) => {
+    const request = ++printRequest.current;
+    setShowPrintPreview(false);
+    setIsLoadingPrintContext(true); setPrintContext(null);
+    try {
+      const context = await fetchLetterPrintContext(supabase, projectId, letterId);
+      if (request === printRequest.current) setPrintContext(context);
+    } catch (cause) {
+      console.error('[PRINT_CONTEXT_ERROR]:', cause);
+      if (request === printRequest.current) setPrintContext(blockedLetterPrintContext(letterId, 'לא ניתן לקרוא את הצירוף הכספי של המכתב כרגע. הטקסט והסכומים השמורים לא שונו.'));
+    } finally {
+      if (request === printRequest.current) setIsLoadingPrintContext(false);
+    }
+  }, [projectId, supabase]);
+
+  const clearPrintContext = useCallback(() => {
+    ++printRequest.current; setPrintContext(null); setIsLoadingPrintContext(false); setShowPrintPreview(false);
+  }, []);
+
+  useEffect(() => () => { ++printRequest.current; }, []);
 
   const fetchContextDetails = useCallback(
     async (ids: string[]) => {
@@ -77,9 +108,12 @@ export function useSmartLetterState({
   );
 
   const fetchLedgerItems = useCallback(async () => {
+    setIsLoadingLedger(true);
+    setOperationError(previous => previous?.kind === 'ledger' ? null : previous);
     try {
       const voItems = await apiFetchLedgerItems(supabase, projectId);
       setLedgerItems(voItems);
+      setLedgerReadFailed(false);
 
       if (initialSelectedItems?.length) {
         const selectableIds = new Set(voItems.map((item) => item.id));
@@ -89,10 +123,16 @@ export function useSmartLetterState({
       }
     } catch (err) {
       console.error("[LEDGER_FETCH_ERROR]:", err);
+      setLedgerReadFailed(true);
+      setOperationError({kind: 'ledger', message: 'לא ניתן לקרוא את השורות הכספיות כרגע. הבחירה הקודמת נשמרה.'});
+    } finally {
+      setIsLoadingLedger(false);
     }
   }, [initialSelectedItems, projectId, supabase]);
 
   const fetchSavedLetters = useCallback(async () => {
+    setIsLoadingHistory(true);
+    setOperationError(previous => previous?.kind === 'history' ? null : previous);
     try {
       const [nextProjectName, nextSavedLetters] = await Promise.all([
         fetchProjectName(supabase, projectId),
@@ -103,6 +143,9 @@ export function useSmartLetterState({
       setSavedLetters(nextSavedLetters);
     } catch (err) {
       console.error("[HISTORY_FETCH_ERROR]:", err);
+      setOperationError({kind: 'history', message: 'לא ניתן לקרוא את היסטוריית המכתבים כרגע. אפשר לנסות שוב.'});
+    } finally {
+      setIsLoadingHistory(false);
     }
   }, [projectId, supabase]);
 
@@ -141,6 +184,7 @@ export function useSmartLetterState({
 
   const generateLetter = useCallback(async () => {
     if (!letterType) return;
+    setOperationError(null); clearPrintContext();
     setIsGenerating(true);
     setGeneratedLetter("");
 
@@ -158,33 +202,35 @@ export function useSmartLetterState({
       if (data.success) {
         setGeneratedLetter(data.letter || "");
       } else {
-        setGeneratedLetter(
-          `שגיאה ביצירת המכתב: ${data.error || "תקלה לא ידועה"}`,
-        );
+        setOperationError({kind: 'generate', message: data.error || 'הכנת הטיוטה לא הושלמה. אפשר לנסות שוב.'});
       }
     } catch (err) {
       console.error("[GENERATE_ERROR]:", err);
-      setGeneratedLetter(
-        "שגיאה בחיבור - אנא בדוק את החיבור ל-Gemini ונסה שנית.",
-      );
+      setOperationError({kind: 'generate', message: 'הכנת הטיוטה לא הושלמה בגלל בעיית חיבור. אפשר לנסות שוב.'});
     } finally {
       setIsGenerating(false);
     }
-  }, [keyPoints, letterType, projectId, recipient, selectedItems, subject, tone]);
+  }, [clearPrintContext, keyPoints, letterType, projectId, recipient, selectedItems, subject, tone]);
 
-  const copyLetter = useCallback(() => {
+  const copyLetter = useCallback(async () => {
     if (!generatedLetter) return;
-    void navigator.clipboard.writeText(generatedLetter);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2000);
+    setIsCopied(false); setOperationError(null);
+    try {
+      await navigator.clipboard.writeText(generatedLetter);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch {
+      setOperationError({kind: 'copy', message: 'ההעתקה לא הושלמה. אפשר לבחור את הטקסט ולהעתיק ידנית.'});
+    }
   }, [generatedLetter]);
 
   const saveLetter = useCallback(async () => {
     if (!generatedLetter || !projectId) return;
+    setSaveSuccess(false); setOperationError(null);
     setIsSaving(true);
 
     try {
-      await saveVoLetter({
+      const letterId = await saveVoLetter({
         projectId,
         subject: subject || `דרישת תשלום ${new Date().getTime()}`,
         recipientName: recipient,
@@ -194,11 +240,14 @@ export function useSmartLetterState({
       });
 
       setSaveSuccess(true);
+      if (letterId) void loadPrintContext(letterId);
+      else setPrintContext(blockedLetterPrintContext('', 'המכתב נשמר אך מזההו לא התקבל. אפשר לבחור אותו מההיסטוריה כדי לקרוא את השורות המקושרות.'));
       void fetchSavedLetters();
       void fetchLedgerItems();
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
       console.error("[SAVE_ERROR]:", err);
+      setOperationError({kind: 'save', message: 'שמירת המכתב לא הושלמה. ' + (err instanceof Error ? err.message : 'הטקסט נשאר בחלון לבדיקה.')});
     } finally {
       setIsSaving(false);
     }
@@ -207,6 +256,7 @@ export function useSmartLetterState({
     fetchSavedLetters,
     generatedLetter,
     letterType,
+    loadPrintContext,
     projectId,
     recipient,
     selectedLedgerItems,
@@ -214,14 +264,9 @@ export function useSmartLetterState({
   ]);
 
   const deleteLetter = useCallback(
-    async (id: string) => {
-      if (
-        !confirm(
-          "בטל מחיקת המסמך מהארכיון המוגן. האם אתה בטוח?",
-        )
-      ) {
-        return;
-      }
+    async (id: string, confirmed = false) => {
+      if (!confirmed) return;
+      setOperationError(null);
 
       setIsDeleting(id);
       try {
@@ -229,6 +274,8 @@ export function useSmartLetterState({
         void fetchSavedLetters();
       } catch (err) {
         console.error("[DELETE_ERROR]:", err);
+        setOperationError({kind: 'delete', message: 'מחיקת המכתב לא הושלמה. ההיסטוריה נשארה לתצוגה.'});
+        throw err;
       } finally {
         setIsDeleting(null);
       }
@@ -237,9 +284,9 @@ export function useSmartLetterState({
   );
 
   const openPrintPreview = useCallback(() => {
-    if (!generatedLetter) return;
+    if (!generatedLetter || isLoadingPrintContext || (printContext ? !printContext.matchesStoredTotals : selectedItems.length === 0)) return;
     setShowPrintPreview(true);
-  }, [generatedLetter]);
+  }, [generatedLetter, isLoadingPrintContext, printContext, selectedItems.length]);
 
   const closePrintPreview = useCallback(() => {
     setShowPrintPreview(false);
@@ -250,18 +297,27 @@ export function useSmartLetterState({
     setSubject(letter.subject);
     setRecipient(letter.recipient_name || "");
     setViewMode("edit");
-  }, []);
+    setSelectedLedgerItems([]); setSaveSuccess(false); setOperationError(null);
+    void loadPrintContext(letter.id);
+  }, [loadPrintContext]);
 
   const toggleLedgerItem = useCallback((id: string) => {
+    clearPrintContext(); setSaveSuccess(false);
     setSelectedLedgerItems((prev) =>
       prev.includes(id)
         ? prev.filter((selectedId) => selectedId !== id)
         : [...prev, id],
     );
-  }, []);
+  }, [clearPrintContext]);
 
   return {
     state: {
+      operationError,
+      isLoadingLedger,
+      ledgerReadFailed,
+      isLoadingHistory,
+      isLoadingPrintContext,
+      printContext,
       letterType,
       recipient,
       subject,
@@ -291,6 +347,7 @@ export function useSmartLetterState({
       setViewMode,
     },
     actions: {
+      retryPrintContext: async () => {if (printContext?.letterId) await loadPrintContext(printContext.letterId);},
       fetchContextDetails,
       fetchLedgerItems,
       fetchSavedLetters,
@@ -304,6 +361,7 @@ export function useSmartLetterState({
       toggleLedgerItem,
     },
     derived: {
+      canPrint: Boolean(generatedLetter && !isLoadingPrintContext && (printContext ? printContext.matchesStoredTotals : selectedItems.length)),
       selectedItems,
       subtotal,
       vat,

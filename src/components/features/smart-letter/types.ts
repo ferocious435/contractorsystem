@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { LucideIcon } from "lucide-react";
+import type {LetterPrintContext} from './letterPrintContext';
 
 export type LetterTypeValue =
   | "claim"
@@ -76,7 +77,7 @@ export interface SavedSmartLetter {
   recipient_name?: string | null;
   doc_type?: string | null;
   content: string;
-  total_amount?: number | null;
+  total_amount_excl_vat?: number | null;
   total_amount_incl_vat?: number | null;
   created_at: string;
   updated_at?: string | null;
@@ -109,6 +110,12 @@ export interface SaveSmartLetterPayload {
 }
 
 export interface SmartLetterState {
+  operationError?: {kind: 'ledger' | 'history' | 'generate' | 'save' | 'delete' | 'copy' | 'print'; message: string} | null;
+  isLoadingLedger?: boolean;
+  ledgerReadFailed?: boolean;
+  isLoadingHistory?: boolean;
+  isLoadingPrintContext?: boolean;
+  printContext?: LetterPrintContext | null;
   letterType: LetterTypeValue | "";
   recipient: string;
   subject: string;
@@ -145,6 +152,7 @@ export interface SmartLetterSetters {
 }
 
 export interface SmartLetterDerivedState {
+  canPrint?: boolean;
   selectedItems: SmartLetterLedgerItem[];
   subtotal: number;
   vat: number;
@@ -154,13 +162,14 @@ export interface SmartLetterDerivedState {
 }
 
 export interface SmartLetterActions {
+  retryPrintContext?: () => Promise<void>;
   fetchContextDetails: (ids: string[]) => Promise<void>;
   fetchLedgerItems: () => Promise<void>;
   fetchSavedLetters: () => Promise<void>;
   generateLetter: () => Promise<void>;
   copyLetter: () => void;
   saveLetter: () => Promise<void>;
-  deleteLetter: (id: string) => Promise<void>;
+  deleteLetter: (id: string, confirmed?: boolean) => Promise<void>;
   openPrintPreview: () => void;
   closePrintPreview: () => void;
   selectSavedLetter: (letter: SavedSmartLetter) => void;
