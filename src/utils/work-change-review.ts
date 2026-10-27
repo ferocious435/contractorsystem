@@ -2,6 +2,7 @@ import { anchorSourceRange, findEvidenceAnchor, normalizeEvidenceSource, type Ev
 import { hasDocumentBodyText } from './document-source-readiness.ts';
 import type { WorkChangePacket } from './work-change-sources.ts';
 import { validateWorkChangeScopes, type WorkChangeScopeComparison } from './work-change-scope.ts';
+import { buildWorkChangeFinancialReadiness, type WorkChangeFinancialReadiness } from './work-change-financial-readiness.ts';
 
 export const WORK_CHANGE_VERSION = 'work-change-v1';
 export const WORK_CHANGE_FACT_KINDS = ['BASELINE_WORK', 'PROPOSED_WORK', 'BASELINE_TOTAL', 'PROPOSAL_TOTAL',
@@ -26,6 +27,7 @@ export type WorkChangeReview = {
         canCompare: boolean; documentStatus: string; selectionComplete: boolean; readingGaps: string[] }>;
     facts: WorkChangeFact[]; tableRows: WorkChangeTableRow[]; comparisons: WorkChangeComparison[];
     scopeComparisons: WorkChangeScopeComparison[]; scopeUnmatchedIds: string[]; limitations: string[];
+    financialReadiness: WorkChangeFinancialReadiness;
     ownerNotes: WorkChangePacket['ownerNotes']; requiresReview: boolean; paymentEntitlementConfirmed: false;
 };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
@@ -216,6 +218,7 @@ export function validateWorkChangeReview(packet: WorkChangePacket, draft: unknow
                 documentStatus: source.readiness.documentStatus, selectionComplete: source.selection.complete, readingGaps };
         }),
         facts, tableRows: extractedRows, comparisons, scopeComparisons: scope.comparisons, scopeUnmatchedIds: scope.unmatchedIds,
+        financialReadiness: buildWorkChangeFinancialReadiness(packet, extractedRows, scope.comparisons),
         ownerNotes: packet.ownerNotes, limitations: uniqueLimitations,
         requiresReview: uniqueLimitations.length > 0 || facts.some(fact => !fact.confirmed) || extractedRows.some(row => row.requiresReview)
             || comparisons.some(pair => pair.status === 'NOT_COMPARABLE'),

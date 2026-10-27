@@ -5,7 +5,7 @@ import { registerHooks } from 'node:module';
 import ts from 'typescript';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { finding, sourceDocuments, registerWorkChangeModules } from './fixtures/work-change-fixtures.mjs';
+import { finding, sourceDocuments, financialScenario, registerWorkChangeModules } from './fixtures/work-change-fixtures.mjs';
 const resolveHook=registerWorkChangeModules();
 const jsxHook=registerHooks({load(url,context,next){if(url.endsWith('.tsx'))return{format:'module',shortCircuit:true,source:ts.transpileModule(fs.readFileSync(new URL(url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX},fileName:url}).outputText};return next(url,context);}});
 const {WorkChangeReviewContent}=await import('../src/components/pricing/WorkChangeReviewPanel.tsx');
@@ -53,4 +53,20 @@ test('the scope comparison shows both physical works and their units before paym
  assert.match(visible,/100\s*m/);assert.match(visible,/80\s*pcs/);
  assert.match(visible,/תוספת כספית מאומתת\s*—/);
  assert.match(html,/documentId=boq/);assert.match(html,/documentId=proposal/);
+});
+
+test('financial readiness shows known prices, scope gaps and historical VAT with accessible sources',()=>{
+ const data=financialScenario(),packet=buildWorkChangePacket(data.finding,data.documents);
+ const result=validateWorkChangeReview(packet,{scopeComparisons:[
+  {component:'METHOD_WORK',baselineIds:['T1'],proposalIds:['T4'],basisIds:['R1'],composition:'DIFFERENT'},
+  {component:'MATERIAL_SUPPLY',baselineIds:['T2'],proposalIds:['T5'],basisIds:['R1'],composition:'DIFFERENT'},
+  {component:'SHAFT',baselineIds:['T3'],proposalIds:['T6'],basisIds:['R1'],composition:'DIFFERENT'},
+ ]});
+ const html=renderToStaticMarkup(React.createElement(WorkChangeReviewContent,{review:result,projectId:'project'}));
+ const visible=html.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ');
+ assert.match(visible,/מוכנות להשוואה כספית/);assert.match(visible,/13,050/);
+ assert.match(visible,/100\s*מ׳/);assert.match(visible,/80\s*מ׳/);
+ assert.match(visible,/תנאי ההצעה וחלוקת האחריות/);assert.match(visible,/בסיס המחיר והאישור/);
+ assert.match(visible,/17%/);assert.match(visible,/18%/);assert.match(visible,/אינם תוספת מאושרת/);
+ assert.match(html,/documentId=offer/);
 });

@@ -4,6 +4,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import type { WorkChangeFact, WorkChangeReview } from '@/utils/work-change-review';
 import { requestWorkChangeReview } from './workChangeReviewApi';
+import { WorkChangeFinancialReadiness } from './WorkChangeFinancialReadiness';
 
 const labels: Record<string, string> = {
     BASELINE_WORK: 'עבודה מקורית', PROPOSED_WORK: 'עבודה חלופית', BASELINE_TOTAL: 'סכום במקור המקורי',
@@ -69,6 +70,7 @@ export const WorkChangeReviewContent: React.FC<ContentProps> = ({ review, projec
             בדיקת מקורות והשוואת עבודה. לא אושרה דרישת תשלום ולא שונו הסכומים בפרויקט.
         </div>
         <p className="text-sm text-gray-300">נכללו {review.sources.length} מסמכים. {review.sources.filter(source => !source.canCompare).length} מהם דורשים השלמת קריאה או אימות. הפרטים והציטוטים נפתחים לפי הצורך.</p>
+        <WorkChangeFinancialReadiness review={review} projectId={projectId} />
         {review.scopeComparisons?.length > 0 && <section className="space-y-3"><h3 className="font-bold text-blue-200">התאמת הרכב העבודות</h3>
             <p className="text-sm text-gray-300">אלה רכיבים שנקשרו לשינוי המתואר במקורות. קריאות ומעמד מחייב נבדקים בנפרד. שורות ממסמכים או מבנים שונים לא חוברו.</p>
             {review.scopeComparisons[0].evidence[0] && <blockquote className="whitespace-pre-wrap break-words text-sm leading-7 border-r-2 border-blue-400/60 pr-3">{review.scopeComparisons[0].evidence[0].quote}</blockquote>}

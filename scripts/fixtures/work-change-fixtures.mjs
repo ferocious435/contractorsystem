@@ -20,6 +20,28 @@ export const sourceDocuments = () => [
   document('deleted', 'קידוח אופקי ברחוב הרימון.', { deleted_at: '2025-01-01' }),
 ];
 
+export function financialScenario() {
+  const item=finding();item.target_contract_doc_id='old';
+  const change='ברחוב הרימון הוצע לשנות את שיטת הביצוע מדחיקת צנרת GRP לשיטת קידוח אופקי בצינורות PP.';
+  item.evidence_data.work_quote=change;
+  return {finding:item,documents:[
+    document('primary',change+'\nראו סעיפים 62.04.0012-62.04.0016 בכתב הכמויות. התשלום כפוף לתנאים שיאושרו.'),
+    document('old','כתב הכמויות המקורי\n'
+      +'62.04.0012 דחיקת צנרת GRP מתוך פיר, אספקת צינורות בנפרד.\nמטר 100 75 7500\n'
+      +'62.04.0014 אספקה בלבד של צינורות GRP.\nמטר 100 40 4000\n'
+      +'62.04.0016 פיר דחיקה מבטון.\nיחידות 2 1000 2000\n'
+      +'סה"כ כללי 13,500.00\nמע"מ 17% 2,295.00\nסה"כ כולל מע"מ 15,795.00',{category:'CONTRACT'}),
+    document('offer','קידוח אופקי ברחוב הרימון. בפנייה צוין אומדן של 12,000 ₪ ללא מע"מ. מבוקש סך 14,000 ₪ ללא מע"מ.\n'
+      +'הצעת מחיר לחלופה\nהנחה של 15% לביצוע ואספקה; הנחה של 5% לפירים.\n'
+      +'71.02.0002 קידוח אופקי ומשיכת צינורות PP, אספקה בנפרד.\nמטר 80 90 7200\n'
+      +'71.02.0004 אספקה בלבד של צינורות PP. המחיר ליחידת צינור באורך 0.5 מטר.\nיחידות 160 30 4800\n'
+      +'71.02.0006 ביצוע פיר קידוח מבטון.\nיחידות 3 1000 3000\n'
+      +'סה"כ עלות 13,050.00\n17% מע"מ בשיעור 2,218.50\nסה"כ כולל מע"מ 15,268.50\n'
+      +'הערות\nההצעה מתייחסת לקרקע ללא סלע.\nעל אחריות וחשבון מזמין העבודה:\nדרכי גישה, הסדרי תנועה ואספקת מים.\nמאשר כתב הכמויות'),
+    document('designer','קידוח אופקי ברחוב הרימון: שכר טרחה לתכנון 2000 ₪ ללא מע"מ.'),
+  ]};
+}
+
 export const storageModuleUrl = 'data:text/javascript,' + encodeURIComponent(`
  let entries={}, callback=null; export const calls=[];
  export function reset(values={}, onDownload=null){entries=values;callback=onDownload;calls.length=0;}
@@ -30,7 +52,13 @@ export function registerWorkChangeModules(overrides = {}) {
     if (overrides[specifier]) return { url: overrides[specifier], shortCircuit: true };
     if (specifier.startsWith('@/')) return next(new URL(`../../src/${specifier.slice(2)}.ts`, import.meta.url).href, context);
     try { return next(specifier, context); }
-    catch(error) { if(error.code==='ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !/\.[cm]?[jt]sx?$/u.test(specifier)) return next(`${specifier}.ts`,context); throw error; }
+    catch(error) {
+      if(error.code==='ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !/\.[cm]?[jt]sx?$/u.test(specifier)) {
+        try { return next(`${specifier}.ts`,context); }
+        catch(extensionError) { if(extensionError.code==='ERR_MODULE_NOT_FOUND') return next(`${specifier}.tsx`,context); throw extensionError; }
+      }
+      throw error;
+    }
   } });
 }
 
