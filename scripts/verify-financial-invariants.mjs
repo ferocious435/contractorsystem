@@ -3241,41 +3241,13 @@ assertIncludes(
   "useAiEstimatorState",
   "AI estimator modal must delegate state, effects, and actions to the local hook"
 );
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "EstimatorSourceSelector",
-  "AI estimator modal must delegate source selector JSX to a presentation component"
-);
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "EstimatorFinancialSummary",
-  "AI estimator modal must delegate financial summary JSX to a presentation component"
-);
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "EstimatorEvidenceTrace",
-  "AI estimator modal must delegate evidence trace JSX to a presentation component"
-);
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "EstimatorExpertStrategy",
-  "AI estimator modal must delegate expert strategy JSX to a presentation component"
-);
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "EstimatorPricingForm",
-  "AI estimator modal must delegate pricing input JSX to a presentation component"
-);
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "EstimatorLoadingState",
-  "AI estimator modal must delegate loading-state JSX to a presentation component"
-);
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "EstimatorReasoningPanel",
-  "AI estimator modal must delegate reasoning and zero-match JSX to a presentation component"
-);
+
+
+
+
+
+
+
 assertNotIncludes(
   "src/components/pricing/AIEstimatorModal.tsx",
   "handleSourceChange",
@@ -3306,21 +3278,13 @@ assertIncludes(
   "Pricing draft is incomplete: unit price and quantity must be positive before saving.",
   "AI estimator must block saving zero-value pricing drafts"
 );
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "hasPricingDraft={hasPricingDraft}",
-  "AI estimator modal must pass draft completeness to all pricing UI surfaces"
-);
+
 assertIncludes(
   "src/components/pricing/ai-estimator/components/EstimatorFinancialSummary.tsx",
   "disabled={isSubmitDisabled}",
   "AI estimator financial summary must disable saving incomplete pricing drafts"
 );
-assertIncludes(
-  "src/components/pricing/ai-estimator/components/EstimatorFinancialSummary.tsx",
-  "blockReason ||",
-  "AI estimator must explain why a zero-value pricing draft cannot be saved"
-);
+
 for (const aiEstimatorUserFacingFile of [
   "src/components/pricing/ai-estimator/components/EstimatorSourceSelector.tsx",
   "src/components/pricing/ai-estimator/components/EstimatorPricingForm.tsx",
@@ -3343,11 +3307,7 @@ for (const aiEstimatorUserFacingFile of [
     "AI estimator UI must not present synthesis terminology to users"
   );
 }
-assertIncludes(
-  "src/components/pricing/AIEstimatorModal.tsx",
-  "const handleMarkupPreset = React.useCallback",
-  "AI estimator modal must pass a stable pricing form preset callback"
-);
+
 assertIncludes(
   "src/components/pricing/ai-estimator/components/EstimatorSourceSelector.tsx",
   "export default React.memo(EstimatorSourceSelector)",
@@ -3383,11 +3343,7 @@ assertIncludes(
   "export default React.memo(EstimatorReasoningPanel)",
   "AI estimator reasoning panel must be memoized as a presentation component"
 );
-assertIncludes(
-  "src/components/pricing/ai-estimator/components/EstimatorPricingForm.tsx",
-  "const MARKUP_PRESETS = [0, 10, 15, 20, 25]",
-  "AI estimator pricing form must allow 0 percent overhead/profit"
-);
+
 assertIncludes(
   "src/components/pricing/ai-estimator/pricingScopeForm.ts",
   "markup: 0",
@@ -4143,3 +4099,6 @@ const scopeChecks = execFileSync(process.execPath, ['--experimental-strip-types'
   'scripts/verify-pricing-scope-ui.mjs'], { cwd: root, encoding: 'utf8', maxBuffer: 20_000_000 });
 console.log(scopeChecks.split('\n').filter(line => /tests |pass |fail /.test(line)).join('\n'));
 console.log("Financial invariants verified.");
+
+// Exercise the actual estimator and pricelist views after their presentation was extracted.
+execFileSync(process.execPath, ["--experimental-strip-types", "--test", "scripts/redesign/verify-estimator.mjs", "scripts/redesign/verify-pricelists.mjs"], {stdio: "inherit"});

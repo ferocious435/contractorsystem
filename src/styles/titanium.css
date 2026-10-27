@@ -463,3 +463,37 @@
   .titanium-theme { --ti-fast: 0ms; --ti-select: 0ms; --ti-panel: 0ms; scroll-behavior: auto; }
   .titanium-theme *, .titanium-theme *::before, .titanium-theme *::after { animation: none !important; transition-duration: 0ms !important; scroll-behavior: auto !important; }
 }
+
+/* D3: saved pricelists and O05 item inspection. */
+.ti-pricelists-upload .ti-panel__body > div { display: grid; justify-items: start; gap: 12px; }
+.ti-pricelists-upload--dragging { border-color: var(--ti-focus); background: var(--ti-selection); }
+.ti-pricelists-upload__progress { display: grid; gap: 8px; width: min(100%, 480px); }
+.ti-pricelists-upload progress { width: 100%; accent-color: var(--ti-accent); }
+.ti-pricelists-catalog { display: grid; gap: 12px; min-width: 0; }
+.ti-pricelist-card .ti-panel__body { display: grid; grid-template-columns: 28px minmax(180px, 1fr) minmax(140px, .6fr) auto; gap: 20px; align-items: center; }
+.ti-pricelist-card__name, .ti-pricelist-card__counts { min-width: 0; overflow-wrap: anywhere; }
+.ti-pricelist-card__name h3 { margin: 0 0 6px; }
+.ti-pricelist-card__counts > strong { display: block; font-size: 24px; line-height: 32px; font-weight: 600; }
+.ti-pricelist-card__counts > p { margin-top: 6px; }
+.ti-dialog.ti-pricelist-dialog { width: 760px; max-width: calc(100vw - 32px); }
+.ti-pricelist-inspection { display: grid; min-width: 0; gap: 16px; }
+.ti-pricelist-inspection .ti-dialog__header { margin: 0; }
+.ti-pricelist-inspection .ti-title { overflow-wrap: anywhere; }
+.ti-pricelist-scroll { min-width: 0; width: 100%; max-height: 60dvh; overflow: auto; border: 1px solid var(--ti-border); border-radius: 12px; }
+.ti-pricelist-items { width: 696px; min-width: 696px; table-layout: fixed; border-collapse: collapse; text-align: right; }
+.ti-pricelist-items th { position: sticky; top: 0; z-index: 1; font-size: 13px; line-height: 20px; font-weight: 500; background: var(--ti-raised); color: var(--ti-secondary); }
+.ti-pricelist-items th, .ti-pricelist-items td { padding: 12px; vertical-align: top; overflow-wrap: anywhere; border-bottom: 1px solid var(--ti-border); }
+.ti-pricelist-items td { font-size: 15px; line-height: 24px; }
+.ti-pricelist-items td p { margin: 0; }
+.ti-pricelist-items td:first-child .ti-chip { margin-top: 8px; }
+.ti-pricelist-items tr[data-item-type="CHAPTER"] { background: var(--ti-raised); font-weight: 600; }
+.ti-pricelist-items tr[data-item-type="SUBCHAPTER"] { background: var(--ti-surface); font-weight: 500; }
+.ti-pricelist-items tr[data-item-type="NOTE"] { background: color-mix(in srgb, var(--ti-warning) 7%, var(--ti-surface)); }
+.ti-pricelist-rate { font-variant-numeric: tabular-nums; }
+.ti-pricelist-rate .ti-bidi { white-space: nowrap; }
+.ti-pricelist-note { margin-top: 12px; font-size: 13px; line-height: 20px; }
+.ti-pricelist-note summary { color: var(--ti-accent); cursor: pointer; padding: 6px 0; }
+.ti-pricelist-note blockquote { margin: 8px 0 0; padding: 12px; background: var(--ti-paper); color: var(--ti-ink); border-radius: 8px; font-size: 15px; line-height: 24px; }
+.ti-pricelist-inspection__footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 1100px) { .ti-pricelist-card .ti-panel__body { grid-template-columns: 28px minmax(0, 1fr); gap: 12px; } .ti-pricelist-card__counts, .ti-pricelist-card .ti-actions { grid-column: 2; } }
+@media (max-width: 599px) { .ti-pricelist-card .ti-panel__body { grid-template-columns: minmax(0, 1fr); } .ti-pricelist-card > .ti-panel__body > svg { display: none; } .ti-pricelist-card__counts, .ti-pricelist-card .ti-actions { grid-column: 1; } .ti-pricelist-card .ti-actions { align-items: stretch; } .ti-pricelist-card .ti-button { flex: 1 1 100%; } .ti-pricelist-inspection__footer { align-items: stretch; flex-direction: column; } }
