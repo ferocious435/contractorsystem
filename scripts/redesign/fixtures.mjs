@@ -11,3 +11,13 @@ export const documentStates=[
   ['SOURCE_INCOMPLETE',documentFixture('partial',{title:'מסמך_מאושר_חלקית.pdf',ai_status:'VALIDATED',ocr_status:'REQUIRES_REVIEW',extracted_text:'העמוד הראשון נקרא, העמוד השני לא נקרא.',parsed_json:{source_reading:{...reading,complete:false,totalPages:2,readPages:[1],unreadablePages:[2]}}})],
 ];
 export const completePdfReading=reading;
+
+export function radarFixture(id,overrides={}){return{id,project_id:'demo-radar-redesign',title:`ממצא בדיקה ${id}`,description:'דרישה מהמקור [1] מול תיעוד הביצוע [2].',category:'site event',severity:'MEDIUM',status:'OPEN',pricing_status:'PENDING',created_at:'2026-10-20T10:00:00Z',source_execution_doc_id:'synthetic-work',source_doc:{id:'synthetic-work',title:'פרוטוקול_בדיקה.pdf'},target_doc:{id:'synthetic-contract',title:'חוזה_בדיקה.pdf'},...overrides};}
+export const verifiedRadarEvidence={contract_quote:'יש לבצע את העבודה בשיטה א.',work_quote:'יש לבצע את אותה העבודה בשיטה ב.',contract_title:'חוזה_בדיקה.pdf',work_title:'פרוטוקול_בדיקה.pdf',contract_page:7,work_page:2,document_pair:{contract_doc_id:'synthetic-contract',work_doc_id:'synthetic-work'},evidence_status:'VERIFIED',source_verification:{contract_quote_matched:true,work_quote_matched:true,quality_gate_passed:true,source_reading_complete:true,comparison_context_complete:true},semantic_assessment:{version:'evidence-relation-v1',resultType:'CONTRADICTION',relation:'INCOMPATIBLE'}};
+export const radarFindings=[
+ radarFixture('verified',{category:'contradiction',evidence_data:verifiedRadarEvidence}),
+ radarFixture('change',{category:'variation',evidence_data:{...verifiedRadarEvidence,semantic_assessment:{version:'evidence-relation-v1',resultType:'KNOWN_CHANGE'}}}),
+ radarFixture('event'),radarFixture('missing',{category:'missing data'}),radarFixture('no-match',{category:'no direct match'}),
+ radarFixture('pricing',{status:'MOVED_TO_PRICING',category:'variation'}),radarFixture('closed',{status:'RESOLVED'}),
+ radarFixture('technical',{status:'ARCHIVED',title:'EXCLUDED_TECHNICAL_RECORD',evidence_data:{review_disposition:{type:'INVALID_AUTOMATIC_FINDING'}}}),
+];

@@ -2,14 +2,12 @@ import React from 'react';
 import { RadarIssueHistory } from './contradiction-radar/RadarIssueHistory';
 import { RadarLinkedRecords } from './contradiction-radar/RadarLinkedRecords';
 import { RadarFindingAssessment } from './contradiction-radar/RadarFindingAssessment';
-import { motion, AnimatePresence } from 'framer-motion';
+import {RadarFindingView,moveFindingToPricing,cleanRadarDisplayText} from './contradiction-radar/RadarFindingView';
+import {Dialog} from '@/components/ui/titanium/Dialog';
+import {Button} from '@/components/ui/titanium/Button';
+import {Feedback} from '@/components/ui/titanium/Feedback';
 import {
-    AlertTriangle,
-    Zap,
-    Activity,
     CheckCircle2,
-    RefreshCw,
-    ChevronDown,
     FileText,
     ArrowRightLeft,
     Shield,
@@ -24,8 +22,8 @@ import {
 } from 'lucide-react';
 import type { ContradictionItem } from '@/types';
 import { RichText } from '@/components/ui/RichText';
-import { getRadarFindingKind, getRadarFindingReference } from './contradiction-radar/utils/findingClassification';
-import { getEvidenceDisplayStatus, evidenceStatusLabel } from './contradiction-radar/utils/evidenceVerification';
+import { getRadarFindingReference } from './contradiction-radar/utils/findingClassification';
+import { getEvidenceDisplayStatus } from './contradiction-radar/utils/evidenceVerification';
 
 type EvidenceRecord = Record<string, unknown>;
 
@@ -54,7 +52,7 @@ interface ContradictionRadarFeedItemProps {
     onToggleExpand: (id: string) => void;
     onRescanItem: (id: string, executionDocId?: string) => void;
     onUpdateStatus: (id: string, newStatus: string, item?: ContradictionItem) => Promise<boolean>;
-    onDelete: (id: string) => Promise<boolean>;
+    onDelete: (id: string, confirmed?: boolean) => Promise<boolean>;
     onNavigate?: (view: string, params?: Record<string, unknown>) => void;
     onRadarOpenDocument: (documentId?: string | null, pageNum?: number | string | null) => void;
 }
@@ -126,44 +124,17 @@ function ContradictionRadarFeedItem({
     onNavigate,
     onRadarOpenDocument,
 }: ContradictionRadarFeedItemProps) {
-    const cleanDisplayText = (text?: string | null) => {
-        return String(text || '')
-            .replace(/Powered by[^\n.]*/gi, '')
-            .replace(/CONFIDENCE:\s*\d+%/gi, '')
-            .replace(/CONTRACT[_\s-]*VS[_\s-]*EXECUTION/gi, '')
-            .replace(/\s{2,}/g, ' ')
-            .trim();
+    const cleanDisplayText = cleanRadarDisplayText;
+    const [actionError,setActionError] = React.useState<string | null>(null);
+    const [updating,setUpdating] = React.useState(false);
+    const [deleteOpen,setDeleteOpen] = React.useState(false);
+    const [deleting,setDeleting] = React.useState(false);
+    const updateStatusInView = async (id:string,status:string,item?:ContradictionItem) => {
+        setActionError(null);setUpdating(true);
+        try { const updated = await onUpdateStatus(id,status,item);if(!updated)setActionError('השינוי לא נשמר. הממצא נשאר במצבו הקודם.');return updated; }
+        catch {setActionError('השינוי לא נשמר. אפשר לנסות שוב.');return false;}
+        finally {setUpdating(false);}
     };
-
-    const getCategoryMeta = () => {
-        const kind = getRadarFindingKind(c);
-        if (kind === 'CONTRADICTION') {
-            return {
-                label: 'סתירה מהותית',
-                icon: <AlertTriangle className="h-4 w-4 text-red-500" />,
-                tone: 'red',
-            };
-        }
-        if (kind === 'VARIATION') {
-            return {
-                label: 'שינוי או חריג',
-                icon: <Zap className="h-4 w-4 text-blue-500" />,
-                tone: 'blue',
-            };
-        }
-        if (kind === 'MISSING_INFO' || kind === 'NO_DIRECT_MATCH') return {
-            label: kind === 'MISSING_INFO' ? 'חוסר נתונים' : 'אין התאמה ישירה',
-            icon: <FileSearch className="h-4 w-4 text-amber-500" />,
-            tone: 'amber',
-        };
-        return {
-            label: 'אירוע שטח',
-            icon: <Activity className="h-4 w-4 text-emerald-500" />,
-            tone: 'emerald',
-        };
-    };
-
-    const categoryMeta = getCategoryMeta();
     const findingReference = getRadarFindingReference(c);
     const evidenceData = getEvidenceRecord(c.evidence_data);
     const expert = getEvidenceRecord(evidenceData?.expert_strategy);
@@ -216,118 +187,23 @@ function ContradictionRadarFeedItem({
         ? `כדי לבדוק את הממצא צריך להשלים: ${missingEvidence.join(' | ')}.`
         : 'יש לבדוק את משמעות הדרישות, תחולתן והקשר בין המקורות לפני פעולה כספית. מציאת מובאות לבדה אינה מוכיחה סתירה.';
 
-    const RowComponent = (shouldAnimate ? motion.div : 'div') as React.ElementType;
-    const rowAnimationProps = shouldAnimate
-        ? {
-            initial: { opacity: 0, x: -20 },
-            animate: { opacity: 1, x: 0 },
-            transition: { delay: Math.min(idx, 10) * 0.05 },
-        }
-        : {};
-
-    return (
-        <RowComponent
-            {...rowAnimationProps}
-            className={`group relative bg-[#151C24]/55 border rounded-[2rem] overflow-hidden transition-all duration-300 ${
-                isExpanded ? 'border-white/15 bg-white/[0.03] shadow-[0_30px_60px_rgba(0,0,0,0.35)]' : 'border-white/5 hover:border-white/10'
-            }`}
-        >
-            <div className={`absolute top-0 right-0 w-1.5 h-full opacity-25 group-hover:opacity-100 transition-opacity ${
-                categoryMeta.tone === 'red' ? 'bg-red-500' : categoryMeta.tone === 'blue' ? 'bg-blue-500' : 'bg-emerald-500'
-            }`} />
-
-            <div className="p-6 cursor-pointer" onClick={() => onToggleExpand(c.id)}>
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-                    <div className="flex-1 space-y-3">
-                        <div className="flex flex-wrap items-center gap-3">
-                            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/[0.06] border border-white/15 text-gray-200">
-                                <ClipboardList className="h-4 w-4 text-gray-400" />
-                                <span className="text-xs font-black tracking-wide">{findingReference}</span>
-                            </div>
-
-                            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${
-                                categoryMeta.tone === 'red'
-                                    ? 'bg-red-500/10 border-red-500/20 text-red-400'
-                                    : categoryMeta.tone === 'blue'
-                                        ? 'bg-blue-500/10 border-blue-500/20 text-blue-400'
-                                        : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                            }`}>
-                                {categoryMeta.icon}
-                                <span className="text-xs font-bold">{categoryMeta.label}</span>
-                            </div>
-
-                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border ${
-                                evidenceStatus === 'SOURCE_VERIFIED'
-                                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                                    : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
-                            }`}>
-                                <ShieldAlert size={13} />
-                                <span className="text-xs font-bold">
-                                    {evidenceStatusLabel(evidenceStatus)}
-                                </span>
-                            </div>
-
-                            {repeatedHistory.length > 1 && (
-                                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-violet-500/10 border-violet-500/20 text-violet-300">
-                                    <RefreshCw size={13} />
-                                    <span className="text-xs font-bold">חזר ב־{repeatedHistory.length} פרוטוקולים</span>
-                                </div>
-                            )}
-                        </div>
-
-                        <h3 className="text-2xl font-black text-white leading-tight group-hover:text-blue-300 transition-colors">
-                            {cleanDisplayText(c.title)}
-                        </h3>
-
-                        <p className="text-base text-gray-300 leading-7 line-clamp-2">
-                            {cleanDisplayText(c.description)}
-                        </p>
-                    </div>
-
-                    <div className="flex items-center gap-2 self-end lg:self-center">
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onRescanItem(c.id, c.source_execution_doc_id);
-                            }}
-                            disabled={isItemRescanning || isScanning || !aiAvailable}
-                            title={aiAvailable ? 'סריקה מחדש' : 'נדרש חיבור AI לפני סריקה מחדש'}
-                            className={`p-2.5 rounded-xl border border-white/10 transition-all ${
-                                isItemRescanning ? 'bg-blue-500/20 text-blue-400' : 'bg-white/[0.03] text-gray-500 hover:text-white hover:bg-white/10'
-                            }`}
-                        >
-                            <RefreshCw className={`w-4 h-4 ${isItemRescanning ? 'animate-spin' : ''}`} />
-                        </button>
-                        <div className={`p-2.5 rounded-xl border border-white/10 bg-white/[0.03] text-gray-500 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>
-                            <ChevronDown className="w-4 h-4" />
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <AnimatePresence>
-                {isExpanded && (
-                    <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="p-6 md:p-8 border-t border-white/5 space-y-8 bg-black/20"
-                    >
-                        <div className="flex flex-col md:flex-row md:items-center gap-4 p-5 bg-white/[0.02] border border-white/5 rounded-2xl">
+    return <RadarFindingView item={c} idx={idx} isExpanded={isExpanded} isItemRescanning={isItemRescanning} isScanning={isScanning} aiAvailable={aiAvailable} shouldAnimate={shouldAnimate} onToggleExpand={onToggleExpand} onRescanItem={onRescanItem} onUpdateStatus={onUpdateStatus} onDelete={onDelete} onNavigate={onNavigate} onRadarOpenDocument={onRadarOpenDocument}>
+        {actionError && !deleteOpen && <Feedback tone="danger">{actionError}</Feedback>}
+                                <div className="flex flex-col md:flex-row md:items-center gap-4 p-5 bg-white/[0.02] border border-white/5 rounded-2xl">
                             <div className="flex flex-wrap items-center gap-6">
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         onRadarOpenDocument(c.source_doc?.id, workPage);
                                     }}
-                                    className="flex items-center gap-3 group/doc transition-all"
+                                    disabled={!c.source_doc?.id} className="flex items-center gap-3 group/doc transition-all"
                                 >
                                     <div className="w-10 h-10 rounded-xl bg-black/40 border border-white/5 flex items-center justify-center group-hover/doc:border-blue-500/50 group-hover/doc:bg-blue-500/10 transition-colors">
                                         <FileText className="w-5 h-5 text-gray-400 group-hover/doc:text-blue-400" />
                                     </div>
                                     <div className="text-right">
                                         <div className="text-xs text-gray-500 font-bold">מסמך ביצוע</div>
-                                        <div className="text-sm text-gray-200 font-bold">{c.source_doc?.title || 'לא נמצא מסמך ביצוע'}</div>
+                                        <div className="text-sm text-gray-200 font-bold">{c.source_doc?.title || 'לא נמצא מסמך ביצוע'}</div><span className="ti-meta">{workPage ? 'עמוד '+workPage : 'עמוד לא אומת'}</span>
                                     </div>
                                 </button>
 
@@ -345,7 +221,7 @@ function ContradictionRadarFeedItem({
                                     </div>
                                     <div className="text-right">
                                         <div className="text-xs text-gray-500 font-bold">מסמך חוזי</div>
-                                        <div className="text-sm text-gray-200 font-bold">{c.target_doc?.title || richTextEvidence?.contract_title || 'לא נמצא מסמך חוזי'}</div>
+                                        <div className="text-sm text-gray-200 font-bold">{c.target_doc?.title || richTextEvidence?.contract_title || 'לא נמצא מסמך חוזי'}</div><span className="ti-meta">{contractPage ? 'עמוד '+contractPage : 'עמוד לא אומת'}</span>
                                     </div>
                                 </button>
                             </div>
@@ -356,19 +232,9 @@ function ContradictionRadarFeedItem({
                                 <button
                                     onClick={async (e) => {
                                         e.stopPropagation();
-                                        const updated = await onUpdateStatus(c.id, 'MOVED_TO_PRICING', c);
-                                        if (updated && onNavigate) {
-                                            onNavigate('pricing', {
-                                                estimateId: c.id,
-                                                entryPoint: 'contradiction-radar',
-                                                returnTo: 'radar',
-                                                contradictionTitle: cleanDisplayText(c.title),
-                                                contradictionSummary: cleanDisplayText(c.description),
-                                                sourceDocTitle: c.source_doc?.title || '',
-                                                targetDocTitle: c.target_doc?.title || '',
-                                            });
-                                        }
+                                        await moveFindingToPricing(c,updateStatusInView,onNavigate);
                                     }}
+                                    disabled={updating}
                                     className="flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-sm font-bold text-emerald-400 hover:bg-emerald-500/20 transition-all"
                                 >
                                     <Database className="w-4 h-4" />
@@ -430,7 +296,7 @@ function ContradictionRadarFeedItem({
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="ti-radar-quotes grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="bg-white/[0.02] p-5 rounded-2xl border border-white/5 space-y-3">
                                 <div className="flex items-center gap-2 text-sm font-bold text-blue-300">
                                     <Shield className="w-4 h-4" />
@@ -595,9 +461,9 @@ function ContradictionRadarFeedItem({
                                 {c.status !== 'RESOLVED' ? (
                                     <button
                                         onClick={() => {
-                                            void onUpdateStatus(c.id, 'RESOLVED');
+                                            void updateStatusInView(c.id, 'RESOLVED');
                                         }}
-                                        className="flex items-center gap-2 px-6 py-3 bg-emerald-500 text-black rounded-xl text-sm font-bold transition-all hover:bg-emerald-400"
+                                        disabled={updating} className="flex items-center gap-2 px-6 py-3 bg-emerald-500 text-black rounded-xl text-sm font-bold transition-all hover:bg-emerald-400"
                                     >
                                         <CheckCircle2 size={18} />
                                         סמן כטופל
@@ -605,29 +471,27 @@ function ContradictionRadarFeedItem({
                                 ) : (
                                     <button
                                         onClick={() => {
-                                            void onUpdateStatus(c.id, 'OPEN');
+                                            void updateStatusInView(c.id, 'OPEN');
                                         }}
-                                        className="flex items-center gap-2 px-6 py-3 bg-white/[0.03] border border-white/10 text-gray-300 rounded-xl text-sm font-bold hover:bg-white/[0.05] hover:text-white transition-all"
+                                        disabled={updating} className="flex items-center gap-2 px-6 py-3 bg-white/[0.03] border border-white/10 text-gray-300 rounded-xl text-sm font-bold hover:bg-white/[0.05] hover:text-white transition-all"
                                     >
                                         פתח מחדש
                                     </button>
                                 )}
                                 <button
                                     onClick={() => {
-                                        void onDelete(c.id);
+                                        setActionError(null);setDeleteOpen(true);
                                     }}
                                     className="p-3 bg-red-500/[0.03] border border-white/5 text-gray-500 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all"
-                                    title="מחיקה"
+                                    title="מחיקה" aria-label="מחיקת ממצא"
                                 >
                                     <Trash2 size={18} />
                                 </button>
                             </div>
                         </div>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-        </RowComponent>
-    );
+
+        <Dialog open={deleteOpen} labelledBy={'radar-delete-'+c.id} onClose={()=>{if(!deleting)setDeleteOpen(false);}}><h2 id={'radar-delete-'+c.id} className="ti-section-title">מחיקת ממצא</h2>{actionError && <Feedback tone="danger">{actionError}</Feedback>}<p className="ti-copy">האם למחוק את הממצא ״{cleanDisplayText(c.title)}״?</p><div className="ti-actions"><Button onClick={()=>setDeleteOpen(false)} disabled={deleting}>ביטול</Button><Button variant="danger" pending={deleting} busyLabel="מוחק…" onClick={async()=>{setDeleting(true);try{const deleted=await onDelete(c.id,true);if(deleted)setDeleteOpen(false);else setActionError('המחיקה לא הושלמה. הממצא נשמר.');}catch{setActionError('המחיקה לא הושלמה. הממצא נשמר.');}finally{setDeleting(false);}}}>מחיקת הממצא</Button></div></Dialog>
+    </RadarFindingView>;
 }
 
 export default React.memo(ContradictionRadarFeedItem);

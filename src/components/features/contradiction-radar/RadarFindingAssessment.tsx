@@ -14,7 +14,7 @@ export function RadarFindingAssessment({ value }: { value: unknown }) {
     const kind: Record<string,string> = { CONTRADICTION:'דרישות שאינן מתיישבות', KNOWN_CHANGE:'שינוי מתועד לבירור',
         EVENT:'אירוע מתועד', NEEDS_VERIFICATION:'השוואה שדורשת ביסוס', NO_CONFLICT:'לא הוכחה סתירה בהשוואה זו' };
     const date = text(history.evidenceThrough) || text(review.evidenceDate);
-    return <section aria-label="סוג המסקנה ובסיסה" className="p-5 rounded-2xl border border-amber-400/20 bg-amber-500/5 space-y-3">
+    return <section aria-label="סוג המסקנה ובסיסה" className="ti-radar-section" data-evidence-status={getEvidenceDisplayStatus(evidence)}>
         <h4 className="text-sm font-bold text-amber-200">סוג המסקנה ובסיסה</h4>
         <p className="text-sm text-gray-200">{kind[text(semantic.resultType)] || 'טרם בוצעה הערכה של משמעות ההשוואה'} · {evidenceStatusLabel(getEvidenceDisplayStatus(evidence))}</p>
         <p className="text-xs text-gray-400">{date ? `מצב לפי המסמכים עד ${date.split('-').reverse().join('.')}` : 'לא נמצא תאריך מלא ומאומת למצב המתואר.'}</p>

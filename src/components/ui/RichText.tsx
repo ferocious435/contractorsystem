@@ -1,145 +1,16 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Fingerprint, FileSearch, Quote } from 'lucide-react';
+"use client";
 
-interface EvidenceData {
-    contract_quote?: string;
-    work_quote?: string;
-    contract_title?: string;
-    work_title?: string;
-    contract_page?: number | string;
-    work_page?: number | string;
-    contract_url?: string;
-    work_url?: string;
-    document_pair?: {
-        contract_doc_id?: string | null;
-        work_doc_id?: string | null;
-    };
+import {useId,useState} from 'react';
+import {ExternalLink} from 'lucide-react';
+import {Button} from './titanium/Button';
+import {Dialog} from './titanium/Dialog';
+interface EvidenceData {contract_quote?:string;work_quote?:string;contract_title?:string;work_title?:string;contract_page?:number|string;work_page?:number|string;contract_url?:string;work_url?:string;document_pair?:{contract_doc_id?:string|null;work_doc_id?:string|null};}
+function EvidenceMarker({part,isMarker1,evidence,onOpen}:{part:string;isMarker1:boolean;evidence:EvidenceData;onOpen?:(documentId:string|null,page:number|string|null)=>void}){
+ const [showQuote,setShowQuote]=useState(false),titleId=useId();
+ const quote=isMarker1?evidence.contract_quote:evidence.work_quote,title=isMarker1?evidence.contract_title:evidence.work_title,page=isMarker1?evidence.contract_page:evidence.work_page,url=isMarker1?evidence.contract_url:evidence.work_url,documentId=isMarker1?evidence.document_pair?.contract_doc_id:evidence.document_pair?.work_doc_id;
+ if(!quote)return <span className="ti-chip ti-tone--warning">{part} נדרש אימות</span>;
+ const canOpen=Boolean(onOpen&&documentId||url);
+ return <span className="ti-evidence-marker"><button type="button" className="ti-evidence-marker__button" aria-label={`פתיחת מקור ${part} · ${page?`עמוד ${page}`:'עמוד לא אומת'}`} aria-haspopup="dialog" onClick={event=>{event.stopPropagation();setShowQuote(true);}}>{part}<ExternalLink size={13} aria-hidden="true"/><span className="ti-sr-only">{page?`עמוד ${page}`:'עמוד לא אומת'}</span></button><Dialog open={showQuote} labelledBy={titleId} onClose={()=>setShowQuote(false)}><header className="ti-dialog__header"><h2 id={titleId} className="ti-section-title">ציטוט מקור {part}</h2><Button onClick={()=>setShowQuote(false)}>סגירה</Button></header><p className="ti-source-name"><bdi dir="auto">{title||'מסמך מקור'}</bdi> · {page?`עמוד ${page}`:'עמוד לא אומת'}</p><blockquote className="ti-evidence-quote" dir="auto">״{quote}״</blockquote><p className="ti-meta">המובאה מוצגת מהנתונים השמורים; מצבה וההקשר שלה נבדקים בכרטיס.</p><Button onClick={()=>{if(onOpen&&documentId)onOpen(documentId,page||null);else if(url)window.open(page?`${url}#page=${page}`:url,'_blank','noopener,noreferrer');}} disabled={!canOpen} disabledReason={!canOpen?'אין קובץ מקור מקושר לפתיחה':undefined}>פתיחת קובץ המקור<ExternalLink size={16} aria-hidden="true"/></Button></Dialog></span>;
 }
-
-const EvidenceMarker = ({
-    part,
-    isMarker1,
-    evidence,
-    onOpen
-}: {
-    part: string;
-    isMarker1: boolean;
-    evidence: EvidenceData;
-    onOpen?: (documentId: string | null, page: number | string | null) => void
-}) => {
-    const [isHovered, setIsHovered] = useState(false);
-    const quote = isMarker1 ? evidence?.contract_quote : evidence?.work_quote;
-    const title = isMarker1 ? evidence?.contract_title : evidence?.work_title;
-    const page = isMarker1 ? evidence?.contract_page : evidence?.work_page;
-    const url = isMarker1 ? evidence?.contract_url : evidence?.work_url;
-    const documentId = isMarker1
-        ? evidence?.document_pair?.contract_doc_id
-        : evidence?.document_pair?.work_doc_id;
-
-    if (!quote) {
-        return (
-            <span className="inline-flex items-center mx-0.5 px-2 py-0.5 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[10px] font-black align-middle">
-                {part} נדרש אימות
-            </span>
-        );
-    }
-
-    return (
-        <span
-            className="relative inline-block mx-0.5 align-middle select-none"
-            onMouseEnter={() => setIsHovered(true)}
-            onMouseLeave={() => setIsHovered(false)}
-        >
-            <motion.span
-                whileHover={{ scale: 1.15, y: -1 }}
-                whileTap={{ scale: 0.9 }}
-                onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (onOpen && documentId) {
-                        onOpen(documentId, page || null);
-                    } else if (url) {
-                        window.open(page ? `${url}#page=${page}` : url, '_blank');
-                    }
-                }}
-                className={`cursor-pointer px-2 py-0.5 rounded-md text-[10px] font-black border transition-all shadow-md flex items-center gap-1.5 active:brightness-125 ${
-                    isMarker1
-                    ? 'bg-blue-600/30 text-blue-300 border-blue-500/50 hover:bg-blue-500/40'
-                    : 'bg-red-600/30 text-red-300 border-red-500/50 hover:bg-red-500/40'
-                }`}
-            >
-                {part}
-                <ExternalLink size={8} className="opacity-70" />
-            </motion.span>
-
-            <AnimatePresence>
-                {isHovered && (
-                    <motion.span
-                        initial={{ opacity: 0, scale: 0.9, y: 5, x: '-50%' }}
-                        animate={{ opacity: 1, scale: 1, y: 0, x: '-50%' }}
-                        exit={{ opacity: 0, scale: 0.9, y: 2, x: '-50%' }}
-                        transition={{ duration: 0.1, ease: "linear" }}
-                        style={{ zIndex: 9999 }}
-                        className="absolute bottom-full left-1/2 mb-3 w-80 p-5 bg-[#0B0F14] border border-white/10 rounded-[1.5rem] shadow-[0_20px_50px_rgba(0,0,0,1)] pointer-events-none"
-                    >
-                        <span className="block font-black text-[9px] uppercase tracking-[0.2em] text-gray-500 mb-3 border-b border-white/5 pb-2 flex items-center justify-between">
-                            <span className="flex items-center gap-2">
-                                <Fingerprint className={`w-3.5 h-3.5 ${isMarker1 ? 'text-blue-400' : 'text-red-400'}`} />
-                                {isMarker1 ? 'בסיס חוזי (צילום מצב)' : 'ראיית ביצוע (מהשטח)'}
-                            </span>
-                            <span className="text-white/20 font-mono text-[8px]">REF: {part}</span>
-                        </span>
-                        <div className="relative">
-                            <Quote className="absolute -top-1 -right-1 w-6 h-6 text-white/5 pointer-events-none" />
-                            <p className="text-[12px] text-gray-100 leading-relaxed italic font-medium text-right relative z-10 pr-2" dir="rtl">
-                                &quot;{quote}&quot;
-                            </p>
-                        </div>
-                        <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-[9px] text-gray-500 font-black truncate uppercase tracking-widest">
-                            <span className="flex items-center gap-2 max-w-[70%] truncate text-gray-400">
-                                <FileSearch className="w-3.5 h-3.5 text-gray-600" />
-                                {title || 'מסמך מקור'}
-                            </span>
-                            {page && (
-                                <span className="bg-white/5 px-2.5 py-1 rounded-lg border border-white/10 text-emerald-400/70 shrink-0 font-mono">
-                                    עמוד {page}
-                                </span>
-                            )}
-                        </div>
-                        <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-[#0B0F14] border-r border-b border-white/10 rotate-45" />
-                    </motion.span>
-                )}
-            </AnimatePresence>
-        </span>
-    );
-};
-
-interface RichTextProps {
-    text: string;
-    evidence?: EvidenceData;
-    onOpen?: (documentId: string | null, page: number | string | null) => void;
-    className?: string;
-    dir?: 'rtl' | 'ltr';
-}
-
-export const RichText = ({ text, evidence, onOpen, className = "", dir = "ltr" }: RichTextProps) => {
-    if (!text) return null;
-
-    const parts = text.split(/(\[[12]\])/);
-
-    return (
-        <span className={`${className} leading-relaxed block`} dir={dir}>
-            {parts.map((part, i) => {
-                const isMarker1 = part === '[1]';
-                const isMarker2 = part === '[2]';
-
-                if (isMarker1 || isMarker2) {
-                    return <EvidenceMarker key={i} part={part} isMarker1={isMarker1} evidence={evidence || {}} onOpen={onOpen} />;
-                }
-
-                return <span key={i}>{part}</span>;
-            })}
-        </span>
-    );
-};
+interface RichTextProps {text:string;evidence?:EvidenceData;onOpen?:(documentId:string|null,page:number|string|null)=>void;className?:string;dir?:'rtl'|'ltr'|'auto';}
+export function RichText({text,evidence,onOpen,className='',dir='auto'}:RichTextProps){if(!text)return null;return <span className={`ti-rich-text ${className}`} dir={dir}>{text.split(/(\[[12]\])/).map((part,index)=>part==='[1]'||part==='[2]'?<EvidenceMarker key={index} part={part} isMarker1={part==='[1]'} evidence={evidence||{}} onOpen={onOpen}/>:<span key={index}>{part}</span>)}</span>;}

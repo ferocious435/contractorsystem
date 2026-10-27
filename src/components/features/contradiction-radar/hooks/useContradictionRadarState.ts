@@ -417,8 +417,8 @@ export function useContradictionRadarState({
         }
     }, [projectId]);
 
-    const deleteContradiction = useCallback(async (id: string) => {
-        if (!confirm('האם למחוק את הממצא הזה?')) return false;
+    const deleteContradiction = useCallback(async (id: string, confirmed = false) => {
+        if (!confirmed) return false;
 
         try {
             await deleteContradictionById(projectId, id);

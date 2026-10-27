@@ -1,0 +1,30 @@
+"use client";
+
+import type { useContradictionRadarState } from './hooks/useContradictionRadarState';
+import ContradictionRadarHeader from '../ContradictionRadarHeader';
+import ContradictionRadarFeedItem from '../ContradictionRadarFeedItem';
+import { Button } from '@/components/ui/titanium/Button';
+import { Panel } from '@/components/ui/titanium/Panel';
+import { Feedback } from '@/components/ui/titanium/Feedback';
+import { StatusChip } from '@/components/ui/titanium/StatusChip';
+
+export function RadarWorkspaceView({state,actions,derived,onNavigate}:ReturnType<typeof useContradictionRadarState>&{onNavigate?:(view:string,params?:Record<string,unknown>)=>void}) {
+  const {isScanning,isLoading,isReviewing,reviewMessage,reviewError,supportSources}=state;
+  const sources=supportSources?[{label:'חוזה מדף 3210',available:supportSources.shelfContract3210.available,detail:supportSources.shelfContract3210.title},{label:'הספר הכחול',available:supportSources.blueBook.available,detail:supportSources.blueBook.title},{label:'מחירונים',available:supportSources.priceLists.length>0,detail:supportSources.priceLists.map(item=>item.name).join(' · ')},{label:'תקנים',available:supportSources.standards.length>0,detail:supportSources.standards.map(item=>item.title).join(' · ')}]:[];
+  return <div className="ti-page ti-radar-workspace" dir="rtl">
+    <ContradictionRadarHeader isScanning={isScanning} progress={state.progress} retryableDocsCount={state.retryableDocsCount} currentStep={state.currentStep} currentStepStatus={state.currentStepStatus} contractDocsCount={derived.contractDocsCount} executionDocsCount={derived.executionDocsCount} hasContradictions={derived.hasContradictions} aiAvailable={state.aiAvailable} projectName={state.resolvedProjectName} scanProject={actions.scanProject} onExportPDF={actions.handleExportPDF} onBack={onNavigate?()=>onNavigate('projects'):undefined}/>
+    <Panel className="ti-radar-source-summary"><details className="ti-radar-support"><summary>מקורות והפניות במסמכי הפרויקט</summary><p className="ti-copy">הספר הכחול וחוזה 3210 משמשים בסיס כברירת מחדל, אלא אם נקבע אחרת בחוזה הפרויקט. כל סעיף נבדק בנפרד לפי העבודה, תנאי החוזה והמקור.</p><div className="ti-radar-support-grid">{sources.map(source=><div key={source.label}><strong>{source.label}</strong><StatusChip tone="neutral">{source.available?'קיים במערכת':'לא נטען'}</StatusChip>{source.detail && <p className="ti-meta">{source.detail}</p>}</div>)}</div>
+      {!supportSources && <Feedback>פרטי מקורות הייחוס טרם נטענו.</Feedback>}
+      {supportSources?.referenceChecks?.error && <Feedback tone="warning">בדיקת ההפניות לא הושלמה. תחולת המקורות עדיין לא אומתה.</Feedback>}
+      {supportSources?.referenceChecks?.eligibleComparisonPages===0 && <Feedback tone="warning">עדיין לא אומתו סעיפים מספריית הייחוס לשימוש בהשוואה. נדרשת בדיקת הסעיפים והמהדורות המתאימים.</Feedback>}
+      {supportSources?.referenceChecks?.references?.filter(source=>source.contractEvidence?.length).map(source=><details key={source.id}><summary>{source.title}: {source.applicability==='REFERENCE_ONLY'?'הוחרג לפי החוזה':'תנאי חוזה שיש להביא בחשבון'}</summary>{source.contractEvidence?.map((evidence,index)=><p className="ti-copy" key={`${evidence.documentId}:${index}`}><strong>{evidence.title}</strong>: {evidence.quote}</p>)}</details>)}
+      {Boolean(supportSources?.referenceChecks?.missingRequiredDocuments?.length) && <details><summary>מקורות שהטקסט המלא שלהם חסר במערכת ({supportSources?.referenceChecks?.missingRequiredDocuments?.length})</summary><p className="ti-copy">{supportSources?.referenceChecks?.missingRequiredDocuments?.map(source=>source.targetLabel).join(' · ')}</p></details>}
+    </details><p className="ti-meta">נוכחות קובץ בספרייה אינה אישור לקריאת כל עמודיו או לתחולת כל סעיפיו.</p></Panel>
+    <details className="ti-radar-tools"><summary>כלי בדיקת ראיות שמורות</summary><div className="ti-actions"><Button onClick={()=>actions.reviewSavedEvidence()} disabled={isReviewing||isScanning} pending={isReviewing} busyLabel="בודק ראיות…">בדיקת ראיות בממצאים שמורים</Button><Button onClick={()=>actions.reviewSavedEvidence(true)} disabled={isReviewing||isScanning}>בדיקת MTM מול המסמכים השמורים</Button></div></details>
+    {reviewMessage && <Feedback tone={reviewError?'danger':'info'}>{reviewMessage}</Feedback>}
+    <div className="ti-tabs" aria-label="מצב ממצאים">{derived.statusFilterOptions.map(option=><button key={option.id} type="button" data-radar-status={option.id} className="ti-tab" aria-pressed={state.activeStatusFilter===option.id} onClick={()=>actions.handleStatusFilterChange(option.id)}>{option.label} ({option.count})</button>)}</div>
+    <div className="ti-tabs" aria-label="סוג ממצא">{derived.filterOptions.map(option=><button key={option.id} type="button" data-radar-filter={option.id} className="ti-tab" aria-pressed={state.activeFilter===option.id} onClick={()=>actions.handleFilterChange(option.id)}>{option.label} ({option.count})</button>)}</div>
+    {isLoading?<Feedback>טוען ממצאים מהמערכת…</Feedback>:!derived.hasFilteredFindings?<Feedback title={derived.hasContradictions?'אין ממצאים בסינון הזה':'כרגע אין ממצאים לתצוגה'}>אפשר לבדוק את שאר המסננים. תצוגה ריקה אינה מעידה שכל מסמכי הפרויקט נבדקו.<Button variant="text" onClick={()=>actions.handleFilterChange('ALL')}>הצג את כל הממצאים</Button></Feedback>:<div className="ti-radar-feed">{derived.filteredFindings.map((finding,index)=><ContradictionRadarFeedItem key={finding.id} item={finding} idx={index} isExpanded={state.expandedId===finding.id} isItemRescanning={state.rescanningIds.has(finding.id)} isScanning={isScanning} aiAvailable={state.aiAvailable===true} shouldAnimate={derived.shouldAnimateItems} onToggleExpand={actions.toggleExpanded} onRescanItem={actions.rescanItem} onUpdateStatus={actions.updateStatus} onDelete={actions.deleteContradiction} onNavigate={onNavigate} onRadarOpenDocument={actions.radarOpenDocument}/>)}</div>}
+    <p className="ti-meta">ממצא, הציטוטים וההיסטוריה נבחנים יחד. פעולה חדשה מתבצעת רק בלחיצה מפורשת.</p>
+  </div>;
+}

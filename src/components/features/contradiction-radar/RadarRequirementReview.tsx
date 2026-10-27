@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import type { IssueRequirementReview, ReviewedRequirement } from '@/utils/radar-requirement-review';
 import type { RequirementKind } from '@/utils/requirement-statement-comparison';
+import {Dialog} from '@/components/ui/titanium/Dialog';
+import {Button} from '@/components/ui/titanium/Button';
 
 const labels: Record<RequirementKind, string> = { METHOD_CHANGE: 'שינוי שיטת הביצוע', SIGN_ANNEX: 'דרישה לחתימת נספח',
     BINDING_ANNEX: 'הטענה שהנספח מחייב', NO_EXTRA_PAYMENT: 'תנאי מחיר ללא תוספת', SUBMIT_PRICE: 'הגשת ניתוח מחיר',
@@ -53,7 +55,7 @@ export function RadarRequirementReview({ value, projectId, openDocument }: {
             Number(b.assessment === 'CONFLICT') - Number(a.assessment === 'CONFLICT') || (b.date || '').localeCompare(a.date || ''));
         return entries.length ? [{ kind: kind as RequirementKind, entries, latest: entries[0] }] : [];
     });
-    return <section aria-label="בדיקת בסיס הדרישות" className="p-4 rounded-xl border border-violet-400/20 bg-violet-500/5 space-y-3">
+    return <section aria-label="בדיקת בסיס הדרישות" className="ti-radar-section">
         <h5 className="text-sm font-bold text-violet-200">בדיקת הבסיס לדרישות MTM</h5>
         <p className="text-xs text-gray-400 leading-6">הדרישות הושוו למסמכי הפרויקט ולהפניות החלות. סמכות לשינוי שיטה אינה מוכיחה הסכמה למחיר או לוויתור.</p>
         {groups.length === 0 && <p className="text-xs text-gray-300">לא נמצאה דרישה מסוימת נוספת לבדיקה בתקופת המסמכים.</p>}
@@ -92,10 +94,6 @@ export function RadarRequirementReview({ value, projectId, openDocument }: {
                 {gap.quote && <blockquote className="mt-1 text-gray-400 leading-6">{gap.quote}</blockquote>}
             </li>)}</ul>
         </details>}
-        {referencePage && projectId && <div role="dialog" aria-modal="true" aria-label="עמוד מקור מחייב" className="fixed inset-4 z-[100] bg-gray-950 border border-white/20 rounded-xl flex flex-col p-3 shadow-2xl">
-            <div className="flex justify-between items-center text-sm text-gray-100 mb-3"><span>{referencePage.title} · עמוד {referencePage.page}</span>
-                <button type="button" className="p-2 border border-white/20 rounded-lg" onClick={() => setReferencePage(null)}>סגירה</button></div>
-            <iframe title="עמוד מקור מחייב" className="flex-1 w-full bg-white rounded-lg" src={`/api/reference-library/text?${new URLSearchParams({ projectId, referenceId: referencePage.id, page: String(referencePage.page) })}`} />
-        </div>}
+        {referencePage && projectId && <Dialog open labelledBy="radar-reference-title" className="ti-source-dialog" onClose={()=>setReferencePage(null)}><header className="ti-dialog__header"><h2 id="radar-reference-title" className="ti-section-title">{referencePage.title} · עמוד {referencePage.page}</h2><Button onClick={()=>setReferencePage(null)}>סגירה</Button></header><p className="ti-meta">תצוגת העמוד אינה מאשרת את קריאת הספרייה כולה או את תחולת הסעיף.</p><iframe title="עמוד מקור ייחוס" className="ti-source-frame" src={`/api/reference-library/text?${new URLSearchParams({ projectId, referenceId: referencePage.id, page: String(referencePage.page) })}`}/></Dialog>}
     </section>;
 }

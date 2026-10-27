@@ -42,7 +42,7 @@ export function RadarLinkedRecords({ projectId, findingId, value, openDocument }
         finally { setBusy(false); }
     }
     const primarySource = plan?.attachHistory.find(entry => entry.relation === 'PRIMARY');
-    return <section aria-label="קישורי הנושא ותמחור קיים" className="p-5 rounded-2xl border border-violet-400/20 bg-violet-500/5 space-y-4">
+    return <section aria-label="קישורי הנושא ותמחור קיים" className="ti-radar-section">
         <h4 className="text-sm font-bold text-violet-200">רישומים ומסמכים הקשורים לאותו נושא</h4>
         <button type="button" disabled={busy} onClick={() => void reconcile()} className="text-xs text-violet-200 disabled:opacity-50">
             {busy ? 'בודק…' : 'בדיקת כפילויות וקישור לרישומים קיימים'}

@@ -22,7 +22,7 @@ export function RadarIssueHistory({ value, openDocument }: {
     const history = value as IssueHistoryAssessment & { timing?: IssueTimingReview; completionBasis?: CompletionDeadlineReview | null;
         requirementReview?: IssueRequirementReview; projectId?: string };
     if (history.version !== 'aspect-history-v1' || !history.aspects || !Array.isArray(history.events)) return null;
-    return <section aria-label="היסטוריית MTM" className="p-5 rounded-2xl border border-blue-400/20 bg-blue-500/5 space-y-4">
+    return <section aria-label="היסטוריית MTM" className="ti-radar-section">
         <div>
             <h4 className="text-sm font-bold text-blue-200">היסטוריית MTM — שיטה, חתימה ומחיר</h4>
             <p className="text-xs text-gray-400 mt-2">מצב לפי המסמכים עד {dateLabel(history.evidenceThrough)}. אישור שיטה אינו מוכיח חתימה או מחיר מוסכם.</p>

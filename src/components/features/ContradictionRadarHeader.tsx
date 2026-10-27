@@ -1,7 +1,8 @@
-import React from 'react';
-import { Target, Zap, Download, Check } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-
+import {Download,Scan} from 'lucide-react';
+import {Panel} from '@/components/ui/titanium/Panel';
+import {Button} from '@/components/ui/titanium/Button';
+import {Feedback} from '@/components/ui/titanium/Feedback';
+import {StatusChip} from '@/components/ui/titanium/StatusChip';
 interface ContradictionRadarHeaderProps {
     isScanning: boolean;
     progress: number;
@@ -15,172 +16,15 @@ interface ContradictionRadarHeaderProps {
     projectName: string;
     scanProject: (force: boolean, retrySkipped?: boolean) => void;
     onExportPDF: () => void;
+    onBack?: () => void;
 }
 
-export default function ContradictionRadarHeader({
-    isScanning,
-    progress,
-    retryableDocsCount = 0,
-    currentStep,
-    currentStepStatus,
-    contractDocsCount,
-    executionDocsCount,
-    hasContradictions,
-    aiAvailable,
-    projectName,
-    scanProject,
-    onExportPDF,
-}: ContradictionRadarHeaderProps) {
-    const isResultSuccess = currentStepStatus === 'success';
 
-    return (
-        <div className="bg-[#151C24]/55 border border-white/5 rounded-[2.5rem] p-8 md:p-10 relative overflow-hidden" dir="rtl">
-            <div className="absolute top-[-100px] left-[-100px] w-64 h-64 bg-blue-500/10 rounded-full blur-[100px] pointer-events-none" />
-            <div className="absolute bottom-[-100px] right-[-100px] w-64 h-64 bg-emerald-500/10 rounded-full blur-[100px] pointer-events-none" />
-
-            <div className="relative z-10 flex flex-col gap-8">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8">
-                    <div className="flex items-start gap-6">
-                        <div className={`w-18 h-18 min-w-18 rounded-[1.75rem] border flex items-center justify-center transition-all duration-700 ${
-                            isScanning ? 'border-blue-500 bg-blue-500/10 shadow-[0_0_40px_rgba(59,130,246,0.3)]' : 'border-white/10 bg-white/5'
-                        }`}>
-                            <Target className={`w-9 h-9 ${isScanning ? 'text-blue-400 animate-pulse' : 'text-gray-400'}`} />
-                        </div>
-
-                        <div className="space-y-3">
-                            <div className="flex flex-wrap items-center gap-3">
-                                <span className="px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs text-blue-300 font-bold">
-                                    רדאר סתירות
-                                </span>
-                                <span className="text-sm text-gray-500">הפרויקט: {projectName}</span>
-                            </div>
-                            <h2 className="text-3xl md:text-4xl font-black text-white leading-tight">
-                                בדיקת פערים בין החוזה לביצוע
-                            </h2>
-                            <p className="text-base text-gray-300 max-w-2xl leading-8">
-                                המערכת בודקת מה לא מסתדר בין מסמכי החוזה, המפרט והשטח, כדי לעזור לקבלן להבין מה דורש טיפול, תיעוד או דרישה מסחרית.
-                            </p>
-                        </div>
-                    </div>
-
-                    <div className="min-w-[280px] bg-black/35 border border-white/5 rounded-3xl p-5">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <div className="text-xs text-gray-500 font-bold">מצב הבדיקה</div>
-                                <div className="text-sm text-white font-bold mt-1">
-                                    {isScanning
-                                        ? 'המערכת סורקת עכשיו מסמכים'
-                                        : aiAvailable === null
-                                            ? 'בודק את חיבור ה-AI'
-                                            : aiAvailable
-                                                ? 'המערכת מוכנה לבדיקה'
-                                                : 'חיבור ה-AI לא מוגדר'}
-                                </div>
-                            </div>
-                            <div className={`w-3 h-3 rounded-full ${isScanning
-                                ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]'
-                                : aiAvailable
-                                    ? 'bg-emerald-500'
-                                    : 'bg-amber-500'
-                            }`} />
-                        </div>
-
-                        <div className="mt-4 text-sm text-gray-400">
-                            {isScanning ? currentStep : `נמצאו ${contractDocsCount} מסמכים חוזיים ו-${executionDocsCount} מסמכי ביצוע`}
-                        </div>
-
-                        {isScanning && (
-                            <div className="mt-4 space-y-2">
-                                <div className="flex justify-between text-sm text-blue-300 font-bold">
-                                    <span>{currentStep}</span>
-                                    <span>{Math.round(progress)}%</span>
-                                </div>
-                                <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
-                                    <motion.div
-                                        initial={{ width: 0 }}
-                                        animate={{ width: `${progress}%` }}
-                                        className="h-full bg-blue-500"
-                                    />
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 p-6 bg-white/[0.03] border border-white/5 rounded-[2rem]">
-                    <div>
-                        <div className="text-sm font-bold text-white">
-                            {isScanning
-                                ? 'הבדיקה רצה עכשיו'
-                                : aiAvailable
-                                    ? 'אפשר להריץ בדיקה חדשה או לייצא דוח'
-                                    : 'אפשר לצפות בממצאים ולייצא דוח'}
-                        </div>
-                        <div className="text-sm text-gray-400 mt-1">
-                            {aiAvailable
-                                ? 'בדיקה חכמה משתמשת בתוצאות הקיימות וסורקת רק מה שבאמת צריך.'
-                                : 'ניתוח חדש יופעל רק לאחר הגדרת חיבור AI בשרת.'}
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-3 flex-wrap">
-                        {retryableDocsCount > 0 && (
-                            <button
-                                onClick={() => scanProject(false, true)}
-                                disabled={isScanning || aiAvailable !== true}
-                                className="px-5 py-4 rounded-2xl font-bold text-sm border border-amber-500/30 text-amber-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-amber-500/10"
-                            >
-                                בדיקה חוזרת ל־{retryableDocsCount} מסמכים
-                            </button>
-                        )}
-                        <button
-                            onClick={() => scanProject(false)}
-                            disabled={isScanning || aiAvailable !== true}
-                            className={`px-7 py-4 rounded-2xl font-black text-sm transition-all active:scale-95 flex items-center gap-3 ${
-                                isScanning || aiAvailable !== true
-                                    ? 'bg-white/5 text-gray-500 cursor-not-allowed border border-white/5'
-                                    : 'bg-white text-black hover:bg-blue-50 hover:text-blue-600'
-                            }`}
-                        >
-                            <Zap className={`w-4 h-4 ${isScanning ? 'animate-spin' : ''}`} />
-                            {isScanning
-                                ? 'הבדיקה פועלת...'
-                                : aiAvailable === true
-                                    ? 'בדיקה חכמה'
-                                    : aiAvailable === false
-                                        ? 'נדרש חיבור AI'
-                                        : 'בודק חיבור...'}
-                        </button>
-
-                        <button
-                            className="flex items-center gap-3 px-6 py-4 bg-white/5 border border-white/10 text-gray-300 rounded-2xl hover:bg-white/10 hover:text-white transition-all active:scale-95 disabled:opacity-30"
-                            disabled={!hasContradictions}
-                            onClick={onExportPDF}
-                        >
-                            <Download className="w-5 h-5" />
-                            <span className="text-sm font-bold">ייצוא דוח PDF</span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <AnimatePresence>
-                {currentStep && !isScanning && (
-                    <motion.div
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0 }}
-                        className={`absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 px-6 py-2 rounded-full ${
-                            isResultSuccess
-                                ? 'bg-emerald-500/10 border border-emerald-500/20'
-                                : 'bg-red-500/10 border border-red-500/20'
-                        }`}
-                    >
-                        <Check size={12} className={isResultSuccess ? 'text-emerald-400' : 'text-red-400'} />
-                        <span className={`text-xs font-bold ${isResultSuccess ? 'text-emerald-400' : 'text-red-400'}`}>{currentStep}</span>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-        </div>
-    );
+export default function ContradictionRadarHeader({isScanning,progress,retryableDocsCount=0,currentStep,currentStepStatus,contractDocsCount,executionDocsCount,hasContradictions,aiAvailable,projectName,scanProject,onExportPDF,onBack}:ContradictionRadarHeaderProps){
+ const unavailable=aiAvailable!==true,reason=aiAvailable===null?'בודק את זמינות שירות הניתוח…':'שירות הניתוח אינו זמין. אפשר לצפות בממצאים ובמקורות השמורים.';
+ return <Panel material="metal" className="ti-radar-header"><div className="ti-page-header"><div className="ti-radar-header__title"><h1 className="ti-title">מכ״ם סתירות</h1><p className="ti-subtitle">פערים בין החוזה לביצוע · {projectName}</p></div><div className="ti-actions">{onBack&&<Button variant="text" onClick={onBack}>חזרה לרשימת פרויקטים</Button>}<Button variant="primary" onClick={()=>scanProject(false)} disabled={isScanning||unavailable} pending={isScanning} busyLabel="הבדיקה פועלת…" disabledReason={unavailable?reason:undefined}><Scan size={17} aria-hidden="true"/>בדיקה חכמה</Button>{retryableDocsCount>0 && <Button onClick={()=>scanProject(false,true)} disabled={isScanning||unavailable} disabledReason={unavailable?reason:undefined}>בדיקה חוזרת ל־{retryableDocsCount} {retryableDocsCount===1?'מסמך':'מסמכים'}</Button>}<Button onClick={onExportPDF} disabled={!hasContradictions} disabledReason={!hasContradictions?'אין ממצאים שמורים לייצוא':undefined}><Download size={17} aria-hidden="true"/>ייצוא דוח PDF</Button></div></div>
+ <div className="ti-radar-header__status"><StatusChip tone={isScanning?'info':'neutral'}>{isScanning?'בדיקת מסמכים בתהליך':aiAvailable===null?'בודק זמינות ניתוח':aiAvailable?'שירות הניתוח זמין':'ניתוח חדש אינו זמין'}</StatusChip><span className="ti-meta">ברשימה שנטענה: {contractDocsCount} מסמכים חוזיים · {executionDocsCount} מסמכי ביצוע</span><span className="ti-meta">הבדיקה החכמה משתמשת בתוצאות הקיימות ובודקת מסמכים חדשים או שהשתנו.</span></div>
+ {isScanning && <div className="ti-radar-progress" role="status"><span>{currentStep || 'בודק מסמכים…'}</span><progress max={100} value={Math.max(0,Math.min(100,progress))} aria-label="התקדמות בדיקת המסמכים"/><bdi dir="ltr">{Math.round(progress)}%</bdi></div>}
+ {currentStep&&!isScanning && <Feedback tone={currentStepStatus==='success'?'success':currentStepStatus==='error'?'danger':'info'}>{currentStep}</Feedback>}
+ </Panel>;
 }
