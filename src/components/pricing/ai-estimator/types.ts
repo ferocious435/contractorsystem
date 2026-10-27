@@ -1,5 +1,7 @@
 import type { ContradictionItem } from '@/types';
 import type { ApprovePricingEstimationPayload } from '@/components/features/pricing-ledger';
+import type { PricingScopeResult } from '@/utils/pricing-scope-review';
+import type { ManualPricingInputs } from '@/utils/pricing-scope-approval';
 
 export interface AIEstimatorModalProps {
     contradiction: ContradictionItem;
@@ -10,10 +12,11 @@ export interface AIEstimatorModalProps {
 export interface AIEstimatorFormState {
     description: string;
     unit: string;
-    quantity: number;
-    unitPrice: number;
+    quantity: number | null;
+    unitPrice: number | null;
     markup: number;
     source: string;
+    manualPricingInputs: ManualPricingInputs;
 }
 
 export interface AIPricingMatchedItem extends Record<string, unknown> {
@@ -64,8 +67,10 @@ export interface AIPricingEvaluationResponse {
     item_code?: string;
     suggested_description?: string;
     suggested_unit?: string;
-    suggested_quantity?: number;
-    suggested_unit_price_excl_vat?: number;
+    suggested_quantity?: number | null;
+    suggested_unit_price_excl_vat?: number | null;
+    scope_review?: PricingScopeResult | null;
+    total_excl_vat?: number | null;
     source?: string;
     confidence?: unknown;
     confidence_score?: unknown;
@@ -82,9 +87,9 @@ export interface AIPricingEvaluationResponse {
         source_name?: string;
         description?: string;
         unit?: string;
-        quantity?: number;
-        unit_price_excl_vat?: number;
-        amount_excl_vat?: number;
+        quantity?: number | null;
+        unit_price_excl_vat?: number | null;
+        amount_excl_vat?: number | null;
         basis?: string;
         is_inference?: boolean;
     }>;

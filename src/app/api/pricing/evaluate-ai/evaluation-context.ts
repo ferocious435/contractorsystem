@@ -147,6 +147,12 @@ export function buildPricingEvidenceData(
     return {
         ...currentEvidence,
         pricing_evaluation: {
+            scope_review: evaluation.scope_review || null,
+            scope_source_signature: evaluation.scope_source_signature || null,
+            suggested_unit_price_excl_vat: evaluation.suggested_unit_price_excl_vat ?? null,
+            suggested_quantity: evaluation.suggested_quantity ?? null,
+            suggested_unit: evaluation.suggested_unit || '',
+            total_excl_vat: evaluation.total_excl_vat ?? null,
             match_found: evaluation.match_found,
             source: evaluation.source,
             confidence: evaluation.confidence,

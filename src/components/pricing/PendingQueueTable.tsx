@@ -744,7 +744,7 @@ function PendingQueueTable({
                     </div>
                     <div className="flex items-center gap-2 text-gray-600">
                         <span>מעבד:</span>
-                        <span className="text-white">Powered by Gemini 3.5 Flash</span>
+                        <span className="text-white">תמחור לפי מקורות מאומתים</span>
                     </div>
                     <div className="flex items-center gap-2 text-gray-600">
                         <span>מע&quot;מ:</span>

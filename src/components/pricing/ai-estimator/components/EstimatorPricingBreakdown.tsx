@@ -1,6 +1,7 @@
 import React from 'react';
 import { Calculator, FileSearch } from 'lucide-react';
 import type { AIPricingEvaluationResponse, AIPricingMatchedItem } from '../types';
+import { formatPricingAmount } from '../pricingScopeForm';
 
 interface EstimatorPricingBreakdownProps {
     estimateData?: AIPricingEvaluationResponse | null;
@@ -15,7 +16,9 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 function formatMoney(value: unknown) {
-    const numericValue = Number(value || 0);
+    if (value === null || value === undefined || value === '') return '—';
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return '—';
     return `₪${numericValue.toLocaleString('he-IL', { maximumFractionDigits: 2 })}`;
 }
 
@@ -58,7 +61,7 @@ function EstimatorPricingBreakdown({ estimateData }: EstimatorPricingBreakdownPr
                                 {row.is_inference && <div className="mt-1 text-[10px] text-amber-400">שורת טיוטה לעריכה</div>}
                             </div>
                             <span>{row.unit || '-'}</span>
-                            <span>{Number(row.quantity || 0).toLocaleString('he-IL')}</span>
+                            <span>{formatPricingAmount(row.quantity)}</span>
                             <span>{formatMoney(row.unit_price_excl_vat)}</span>
                             <span className="font-black text-emerald-400">{formatMoney(row.amount_excl_vat)}</span>
                         </div>

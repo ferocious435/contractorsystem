@@ -2,6 +2,7 @@ import React from 'react';
 import { Loader2, Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { VAT_RATE } from '@/utils/constants';
+import { formatPricingAmount } from '../pricingScopeForm';
 
 interface EstimatorFinancialSummaryProps {
     themeColor: string;
@@ -9,9 +10,9 @@ interface EstimatorFinancialSummaryProps {
     isExpertMode: boolean;
     isSaving: boolean;
     isLoading: boolean;
-    totalExclVat: number;
-    vatAmount: number;
-    totalInclVat: number;
+    totalExclVat: number | null;
+    vatAmount: number | null;
+    totalInclVat: number | null;
     transactionDisplayId: string;
     canSubmit: boolean;
     blockReason?: string;
@@ -43,13 +44,13 @@ function EstimatorFinancialSummary({
                     <span className="text-[10px] font-mono font-black text-gray-500 uppercase tracking-[0.2em]">ערך נטו (ללא מע&quot;מ)</span>
                     <div className="flex items-baseline gap-2">
                         <span className="text-xs text-gray-600 font-mono">₪</span>
-                        <span className="text-3xl font-mono font-black text-gray-200">{totalExclVat.toLocaleString()}</span>
+                        <span className="text-3xl font-mono font-black text-gray-200">{formatPricingAmount(totalExclVat)}</span>
                     </div>
                 </div>
                 <div className="flex flex-col items-end gap-2">
                     <span className="text-[10px] font-mono font-black text-blue-500/60 uppercase tracking-[0.2em]">מע&quot;מ {(VAT_RATE * 100).toFixed(0)}%</span>
                     <div className="flex items-baseline gap-2">
-                        <span className="text-2xl font-mono font-black text-blue-500/80">{vatAmount.toLocaleString()}</span>
+                        <span className="text-2xl font-mono font-black text-blue-500/80">{formatPricingAmount(vatAmount)}</span>
                         <span className="text-xs text-blue-500/40 font-mono">₪</span>
                     </div>
                 </div>
@@ -62,7 +63,7 @@ function EstimatorFinancialSummary({
                 </div>
                 <div className="flex items-baseline gap-4">
                     <span className={`text-3xl sm:text-5xl lg:text-7xl break-words font-mono font-black text-${themeColor}-400 tracking-tighter drop-shadow-[0_0_30px_rgba(16,185,129,0.2)]`}>
-                        ₪{totalInclVat.toLocaleString()}
+                        ₪{formatPricingAmount(totalInclVat)}
                     </span>
                 </div>
             </div>

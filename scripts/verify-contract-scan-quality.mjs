@@ -4,6 +4,13 @@ import test from 'node:test';
 
 const quality = await import('../src/utils/contract-scan-quality.ts');
 
+test('technical quote choices put the current subject first without dropping a contractual exception',()=>{
+  const unrelated='פרק 40 של המפרט הכללי לא יחול על העבודה.';
+  const relevant='צביעת הקיר תבוצע בשתי שכבות.';
+  const schema=quality.buildGroundedScanResponseSchema({workText:'יש לבצע צביעת הקיר בשכבה אחת.',contractTexts:[unrelated,relevant]});
+  assert.deepEqual(schema.items.properties.contract_quote.enum,[relevant,unrelated,null]);
+});
+
 const contract = {
   id: 'contract-boq',
   title: 'כתב כמויות',

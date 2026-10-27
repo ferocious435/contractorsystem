@@ -7,7 +7,7 @@ import { registerHooks } from 'node:module';
 const modelUrl = 'data:text/javascript,' + encodeURIComponent(`
   let response = null; export let calls = 0;
   export function reset(value = null) { response = value; calls = 0; }
-  export function getComparisonAiIdentity() { return { provider: 'fixture', model: 'fixture' }; }
+  export function getComparisonAiIdentity() { return { kind: 'ollama', provider: 'fixture', model: 'fixture' }; }
   export async function generateComparisonText() {
     calls++; if (response === null) throw new Error('Unexpected model call'); return response;
   }
@@ -15,7 +15,9 @@ const modelUrl = 'data:text/javascript,' + encodeURIComponent(`
 const model = await import(modelUrl);
 const hook = registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === '@/lib/comparison-ai') return { url: modelUrl, shortCircuit: true };
-  return nextResolve(specifier.startsWith('@/') ? new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href : specifier, context);
+  if (specifier.startsWith('@/')) return nextResolve(new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href, context);
+  try { return nextResolve(specifier, context); }
+  catch (error) { if (error.code === 'ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !/\.[cm]?[jt]sx?$/u.test(specifier)) return nextResolve(`${specifier}.ts`, context); throw error; }
 } });
 const { enrichProjectFindingsWithSupportSources } = await import('../src/utils/support-source-enrichment-server.ts');
 const { loadProjectReferenceAuthority } = await import('../src/utils/document-reference-authority-server.ts');
@@ -40,7 +42,7 @@ function database(data, { allowWrites = false } = {}) {
   return { reads, writes, from(table) {
     assert.ok(Object.hasOwn(data, table), `Unexpected table ${table}`);
     const filters = [], ordering = [];
-    let columns = '*', bounds = [0, Infinity], update = null;
+    let columns = '*', bounds = [0, Infinity], update = null, one = false;
     const query = {
       select(value = '*') { columns = value; reads.push({ table, columns }); return query; },
       eq(key, value) { filters.push(row => row[key] === value); return query; },
@@ -62,6 +64,7 @@ function database(data, { allowWrites = false } = {}) {
       range(first, last) { bounds = [first, last]; return query; },
       limit(count) { bounds[1] = count - 1; return query; },
       update(value) { assert.ok(allowWrites, 'Unexpected database write'); update = structuredClone(value); return query; },
+      maybeSingle() { one = true; return query; },
       insert() { throw new Error('Unexpected database insertion'); },
       then(resolve, reject) {
         const rows = data[table].filter(row => filters.every(f => f(row))).toSorted((a, b) => {
@@ -70,7 +73,7 @@ function database(data, { allowWrites = false } = {}) {
         if (update) writes.push({ table, ids: rows.map(row => row.id), value: update });
         const selected = update ? null : rows.map(row => columns === '*' ? structuredClone(row)
           : Object.fromEntries(columns.split(',').map(key => key.trim()).map(key => [key, row[key] ?? null])));
-        return Promise.resolve({ data: selected, error: null }).then(resolve, reject);
+        return Promise.resolve({ data: one ? selected?.[0] ?? null : selected, error: null }).then(resolve, reject);
       },
     };
     return query;
@@ -118,6 +121,18 @@ test('a contractually excluded reference cannot enter the model recommendation o
   assert.equal(db.writes.length, 1);
   assert.deepEqual(db.writes[0].value.evidence_data.support_analysis.reference_evidence, []);
   assert.equal(model.calls, 0);
+});
+
+test('unverified model prose cannot cancel a contract in the published recommendation',async()=>{
+  const fabricated='UNPROVED_CONTRACT_CANCELLATION';
+  model.reset(JSON.stringify({impact_summary:fabricated,recommended_action:fabricated,reference_ids:['R1'],price_item_ids:[]}));
+  const db=database(tables({contradictions:[finding]}),{allowWrites:true});
+  const result=await enrichProjectFindingsWithSupportSources({supabase:db,projectId:'p'});
+  assert.equal(result.failed,0); assert.equal(model.calls,1);
+  const stored=db.writes[0].value.evidence_data.support_analysis;
+  assert.equal(stored.reference_evidence.length,1);
+  assert.equal(JSON.stringify(stored).includes(fabricated),false);
+  assert.deepEqual(stored.price_evidence,[]);
 });
 
 for (const path of ['library', 'fallback']) {

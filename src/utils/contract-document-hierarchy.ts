@@ -2,9 +2,10 @@ export const CONTRACT_DOCUMENT_HIERARCHY_GUIDE = `
 DOCUMENT HIERARCHY AND PRECEDENCE:
 - First follow the project-specific contract clauses. If a contract clause defines document priority, use that clause before any generic rule.
 - Project contract documents are usually complementary: signed contract, signed/project BOQ, special specifications, drawings, approved change orders, and written approvals can work together.
-- Shelf contracts, the Blue Book/general specifications, and standards are reference/incorporated sources. They are not ordinary project contract documents by themselves.
-- Use reference/incorporated sources only when a project contract, tender, special specification, or written instruction incorporates them, or when the user explicitly asks for reference guidance.
-- A project-specific special specification can control the project. A general specification/Blue Book chapter is a fallback/reference layer unless the project documents make it binding for that scope.
+- The Blue Book/general specifications and shelf contract 3210 are the ContractorSystem default contractual basis unless the project contract states otherwise. A missing direct reference does not remove this basis. This is a system rule, not a fabricated quote from a contract.
+- A project-specific clause overrides this default only in its evidenced scope. An exception for one chapter does not exclude the entire source. Different chapters may legitimately use different editions.
+- Use a concrete reference clause only when its text, relevant chapter and applicable edition are verified. A default family basis does not confirm an unread page, damaged section number, unknown edition or fragment. An unknown clause limits only results depending on it.
+- Other reference families need their own established applicability; the default for these two sources does not automatically include them. Additional Israeli-standard checking is deferred.
 - Execution documents, site diaries, protocols, letters, photos, invoices, and supplier quotes are evidence of events or approvals. They do not override the contract baseline by themselves.
 - If contract documents conflict, are unclear, or can be read in more than one way, mark the issue as a document-precedence conflict and require supervisor/manager decision according to the contract.
 - When the contract says the stricter or more restrictive requirement governs, apply that as the working rule until the supervisor/manager decides otherwise.
@@ -16,7 +17,8 @@ DOCUMENT HIERARCHY AND PRECEDENCE:
 export const DOCUMENT_PRECEDENCE_SUMMARY_HE = [
     "קודם בודקים סעיף חוזי ספציפי לפרויקט.",
     "מסמכי החוזה של הפרויקט משלימים זה את זה, אך סתירה או אי-בהירות דורשות הכרעת מנהל/מפקח לפי החוזה.",
-    "חוזה מדף, המפרט הכללי והספר הכחול הם שכבת ייחוס/מקור מחייב לפי הפניה; הם לא מחליפים את מסמכי הפרויקט ללא הפניה חוזית.",
+    "הספר הכחול והמפרט הכללי וחוזה מדף 3210 הם בסיס ברירת המחדל, אם החוזה אינו קובע אחרת. העדר הפניה מפורשת אינו מבטל אותם.",
+    "הוראה ספציפית בחוזה גוברת בהיקף שלה בלבד. נוסח, פרק ומהדורה של סעיף מסוים עדיין דורשים אימות; מהדורות שונות לפרקים שונים אפשריות.",
     "כאשר החוזה קובע שהדרישה המחמירה/המגבילה גוברת, משתמשים בה ככלל עבודה עד להכרעה אחרת.",
     "פרוטוקול, יומן, מכתב, תמונה או הצעת מחיר הם ראיה או אסמכתא; הם אינם מחליפים את החוזה בלי אישור/פקודת שינוי בכתב.",
     "בתמחור חריגים: כתב כמויות/סעיף קרוב -> מחירון רשמי לפי החוזה -> דקל אם מותר -> ניתוח מחיר/הצעות מחיר רק כמוצא אחרון ובאישור נדרש.",

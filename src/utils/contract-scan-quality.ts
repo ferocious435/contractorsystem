@@ -51,7 +51,11 @@ function quoteChoices(text: string) {
 
 export function buildGroundedScanResponseSchema(input: { workText: string; contractTexts: string[] }) {
     const workQuotes = quoteChoices(input.workText);
-    const contractQuotes = [...new Set(input.contractTexts.flatMap(quoteChoices))];
+    const workTopics = topicTokens(input.workText);
+    const relevance = (quote: string) => [...topicTokens(quote)].filter(topic => workTopics.has(topic)).length;
+    // This orders available quotations, never determines authority or drops an exception.
+    const contractQuotes = [...new Set(input.contractTexts.flatMap(quoteChoices))]
+        .sort((left, right) => relevance(right) - relevance(left));
     const claimSchema = (quotes: string[]) => {
         const subjects = [...new Set(quotes.map(quote => readEvidenceMeaning(quote).subjectQuote || quote.slice(0, 100)))];
         return { ...EVIDENCE_CLAIM_SCHEMA, properties: { ...EVIDENCE_CLAIM_SCHEMA.properties,
@@ -725,6 +729,7 @@ RULES:
 19. For each extraction, subject/value/scope/location/party/condition/period must be exact phrases in that side's quote and refer to the same assertion. party means the party obligated, not the author. Use null when absent. Never take a value from a different product or clause. The server verifies these spans and the comparison; do not return a relation or confidence score.
 20. An unsigned copy is not automatically a draft, refusal or binding replacement. Distinguish a requested change from a decision; do not infer signatures, dates or final authority. A rejection remains a rejection, not an agreement. A warning is an attributed claim, not admitted fault or proved damage.
 21. Compare the demand itself against its governing rule. A general project rule or an incorporated reference may apply without naming MTM or the street. Keep method authority, required written approval, signature, response period and price/waiver conditions separate. Permission to change a method does not prove power to impose a price or waive claims. An instruction explicitly bypassing required approval, or a response demand below an explicit permitted minimum with the same clock and units, can be incompatible. Preserve all qualifications. Source availability alone does not establish applicability or precedence.
+22. החרגה של פרק מסוים אינה מבטלת פרק אחר. כאשר מצורפת דרישה טכנית מאומתת מפרק שלא הוחרג, השווה אליה את אותה עבודה. כלל שמחריג פרק אחר אינו דרישה טכנית על נושא העבודה ואינו contract_quote מתאים. תחילה בחר את הדרישה הנוגעת לאותו נושא; בדוק את תחום ההחרגה בנפרד.
 
 Allowed roles: ${STATEMENT_ROLES.join(' | ')}.
 Allowed attributes: ${COMPARISON_ATTRIBUTES.join(' | ')}.

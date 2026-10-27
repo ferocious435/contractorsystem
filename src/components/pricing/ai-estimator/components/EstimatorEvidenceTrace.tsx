@@ -87,9 +87,48 @@ function EstimatorEvidenceTrace({
 
         return null;
     }, [contradiction]);
+    const scope = estimateData?.scope_review;
+    const scopeLabels = { FULL: 'התאמה מלאה', PARTIAL: 'כיסוי חלקי', REJECTED: 'הסעיף אינו מתאים', NEEDS_REVIEW: 'נדרשת בדיקה' };
 
     return (
         <div className="space-y-6">
+            {scope && (
+                <div className="rounded-3xl border border-blue-500/20 bg-blue-500/5 p-5 space-y-4">
+                    <div className="font-bold text-blue-300">בדיקת התאמה והרכב העבודה · {scopeLabels[scope.status]}</div>
+                    {scope.uncoveredRequirementIds.length > 0 && (
+                        <p className="text-sm text-amber-300">טרם כוסה במחיר: {scope.uncoveredRequirementIds.map(id =>
+                            scope.requirements.find(item => item.id === id)?.description || id).join(', ')}</p>
+                    )}
+                    {scope.positions.map((position, index) => (
+                        <details key={`${position.candidateId}-${index}`} className="rounded-2xl border border-white/10 p-4 text-sm text-gray-300">
+                            <summary className="cursor-pointer font-bold">
+                                {position.sourceTitle || 'מקור מחיר'} · {position.itemCode || 'ללא קוד'}
+                                {position.page ? ` · עמוד ${position.page}` : ''} · {scopeLabels[position.status]}
+                            </summary>
+                            <p className="mt-3">{position.reason}</p>
+                            {position.requirementIds.length > 0 && <p className="mt-2 text-emerald-300">כולל: {position.requirementIds.map(id =>
+                                scope.requirements.find(item => item.id === id)?.description || id).join(', ')}</p>}
+                            {position.evidence.map((anchor, quoteIndex) => (
+                                <div key={`${anchor.documentId}-${anchor.start}-${quoteIndex}`} className="mt-3 rounded-xl bg-black/30 p-3">
+                                    <div className="text-xs text-gray-400">
+                                        ציטוט מקור {anchor.page ? ` · עמוד ${anchor.page}` : ''}
+                                    </div>
+                                    <blockquote className="mt-2 whitespace-pre-wrap leading-6">{anchor.quote}</blockquote>
+                                    {(scope.requirements.some(item => item.evidence.some(evidence => evidence.documentId === anchor.documentId))
+                                        || anchor.documentId === contradiction.target_contract_doc_id
+                                        || (position.documentId && (anchor.documentId === position.candidateId || anchor.documentId === position.documentId))) && (
+                                        <button className="mt-2 text-xs text-blue-300" onClick={() => onViewSource({
+                                            document_id: scope.requirements.some(item => item.evidence.some(evidence => evidence.documentId === anchor.documentId)) || anchor.documentId === contradiction.target_contract_doc_id
+                                                ? anchor.documentId : position.documentId || undefined,
+                                            quote: anchor.quote, page: anchor.page || position.page,
+                                        })}>פתח מקור</button>
+                                    )}
+                                </div>
+                            ))}
+                        </details>
+                    ))}
+                </div>
+            )}
             <div className="text-[10px] font-mono font-black text-gray-600 uppercase tracking-[0.4em] flex items-center gap-4">
                 <div className="w-8 h-[1px] bg-gray-800" />
                 יומן ראיות
@@ -127,7 +166,7 @@ function EstimatorEvidenceTrace({
                     </motion.div>
                 ))}
 
-                {contradiction.evidence_data && (
+                {contradiction.evidence_data && (directEvidence || !estimateData?.scope_review?.lines.some(line => line.unitPriceExclVat.value !== null)) && (
                     <div className="mt-4 p-6 bg-blue-500/5 border border-blue-500/20 rounded-3xl space-y-4">
                         <div className="flex items-center gap-3 mb-2">
                             <Shield className="w-4 h-4 text-blue-400" />

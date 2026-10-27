@@ -6,8 +6,18 @@ const hook = registerHooks({ resolve(specifier, context, nextResolve) {
 } });
 const authority = await import('../src/utils/document-reference-authority.ts');
 const comparison = await import('../src/utils/bound-reference-comparison.ts');
+const chunks = await import('../src/utils/document-scan-chunks.ts');
 hook.deregister();
 const quote = 'עטיפת הצינור תבוצע בחול מצומנט בשיעור 8 אחוז.';
+
+test('context presents the matching technical passage before an unrelated exception and retains both',()=>{
+  const native=chunks.buildDocumentScanChunks([{id:'exception',title:'תנאי פרויקט',extracted_text:'פרק 40 של המפרט הכללי לא יחול על העבודה.'}]);
+  const references=chunks.buildDocumentScanChunks([{id:'technical',title:'מפרט כללי',extracted_text:quote}]);
+  const context=chunks.prepareContractComparisonContext(native,references,'המפקח דורש עטיפת הצינור בחול מצומנט בשיעור 4 אחוז.');
+  assert.ok(context.text.indexOf('Document ID: technical')<context.text.indexOf('Document ID: exception'));
+  assert.ok(context.text.includes(native[0].text)); assert.ok(context.text.includes(quote));
+  assert.deepEqual(new Set(context.selection.sources.map(source=>source.documentId)),new Set(['exception','technical']));
+});
 const graph = () => authority.buildDocumentReferenceGraph({ documents: [
   { id: 'project-spec', title: 'מפרט מיוחד', role: 'PROJECT_CONTRACT', clauses: [{ text: 'על העבודה יחול פרק 57 של המפרט הכללי מהדורת 2023.' }] },
   { id: 'blue', title: 'המפרט הכללי', role: 'REFERENCE', referenceType: 'BLUE_BOOK', clauses: [

@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { performance } from 'node:perf_hooks';
 import { registerHooks } from 'node:module';
 import fs from 'node:fs';
+import { CONTRACT_DOCUMENT_HIERARCHY_GUIDE } from '../src/utils/contract-document-hierarchy.ts';
 
 import {
   assessContractScanFinding,
@@ -25,11 +26,12 @@ projectHook.deregister();
 const identity = getComparisonAiIdentity(process.env);
 assert.equal(identity.kind, 'ollama', 'Acceptance must use the product’s configured local provider');
 const model = identity.model;
+const requestAudit = [];
 
 async function runCase(testCase) {
   const comparisonDocuments = [...testCase.contracts, ...(testCase.referenceContracts || [])];
   const prompt = buildContractScanPrompt({
-    contractHierarchyGuide: 'The contractual base controls. Later dated work records define the current project status.',
+    contractHierarchyGuide: CONTRACT_DOCUMENT_HIERARCHY_GUIDE,
     contractContext: testCase.referenceContracts ? formatContractComparisonContext(
       buildDocumentScanChunks(testCase.contracts), buildDocumentScanChunks(testCase.referenceContracts), testCase.workDocument.extracted_text,
     ) : testCase.contracts.map((document) => `--- Document ID: ${document.id}\nTitle: ${document.title}\n${document.extracted_text}`).join('\n\n'),
@@ -46,6 +48,9 @@ async function runCase(testCase) {
     contractSourceChars: comparisonDocuments.reduce((sum, document) => sum + document.extracted_text.length, 0),
     projectWorkChunksIndexed: testCase.projectWorkChunks || 1,
   });
+  const responseFormat = buildGroundedScanResponseSchema({workText:testCase.workDocument.extracted_text,
+    contractTexts:comparisonDocuments.map(document=>document.extracted_text)});
+  if(process.env.RADAR_REQUEST_AUDIT){requestAudit.push({name:testCase.name,prompt,responseFormat});return {name:testCase.name,durationSeconds:0};}
   const startedAt = performance.now();
   let rawFindings;
   let lastError;
@@ -53,8 +58,7 @@ async function runCase(testCase) {
     let response = '';
     try {
       response = await generateComparisonText(prompt, process.env, {
-        responseFormat: buildGroundedScanResponseSchema({ workText: testCase.workDocument.extracted_text,
-          contractTexts: comparisonDocuments.map(document => document.extracted_text) }), numCtx: 8192, numPredict,
+        responseFormat, numCtx: 8192, numPredict,
         temperature: 0, seed: 42, timeoutMs: numPredict === 1024 ? 180_000 : 240_000,
       });
       rawFindings = parseScanFindings(response, { requireSemantic: true });
@@ -124,6 +128,33 @@ const responseSpecification = {
 const unansweredRequest = 'הבקשה התקבלה אצל המזמין ביום 01.01.2025. נכון ליום 25.01.2025 לא נמסרה תשובה לבקשה.';
 
 const cases = [
+  {
+    name: 'the default Blue Book basis does not require a direct incorporation sentence',
+    contracts: [{ id: 'project-contract', title: 'תנאי הפרויקט', category: 'CONTRACT',
+      extracted_text: 'מסמכי הפרויקט כוללים כתב כמויות ומפרט מיוחד. לא נקבע שינוי לבסיס המפרט הכללי.' }],
+    referenceContracts: [{ id: 'default-blue-57', title: 'המפרט הכללי פרק 57 מהדורת 2023, סעיף מאומת', category: 'INCORPORATED_REFERENCE',
+      extracted_text: 'עטיפת הצינור תבוצע בחול מצומנט בשיעור 8%.' }],
+    workDocument: { id: 'different-wrap', title: 'הוראת עטיפה', category: 'PROTOCOL',
+      extracted_text: 'המפקח דורש לבצע עטיפת הצינור בחול מצומנט בשיעור 4%.' },
+    assertResult(result) {
+      assert.equal(result.acceptedFindings.length, 1);
+      assert.equal(result.acceptedFindings[0].contract_document_id, 'default-blue-57');
+      assert.equal(result.acceptedFindings[0].category, 'סתירה');
+    },
+  },
+  {
+    name: 'a verified default chapter remains usable when the contract excludes another chapter',
+    contracts: [{ id: 'scoped-exclusion', title: 'מפרט מיוחד', category: 'SPECS', extracted_text: 'פרק 51 של המפרט הכללי לא יחול על העבודה.' }],
+    referenceContracts: [{ id: 'allowed-default-57', title: 'המפרט הכללי פרק 57 מהדורת 2023, סעיף מאומת', category: 'INCORPORATED_REFERENCE',
+      extracted_text: 'עטיפת הצינור תבוצע בחול מצומנט בשיעור 8%.' }],
+    workDocument: { id: 'changed-wrap-after-exclusion', title: 'הוראת עטיפה', category: 'PROTOCOL',
+      extracted_text: 'המפקח דורש לבצע עטיפת הצינור בחול מצומנט בשיעור 4%.' },
+    assertResult(result) {
+      assert.equal(result.acceptedFindings.length, 1);
+      assert.equal(result.acceptedFindings[0].contract_document_id, 'allowed-default-57');
+      assert.equal(result.acceptedFindings[0].category, 'סתירה');
+    },
+  },
   {
     name: 'an incorporated normative clause participates in the initial comparison with its own exact source',
     contracts: [{ id: 'incorporating-spec', title: 'מפרט מיוחד', category: 'SPECS',
@@ -329,7 +360,8 @@ for (const testCase of cases.filter(item => !process.argv[2] || item.name.includ
   }
 }
 
-console.log(JSON.stringify({
+if(process.env.RADAR_REQUEST_AUDIT){fs.writeFileSync(process.env.RADAR_REQUEST_AUDIT,JSON.stringify(requestAudit,null,2));console.log(JSON.stringify({captureOnly:true,cases:requestAudit.length}));}
+else console.log(JSON.stringify({
   passed: failures.length === 0,
   model,
   cases: results.length,

@@ -1,3 +1,5 @@
+import type { ManualPricingInputs } from '@/utils/pricing-scope-approval';
+
 export type PricingLedgerRowType = 'BASE_CONTRACT' | 'APPROVED_VO' | 'PENDING_VO' | 'SENT_VO';
 
 export type EditablePricingLedgerRowType = Extract<PricingLedgerRowType, 'APPROVED_VO' | 'PENDING_VO'>;
@@ -101,6 +103,7 @@ export interface PricingEstimationData {
 }
 
 export interface ApprovePricingEstimationPayload extends PricingEstimationData {
+    manual_pricing_inputs?: ManualPricingInputs;
     contradiction_id?: string;
     ai_rationale?: string;
     governing_notes?: string[];

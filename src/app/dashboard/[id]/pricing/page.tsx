@@ -35,7 +35,7 @@ export default async function PricingPage({ params }: { params: Promise<{ id: st
                         <span className="text-gray-600 font-sans text-xl font-light">/ תמחור וניהול חריגים</span>
                     </h1>
                     <p className="text-gray-400 text-sm mt-3 max-w-3xl leading-relaxed">
-                        מערכת אימות פיננסית מבוססת <span className="text-emerald-500/80 font-mono">Gemini 3.5 Flash</span>. 
+                        בדיקת מקורות, התאמת סעיפים וכיסוי העבודה לפני אישור סכום.
                         כאן מתבצע ניתוח הנדסי של סתירות חוזיות ותרגומן לערך כספי (V.O). 
                         <span className="block mt-1 text-[11px] text-gray-500 uppercase font-mono tracking-wider">הערה: כל הסכומים אינם כוללים מע&quot;מ (18%)</span>
                     </p>

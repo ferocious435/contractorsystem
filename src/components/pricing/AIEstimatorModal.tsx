@@ -4,6 +4,7 @@ import React from 'react';
 import { X, ShieldCheck, Briefcase } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ScreenOfTruthModal from '@/components/documents/ScreenOfTruthModal';
+import { applyPricingScopeFormEdit } from './ai-estimator/pricingScopeForm';
 import {
     EstimatorEvidenceTrace,
     EstimatorExpertStrategy,
@@ -61,9 +62,10 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
         transactionDisplayId,
         hasPricingDraft,
         requiresUserAnswerBeforeApproval,
+        pricingBlockReason,
     } = derived;
     const handleMarkupPreset = React.useCallback((markup: number) => {
-        setFormState((prev) => ({ ...prev, markup }));
+        setFormState((prev) => applyPricingScopeFormEdit(prev, 'markup', markup));
     }, [setFormState]);
 
     return (
@@ -235,9 +237,7 @@ export default function AIEstimatorModal({ contradiction, onClose, onApprove }: 
                             totalInclVat={totalInclVat}
                             transactionDisplayId={transactionDisplayId}
                             canSubmit={hasPricingDraft && !requiresUserAnswerBeforeApproval}
-                            blockReason={requiresUserAnswerBeforeApproval
-                                ? 'יש שאלות שמשפיעות על הכמות או המחיר. עדכון התמחור נשאר כטיוטה עד להשלמת הנתונים.'
-                                : undefined}
+                            blockReason={pricingBlockReason || undefined}
                             onSubmit={handleSubmit}
                         />
                     </div>

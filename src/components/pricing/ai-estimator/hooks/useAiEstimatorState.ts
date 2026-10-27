@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { createClient } from '@/utils/supabase/client';
-import { VAT_RATE } from '@/utils/constants';
-import { getAmountVat, getLedgerRowAmount, getMoneySum } from '@/utils/project-financials';
+import { applyPricingScopeFormEdit, getPricingFormAmounts, getReviewedPricingFormAmounts, getPricingFormApproval, toPricingScopeForm } from '../pricingScopeForm';
 import { normalizeConfidenceScore } from '@/utils/pricing-confidence';
 import {
     evaluateAiPricing,
@@ -19,14 +18,7 @@ import type {
 type UseAiEstimatorStateOptions = AIEstimatorModalProps;
 
 function createDefaultFormState(): AIEstimatorFormState {
-    return {
-        description: '',
-        unit: '',
-        quantity: 0,
-        unitPrice: 0,
-        markup: 0,
-        source: 'CUSTOM_ANALYSIS',
-    };
+    return toPricingScopeForm({});
 }
 
 function createTransactionDisplayId() {
@@ -61,6 +53,7 @@ export function useAiEstimatorState({
     const [estimateData, setEstimateData] = useState<AIPricingEvaluationResponse | null>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [isExpertMode, setIsExpertMode] = useState(false);
+    const [estimationError, setEstimationError] = useState<string | null>(null);
     const [formState, setFormState] = useState<AIEstimatorFormState>(createDefaultFormState);
     const [viewerDoc, setViewerDoc] = useState<AiEstimatorSourceDocument | null>(null);
     const [isViewerOpen, setIsViewerOpen] = useState(false);
@@ -68,12 +61,13 @@ export function useAiEstimatorState({
     const supabase = useMemo(() => createClient(), []);
 
     const getEffectiveUnitPriceExclVat = useCallback(
-        () => formState.unitPrice * (1 + (formState.markup / 100)),
-        [formState.markup, formState.unitPrice]
+        () => getPricingFormAmounts(formState).effectiveUnitPriceExclVat,
+        [formState]
     );
 
     const runEstimation = useCallback(async (withExpert: boolean = false) => {
         setIsLoading(true);
+        setEstimationError(null);
 
         try {
             const data = await evaluateAiPricing({
@@ -84,16 +78,10 @@ export function useAiEstimatorState({
 
             setEstimateData(data);
 
-            setFormState((prev) => ({
-                description: data.suggested_description || contradiction.description || prev.description,
-                unit: data.suggested_unit || 'מ"ר',
-                quantity: data.suggested_quantity || 1,
-                unitPrice: data.suggested_unit_price_excl_vat || 0,
-                markup: prev.markup || 0,
-                source: data.source || 'CUSTOM_ANALYSIS',
-            }));
+            setFormState(toPricingScopeForm({ ...data, suggested_description: data.suggested_description || contradiction.description || '' }));
         } catch (error) {
             console.error('[AI_TERMINAL_ERROR]:', error);
+            setEstimationError('בדיקת המחיר לא הושלמה. הנתונים נשארו לבדיקה.');
         } finally {
             setIsLoading(false);
         }
@@ -108,10 +96,7 @@ export function useAiEstimatorState({
     ) => {
         const { name, value } = event.target;
 
-        setFormState((prev) => ({
-            ...prev,
-            [name]: (name === 'description' || name === 'unit' || name === 'source') ? value : Number(value),
-        }));
+        setFormState((prev) => applyPricingScopeFormEdit(prev, name, value));
     }, []);
 
     const handleSubmit = useCallback(async () => {
@@ -119,10 +104,11 @@ export function useAiEstimatorState({
 
         try {
             const effectiveUnitPriceExclVat = getEffectiveUnitPriceExclVat();
-            if (effectiveUnitPriceExclVat <= 0 || formState.quantity <= 0) {
+            if (effectiveUnitPriceExclVat === null || effectiveUnitPriceExclVat <= 0 || formState.quantity === null || formState.quantity <= 0) {
                 throw new Error('Pricing draft is incomplete: unit price and quantity must be positive before saving.');
             }
-            if (estimateData?.requires_user_answer_before_approval) {
+            const approval = getPricingFormApproval(estimateData, formState, { isLoading, error: estimationError });
+            if (!approval.allowed) {
                 throw new Error('Pricing draft requires user answers before approval.');
             }
             const confidenceScore = normalizeConfidenceScore(
@@ -145,6 +131,7 @@ export function useAiEstimatorState({
             const linkedEvidence = {
                 ...(contradiction.evidence_data || {}),
                 pricing_evaluation: {
+                    scope_review: estimateData?.scope_review || null,
                     match_found: estimateData?.match_found,
                     source: estimateData?.source,
                     confidence: estimateData?.confidence,
@@ -175,6 +162,7 @@ export function useAiEstimatorState({
                 quantity: formState.quantity,
                 unit_price_excl_vat: effectiveUnitPriceExclVat,
                 markup_percentage: formState.markup / 100,
+                manual_pricing_inputs: formState.manualPricingInputs,
                 ai_rationale: estimateData?.ai_rationale || '',
                 governing_notes: pricingNotes,
                 expert_strategy: estimateData?.expert_strategy || null,
@@ -190,11 +178,9 @@ export function useAiEstimatorState({
         contradiction.evidence_data,
         contradiction.id,
         estimateData,
-        formState.description,
-        formState.markup,
-        formState.quantity,
-        formState.source,
-        formState.unit,
+        estimationError,
+        isLoading,
+        formState,
         getEffectiveUnitPriceExclVat,
         onApprove,
         onClose,
@@ -223,17 +209,13 @@ export function useAiEstimatorState({
     const derived = useMemo(() => {
         const themeColor = isExpertMode ? 'amber' : 'emerald';
         const themeHex = isExpertMode ? '#f59e0b' : '#10b981';
-        const effectiveUnitPriceExclVat = getEffectiveUnitPriceExclVat();
-        const totalExclVat = getLedgerRowAmount({
-            quantity: formState.quantity,
-            unit_price_excl_vat: effectiveUnitPriceExclVat,
-        });
-        const vatAmount = getAmountVat(totalExclVat, VAT_RATE);
-        const totalInclVat = getMoneySum([totalExclVat, vatAmount]);
-        const hasPricingDraft = totalExclVat > 0;
+        const { effectiveUnitPriceExclVat, totalExclVat, vatAmount, totalInclVat } = getReviewedPricingFormAmounts(estimateData, formState, { isLoading, error: estimationError });
+        const hasPricingDraft = totalExclVat !== null && totalExclVat > 0;
         const confidencePct = Math.round((normalizeConfidenceScore(estimateData?.confidence) ?? 0) * 100);
         const isZeroMatch = estimateData?.match_quality === 'ZERO_MATCH' || estimateData?.match_found === false;
-        const requiresUserAnswerBeforeApproval = Boolean(estimateData?.requires_user_answer_before_approval);
+        const approval = getPricingFormApproval(estimateData, formState, { isLoading, error: estimationError });
+        const requiresUserAnswerBeforeApproval = !approval.allowed;
+        const pricingBlockReason = approval.reason;
         const expert = estimateData?.expert_strategy;
         const expertTechnical = expert?.technical_foundation || expert?.ripple_effect?.technical_analysis;
         const expertArgument = expert?.professional_argument || expert?.contractual_diagnostic?.argument_for_supervisor;
@@ -248,6 +230,7 @@ export function useAiEstimatorState({
             totalInclVat,
             hasPricingDraft,
             requiresUserAnswerBeforeApproval,
+            pricingBlockReason,
             confidencePct,
             isZeroMatch,
             expert,
@@ -256,7 +239,7 @@ export function useAiEstimatorState({
             expertDiary,
             transactionDisplayId,
         };
-    }, [estimateData, formState.quantity, getEffectiveUnitPriceExclVat, isExpertMode, transactionDisplayId]);
+    }, [estimateData, formState, estimationError, isLoading, isExpertMode, transactionDisplayId]);
 
     const state = useMemo(() => ({
         isLoading,

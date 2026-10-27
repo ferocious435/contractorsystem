@@ -272,7 +272,7 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = ({
                                     <div className="space-y-3">
                                         <h4 className="text-[10px] font-black uppercase text-blue-600 tracking-widest">ניתוח בינה מלאכותית</h4>
                                         <div className="text-sm text-slate-600 leading-relaxed italic border-r-2 border-blue-200 pr-4">
-                                            {item.ai_rationale || 'ניתוח אוטומטי של מערכת Gemini'}
+                                            {item.ai_rationale || 'נדרש לבדוק את מקורות התמחור'}
                                         </div>
                                     </div>
                                 </div>

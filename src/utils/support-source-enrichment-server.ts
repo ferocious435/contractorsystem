@@ -12,12 +12,16 @@ import {
     SUPPORT_ANALYSIS_RESPONSE_SCHEMA,
     SUPPORT_ANALYSIS_VERSION,
     supportSourceSignature,
-    supportAnalysisTextIsGrounded,
+    checkedSupportSummary,
     type SupportCandidate,
 } from '@/utils/support-source-enrichment';
 import { loadProjectReferenceAuthority, REFERENCE_AUTHORITY_DOCUMENT_COLUMNS } from '@/utils/document-reference-authority-server';
 import { resolveDocumentReferenceAuthority, type DocumentReferenceGraph } from '@/utils/document-reference-authority';
 import { isTechnicalRadarExclusion } from '@/utils/radar-review-disposition';
+import { loadPricingScopeContext } from '@/utils/pricing-scope-sources-server';
+import { reviewPricingScope } from '@/utils/pricing-scope-review-server';
+import { validatePricingScope, type PricingScopeCandidate, type PricingScopeResult } from '@/utils/pricing-scope-review';
+import { cachedPricingScope, pricingScopeSignature } from '@/utils/pricing-scope-signature';
 
 type AnyRecord = Record<string, unknown>;
 
@@ -70,19 +74,6 @@ type PriceListRow = {
     parse_status?: string | null;
 };
 
-type PriceItemRow = {
-    id: string;
-    pricelist_id: string;
-    item_code?: string | null;
-    item_type?: string | null;
-    description?: string | null;
-    unit?: string | null;
-    rate?: number | string | null;
-    page_number?: number | null;
-    source_excerpt?: string | null;
-    pricelists?: AnyRecord | AnyRecord[] | null;
-};
-
 export type SupportEnrichmentProgress = {
     processed: number;
     total: number;
@@ -106,11 +97,6 @@ function getReferenceType(value: { title?: string | null; reference_type?: strin
     if (/3210|חוזה\s*מדף|shelf\s*contract/.test(title)) return 'SHELF_CONTRACT_3210';
     if (/ספר\s*כחול|הספר\s*הכחול|מפרט\s*כללי|blue\s*book/.test(title)) return 'BLUE_BOOK';
     return 'OTHER_REFERENCE';
-}
-
-function joinedPriceList(row: PriceItemRow) {
-    if (Array.isArray(row.pricelists)) return readRecord(row.pricelists[0]);
-    return readRecord(row.pricelists);
 }
 
 async function loadReferenceRows(supabase: SupabaseClient, projectId: string) {
@@ -234,58 +220,6 @@ async function findReferenceCandidates(params: {
     return rankSupportCandidates(query, candidates, 4);
 }
 
-async function findPriceCandidates(params: {
-    supabase: SupabaseClient;
-    query: string;
-    terms: string[];
-    priceLists: PriceListRow[];
-}) {
-    const { supabase, query, terms, priceLists } = params;
-    const priceListIds = priceLists.map((row) => row.id);
-    const filter = buildSafeIlikeOrFilter('description', terms);
-    if (priceListIds.length === 0 || !filter) return [];
-
-    const { data, error } = await supabase
-        .from('pricelist_items')
-        .select(`
-            id,
-            pricelist_id,
-            item_code,
-            item_type,
-            description,
-            unit,
-            rate,
-            page_number,
-            source_excerpt,
-            pricelists!inner(id, name, source_type)
-        `)
-        .in('pricelist_id', priceListIds)
-        .eq('item_type', 'ITEM')
-        .or(filter)
-        .limit(60);
-    if (error) {
-        console.warn('[scan:support] Price search failed:', error.message);
-        return [];
-    }
-
-    const candidates = ((data || []) as unknown as PriceItemRow[]).map((row): SupportCandidate => {
-        const priceList = joinedPriceList(row);
-        return {
-            id: row.id,
-            sourceId: row.pricelist_id,
-            title: text(priceList.name) || priceLists.find((item) => item.id === row.pricelist_id)?.name || 'מחירון',
-            sourceType: text(priceList.source_type) || null,
-            itemCode: row.item_code || null,
-            unit: row.unit || null,
-            rate: row.rate ?? null,
-            page: row.page_number || null,
-            text: (text(row.source_excerpt) || text(row.description)).slice(0, 900),
-        };
-    });
-
-    return rankSupportCandidates(query, candidates, 5);
-}
-
 function mapReferenceEvidence(candidate: SupportCandidate) {
     return {
         reference_document_id: candidate.sourceId || null,
@@ -301,10 +235,11 @@ function mapReferenceEvidence(candidate: SupportCandidate) {
     };
 }
 
-function mapPriceEvidence(candidate: SupportCandidate) {
+function mapPriceEvidence(candidate: SupportCandidate | PricingScopeCandidate) {
     return {
-        pricelist_id: candidate.sourceId || null,
-        pricelist_item_id: candidate.id,
+        pricelist_id: 'pricelistId' in candidate ? candidate.pricelistId || null : candidate.sourceId || null,
+        pricelist_item_id: 'pricelistId' in candidate && !candidate.pricelistId ? null : candidate.id,
+        document_id: 'documentId' in candidate ? candidate.documentId || null : null,
         pricelist_name: candidate.title || null,
         source_type: candidate.sourceType || null,
         item_code: candidate.itemCode || null,
@@ -384,16 +319,22 @@ export async function enrichProjectFindingsWithSupportSources(params: {
                 authorityGraph: authority.graph,
             });
             const needsCommercialReview = /סתירה|שינוי|חריג|פעולה/iu.test(text(finding.category));
-            const priceCandidates = needsCommercialReview
-                ? await findPriceCandidates({ supabase, query, terms, priceLists })
-                : [];
+            let scopeReview: PricingScopeResult | null = null;
+            let scopeSignature: string | null = null;
+            let priceCandidates: PricingScopeCandidate[] = [];
+            if (needsCommercialReview) {
+                const pricingContext = await loadPricingScopeContext({ supabase, projectId, findingId: finding.id });
+                scopeSignature = pricingScopeSignature(pricingContext);
+                scopeReview = cachedPricingScope(evidence.pricing_evaluation, scopeSignature) || (pricingContext.candidates.length ? await reviewPricingScope(pricingContext)
+                    : validatePricingScope(pricingContext, { requirements: [], positions: [], lines: [] }));
+                const selectedIds = new Set(scopeReview.lines.filter(line => line.unitPriceExclVat.value !== null).map(line => line.candidateId));
+                priceCandidates = pricingContext.candidates.filter(candidate => selectedIds.has(candidate.id));
+            }
 
-            let impactSummary = 'לא נמצא מקור נוסף שמוכיח השפעה כספית או חוזית מעבר למסמכי הפרויקט.';
-            let recommendedAction = text(finding.strategy_advice) || 'לשמור את הציטוטים ולבדוק את הצעד הבא מול מסמכי הפרויקט.';
             let selectedReferenceIds: string[] = [];
-            let selectedPriceItemIds: string[] = [];
 
-            if (needsCommercialReview && (referenceCandidates.length > 0 || priceCandidates.length > 0)) {
+            if (needsCommercialReview && referenceCandidates.length > 0) {
+                if (identity.kind !== 'ollama') throw new Error('הלוקאלי אינו זמין; המקורות הנוספים נשארים לבדיקה.');
                 const prompt = buildSupportAnalysisPrompt({
                     title: text(finding.title),
                     category: text(finding.category),
@@ -411,50 +352,25 @@ export async function enrichProjectFindingsWithSupportSources(params: {
                     seed: 42,
                 });
                 const modelResult = extractFirstJsonObject(modelText);
-                impactSummary = text(modelResult.impact_summary) || impactSummary;
-                recommendedAction = text(modelResult.recommended_action) || recommendedAction;
                 selectedReferenceIds = selectRelevantSupportIds({
                     value: modelResult.reference_ids,
                     prefix: 'R',
                     candidates: referenceCandidates,
                     query,
                 });
-                selectedPriceItemIds = selectRelevantSupportIds({
-                    value: modelResult.price_item_ids,
-                    prefix: 'P',
-                    candidates: priceCandidates,
-                    query,
-                });
-                const selectedReferencesForCheck = selectedReferenceIds.map((id) =>
-                    referenceCandidates[Number(id.slice(1)) - 1]
-                ).filter((candidate): candidate is SupportCandidate => Boolean(candidate));
-                const suppliedSourceText = [
-                    query,
-                    text(evidence.contract_quote),
-                    ...selectedReferencesForCheck.map((candidate) => candidate.text),
-                    ...selectedPriceItemIds.map((id) => priceCandidates[Number(id.slice(1)) - 1])
-                        .filter((candidate): candidate is SupportCandidate => Boolean(candidate))
-                        .map((candidate) => `${candidate.itemCode || ''} ${candidate.text} ${candidate.rate ?? ''}`),
-                ].join('\n');
-                if (!supportAnalysisTextIsGrounded({
-                    impactSummary,
-                    recommendedAction,
-                    suppliedSourceText,
-                    selectedReferences: selectedReferencesForCheck,
-                })) {
-                    impactSummary = 'המקורות הנוספים לא הוכיחו השפעה חדשה מעבר למסמכי הפרויקט.';
-                    recommendedAction = text(finding.strategy_advice) || 'לשמור את הציטוטים ולבדוק את הצעד הבא מול מסמכי הפרויקט.';
-                    selectedReferenceIds = [];
-                    selectedPriceItemIds = [];
-                }
             }
+
+            const selectedPriceItemIds = priceCandidates.map((_, index) => `P${index + 1}`);
+            const checkedSummary = checkedSupportSummary(scopeReview, selectedReferenceIds.length);
+            const impactSummary = checkedSummary.impact_summary;
+            const recommendedAction = checkedSummary.recommended_action;
 
             const selectedReferences = selectedReferenceIds.map((id) =>
                 referenceCandidates[Number(id.slice(1)) - 1]
             ).filter((candidate): candidate is SupportCandidate => Boolean(candidate));
             const selectedPrices = selectedPriceItemIds.map((id) =>
                 priceCandidates[Number(id.slice(1)) - 1]
-            ).filter((candidate): candidate is SupportCandidate => Boolean(candidate));
+            ).filter((candidate): candidate is PricingScopeCandidate => Boolean(candidate));
             const supportAnalysis = {
                 version: SUPPORT_ANALYSIS_VERSION,
                 status: 'COMPLETE',
@@ -472,6 +388,8 @@ export async function enrichProjectFindingsWithSupportSources(params: {
                     price_lists: priceLists.map((row) => ({ id: row.id, name: row.name, status: row.parse_status || 'READY' })),
                 },
                 pricing_rule: 'PROJECT_BOQ_FIRST_THEN_APPLICABLE_OFFICIAL_PRICELIST',
+                scope_review: scopeReview,
+                scope_source_signature: scopeSignature,
                 analysis_provider: identity.provider,
                 analysis_model: identity.model,
             };
@@ -488,22 +406,13 @@ export async function enrichProjectFindingsWithSupportSources(params: {
             failed += 1;
             const message = error instanceof Error ? error.message : 'Support analysis failed';
             console.warn(`[scan:support] Failed to enrich ${finding.id}:`, message);
-            await supabase
-                .from('contradictions')
-                .update({
-                    evidence_data: {
-                        ...evidence,
-                        support_analysis: {
-                            version: SUPPORT_ANALYSIS_VERSION,
-                            status: 'ERROR',
-                            source_signature: sourceSignature,
-                            analyzed_at: new Date().toISOString(),
-                            error: message,
-                        },
-                    },
-                })
-                .eq('id', finding.id)
-                .eq('project_id', projectId);
+            const lastComplete = existingSupport.status === 'COMPLETE' ? existingSupport : existingSupport.last_complete || null;
+            const result = await supabase.from('contradictions').update({ evidence_data: { ...evidence,
+                support_analysis: { version: SUPPORT_ANALYSIS_VERSION, status: 'ERROR', source_signature: sourceSignature,
+                    impact_summary: 'בדיקת המקורות לא הושלמה; התמחור נשאר לבדיקה.', recommended_action: text(finding.strategy_advice),
+                    price_evidence: [], reference_evidence: [], error: message, last_complete: lastComplete } } })
+                .eq('id', finding.id).eq('project_id', projectId);
+            if (result.error) console.warn('[scan:support] Cannot save review limitation:', result.error.message);
         }
 
         processed += 1;

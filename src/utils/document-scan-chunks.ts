@@ -354,6 +354,11 @@ export function prepareContractComparisonContext(
                 extracted_text: chunk.sourceText || chunk.text }, queryText, 1_100);
             return { ...chunk, text: contractContextText(context), context_selection: context };
         });
+    const queryTerms = meaningfulRetrievalTerms(queryText);
+    const relevance = (chunk: DocumentScanChunk) => [...meaningfulRetrievalTerms(chunk.text)]
+        .filter(term => queryTerms.has(term)).length;
+    // Ordering focuses the technical comparison; every selected exception and its authority remain available.
+    selected.sort((left, right) => relevance(right) - relevance(left));
     const sources = selected.map(chunk => ({ documentId: chunk.documentId,
         selection: chunk.context_selection || { reason: 'legacy_chunk_without_source_offsets', matched_terms: [],
             source_anchors: [], complete: false, limitations: ['source_offsets_unavailable'] } }));

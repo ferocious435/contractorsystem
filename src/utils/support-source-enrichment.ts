@@ -2,6 +2,26 @@ import { createHash } from 'crypto';
 
 export const SUPPORT_ANALYSIS_VERSION = 'support-impact-v3';
 
+/** Publish checked state, never a model's free-form assertion of entitlement or contract cancellation. */
+export function checkedSupportSummary(scope: { status: string; requiresReview: boolean } | null, referenceCount: number) {
+    if (scope?.status === 'FULL' && !scope.requiresReview) return {
+        impact_summary: 'המקורות מכסים את העבודה. הסכום מבוסס על הכמות והמחיר המאומתים, לפני מע״מ.',
+        recommended_action: 'לעיין במקורות ובנתוני החישוב לפני אישור התמחור.',
+    };
+    if (scope?.status === 'PARTIAL') return {
+        impact_summary: 'המחיר מכסה רק חלק מהעבודה. הפעולות החסרות נשארו לבדיקה וללא סכום סופי.',
+        recommended_action: 'להשלים מקור ותמחור לפעולות שאינן מכוסות, בלי לשלם שוב על פעולה שכבר כלולה.',
+    };
+    if (scope?.status === 'REJECTED') return {
+        impact_summary: 'הסעיפים שנבדקו לא התאימו לעבודה או לתנאי המקורות. לא אושר סכום.',
+        recommended_action: 'לבחור מקור מתאים ולבדוק מחדש את התאמת הסעיף לפני אישור תמחור.',
+    };
+    return { impact_summary: referenceCount ? 'נמצאו מקורות נוספים להשוואה; הציטוטים מוצגים לבדיקה. לא אושר סכום נוסף.'
+        : 'המקורות לא הספיקו לאימות תמחור מלא. הנתונים נשארו לבדיקה.',
+        recommended_action: 'לבדוק את המקורות ולהשלים את הנתון או האישור החסר לפני אישור סכום.',
+    };
+}
+
 export type SupportIncorporationEvidence = {
     document_id: string;
     title: string | null;
@@ -79,9 +99,9 @@ export function buildSafeIlikeOrFilter(column: string, terms: string[]) {
         .join(',');
 }
 
-export function rankSupportCandidates(
+export function rankSupportCandidates<T extends SupportCandidate>(
     query: unknown,
-    candidates: SupportCandidate[],
+    candidates: T[],
     limit = 4,
 ) {
     const queryWords = normalize(query).split(' ')

@@ -15,17 +15,19 @@ const MARKUP_PRESETS = [0, 10, 15, 20, 25];
 const SOURCE_LABELS: Record<string, string> = {
     BOQ: 'כתב כמויות / סעיף חוזי',
     DEKEL: 'דקל או מחירון רשמי שנמצא במערכת',
+    HOUSING_MINISTRY: 'מחירון משרד הבינוי והשיכון',
     CONTRACTOR: 'הצעת מחיר',
-    CUSTOM_ANALYSIS: 'טיוטת תמחור לעריכה לפי מסמכי הפרויקט',
+    CUSTOM_ANALYSIS: 'מחיר לפי מקור שמור בפרויקט',
 };
 
 function EstimatorPricingForm({
     formState,
     onFormChange,
     onMarkupPreset,
-    hasPricingDraft,
 }: EstimatorPricingFormProps) {
-    const pricingBasisLabel = !hasPricingDraft && formState.source === 'CUSTOM_ANALYSIS'
+    const pricingBasisLabel = formState.manualPricingInputs.unitPriceExclVat !== undefined || formState.manualPricingInputs.markupPercent
+        ? 'מחיר שהוזן או הותאם ידנית'
+        : formState.unitPrice === null
         ? 'לא נבנה מחיר אוטומטי - יש להזין מחיר יחידה'
         : (SOURCE_LABELS[formState.source] || SOURCE_LABELS.CUSTOM_ANALYSIS);
 
@@ -67,7 +69,7 @@ function EstimatorPricingForm({
                     <input
                         type="number"
                         name="quantity"
-                        value={formState.quantity}
+                        value={formState.quantity ?? ''}
                         onChange={onFormChange}
                         className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-sm text-white font-mono font-black focus:border-blue-500/50 outline-none"
                     />
@@ -81,7 +83,7 @@ function EstimatorPricingForm({
                     <input
                         type="number"
                         name="unitPrice"
-                        value={formState.unitPrice}
+                        value={formState.unitPrice ?? ''}
                         onChange={onFormChange}
                         className="w-full bg-blue-500/[0.05] border border-blue-500/20 rounded-2xl px-6 py-4 text-lg text-blue-400 font-mono font-black focus:border-blue-500/50 outline-none shadow-[0_0_20px_rgba(59,130,246,0.05)]"
                     />

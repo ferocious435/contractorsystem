@@ -1,328 +1,75 @@
-import { geminiFlashModel } from '@/lib/gemini';
-import { canAutomaticallyPriceFinding } from '@/utils/radar-review-disposition';
-import { syncProjectContractBase } from '@/utils/project-contract-base-server';
-import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
-import { isTrustedBaseContractRow } from '@/utils/project-financials';
-import { isReferenceDocument } from '@/utils/contract-document-hierarchy';
-import {
-    DEFAULT_PRICING_EVALUATION_TEXT_FALLBACKS,
-    normalizePricingEvaluation,
-    parseGeminiJsonObject,
-} from './evaluation-normalizers';
-import {
-    buildExpertPrompt,
-    buildKeywordPrompt,
-    buildPricingPrompt,
-} from './evaluation-prompts';
-import {
-    buildBoqContext,
-    buildBoqRawContext,
-    buildMatchedItems,
-    buildPricelistContext,
-    buildPricingEvidenceData,
-    buildSourceTrace,
-    hasSourceMatches,
-} from './evaluation-context';
-import { extractPricingKeywords } from './evaluation-keywords';
-import {
-    appendUniqueParentNotes,
-    buildParentItemCodePrefixes,
-    buildParentNoteOrFilter,
-    filterExternalPricingReferences,
-} from './evaluation-pricelists';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { canAutomaticallyPriceFinding } from '@/utils/radar-review-disposition';
+import { loadPricingScopeContext } from '@/utils/pricing-scope-sources-server';
+import { reviewPricingScope, PricingScopeLocalError } from '@/utils/pricing-scope-review-server';
+import { buildPricingScopeEvaluation } from '@/utils/pricing-scope-evaluation';
+import { generateComparisonText, getComparisonAiIdentity } from '@/lib/comparison-ai';
+import type { PricingScopeResult } from '@/utils/pricing-scope-review';
+import { cachedPricingScope, pricingScopeSignature } from '@/utils/pricing-scope-signature';
+import { extractFirstJsonObject } from '@/utils/local-ai-preview';
+import { DEFAULT_PRICING_EVALUATION_TEXT_FALLBACKS, normalizePricingEvaluation } from './evaluation-normalizers';
+import { buildPricingEvidenceData } from './evaluation-context';
 
-type AnyRecord = Record<string, unknown>;
-
-const isRecord = (value: unknown): value is AnyRecord =>
-    Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-
-const toRecords = (value: unknown): AnyRecord[] =>
-    Array.isArray(value) ? value.filter(isRecord) : [];
-
-const CONTRADICTION_CONTEXT_SELECT_COLUMNS = [
-    'id',
-    'project_id',
-    'title',
-    'description',
-    'category',
-    'severity',
-    'status',
-    'pricing_status',
-    'source_execution_doc_id',
-    'target_contract_doc_id',
-    'evidence_data',
-    'created_at',
-].join(', ');
+type Row = Record<string, unknown>;
+const object = (value: unknown): Row => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : {};
 
 export class PricingEvaluationHttpError extends Error {
-    constructor(
-        public readonly status: number,
-        message: string,
-    ) {
-        super(message);
-        this.name = 'PricingEvaluationHttpError';
-    }
+    readonly status: number;
+    constructor(status: number, message: string) { super(message); this.status = status; this.name = 'PricingEvaluationHttpError'; }
 }
-
-export interface AiEstimatorServiceInput {
-    contradictionId: string;
-    projectId: string;
-    contractorId: string;
-    expertMode?: boolean;
-}
-
-interface AiEstimatorContext {
-    contradiction: AnyRecord;
-    boqRawContext: string;
-    keywords: string[];
-}
-
-interface AiEstimatorPriceMatches {
-    ledgerMatches: AnyRecord[];
-    trustedLedgerMatches: AnyRecord[];
-    pricelistMatches: AnyRecord[];
-}
+export interface AiEstimatorServiceInput { contradictionId: string; projectId: string; contractorId: string; expertMode?: boolean }
 
 export class AiEstimatorService {
-    constructor(private readonly supabase: SupabaseClient) {}
+    private readonly supabase: SupabaseClient;
+    constructor(supabase: SupabaseClient) { this.supabase = supabase; }
 
     async evaluate(input: AiEstimatorServiceInput) {
-        const context = await this.loadContext(input);
-        const priceMatches = await this.findPriceMatches(input.projectId, context.keywords);
-        const pricingPrompt = this.buildPrompt(context, priceMatches);
-
-        const pricingResult = await geminiFlashModel.generateContent(pricingPrompt);
-        const evaluation = this.normalizeResponse(
-            pricingResult.response.text(),
-            context,
-            priceMatches,
-        );
-
-        const expertStrategy = await this.buildExpertStrategy(input.expertMode, context.contradiction, evaluation);
-        await this.persistPricingEvidence(input.projectId, input.contradictionId, context.contradiction, evaluation, expertStrategy);
-
-        return {
-            success: true,
-            ...evaluation,
-            expert_strategy: expertStrategy,
-        };
-    }
-
-    private async loadContext({
-        contradictionId,
-        projectId,
-        contractorId,
-    }: AiEstimatorServiceInput): Promise<AiEstimatorContext> {
-        const { data: contradiction, error: cError } = await this.supabase
-            .from('contradictions')
-            .select(CONTRADICTION_CONTEXT_SELECT_COLUMNS)
-            .eq('id', contradictionId)
-            .eq('project_id', projectId)
-            .single();
-
-        if (cError || !contradiction) {
-            throw new PricingEvaluationHttpError(404, 'Contradiction not found');
+        const { data, error } = await this.supabase.from('contradictions').select('id, project_id, title, description, status, evidence_data')
+            .eq('id', input.contradictionId).eq('project_id', input.projectId).single();
+        if (error || !data) throw new PricingEvaluationHttpError(404, 'Contradiction not found');
+        const finding = data as Row;
+        if (!canAutomaticallyPriceFinding(finding)) throw new PricingEvaluationHttpError(409,
+            'הממצא הוחרג מהבדיקה או נסגר. החישובים הקודמים זמינים בהיסטוריית הנושא.');
+        const context = await loadPricingScopeContext({ supabase: this.supabase, projectId: input.projectId, findingId: input.contradictionId });
+        const signature = pricingScopeSignature(context);
+        const evidence = object(finding.evidence_data), previous = object(evidence.pricing_evaluation);
+        const cachedScope = cachedPricingScope(previous, signature);
+        const supportScope = cachedPricingScope(evidence.support_analysis, signature);
+        let review: PricingScopeResult;
+        const cached = Boolean(cachedScope);
+        try {
+            review = cachedScope || supportScope || await reviewPricingScope(context);
+        } catch (cause) {
+            if (cause instanceof PricingScopeLocalError) throw new PricingEvaluationHttpError(503, cause.message);
+            throw cause;
         }
-
-        const contradictionRecord = contradiction as unknown as AnyRecord;
-        if (!canAutomaticallyPriceFinding(contradictionRecord)) {
-            throw new PricingEvaluationHttpError(409, 'הממצא הוחרג מהבדיקה או נסגר. החישובים הקודמים זמינים בהיסטוריית הנושא.');
+        const evaluation = buildPricingScopeEvaluation(context, review);
+        evaluation.scope_source_signature = signature;
+        evaluation.suggested_description = finding.title || evaluation.suggested_description;
+        normalizePricingEvaluation(evaluation, { hasSourceMatches: review.lines.some(line => line.unitPriceExclVat.value !== null),
+            textFallbacks: DEFAULT_PRICING_EVALUATION_TEXT_FALLBACKS });
+        let expertStrategy: unknown = cached ? previous.expert_strategy || evidence.expert_strategy || null : null;
+        if (input.expertMode && !expertStrategy) {
+            if (getComparisonAiIdentity().kind !== 'ollama') throw new PricingEvaluationHttpError(503, 'הלוקאלי אינו זמין. ההערכה נשארת לבדיקה.');
+            try {
+                const result = await generateComparisonText(`Explain only the checked scope and missing evidence in Hebrew. Do not change money or claim entitlement without a source. Give practical next steps. Return JSON with technical_foundation, professional_argument, site_diary_instruction.
+Work: ${String(finding.title || '')}
+Checked explanation: ${String(evaluation.ai_rationale || '')}
+Coverage: ${review.status}; still uncovered: ${review.uncoveredRequirementIds.join(', ')}.
+Verified quotes (evidence only): ${JSON.stringify(review.positions.map(position => ({ item: position.itemCode, quotes: position.evidence })))}.`, process.env, {
+                    numCtx: 8192, numPredict: 600, timeoutMs: 180000, temperature: 0, seed: 42,
+                    responseFormat: { type: 'object', additionalProperties: false, required: ['technical_foundation', 'professional_argument', 'site_diary_instruction'],
+                        properties: { technical_foundation: { type: 'string' }, professional_argument: { type: 'string' }, site_diary_instruction: { type: 'string' } } },
+                });
+                expertStrategy = extractFirstJsonObject(result);
+            } catch (cause) { throw new PricingEvaluationHttpError(503, cause instanceof Error ? cause.message : 'Local explanation unavailable'); }
         }
-        await syncProjectContractBase(this.supabase, projectId);
-        await syncContractBoqToLedger(this.supabase, projectId, { contractorId });
-
-        const { data: contractDocs } = await this.supabase
-            .from('documents')
-            .select('title, parsed_json')
-            .eq('project_id', projectId)
-            .in('category', ['CONTRACT', 'BOQ', 'SPECS']);
-
-        const boqRawContext = buildBoqRawContext(
-            toRecords(contractDocs as unknown).filter((doc) => !isReferenceDocument(doc)),
-        );
-
-        const keywordPrompt = buildKeywordPrompt({
-            title: contradictionRecord.title,
-            description: contradictionRecord.description,
-        });
-        const keywordResult = await geminiFlashModel.generateContent(keywordPrompt);
-
-        return {
-            contradiction: contradictionRecord,
-            boqRawContext,
-            keywords: extractPricingKeywords(
-                keywordResult.response.text(),
-                `${contradictionRecord.title || ''} ${contradictionRecord.description || ''}`,
-            ),
-        };
-    }
-
-    private async findPriceMatches(projectId: string, keywords: string[]): Promise<AiEstimatorPriceMatches> {
-        const ledgerSearchTerms = keywords.slice(0, 8);
-        const ledgerOrConditions = ledgerSearchTerms.map((k: string) => `description.ilike.%${k}%`).join(',');
-
-        const ledgerQuery = this.supabase
-            .from('pricing_ledger')
-            .select('item_code, description, unit, unit_price_excl_vat, source, type, evidence_data')
-            .eq('project_id', projectId)
-            .eq('type', 'BASE_CONTRACT')
-            .eq('source', 'BOQ');
-
-        const { data: ledgerMatches } = ledgerOrConditions
-            ? await ledgerQuery.or(ledgerOrConditions).limit(30)
-            : { data: [] };
-
-        const pricelistMatches = await this.findExternalPricelistMatches(projectId, keywords);
-
-        const ledgerMatchRows = toRecords(ledgerMatches as unknown);
-
-        return {
-            ledgerMatches: ledgerMatchRows,
-            trustedLedgerMatches: ledgerMatchRows.filter(isTrustedBaseContractRow),
-            pricelistMatches,
-        };
-    }
-
-    private async findExternalPricelistMatches(projectId: string, keywords: string[]) {
-        let pricelistMatches: AnyRecord[] = [];
-
-        if (keywords.length === 0) {
-            return pricelistMatches;
+        if (!cached || (input.expertMode && !evidence.expert_strategy)) {
+            const nextEvidence = buildPricingEvidenceData(evidence, evaluation, expertStrategy);
+            const saved = await this.supabase.from('contradictions').update({ evidence_data: nextEvidence })
+                .eq('id', input.contradictionId).eq('project_id', input.projectId);
+            if (saved.error) throw saved.error;
         }
-
-        const searchTerms = keywords.slice(0, 8);
-        const orConditions = searchTerms.map((k: string) => `description.ilike.%${k}%`).join(',');
-
-        const { data: matches } = await this.supabase
-            .from('pricelist_items')
-            .select(`
-                id,
-                item_code,
-                item_type,
-                description,
-                unit,
-                rate,
-                pricelists!inner (
-                    name,
-                    description,
-                    source_type,
-                    is_global,
-                    project_id
-                )
-            `)
-            .or(orConditions)
-            .in('item_type', ['ITEM', 'NOTE'])
-            .or(`pricelists.is_global.eq.true,pricelists.project_id.eq.${projectId}`)
-            .limit(50);
-
-        pricelistMatches = filterExternalPricingReferences(toRecords(matches as unknown));
-
-        const itemMatches = pricelistMatches.filter((m: AnyRecord) => m.item_type === 'ITEM');
-        if (itemMatches.length === 0) {
-            return pricelistMatches;
-        }
-
-        const parentPrefixes = buildParentItemCodePrefixes(itemMatches);
-
-        if (parentPrefixes.size === 0) {
-            return pricelistMatches;
-        }
-
-        const orPrefixes = buildParentNoteOrFilter(parentPrefixes);
-        const { data: parentNotes } = await this.supabase
-            .from('pricelist_items')
-            .select(`
-                id, item_code, item_type, description,
-                pricelists!inner (
-                    name,
-                    description,
-                    source_type,
-                    is_global,
-                    project_id
-                )
-            `)
-            .eq('item_type', 'NOTE')
-            .or(orPrefixes)
-            .or(`pricelists.is_global.eq.true,pricelists.project_id.eq.${projectId}`)
-            .limit(40);
-
-        if (parentNotes) {
-            appendUniqueParentNotes(pricelistMatches, toRecords(parentNotes as unknown));
-        }
-
-        return pricelistMatches;
-    }
-
-    private buildPrompt(context: AiEstimatorContext, priceMatches: AiEstimatorPriceMatches) {
-        return buildPricingPrompt({
-            contradiction: context.contradiction,
-            boqContext: buildBoqContext(priceMatches.trustedLedgerMatches),
-            boqRawContext: context.boqRawContext,
-            pricelistContext: buildPricelistContext(priceMatches.pricelistMatches),
-        });
-    }
-
-    private normalizeResponse(
-        pricingText: string,
-        context: AiEstimatorContext,
-        priceMatches: AiEstimatorPriceMatches,
-    ) {
-        const evaluation = parseGeminiJsonObject(pricingText);
-        const sourceMatchesFound = hasSourceMatches(priceMatches.ledgerMatches, priceMatches.pricelistMatches);
-        evaluation.source_trace = buildSourceTrace(
-            priceMatches.ledgerMatches,
-            priceMatches.pricelistMatches,
-            context.keywords,
-        );
-        evaluation.matched_items = buildMatchedItems(priceMatches.ledgerMatches, priceMatches.pricelistMatches);
-        normalizePricingEvaluation(evaluation, {
-            hasSourceMatches: sourceMatchesFound,
-            textFallbacks: DEFAULT_PRICING_EVALUATION_TEXT_FALLBACKS,
-        });
-
-        return evaluation;
-    }
-
-    private async buildExpertStrategy(
-        expertMode: boolean | undefined,
-        contradiction: AnyRecord,
-        evaluation: AnyRecord,
-    ) {
-        if (!expertMode) {
-            return null;
-        }
-
-        const { ENGINEERING_STRATEGY_PROMPT } = await import('@/lib/gemini');
-        const expertPrompt = buildExpertPrompt({
-            strategyPrompt: ENGINEERING_STRATEGY_PROMPT,
-            contradiction,
-            evaluation,
-        });
-
-        const expertResult = await geminiFlashModel.generateContent(expertPrompt);
-        return parseGeminiJsonObject(expertResult.response.text());
-    }
-
-    private async persistPricingEvidence(
-        projectId: string,
-        contradictionId: string,
-        contradiction: AnyRecord,
-        evaluation: AnyRecord,
-        expertStrategy: unknown,
-    ) {
-        const nextEvidenceData = buildPricingEvidenceData(
-            (contradiction.evidence_data || {}) as unknown as AnyRecord,
-            evaluation,
-            expertStrategy,
-        );
-
-        await this.supabase
-            .from('contradictions')
-            .update({
-                evidence_data: nextEvidenceData,
-            })
-            .eq('id', contradictionId)
-            .eq('project_id', projectId);
+        return { success: true, ...evaluation, expert_strategy: expertStrategy };
     }
 }

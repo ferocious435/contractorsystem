@@ -1,18 +1,24 @@
 import assert from 'node:assert/strict';
 import dotenv from 'dotenv';
 import { performance } from 'node:perf_hooks';
+import { registerHooks } from 'node:module';
 
 import {
   buildSupportAnalysisPrompt,
   selectRelevantSupportIds,
   SUPPORT_ANALYSIS_RESPONSE_SCHEMA,
   supportAnalysisTextIsGrounded,
+  checkedSupportSummary,
 } from '../src/utils/support-source-enrichment.ts';
 
 dotenv.config({ path: '.env.local' });
 
-const baseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-const model = process.env.OLLAMA_MODEL || 'qwen3:4b';
+const adapterHook=registerHooks({resolve(specifier,context,next){return next(specifier.startsWith('@/')?new URL(`../src/${specifier.slice(2)}.ts`,import.meta.url).href:specifier,context);}});
+const {generateComparisonText,getComparisonAiIdentity}=await import('../src/lib/comparison-ai.ts');
+adapterHook.deregister();
+const identity=getComparisonAiIdentity();
+assert.equal(identity.kind,'ollama','Acceptance must use the existing configured local product adapter');
+const model=identity.model;
 const referenceCandidates = [{
   id: 'reference-3210',
   title: 'חוזה מדף 3210',
@@ -37,23 +43,9 @@ const prompt = buildSupportAnalysisPrompt({
   priceCandidates,
 });
 const startedAt = performance.now();
-const response = await fetch(`${baseUrl}/api/generate`, {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({
-    model,
-    prompt,
-    stream: false,
-    format: SUPPORT_ANALYSIS_RESPONSE_SCHEMA,
-    think: false,
-    keep_alive: '10m',
-    options: { temperature: 0, num_ctx: 8192, num_predict: 384, seed: 42 },
-  }),
-  signal: AbortSignal.timeout(180_000),
-});
-if (!response.ok) throw new Error(`Ollama returned HTTP ${response.status}: ${await response.text()}`);
-const payload = await response.json();
-const result = JSON.parse(String(payload.response || '{}'));
+const response = await generateComparisonText(prompt,process.env,{responseFormat:SUPPORT_ANALYSIS_RESPONSE_SCHEMA,
+  temperature:0,numCtx:8192,numPredict:384,seed:42,timeoutMs:180_000});
+const result = JSON.parse(response);
 const issueQuery = 'דרישה לאחריות של 15 שנים\nתקופת הבדק היא 12 חודשים ממועד המסירה.\nהמפקח דורש אחריות של 15 שנים על אביזרי FOX.';
 const selectedReferences = selectRelevantSupportIds({
   value: result.reference_ids,
@@ -86,6 +78,6 @@ console.log(JSON.stringify({
   durationSeconds: Number(((performance.now() - startedAt) / 1000).toFixed(1)),
   selectedReferences,
   selectedPrices,
-  impactSummary,
-  recommendedAction,
+  modelDraft: {impactSummary,recommendedAction},
+  published: checkedSupportSummary(null,selectedReferences.length),
 }, null, 2));

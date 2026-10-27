@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -1090,8 +1091,8 @@ function verifyPricingAiRouteModularizationBehavior() {
   );
   assert(normalizedDraft.source === "CUSTOM_ANALYSIS", "AI evaluation normalizer must force CUSTOM_ANALYSIS on zero-match");
   assert(normalizedDraft.match_quality === "ZERO_MATCH", "AI evaluation normalizer must force ZERO_MATCH on zero-match");
-  assert(normalizedDraft.confidence === 0.6, "AI evaluation normalizer must cap confident zero-match drafts");
-  assert(normalizedDraft.suggested_unit_price_excl_vat === 123.46, "AI evaluation normalizer must round suggested prices excluding VAT");
+  assert(normalizedDraft.confidence === 0.45, "AI evaluation normalizer must cap unverified zero-match confidence");
+  assert(normalizedDraft.suggested_unit_price_excl_vat === null && normalizedDraft.suggested_quantity === null, "No-source model numbers must remain unknown instead of creating a draft price or quantity");
   assert(normalizedDraft.quantity_review_required === true, "AI evaluation normalizer must require review for estimated non-lump-sum quantity");
   assert(normalizedDraft.questions.includes("review quantity"), "AI evaluation normalizer must ask for quantity review when needed");
   assertIncludes(
@@ -1796,23 +1797,8 @@ assert(
 );
   assertIncludes(
     "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-    "from './evaluation-prompts'",
-    "AI estimator service must import prompt builders from an isolated module"
-  );
-  assertIncludes(
-    "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
     "from './evaluation-context'",
     "AI estimator service must import context builders from an isolated module"
-  );
-  assertIncludes(
-    "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-    "from './evaluation-keywords'",
-    "AI estimator service must import keyword extraction from an isolated module"
-  );
-  assertIncludes(
-    "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-    "from './evaluation-pricelists'",
-    "AI estimator service must import pricelist filtering from an isolated module"
   );
   assertNotIncludes(
     "src/app/api/pricing/evaluate-ai/route.ts",
@@ -1855,7 +1841,7 @@ const filesToScanForInlineTotals = [
   "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
   "src/components/features/SmartLetterGenerator.tsx",
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
-  "src/components/pricing/ai-estimator/hooks/useAiEstimatorState.ts",
+  "src/components/pricing/ai-estimator/pricingScopeForm.ts",
   "src/components/pricing/PricingLedgerTable.tsx",
   "src/components/pricing/PrintableLetter.tsx",
 ];
@@ -3575,7 +3561,7 @@ assertIncludes(
 );
 assertIncludes(
   "src/components/pricing/ai-estimator/hooks/useAiEstimatorState.ts",
-  "const hasPricingDraft = totalExclVat > 0",
+  "const hasPricingDraft = totalExclVat !== null && totalExclVat > 0",
   "AI estimator must treat a draft as real only when it has a positive pre-VAT amount"
 );
 assertIncludes(
@@ -3666,8 +3652,8 @@ assertIncludes(
   "AI estimator pricing form must allow 0 percent overhead/profit"
 );
 assertIncludes(
-  "src/components/pricing/ai-estimator/hooks/useAiEstimatorState.ts",
-  "markup: prev.markup || 0",
+  "src/components/pricing/ai-estimator/pricingScopeForm.ts",
+  "markup: 0",
   "AI estimator must not default zero-match pricing to contractor profit"
 );
 assertIncludes(
@@ -3761,7 +3747,7 @@ assertNotIncludes(
   "AI estimator modal must not keep Supabase document lookup inline"
 );
 assertIncludes(
-  "src/components/pricing/ai-estimator/hooks/useAiEstimatorState.ts",
+  "src/components/pricing/ai-estimator/pricingScopeForm.ts",
   "getLedgerRowAmount",
   "AI estimator state hook preview must use the shared ledger amount helper"
 );
@@ -3800,26 +3786,6 @@ assertIncludes(
   "export class AiEstimatorService",
   "AI pricing pipeline must expose a service boundary for automation"
 );
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "const context = await this.loadContext(input)",
-  "AI pricing service must expose a staged loadContext pipeline step"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "buildBoqRawContext",
-  "AI pricing context load must delegate raw BOQ prompt shaping to the context helper"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "const boqRawContext = buildBoqRawContext(",
-  "AI pricing context load must use the capped raw BOQ context builder"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "filter((doc) => !isReferenceDocument(doc))",
-  "AI pricing context load must keep reference documents out of raw BOQ context"
-);
 assertNotIncludes(
   "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
   ".map((d: AnyRecord) => JSON.stringify(d.parsed_json))",
@@ -3830,90 +3796,8 @@ assertNotIncludes(
   ".join('\\n') || 'No existing BOQ found.'",
   "AI pricing context load must not join unbounded raw BOQ context inline"
 );
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "const CONTRADICTION_CONTEXT_SELECT_COLUMNS = [",
-  "AI pricing context load must use an explicit contradiction column list"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  ".select(CONTRADICTION_CONTEXT_SELECT_COLUMNS)",
-  "AI pricing context load must use the lightweight contradiction payload"
-);
-assertSectionNotIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "private async loadContext",
-  "const { data: contractDocs }",
-  ".select('*')",
-  "AI pricing context load must not select full contradiction rows"
-);
-[
-  "'id'",
-  "'project_id'",
-  "'title'",
-  "'description'",
-  "'category'",
-  "'severity'",
-  "'status'",
-  "'pricing_status'",
-  "'source_execution_doc_id'",
-  "'target_contract_doc_id'",
-  "'evidence_data'",
-  "'created_at'",
-].forEach((column) => {
-  assertIncludes(
-    "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-    column,
-    `AI pricing contradiction context payload must include ${column}`
-  );
-});
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "const priceMatches = await this.findPriceMatches(input.projectId, context.keywords)",
-  "AI pricing service must expose a staged findPriceMatches pipeline step"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "const pricingPrompt = this.buildPrompt(context, priceMatches)",
-  "AI pricing service must expose a staged buildPrompt pipeline step"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "const evaluation = this.normalizeResponse(",
-  "AI pricing service must expose a staged normalizeResponse pipeline step"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  ".eq('source', 'BOQ')",
-  "AI evaluation must use only BOQ-sourced base contract rows"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "await syncProjectContractBase(this.supabase, projectId)",
-  "AI evaluation must refresh project contract amount before building pricing context"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "await syncContractBoqToLedger(this.supabase, projectId, { contractorId })",
-  "AI evaluation must refresh trusted BOQ ledger rows before building pricing context"
-);
-{
-  const evaluateAiService = read("src/app/api/pricing/evaluate-ai/ai-estimator-service.ts");
-  assert(
-    evaluateAiService.indexOf("await syncContractBoqToLedger") < evaluateAiService.indexOf(".from('pricing_ledger')"),
-    "AI evaluation must run BOQ ledger sync before fetching contract pricing_ledger rows"
-  );
-}
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "trustedLedgerMatches: ledgerMatchRows.filter(isTrustedBaseContractRow)",
-  "AI evaluation must filter contract context through trusted BOQ evidence rules"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "boqContext: buildBoqContext(priceMatches.trustedLedgerMatches)",
-  "AI evaluation prompt must use only trusted BOQ ledger matches for contract context"
-);
+
+
 assertIncludes(
   "src/app/api/pricing/evaluate-ai/route.ts",
   "requirePricingEvaluationProjectAccess(supabase, projectId)",
@@ -3936,48 +3820,18 @@ assertIncludes(
 );
 assertRegex(
   "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  /\.from\('contradictions'\)[\s\S]*\.eq\('project_id', projectId\)/,
+  /\.from\('contradictions'\)[\s\S]*\.eq\('project_id', input.projectId\)/,
   "AI evaluation must bind contradiction lookup to the requested project"
 );
 assertRegex(
   "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  /\.from\('contradictions'\)[\s\S]*\.update\(\{[\s\S]*evidence_data: nextEvidenceData[\s\S]*\.eq\('id', contradictionId\)[\s\S]*\.eq\('project_id', projectId\)/,
+  /\.from\('contradictions'\)[\s\S]*\.update\(\{[\s\S]*evidence_data: nextEvidence[\s\S]*\.eq\('id', input.contradictionId\)[\s\S]*\.eq\('project_id', input.projectId\)/,
   "AI evaluation must bind contradiction evidence updates to the requested project"
 );
 assertIncludes(
   "src/app/api/pricing/evaluate-ai/evaluation-pricelists.ts",
   "isLikelyContractBoqPricelist",
   "AI evaluation pricelist helper must exclude local contract BOQ from external price references"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "description,",
-  "AI evaluation must load pricelist descriptions before classifying BOQ price lists"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "pricelistMatches = filterExternalPricingReferences(toRecords(matches as unknown))",
-  "AI evaluation must filter external pricelist matches before building the prompt"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  ".or(`pricelists.is_global.eq.true,pricelists.project_id.eq.${projectId}`)",
-  "AI evaluation parent notes must be limited to global or current-project pricelists"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "appendUniqueParentNotes(pricelistMatches, toRecords(parentNotes as unknown))",
-  "AI evaluation parent notes must use the same contract-BOQ exclusion filter"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "is_global,",
-  "AI evaluation must load parent-note pricelist visibility metadata before filtering"
-);
-assertIncludes(
-  "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
-  "project_id",
-  "AI evaluation must load parent-note pricelist project metadata before filtering"
 );
 assertIncludes(
   "src/app/api/chat/route.ts",
@@ -4576,4 +4430,10 @@ verifyProjectContractBaseBehavior();
 await verifyPricingLedgerAiAutomationBehavior();
 verifyPricingAiRouteModularizationBehavior();
 
+// The new common pipeline replaced the external estimator and its internal stages.
+// Exercise its actual source, money and persistence behaviour, rather than requiring obsolete method names.
+const scopeChecks = execFileSync(process.execPath, ['--experimental-strip-types', '--test',
+  'scripts/verify-pricing-scope-integration.mjs', 'scripts/verify-pricing-scope-sources.mjs',
+  'scripts/verify-pricing-scope-ui.mjs'], { cwd: root, encoding: 'utf8', maxBuffer: 20_000_000 });
+console.log(scopeChecks.split('\n').filter(line => /tests |pass |fail /.test(line)).join('\n'));
 console.log("Financial invariants verified.");
