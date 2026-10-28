@@ -554,3 +554,22 @@
   .ti-print-scroll thead { color: #334155 !important; }
   .ti-print-scroll tr, .ti-print-scroll .space-y-8 > .bg-slate-50 { break-inside: avoid; page-break-inside: avoid; }
 }
+
+/* D3: project consultant. */
+.ti-consultant { min-height: 0; }
+.ti-consultant-frame { width: min(100%, 920px); margin-inline: auto; height: calc(100dvh - 240px); min-height: 400px; }
+.ti-consultant-frame > .ti-panel__body { height: 100%; padding: 0; display: flex; flex-direction: column; min-height: 0; }
+.ti-consultant-thread { flex: 1; min-height: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+.ti-consultant-empty { margin: auto; max-width: 640px; text-align: center; display: grid; justify-items: center; gap: 16px; padding-block: 24px; }
+.ti-consultant-empty > svg { color: var(--ti-accent); }
+.ti-consultant-suggestions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; width: 100%; }
+.ti-consultant-suggestions .ti-button { text-align: start; height: auto; }
+.ti-consultant-message { display: grid; gap: 8px; width: fit-content; max-width: 88%; padding: 16px; border: 1px solid var(--ti-border); border-radius: 16px; background: var(--ti-surface); align-self: flex-start; min-width: 0; }
+.ti-consultant-message--user { align-self: flex-end; background: var(--ti-selection); border-color: var(--ti-control); }
+.ti-consultant-message__meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; color: var(--ti-secondary); font-size: 13px; line-height: 20px; }
+.ti-consultant-message__meta > span { display: inline-flex; align-items: center; gap: 8px; }
+.ti-consultant-message__content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; font-size: 16px; line-height: 28px; }
+.ti-consultant-compose { border-top: 1px solid var(--ti-border); padding: 20px 24px; display: grid; gap: 8px; background: var(--ti-surface); border-radius: 0 0 16px 16px; }
+.ti-consultant-compose__row { display: flex; gap: 12px; align-items: flex-end; }
+.ti-consultant-compose textarea { flex: 1; min-width: 0; max-height: 180px; resize: vertical; }
+@media (max-width: 599px) { .ti-consultant-thread { padding: 16px; } .ti-consultant-suggestions { grid-template-columns: minmax(0,1fr); } .ti-consultant-compose { padding: 16px; } .ti-consultant-compose__row { flex-direction: column; align-items: stretch; } .ti-consultant-message { max-width: 100%; padding: 12px; } }
