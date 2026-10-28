@@ -38,7 +38,7 @@
 .ti-panel--plain { background: var(--ti-surface); box-shadow: none; }
 .ti-panel__body { position: relative; min-width: 0; height: 100%; padding: 20px; }
 /* Readable plate under text; the reflective edge never carries secondary text. */
-.ti-panel--metal > .ti-panel__body { margin: 3px; height: calc(100% - 6px); border-radius: 13px; }
+.ti-panel--metal > .ti-panel__body { margin: 3px; height: calc(100% - 6px); border-radius: 13px; background: #141a23f0; }
 .ti-panel--metal :where(.ti-secondary, .ti-muted, .ti-subtitle, .ti-small) { background: #141a23f0; border-radius: 4px; width: fit-content; padding-inline: 4px; }
 .ti-button { position: relative; display: inline-flex; gap: 8px; align-items: center; justify-content: center; min-height: 40px; max-width: 100%; padding: 8px 18px; border: 1px solid var(--ti-control); border-radius: 10px; color: var(--ti-text); background: var(--ti-metal); box-shadow: inset 0 1px 0 #e2e8ff4d, 0 4px 10px #0005; font-weight: 500; text-align: center; text-decoration: none; cursor: pointer; transition: border-color var(--ti-fast), box-shadow var(--ti-fast), filter var(--ti-fast); }
 .ti-button__label { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; }
@@ -255,6 +255,8 @@
 .ti-radar-section { display: flex; flex-direction: column; gap: 12px; padding: 20px; border: 1px solid var(--ti-border); border-radius: 12px; background: var(--ti-surface); }
 .ti-radar-finding__details button:not(.ti-button):not(.ti-evidence-marker__button) { min-height: 36px; padding: 8px 12px; border: 1px solid var(--ti-control); border-radius: 10px; background: var(--ti-metal); color: var(--ti-text); font-size: .875rem; font-weight: 500; text-align: start; overflow-wrap: anywhere; cursor: pointer; }
 .ti-radar-finding__details button:disabled { cursor: not-allowed; opacity: .65; }
+.ti-radar-document-link > .text-right { min-width: 0; padding: 4px 8px; border-radius: 6px; background: #141a23f0; }
+.ti-radar-finding__details .ti-radar-document-link:disabled { opacity: 1; background: var(--ti-raised); border-color: var(--ti-border); color: var(--ti-muted); }
 .ti-radar-finding__details button[aria-label="מחיקת ממצא"] { color: var(--ti-danger); }
 .ti-radar-workspace :is(.text-xs) { font-size: .8125rem; line-height: 1.54; }
 .ti-radar-workspace :is(.text-gray-400,.text-gray-300) { color: var(--ti-secondary); }
@@ -492,8 +494,9 @@
 .ti-pricelist-rate { font-variant-numeric: tabular-nums; }
 .ti-pricelist-rate .ti-bidi { white-space: nowrap; }
 .ti-pricelist-note { margin-top: 12px; font-size: 13px; line-height: 20px; }
-.ti-pricelist-note summary { color: var(--ti-accent); cursor: pointer; padding: 6px 0; }
+.ti-pricelist-note summary { min-height: 36px; color: var(--ti-accent); cursor: pointer; padding: 8px 0; }
 .ti-pricelist-note blockquote { margin: 8px 0 0; padding: 12px; background: var(--ti-paper); color: var(--ti-ink); border-radius: 8px; font-size: 15px; line-height: 24px; }
+@media (pointer: coarse) { .ti-pricelist-note summary { min-height: 44px; } }
 .ti-pricelist-inspection__footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 1100px) { .ti-pricelist-card .ti-panel__body { grid-template-columns: 28px minmax(0, 1fr); gap: 12px; } .ti-pricelist-card__counts, .ti-pricelist-card .ti-actions { grid-column: 2; } }
 @media (max-width: 599px) { .ti-pricelist-card .ti-panel__body { grid-template-columns: minmax(0, 1fr); } .ti-pricelist-card > .ti-panel__body > svg { display: none; } .ti-pricelist-card__counts, .ti-pricelist-card .ti-actions { grid-column: 1; } .ti-pricelist-card .ti-actions { align-items: stretch; } .ti-pricelist-card .ti-button { flex: 1 1 100%; } .ti-pricelist-inspection__footer { align-items: stretch; flex-direction: column; } }
@@ -594,3 +597,12 @@
 .ti-service-documents { display: grid; gap: 12px; padding-inline-start: 20px; }
 .ti-service-quote { margin: 0; padding: 20px; border-radius: 12px; background: var(--ti-paper); color: var(--ti-ink); white-space: pre-wrap; font-size: 16px; line-height: 28px; }
 @media (max-width: 767px) { .ti-settings-grid { grid-template-columns: minmax(0,1fr); gap: 16px; } .ti-service-facts > div { grid-template-columns: minmax(0,1fr); gap: 6px; } .ti-service-quote { padding: 12px; } }
+
+/* Existing paper keeps its original typeface; web UI uses Heebo. */
+.ti-print-scroll .font-sans { font-family: var(--font-print), ui-sans-serif, system-ui, sans-serif; }
+/* Preview-only contrast; the existing printed colors and paper markup stay intact. */
+@media screen {
+  .ti-print-scroll .text-slate-400 { color: #526175; }
+  .ti-print-scroll .text-emerald-600 { color: #047857; }
+  .ti-print-scroll :is(.opacity-70, .opacity-80) { opacity: 1; }
+}

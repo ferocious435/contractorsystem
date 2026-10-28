@@ -24,6 +24,15 @@ function props(extra={}){const state={letterType:'claim',recipient:'נמען ב�
 function render(input=props()){assert.equal(typeof view,'function','The actual letter workspace view is missing');return renderToStaticMarkup(React.createElement(view,input));}
 const button=(html,label)=>html.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`,'u'))?.[0]||'';
 
+test('unknown quantity or unit price cannot turn into zero in the current print attachment',()=>{
+ for(const patch of [{quantity:null},{quantity:Number.NaN},{unit_price_excl_vat:null,unit_price:undefined}]){
+  const input=props();input.derived.selectedItems=[{...letterItems[0],...patch}];input.derived.canPrint=true;
+  assert.deepEqual(printableItemsForView(input.state,input.derived),[]);
+  const html=render(input),print=(html.match(/<button\b[^>]*>[\s\S]*?<\/button>/gu)||[]).find(value=>value.includes('תצוגת הדפסה'));
+  assert.ok(print?.includes('disabled'));assert.ok(html.includes('נדרשות שורות כספיות מלאות'));
+ }
+});
+
 test('five letter types and six tones remain available with their original values',()=>{
   const html=render();for(const option of LETTER_TYPES)assert.ok(html.includes(option.label));for(const option of TONE_OPTIONS)assert.ok(html.includes(`value="${option.value}"`));assert.equal(LETTER_TYPES.length,5);assert.equal(TONE_OPTIONS.length,6);
 });

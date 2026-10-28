@@ -23,6 +23,8 @@ const date = (value: string): string => Number.isFinite(Date.parse(value)) ? new
 
 export function getLetterPrintableItems(state: Pick<SmartLetterState, 'printContext'>, derived: Pick<SmartLetterDerivedState, 'selectedItems'>): LedgerItem[] {
     const rows = state.printContext ? state.printContext.matchesStoredTotals ? state.printContext.items : [] : derived.selectedItems;
+    const knownNumber=(value:unknown):boolean=>typeof value==='number'&&Number.isFinite(value);
+    if(rows.some(item=>!knownNumber(item.quantity)||!knownNumber(item.unit_price_excl_vat??item.unit_price)))return [];
     return rows.map((item) => ({
         id: item.id,
         item_code: item.item_code || '',
@@ -52,11 +54,12 @@ export function LetterWorkspaceView({state, setters, actions, derived}: Props): 
     const busy = isGenerating || isSaving;
     const ledgerUnavailable = isLoadingLedger || ledgerReadFailed || operationError?.kind === 'ledger';
     const saved = saveSuccess && !editedSinceSave && operationError?.kind !== 'save';
-    const canPrint = (derived.canPrint ?? Boolean(generatedLetter)) && (!ledgerUnavailable || Boolean(printContext?.matchesStoredTotals));
+    const printableItems = getLetterPrintableItems(state, derived);
+    const expectedPrintCount=printContext?printContext.items.length:derived.selectedItems.length;
+    const canPrint = (derived.canPrint ?? Boolean(generatedLetter)) && expectedPrintCount===printableItems.length && (!ledgerUnavailable || Boolean(printContext?.matchesStoredTotals));
     const eligibleItems = ledgerItems.filter(item => item.type === 'PENDING_VO' || item.type === 'APPROVED_VO');
     const hasCompleteSelection = derived.selectedItems.length > 0 && selectedLedgerItems.every(id => eligibleItems.some(item => item.id === id));
     const generateReason = !letterType ? 'יש לבחור סוג מכתב לפני הכנת הטיוטה.' : 'נדרשת בחירת שורות כספיות מתאימות לפני הכנת הטיוטה.';
-    const printableItems = getLetterPrintableItems(state, derived);
     const remove = async (): Promise<void> => {
         if (!deleteTarget || isDeleting) return;
         setDeleteError(null);

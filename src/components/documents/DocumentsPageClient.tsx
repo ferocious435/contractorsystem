@@ -132,16 +132,20 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                         const extractData = await extractRes.json();
 
                         if (extractData.success) {
-                            setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? {
-                                ...d,
-                                ai_status: 'PENDING',
-                                extracted_text: `[${extractData.textLength} תווים]`,
-                            } : d));
+                            const params = new URLSearchParams({ projectId });
+                            if (category) params.set('category', category);
+                            const savedResponse = await fetch('/api/documents?' + params.toString());
+                            const savedBody = await savedResponse.json();
+                            if (!savedResponse.ok || !savedBody.success || !Array.isArray(savedBody.documents)) throw new Error('SAVED_DOCUMENT_READ_FAILED');
+                            const savedDocument = savedBody.documents.find((document: ProjectDocument) => document.id === insertedDoc.id);
+                            if (!savedDocument) throw new Error('SAVED_DOCUMENT_NOT_FOUND');
+                            setDocuments(prev => prev.map(document => document.id === insertedDoc.id ? normalizeDocument(savedDocument) : document));
                         } else {
                             setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? { ...d, ai_status: 'PENDING' } : d));
                         }
                     } catch {
                         setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? { ...d, ai_status: 'PENDING' } : d));
+                        setActionError('הקובץ נשמר, אך הטקסט המלא לא נקרא למסך. יש לקרוא שוב את המסמך לפני אימות המקור.');
                     }
                 }
             } catch (err) {

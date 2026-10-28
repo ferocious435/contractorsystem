@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Rubik, Fira_Code } from "next/font/google";
+import { Rubik } from "next/font/google";
 import localFont from "next/font/local";
 import { UIMotionProvider } from "@/components/ui/titanium/UIMotionProvider";
 import "./globals.css";
@@ -15,14 +15,10 @@ const heebo = localFont({
   display: "swap",
 });
 
-const rubik = Rubik({
-  variable: "--font-rubik",
+// Existing printed paper keeps its accepted Rubik typeface.
+const printFont = Rubik({
+  variable: "--font-print",
   subsets: ["hebrew", "latin"],
-});
-
-const firaCode = Fira_Code({
-  variable: "--font-fira-code",
-  subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
@@ -38,7 +34,7 @@ export default function RootLayout({
   return (
     <html lang="he" dir="rtl" className="dark">
       <body
-        className={`${heebo.variable} ${rubik.variable} ${firaCode.variable} font-sans antialiased bg-background text-foreground min-h-screen`}
+        className={`${heebo.variable} ${printFont.variable} font-sans antialiased bg-background text-foreground min-h-screen`}
       >
         <UIMotionProvider>{children}</UIMotionProvider>
       </body>

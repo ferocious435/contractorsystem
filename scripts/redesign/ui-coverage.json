@@ -1,0 +1,213 @@
+{
+  "version": 1,
+  "note": "Static ownership and import reachability. Actual state, accessibility and runtime acceptance are recorded separately; this manifest does not prove those conditions.",
+  "surfaces": [
+    {
+      "id": "S01",
+      "ownerTask": 2,
+      "files": [
+        "src/app/page.tsx",
+        "src/app/login/page.tsx"
+      ]
+    },
+    {
+      "id": "S02",
+      "ownerTask": 2,
+      "files": [
+        "src/components/layout/ProjectPortfolio.tsx"
+      ]
+    },
+    {
+      "id": "S03",
+      "ownerTask": 4,
+      "files": [
+        "src/components/features/ProjectOverview.tsx"
+      ]
+    },
+    {
+      "id": "S04",
+      "ownerTask": 3,
+      "files": [
+        "src/components/documents/DocumentsPageClient.tsx"
+      ]
+    },
+    {
+      "id": "S05",
+      "ownerTask": 3,
+      "files": [
+        "src/components/documents/DocumentsPageClient.tsx"
+      ]
+    },
+    {
+      "id": "S06",
+      "ownerTask": 5,
+      "files": [
+        "src/components/features/ContradictionRadar.tsx"
+      ]
+    },
+    {
+      "id": "S07",
+      "ownerTask": 6,
+      "files": [
+        "src/components/features/PricingLedgerUI.tsx"
+      ]
+    },
+    {
+      "id": "S08",
+      "ownerTask": 8,
+      "files": [
+        "src/components/pricelists/PricelistsPageClient.tsx"
+      ]
+    },
+    {
+      "id": "S09",
+      "ownerTask": 9,
+      "files": [
+        "src/components/features/SmartLetterGenerator.tsx"
+      ]
+    },
+    {
+      "id": "S10",
+      "ownerTask": 9,
+      "files": [
+        "src/components/features/smart-letter/LetterWorkspaceView.tsx"
+      ]
+    },
+    {
+      "id": "S11",
+      "ownerTask": 10,
+      "files": [
+        "src/components/features/AIConsultant.tsx"
+      ]
+    },
+    {
+      "id": "S12",
+      "ownerTask": 11,
+      "files": [
+        "src/components/features/SettingsView.tsx"
+      ]
+    },
+    {
+      "id": "S13",
+      "ownerTask": 11,
+      "files": [
+        "src/app/local-ai-check/page.tsx"
+      ]
+    },
+    {
+      "id": "S14",
+      "ownerTask": 3,
+      "files": [
+        "src/app/dashboard/[id]/documents/page.tsx"
+      ]
+    },
+    {
+      "id": "S15",
+      "ownerTask": 6,
+      "files": [
+        "src/app/dashboard/[id]/pricing/page.tsx"
+      ]
+    },
+    {
+      "id": "S16",
+      "ownerTask": 2,
+      "files": [
+        "src/app/error.tsx",
+        "src/app/not-found.tsx",
+        "src/components/layout/UnavailableView.tsx"
+      ]
+    },
+    {
+      "id": "O01",
+      "ownerTask": 2,
+      "files": [
+        "src/components/layout/ProjectFormDialog.tsx"
+      ]
+    },
+    {
+      "id": "O02",
+      "ownerTask": 2,
+      "files": [
+        "src/components/layout/ProjectFormDialog.tsx"
+      ]
+    },
+    {
+      "id": "O03",
+      "ownerTask": 2,
+      "files": [
+        "src/components/layout/ProjectFormDialog.tsx",
+        "src/components/documents/DocumentsPageClient.tsx",
+        "src/components/features/ContradictionRadarFeedItem.tsx",
+        "src/components/features/smart-letter/LetterWorkspaceView.tsx"
+      ]
+    },
+    {
+      "id": "O04",
+      "ownerTask": 3,
+      "files": [
+        "src/components/documents/ScreenOfTruthModal.tsx",
+        "src/components/documents/DocumentSourceView.tsx"
+      ]
+    },
+    {
+      "id": "O05",
+      "ownerTask": 8,
+      "files": [
+        "src/components/pricelists/PricelistsCatalogView.tsx"
+      ]
+    },
+    {
+      "id": "O06",
+      "ownerTask": 7,
+      "files": [
+        "src/components/pricing/AIEstimatorModal.tsx"
+      ]
+    },
+    {
+      "id": "O07",
+      "ownerTask": 7,
+      "files": [
+        "src/components/pricing/WorkChangeReviewPanel.tsx"
+      ]
+    },
+    {
+      "id": "O08",
+      "ownerTask": 5,
+      "files": [
+        "src/components/features/contradiction-radar/RadarRequirementReview.tsx"
+      ]
+    },
+    {
+      "id": "O09",
+      "ownerTask": 9,
+      "files": [
+        "src/components/pricing/LetterGeneratorModal.tsx"
+      ]
+    },
+    {
+      "id": "O10",
+      "ownerTask": 9,
+      "files": [
+        "src/components/pricing/PrintableLetter.tsx"
+      ]
+    }
+  ],
+  "shared": [
+    "src/app/layout.tsx",
+    "src/components/features/DashboardContent.tsx",
+    "src/components/layout/AppShell.tsx",
+    "src/components/layout/Sidebar.tsx",
+    "src/components/layout/TopBar.tsx",
+    "src/components/layout/ProjectNavigation.tsx"
+  ],
+  "routeFiles": [
+    "src/app/page.tsx",
+    "src/app/layout.tsx",
+    "src/app/error.tsx",
+    "src/app/not-found.tsx",
+    "src/app/login/page.tsx",
+    "src/app/local-ai-check/page.tsx",
+    "src/app/dashboard/[id]/documents/page.tsx",
+    "src/app/dashboard/[id]/pricing/page.tsx"
+  ]
+}

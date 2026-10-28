@@ -196,7 +196,7 @@ function ContradictionRadarFeedItem({
                                         e.stopPropagation();
                                         onRadarOpenDocument(c.source_doc?.id, workPage);
                                     }}
-                                    disabled={!c.source_doc?.id} className="flex items-center gap-3 group/doc transition-all"
+                                    disabled={!c.source_doc?.id} className="ti-radar-document-link flex items-center gap-3 group/doc transition-all"
                                 >
                                     <div className="w-10 h-10 rounded-xl bg-black/40 border border-white/5 flex items-center justify-center group-hover/doc:border-blue-500/50 group-hover/doc:bg-blue-500/10 transition-colors">
                                         <FileText className="w-5 h-5 text-gray-400 group-hover/doc:text-blue-400" />
@@ -214,14 +214,15 @@ function ContradictionRadarFeedItem({
                                         e.stopPropagation();
                                         onRadarOpenDocument(c.target_doc?.id || richTextEvidence?.document_pair?.contract_doc_id, contractPage);
                                     }}
-                                    className="flex items-center gap-3 group/doc transition-all"
+                                    disabled={!c.target_doc?.id && !richTextEvidence?.document_pair?.contract_doc_id}
+                                    className="ti-radar-document-link flex items-center gap-3 group/doc transition-all"
                                 >
                                     <div className="w-10 h-10 rounded-xl bg-black/40 border border-white/5 flex items-center justify-center group-hover/doc:border-blue-500/50 group-hover/doc:bg-blue-500/10 transition-colors">
                                         <Shield className="w-5 h-5 text-gray-400 group-hover/doc:text-blue-400" />
                                     </div>
                                     <div className="text-right">
                                         <div className="text-xs text-gray-500 font-bold">מסמך חוזי</div>
-                                        <div className="text-sm text-gray-200 font-bold">{c.target_doc?.title || richTextEvidence?.contract_title || 'לא נמצא מסמך חוזי'}</div><span className="ti-meta">{contractPage ? 'עמוד '+contractPage : 'עמוד לא אומת'}</span>
+                                        <div className="text-sm text-gray-200 font-bold">{c.target_doc?.title || richTextEvidence?.contract_title || 'לא נמצא מסמך חוזי'}</div><span className="ti-meta">{contractPage ? 'עמוד '+contractPage : 'עמוד לא אומת'}</span>{!c.target_doc?.id && !richTextEvidence?.document_pair?.contract_doc_id && <p className="ti-meta">אין קישור למסמך המקור השמור.</p>}
                                     </div>
                                 </button>
                             </div>
