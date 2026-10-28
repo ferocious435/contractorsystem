@@ -6,6 +6,16 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {radarFindings} from './fixtures.mjs';
 const {LedgerSourceDetails}=await import('../../src/components/features/pricing-ledger/components/LedgerSourceDetails.tsx');
 const {default:ContradictionRadarFeedItem}=await import('../../src/components/features/ContradictionRadarFeedItem.tsx');
+const {RichText}=await import('../../src/components/ui/RichText.tsx');
+test('an evidence marker never presents an invalid page as a verified source location',()=>{
+ for(const page of [-1,0,1.5,'2.5','abc','3abc']){
+  const html=renderToStaticMarkup(React.createElement(RichText,{text:'מקור [1]',evidence:{contract_quote:'הוראה שמורה',contract_page:page,document_pair:{contract_doc_id:'stored-source'}},onOpen:()=>{}}));
+  assert.ok(html.includes('עמוד לא אומת'),String(page));
+ }
+ const html=renderToStaticMarkup(React.createElement(RichText,{text:'מקור [1]',evidence:{contract_quote:'הוראה שמורה',contract_page:'12',document_pair:{contract_doc_id:'stored-source'}},onOpen:()=>{}}));
+ assert.ok(html.includes('עמוד 12'));
+ assert.ok(!html.includes('עמוד לא אומת'));
+});
 test('an unlinked contract source cannot offer an enabled action',()=>{
  const c={...radarFindings[0],target_doc:null,evidence_data:{}};
  const html=renderToStaticMarkup(React.createElement(ContradictionRadarFeedItem,{item:c,idx:0,isExpanded:true,isItemRescanning:false,isScanning:false,aiAvailable:false,shouldAnimate:false,onToggleExpand:()=>{},onRescanItem:()=>{},onUpdateStatus:async()=>true,onDelete:async()=>true,onRadarOpenDocument:()=>{}}));
