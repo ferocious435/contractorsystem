@@ -2,8 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import {BidiText} from '@/components/ui/titanium/BidiText';
+import {Button} from '@/components/ui/titanium/Button';
+import {Feedback} from '@/components/ui/titanium/Feedback';
+import {Panel} from '@/components/ui/titanium/Panel';
 
-type PreviewResult = {
+export type PreviewResult = {
     success?: boolean;
     readOnly?: boolean;
     databaseChanged?: boolean;
@@ -154,130 +158,37 @@ export default function LocalAiCheckClient({ findingRef }: { findingRef: string 
         }
     }
 
-    return (
-        <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
-            <div className="mx-auto max-w-2xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-                <p className="text-sm text-cyan-400">Локальная проверка · {findingRef}</p>
-                <h1 className="mt-2 text-2xl font-semibold">Проверка расхождения</h1>
+    return <LocalAiResultView findingRef={findingRef} result={result} error={error} isExtracting={isExtracting} extractionStatus={extractionStatus} isApplyingReview={isApplyingReview} reviewStatus={reviewStatus} onReextract={reextractContractText} onApplyCorrection={applyReviewedCorrection}/>;
+}
 
-                {!result && !error && (
-                    <p className="mt-6 text-slate-300">Модель читает подтверждённые фрагменты документов…</p>
-                )}
-
-                {error && (
-                    <p className="mt-6 rounded-lg border border-red-800 bg-red-950/50 p-4 text-red-200">
-                        Ошибка: {error}
-                    </p>
-                )}
-
-                {result && (
-                    <div className="mt-6 space-y-4">
-                        <p className={result.success ? 'text-emerald-400' : 'text-amber-300'}>
-                            {result.success ? 'Цитаты и документы подтверждены.' : 'Нужна ручная проверка источников.'}
-                        </p>
-                        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-                            <dt className="text-slate-400">Модель</dt>
-                            <dd>{result.provider} · {result.model}</dd>
-                            <dt className="text-slate-400">Расхождение</dt>
-                            <dd>{result.localResult?.contradiction_confirmed ? 'подтверждено' : 'не подтверждено'}</dd>
-                            <dt className="text-slate-400">Уверенность</dt>
-                            <dd>{typeof result.localResult?.confidence === 'number' ? `${Math.round(result.localResult.confidence * 100)}%` : '—'}</dd>
-                            <dt className="text-slate-400">Изменение базы</dt>
-                            <dd>{result.readOnly && result.databaseChanged === false ? 'нет, только чтение' : 'требует проверки'}</dd>
-                            <dt className="text-slate-400">Точная цитата договора</dt>
-                            <dd>{result.verification?.contractQuoteMatched ? 'найдена в файле' : 'не найдена'}</dd>
-                            <dt className="text-slate-400">Фрагмент договора</dt>
-                            <dd>{result.sourceDiagnostics?.contractReferenceExcerpt || result.sourceDiagnostics?.contractTermMatches?.length ? 'найден в PDF' : 'не найден'}</dd>
-                            <dt className="text-slate-400">Цитата выполнения</dt>
-                            <dd>{result.verification?.workQuoteMatched ? 'найдена в файле' : 'не найдена'}</dd>
-                            <dt className="text-slate-400">Охват договора</dt>
-                            <dd>{result.coverage?.contract?.complete ? `весь текст · ${chunkLabel(result.coverage.contract.chunks)}` : 'неполный'}</dd>
-                            <dt className="text-slate-400">Охват выполнения</dt>
-                            <dd>{result.coverage?.work?.complete ? `весь текст · ${chunkLabel(result.coverage.work.chunks)}` : 'неполный'}</dd>
-                            <dt className="text-slate-400">Контекст всего проекта</dt>
-                            <dd>{result.coverage?.project?.complete
-                                ? `${result.coverage.project.relatedDocuments?.length || 0} связанных документов из ${result.coverage.project.documents || 0} прочитанных`
-                                : 'не проверен'}</dd>
-                        </dl>
-                        {Boolean(result.coverage?.project?.relatedDocuments?.length) && (
-                            <details className="rounded-lg border border-slate-800 bg-slate-950 p-4 text-sm">
-                                <summary className="cursor-pointer text-slate-300">Какие связанные документы учтены</summary>
-                                <ul className="mt-3 space-y-2 text-slate-400">
-                                    {result.coverage?.project?.relatedDocuments?.map((document) => (
-                                        <li key={document.id} dir="auto">{document.title}</li>
-                                    ))}
-                                </ul>
-                            </details>
-                        )}
-                        {result.localResult?.explanation && (
-                            <p dir="auto" className="rounded-lg bg-slate-950 p-4 text-right text-slate-200">
-                                {result.localResult.explanation}
-                            </p>
-                        )}
-                        {result.sourceDiagnostics?.contractReferenceExcerpt && (
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                                <p className="mb-2 text-sm text-slate-400">
-                                    Фрагмент по пункту {result.sourceDiagnostics.contractReference}
-                                </p>
-                                <p dir="rtl" className="text-right text-sm text-slate-200">
-                                    {result.sourceDiagnostics.contractReferenceExcerpt}
-                                </p>
-                            </div>
-                        )}
-                        {!result.sourceDiagnostics?.contractReferenceExcerpt && Boolean(result.sourceDiagnostics?.contractTermMatches?.length) && (
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                                <p className="mb-2 text-sm text-slate-400">
-                                    Ближайший фрагмент по слову «{result.sourceDiagnostics?.contractTermMatches?.[0]?.term}»
-                                </p>
-                                <p dir="rtl" className="text-right text-sm text-slate-200">
-                                    {result.sourceDiagnostics?.contractTermMatches?.[0]?.excerpt}
-                                </p>
-                            </div>
-                        )}
-                        {result.projectId && result.documents?.contract?.id && (
-                            <div className="flex flex-wrap items-center gap-4">
-                                <a
-                                    href={`/api/documents/file?projectId=${encodeURIComponent(result.projectId)}&documentId=${encodeURIComponent(result.documents.contract.id)}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-block text-sm text-cyan-400 hover:text-cyan-300"
-                                >
-                                    Открыть договорный PDF
-                                </a>
-                                <button
-                                    type="button"
-                                    onClick={reextractContractText}
-                                    disabled={isExtracting}
-                                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
-                                >
-                                    {isExtracting ? 'Обновляю текст…' : 'Повторно извлечь текст из PDF'}
-                                </button>
-                            </div>
-                        )}
-                        {extractionStatus && <p className="text-sm text-slate-300">{extractionStatus}</p>}
-                        {result.correctionApplied && (
-                            <p className="rounded-lg border border-emerald-800 bg-emerald-950/40 p-3 text-sm text-emerald-200">
-                                Карточка уточнена по всей истории: основные материалы согласованы. Если подрядчику всё ещё нужны два поставщика, нужно передать разбивку по зонам и получить письменное решение.
-                            </p>
-                        )}
-                        {result.reviewRecommendation && (
-                            <button
-                                type="button"
-                                onClick={applyReviewedCorrection}
-                                disabled={isApplyingReview}
-                                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-60"
-                            >
-                                {isApplyingReview ? 'Сохраняю…' : 'Исправить карточку C-CE6070'}
-                            </button>
-                        )}
-                        {reviewStatus && <p className="text-sm text-slate-300">{reviewStatus}</p>}
-                    </div>
-                )}
-
-                <Link href="/" className="mt-8 inline-block text-sm text-cyan-400 hover:text-cyan-300">
-                    Вернуться в программу
-                </Link>
-            </div>
-        </main>
-    );
+interface LocalAiResultViewProps {findingRef:string;result:PreviewResult|null;error:string;isExtracting:boolean;extractionStatus:string;isApplyingReview:boolean;reviewStatus:string;onReextract():Promise<void>;onApplyCorrection():Promise<void>;}
+const validChunkCount=(value?:number):boolean=>typeof value==='number'&&Number.isInteger(value)&&value>0;
+function coverageText(value?:{complete?:boolean;chunks?:number}):string {if(value?.complete!==true)return value?.complete===false?'неполный':'не проверен';return validChunkCount(value.chunks)?'весь текст · '+chunkLabel(value.chunks):'полнота не подтверждена: число частей не передано';}
+const verificationText=(value?:boolean):string=>value===true?'найдена в файле':value===false?'не найдена':'не проверено';
+export function LocalAiResultView({findingRef,result,error,isExtracting,extractionStatus,isApplyingReview,reviewStatus,onReextract,onApplyCorrection}:LocalAiResultViewProps): React.JSX.Element {
+ const busy=isExtracting||isApplyingReview;
+ const sourcesConfirmed=result?.success===true&&result.verification?.contractQuoteMatched===true&&result.verification?.workQuoteMatched===true&&result.coverage?.contract?.complete===true&&validChunkCount(result.coverage.contract.chunks)&&result.coverage?.work?.complete===true&&validChunkCount(result.coverage.work.chunks)&&result.coverage?.project?.complete===true;
+ const confidence=result?.localResult?.confidence;
+ const details=result?[['Модель',(result.provider||'—')+' · '+(result.model||'—')],['Расхождение',result.localResult?.contradiction_confirmed===true?'подтверждено':result.localResult?.contradiction_confirmed===false?'не подтверждено':'не проверено'],['Уверенность',typeof confidence==='number'&&Number.isFinite(confidence)&&confidence>=0&&confidence<=1?Math.round(confidence*100)+'%':'—'],['Изменение базы',result.readOnly===true&&result.databaseChanged===false?'нет, только чтение':result.databaseChanged===true?'да, изменение отмечено':'требует проверки'],['Точная цитата договора',verificationText(result.verification?.contractQuoteMatched)],['Фрагмент договора',result.sourceDiagnostics?.contractReferenceExcerpt||result.sourceDiagnostics?.contractTermMatches?.length?'найден в PDF':result.sourceDiagnostics?'не найден':'не проверено'],['Цитата выполнения',verificationText(result.verification?.workQuoteMatched)],['Охват договора',coverageText(result.coverage?.contract)],['Охват выполнения',coverageText(result.coverage?.work)],['Контекст всего проекта',result.coverage?.project?.complete===true?(result.coverage.project.relatedDocuments?.length??0)+' связанных документов из '+(typeof result.coverage.project.documents==='number'?result.coverage.project.documents:'—')+' прочитанных':'не проверен']]:[];
+ const excerpt=result?.sourceDiagnostics?.contractReferenceExcerpt||result?.sourceDiagnostics?.contractTermMatches?.[0]?.excerpt;
+ return <main className="titanium-theme ti-page ti-service-shell" dir="ltr" lang="ru">
+  <header className="ti-page-heading"><div><p className="ti-eyebrow">Локальная проверка · <BidiText kind="code" value={findingRef}/></p><h1 className="ti-title">Проверка расхождения</h1><p className="ti-subtitle">Результат чтения источников и отдельные действия с данными</p></div></header>
+  {!result&&!error&&<Feedback>Модель читает подтверждённые фрагменты документов…</Feedback>}
+  {error&&<Feedback tone="danger">Ошибка: {error}</Feedback>}
+  {result&&<>
+   <Feedback tone={sourcesConfirmed?'success':'warning'}>{sourcesConfirmed?'Цитаты и документы подтверждены.':'Нужна ручная проверка источников.'}</Feedback>
+   <Panel><h2 className="ti-section-title">Результат и охват проверки</h2><dl className="ti-service-facts">{details.map(([label,value])=><div key={label}><dt>{label}</dt><dd dir="auto">{value}</dd></div>)}</dl></Panel>
+   {Boolean(result.coverage?.project?.relatedDocuments?.length)&&<Panel><details><summary>Какие связанные документы учтены</summary><ul className="ti-service-documents">{result.coverage?.project?.relatedDocuments?.map((document,index)=><li key={document.id+'-'+index} dir="auto">{document.title}</li>)}</ul></details></Panel>}
+   {result.localResult?.explanation&&<Panel><h2 className="ti-section-title">Объяснение модели</h2><p className="ti-copy ti-preserve-lines" dir="auto">{result.localResult.explanation}</p></Panel>}
+   {excerpt&&<Panel><h2 className="ti-section-title">{result.sourceDiagnostics?.contractReferenceExcerpt?'Фрагмент по пункту '+(result.sourceDiagnostics.contractReference||'—'):'Ближайший фрагмент по слову «'+(result.sourceDiagnostics?.contractTermMatches?.[0]?.term||'—')+'»'}</h2><blockquote className="ti-service-quote" dir="auto">{excerpt}</blockquote></Panel>}
+   <Panel><h2 className="ti-section-title">Отдельные действия</h2><p className="ti-copy">Извлечение повторно читает PDF. Исправление карточки записывает изменение в базу только после нажатия соответствующей кнопки.</p>
+    {result.projectId&&result.documents?.contract?.id&&<div className="ti-actions"><a className="ti-button ti-button--secondary" href={'/api/documents/file?projectId='+encodeURIComponent(result.projectId)+'&documentId='+encodeURIComponent(result.documents.contract.id)} target="_blank" rel="noreferrer">Открыть договорный PDF</a><Button disabled={busy} pending={isExtracting} busyLabel="Обновляю текст…" onClick={()=>void onReextract()}>Повторно извлечь текст из PDF</Button></div>}
+    {extractionStatus&&<Feedback>{extractionStatus}</Feedback>}
+    {result.correctionApplied&&<Feedback tone="success">Карточка уточнена по всей истории: основные материалы согласованы. Если подрядчику всё ещё нужны два поставщика, нужно передать разбивку по зонам и получить письменное решение.</Feedback>}
+    {result.reviewRecommendation&&<Button variant="primary" disabled={busy} pending={isApplyingReview} busyLabel="Сохраняю…" onClick={()=>void onApplyCorrection()}>{'Исправить карточку '+findingRef}</Button>}
+    {reviewStatus&&<Feedback>{reviewStatus}</Feedback>}
+   </Panel>
+  </>}
+  <Link href="/" className="ti-button ti-button--text">Вернуться в программу</Link>
+ </main>;
 }

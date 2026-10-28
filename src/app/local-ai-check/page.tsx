@@ -6,5 +6,5 @@ export default async function LocalAiCheckPage({
     searchParams: Promise<{ findingRef?: string }>;
 }) {
     const { findingRef } = await searchParams;
-    return <LocalAiCheckClient findingRef={findingRef?.trim() || 'C-CE6070'} />;
+    return <div className="titanium-theme"><LocalAiCheckClient findingRef={findingRef?.trim() || 'C-CE6070'} /></div>;
 }

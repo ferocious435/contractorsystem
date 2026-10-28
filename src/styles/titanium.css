@@ -573,3 +573,24 @@
 .ti-consultant-compose__row { display: flex; gap: 12px; align-items: flex-end; }
 .ti-consultant-compose textarea { flex: 1; min-width: 0; max-height: 180px; resize: vertical; }
 @media (max-width: 599px) { .ti-consultant-thread { padding: 16px; } .ti-consultant-suggestions { grid-template-columns: minmax(0,1fr); } .ti-consultant-compose { padding: 16px; } .ti-consultant-compose__row { flex-direction: column; align-items: stretch; } .ti-consultant-message { max-width: 100%; padding: 12px; } }
+
+/* D3: factual settings and developer result. */
+.ti-settings { max-width: 1160px; margin-inline: auto; }
+.ti-settings-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; }
+.ti-settings-grid .ti-panel__body { display: grid; gap: 20px; }
+.ti-settings .ti-section-title { display: flex; gap: 10px; align-items: center; }
+.ti-settings-facts { display: grid; gap: 12px; }
+.ti-settings-facts > div { display: grid; gap: 4px; }
+.ti-settings-facts dt { color: var(--ti-secondary); }
+.ti-settings-facts dd { margin: 0; }
+.ti-service-shell { max-width: 1120px; min-height: 100dvh; margin-inline: auto; overflow-wrap: anywhere; }
+.ti-service-shell .ti-panel__body { display: grid; gap: 16px; }
+.ti-service-shell .ti-button { width: fit-content; }
+.ti-service-facts { display: grid; gap: 0; }
+.ti-service-facts > div { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); gap: 20px; padding-block: 12px; border-bottom: 1px solid var(--ti-border); }
+.ti-service-facts > div:last-child { border: 0; }
+.ti-service-facts dt { color: var(--ti-secondary); }
+.ti-service-facts dd { margin: 0; }
+.ti-service-documents { display: grid; gap: 12px; padding-inline-start: 20px; }
+.ti-service-quote { margin: 0; padding: 20px; border-radius: 12px; background: var(--ti-paper); color: var(--ti-ink); white-space: pre-wrap; font-size: 16px; line-height: 28px; }
+@media (max-width: 767px) { .ti-settings-grid { grid-template-columns: minmax(0,1fr); gap: 16px; } .ti-service-facts > div { grid-template-columns: minmax(0,1fr); gap: 6px; } .ti-service-quote { padding: 12px; } }
