@@ -28,7 +28,14 @@ export function Dialog({ open, labelledBy, onClose, children, className = "" }: 
     if (event.key !== "Tab") return;
     event.stopPropagation();
     const dialog = event.currentTarget;
-    const targets = Array.from(dialog.querySelectorAll<HTMLElement>('a[href],button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[tabindex]:not([tabindex="-1"])')).filter(element => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden");
+    const targets = Array.from(dialog.querySelectorAll<HTMLElement>('a[href],button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[tabindex]:not([tabindex="-1"])')).filter(element => {
+      if (!element.getClientRects().length || getComputedStyle(element).visibility === "hidden") return false;
+      // Closed details can retain layout boxes for hidden links; only their summary is reachable.
+      for (let parent = element.parentElement; parent && parent !== dialog; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement && !parent.open && !parent.querySelector(":scope > summary")?.contains(element)) return false;
+      }
+      return true;
+    });
     const first = targets[0], last = targets[targets.length - 1], active = document.activeElement;
     if (!first) { event.preventDefault(); dialog.focus(); return; }
     if (event.shiftKey && (active === first || !dialog.contains(active))) { event.preventDefault(); last.focus(); }

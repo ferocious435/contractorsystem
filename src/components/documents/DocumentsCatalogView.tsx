@@ -21,8 +21,9 @@ export function selectCatalogDocuments(documents: readonly ProjectDocument[], ca
   const search = query.trim().toLocaleLowerCase();
   return documents.filter(doc => (!category || doc.category === category) && matchesFilter(doc,filter) && (!search || [doc.title,doc.parsed_json?.date,doc.created_at].filter(Boolean).join(' ').toLocaleLowerCase().includes(search))).sort((a,b) => priority(a) - priority(b));
 }
-export function DocumentsCatalogView({documents,category,activeFilter,uploading,processingId,selectedId,loadError,loading=false,analysisAvailable=true,analysisDisabledReason,onSelect,onFilter,onRetryRead,onUpload,onAnalyze,onPreview,onDelete}: {
+export function DocumentsCatalogView({documents,category,activeFilter,uploading,processingId,selectedId,loadError,loading=false,sourceReadErrors,analysisAvailable=true,analysisDisabledReason,onSelect,onFilter,onRetryRead,onUpload,onAnalyze,onPreview,onDelete}: {
   documents: readonly ProjectDocument[]; category?: DocumentCategory; activeFilter: DocumentFilter; uploading: boolean; processingId: string | null; selectedId: string | null; loadError: string | null; loading?: boolean; analysisAvailable?: boolean; analysisDisabledReason?: string;
+  sourceReadErrors?: Readonly<Record<string, string>>;
   onSelect(id:string):void; onFilter(filter:DocumentFilter):void; onRetryRead():Promise<void>; onUpload(files:File[]):Promise<void>; onAnalyze(document:ProjectDocument):Promise<void>; onPreview(document:ProjectDocument):void; onDelete(document:ProjectDocument):Promise<void>;
 }) {
   const [query,setQuery] = useState('');
@@ -42,6 +43,6 @@ export function DocumentsCatalogView({documents,category,activeFilter,uploading,
       {loading && <p role="status">טוען מסמכים…</p>}
       {!loading && !visible.length && !loadError && <Feedback title={scoped.length ? 'לא נמצאו מסמכים בסינון הזה' : 'עדיין אין מסמכים'}>{scoped.length ? 'אפשר לשנות את החיפוש או את המסנן.' : 'העלה מסמך ראשון כדי להתחיל. אפשר גם לגרור לכאן מספר קבצים.'}</Feedback>}
       {visible.map(doc=><DocumentListRow key={doc.id} document={doc} selected={doc.id===selectedId} processing={processingId===doc.id} analysisAvailable={analysisAvailable&&!processingId} analysisDisabledReason={processingId?'ניתוח אחר נמצא בתהליך':analysisDisabledReason} onSelect={()=>{if(container.current && container.current.clientWidth < 1080)onPreview(doc);else onSelect(doc.id);}} onAnalyze={()=>onAnalyze(doc)} onPreview={()=>onPreview(doc)} onDelete={()=>onDelete(doc)} />)}
-    </Panel><Panel className="ti-document-source-panel" title="תצוגת מקור">{selected ? <DocumentSourceView document={selected} fullText={selected.extracted_text} onPreview={()=>onPreview(selected)} /> : <Feedback>בחר מסמך מהרשימה כדי לראות את המקור ואת מצב הקריאה שלו.</Feedback>}</Panel></div>
+    </Panel><Panel className="ti-document-source-panel" title="תצוגת מקור">{selected ? <DocumentSourceView document={selected} fullText={selected.extracted_text} sourceReadError={sourceReadErrors?.[selected.id]} onRetryRead={onRetryRead} retryingRead={loading || Boolean(processingId)} onPreview={()=>onPreview(selected)} /> : <Feedback>בחר מסמך מהרשימה כדי לראות את המקור ואת מצב הקריאה שלו.</Feedback>}</Panel></div>
   </div>;
 }

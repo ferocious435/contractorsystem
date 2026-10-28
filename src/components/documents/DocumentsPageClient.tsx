@@ -50,6 +50,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     const [loading, setLoading] = useState(!isLocalProject && initialDocuments.length === 0);
     const [readAttempt, setReadAttempt] = useState(0);
     const [actionError, setActionError] = useState<string | null>(null);
+    const [sourceReadErrors, setSourceReadErrors] = useState<Record<string, string>>({});
     const [deleteDocument, setDeleteDocument] = useState<ProjectDocument | null>(null);
     const [deleting, setDeleting] = useState(false);
 
@@ -67,11 +68,15 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 const res = await fetch('/api/documents?' + params.toString());
                 const data = await res.json();
                 if (!res.ok || !data.success || !Array.isArray(data.documents)) throw new Error('DOCUMENT_LIST_READ_FAILED');
-                if (!cancelled) setDocuments((prev) => {
-                    const nextDocuments = data.documents.map(normalizeDocument);
-                    if (nextDocuments.length === 0 && prev.length > 0) return prev;
-                    return nextDocuments;
-                });
+                if (!cancelled) {
+                    setDocuments((prev) => {
+                        const nextDocuments = data.documents.map(normalizeDocument);
+                        if (nextDocuments.length === 0 && prev.length > 0) return prev;
+                        return nextDocuments;
+                    });
+                    const loadedIds = new Set(data.documents.map((document: ProjectDocument) => document.id));
+                    setSourceReadErrors(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => !loadedIds.has(id))));
+                }
             } catch {
                 if (!cancelled) setLoadError('לא ניתן לטעון את רשימת המסמכים כרגע. אפשר לנסות לקרוא אותה שוב.');
             } finally {
@@ -169,20 +174,16 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             return;
         }
 
+        setSourceReadErrors(previous => ({ ...previous, [doc.id]: 'הטקסט העדכני ייקרא למסך בסיום הניתוח.' }));
         try {
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
 
-            let extractedTextStr = doc.extracted_text;
             try {
-                const extractRes = await fetch('/api/documents/extract-text', {
+                await fetch('/api/documents/extract-text', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ projectId, documentId: doc.id }),
                 });
-                const extractData = await extractRes.json();
-                if (extractData.success) {
-                    extractedTextStr = `[${extractData.textLength} תווים]`;
-                }
             } catch (err) {
                 console.warn('Failed to extract text:', err);
             }
@@ -202,7 +203,6 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                     ...d,
                     ai_status: data.ai_status || 'ERROR',
                     parsed_json: data.parsed_json || d.parsed_json,
-                    extracted_text: extractedTextStr,
                     category: data.parsed_json?.category || d.category,
                 } : d));
                 return;
@@ -212,13 +212,24 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 ...d,
                 ai_status: 'SCANNED',
                 parsed_json: data.parsed_json,
-                extracted_text: extractedTextStr,
                 category: data.parsed_json?.category || d.category,
             } : d));
         } catch (e) {
             console.error(e);
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'ERROR' } : d));
         } finally {
+            try {
+                // Read the saved source independently of the analysis result and its category.
+                const savedResponse = await fetch('/api/documents?' + new URLSearchParams({ projectId }).toString(), { cache: 'no-store' });
+                const savedBody = await savedResponse.json();
+                if (!savedResponse.ok || !savedBody.success || !Array.isArray(savedBody.documents)) throw new Error('SAVED_DOCUMENT_READ_FAILED');
+                const savedDocument = savedBody.documents.find((document: ProjectDocument) => document.id === doc.id);
+                if (!savedDocument) throw new Error('SAVED_DOCUMENT_NOT_FOUND');
+                setDocuments(previous => previous.map(document => document.id === doc.id ? normalizeDocument(savedDocument) : document));
+                setSourceReadErrors(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => id !== doc.id)));
+            } catch {
+                setSourceReadErrors(previous => ({ ...previous, [doc.id]: 'הטקסט העדכני לא נקרא למסך. יש לנסות לקרוא אותו שוב; קובץ המקור השמור עדיין זמין לפתיחה.' }));
+            }
             setProcessingId(null);
         }
     };
@@ -280,12 +291,17 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         }
     };
 
+    const verificationDocument = selectedDocForVerification
+        ? documents.find(document => document.id === selectedDocForVerification.id) || selectedDocForVerification
+        : null;
+    const retryRead = async () => { setReadAttempt(value => value + 1); };
+
     return <>
         {actionError && <Feedback tone="danger">{actionError}</Feedback>}
-        <DocumentsCatalogView documents={documents} category={category} activeFilter={activeFilter} uploading={isUploading} processingId={processingId} selectedId={selectedId} loadError={loadError} loading={loading}
+        <DocumentsCatalogView documents={documents} category={category} activeFilter={activeFilter} uploading={isUploading} processingId={processingId} selectedId={selectedId} loadError={loadError} loading={loading} sourceReadErrors={sourceReadErrors}
             analysisAvailable={isLocalProject || aiStatus?.available === true} analysisDisabledReason={aiStatus?.available === false ? 'שירות הניתוח אינו זמין כרגע. אפשר לפתוח את המקור השמור.' : 'בודק זמינות שירות הניתוח…'}
-            onSelect={setSelectedId} onFilter={setActiveFilter} onRetryRead={async () => { setReadAttempt(value => value + 1); }} onUpload={handleFiles} onAnalyze={runAIParsing} onPreview={setSelectedDocForVerification} onDelete={async doc => { setDeleteDocument(doc); }} />
-        {selectedDocForVerification && <ScreenOfTruthModal document={selectedDocForVerification} projectId={projectId} onClose={() => setSelectedDocForVerification(null)} onValidate={handleValidate} />}
+            onSelect={setSelectedId} onFilter={setActiveFilter} onRetryRead={retryRead} onUpload={handleFiles} onAnalyze={runAIParsing} onPreview={setSelectedDocForVerification} onDelete={async doc => { setDeleteDocument(doc); }} />
+        {verificationDocument && <ScreenOfTruthModal document={verificationDocument} sourceReadError={sourceReadErrors[verificationDocument.id]} onRetryRead={retryRead} retryingRead={loading || Boolean(processingId)} projectId={projectId} onClose={() => setSelectedDocForVerification(null)} onValidate={handleValidate} />}
         <Dialog open={Boolean(deleteDocument)} labelledBy="document-delete-title" onClose={() => { if (!deleting) setDeleteDocument(null); }}>
             <h2 id="document-delete-title" className="ti-section-title">מחיקת מסמך</h2><p className="ti-copy">האם למחוק את המסמך ״{deleteDocument?.title}״?</p>
             <div className="ti-actions"><Button onClick={() => setDeleteDocument(null)} disabled={deleting}>ביטול</Button><Button variant="danger" pending={deleting} busyLabel="מוחק…" onClick={async () => { if (!deleteDocument) return;setDeleting(true);try { await handleDelete(deleteDocument.id, true);setDeleteDocument(null); } finally { setDeleting(false); } }}>מחיקת המסמך</Button></div>

@@ -9,8 +9,9 @@ import { StatusChip } from '@/components/ui/titanium/StatusChip';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import type { ProjectDocument } from './types';
 
-export function DocumentSourceView({ document, fullText, previewUrl, previewKind, previewError, sourceUrl, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate }: {
+export function DocumentSourceView({ document, fullText, previewUrl, previewKind, previewError, sourceUrl, sourceReadError, onRetryRead, retryingRead, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate }: {
   document: ProjectDocument; fullText?: string | null; previewUrl?: string | null; previewKind?: 'pdf' | 'image' | 'text' | 'office' | 'unsupported'; previewError?: string | null; sourceUrl?: string | null;
+  sourceReadError?: string | null; onRetryRead?(): Promise<void>; retryingRead?: boolean;
   onPreview?(): void; canValidate?: boolean; validating?: boolean; validationDisabledReason?: string; validationError?: string | null; onValidate?(): Promise<void>;
 }) {
   const readiness = assessDocumentSourceReadiness(document);
@@ -36,7 +37,7 @@ export function DocumentSourceView({ document, fullText, previewUrl, previewKind
     {/* A source image is an original signed file; next/image cannot optimize private links. */}
     {/* eslint-disable-next-line @next/next/no-img-element */}
     {previewUrl && previewKind === 'image' && <img className="ti-source-image" src={previewUrl} alt={document.title || 'מסמך מקור'} />}
-    {fullText ? <details className="ti-source-text" open={fullText.length <= 32000}><summary>הטקסט המלא שנשמר</summary><pre>{textChunks.map((text,index)=><span className="ti-source-text__chunk" dir="auto" key={index}>{text}</span>)}</pre></details> : <Feedback>אין עדיין טקסט שמור לתצוגה. אפשר לפתוח את קובץ המקור; פתיחה אינה מפעילה ניתוח.</Feedback>}
+    {sourceReadError ? <Feedback tone="warning"><p>{sourceReadError}</p>{onRetryRead && <Button onClick={onRetryRead} pending={retryingRead}>ניסיון נוסף</Button>}</Feedback> : fullText ? <details className="ti-source-text" open={fullText.length <= 32000}><summary>הטקסט המלא שנשמר</summary><pre>{textChunks.map((text,index)=><span className="ti-source-text__chunk" dir="auto" key={index}>{text}</span>)}</pre></details> : <Feedback>אין עדיין טקסט שמור לתצוגה. אפשר לפתוח את קובץ המקור; פתיחה אינה מפעילה ניתוח.</Feedback>}
     {previewKind === 'unsupported' && <p className="ti-meta">לסוג הקובץ הזה אין תצוגה ישירה בדפדפן.</p>}
     <div className="ti-actions">{onPreview && <Button onClick={onPreview}>פתיחת המקור וסקירת הניתוח</Button>}{sourceUrl && <a className="ti-button ti-button--secondary" href={sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} aria-hidden="true" />פתיחת קובץ המקור</a>}</div>
     {validationError && <Feedback tone="danger">{validationError}</Feedback>}

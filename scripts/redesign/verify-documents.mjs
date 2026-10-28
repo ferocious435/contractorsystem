@@ -93,3 +93,24 @@ test('source preview failure and unsupported formats keep text available and do 
   assert.ok(html.includes('אין תוצאה מאומתת לאישור'));
   assert.equal(validations,0);
 });
+
+test('a failed refresh never presents an earlier source as the current full saved text',()=>{
+  const document=documentFixture('read-error',{ocr_status:'COMPLETED',extracted_text:'OLD_SOURCE_SENTINEL'});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text,sourceReadError:'הטקסט העדכני לא נקרא למסך',sourceUrl:'/synthetic-original.pdf',onRetryRead:async()=>{}});
+  assert.ok(html.includes('הטקסט העדכני לא נקרא למסך'));
+  assert.ok(html.includes('ניסיון נוסף'));
+  assert.ok(html.includes('/synthetic-original.pdf'));
+  assert.ok(!html.includes('OLD_SOURCE_SENTINEL'));
+  assert.ok(!html.includes('הטקסט המלא שנשמר'));
+});
+
+test('a catalog source read failure follows the selected document without hiding another source',()=>{
+  const documents=[documentFixture('unread-view',{extracted_text:'STALE_SOURCE_SENTINEL'}),documentFixture('current-view',{extracted_text:'CURRENT_SOURCE_SENTINEL'})];
+  const props={documents,activeFilter:'ALL',uploading:false,processingId:null,loadError:null,sourceReadErrors:{'unread-view':'הטקסט העדכני לא נקרא למסך'},onSelect:()=>{},onFilter:()=>{},onRetryRead:async()=>{},onUpload:async()=>{},onAnalyze:async()=>{},onPreview:()=>{},onDelete:async()=>{}};
+  const stale=render(DocumentsCatalogView,{...props,selectedId:'unread-view'});
+  assert.ok(stale.includes('הטקסט העדכני לא נקרא למסך'));
+  assert.ok(!stale.includes('STALE_SOURCE_SENTINEL'));
+  const current=render(DocumentsCatalogView,{...props,selectedId:'current-view'});
+  assert.ok(current.includes('CURRENT_SOURCE_SENTINEL'));
+  assert.ok(!current.includes('הטקסט העדכני לא נקרא למסך'));
+});
