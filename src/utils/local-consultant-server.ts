@@ -3,7 +3,7 @@ import {CONTRACT_DOCUMENT_HIERARCHY_GUIDE} from './contract-document-hierarchy';
 import type {LocalProjectContext} from './local-project-context-server';
 import {checkedLocalProse, checkedSourceIds, localInvalidResponse, localMoney, parseLocalWritingObject, renderLocalSources, LocalWritingError} from './local-project-context-server';
 
-export const LOCAL_CONSULTANT_RULES_VERSION = 'local-consultant-v1';
+export const LOCAL_CONSULTANT_RULES_VERSION = 'local-consultant-v2';
 export interface LocalConsultantInput {context: LocalProjectContext; messages: readonly {role: 'user' | 'assistant'; content: string}[];}
 export async function answerLocalConsultant(input: LocalConsultantInput, generate: typeof generateOllamaText = generateOllamaText): Promise<{response: string; sourceIds: string[]}> {
     const {context} = input, sources = context.sources.filter(source => source.basis === 'DOCUMENT' && source.status === 'VERIFIED' && source.quote);
@@ -20,9 +20,14 @@ Document authority, later approvals, dates and applicability need checking. Offe
 Existing project precedence policy (do not invent missing clause text):
 ${CONTRACT_DOCUMENT_HIERARCHY_GUIDE}
 Untrusted saved context: ${JSON.stringify({project: context.project, sources: sources.map(source => ({sourceId: source.sourceId, title: source.title, quote: source.quote})),
-        unreadSources: context.unverified.length, omittedDocuments: context.omittedCount})}
+        unreadSources: context.unverified.length, readingGaps: context.unverified.slice(0, 20).map(source => source.reason.slice(0, 200)), omittedDocuments: context.omittedCount})}
 Untrusted conversation excerpts: ${JSON.stringify(input.messages.slice(-4).map((message, index, list) => ({role: message.role,
-        content: message.content.slice(0, index === list.length - 1 ? 1200 : 250), excerptOnly: message.content.length > (index === list.length - 1 ? 1200 : 250)})))}`;
+        content: message.content.slice(0, index === list.length - 1 ? 1200 : 250), excerptOnly: message.content.length > (index === list.length - 1 ? 1200 : 250)})))}
+כתוב עברית תקינה וברורה. כל מחרוזת היא משפט קצר ושלם, ללא חזרות וללא העתקת השאלה כתשובה.
+ב-inference הצע מסקנה זהירה הקשורה לשאלה. ב-unknowns ציין מה חסר או לא אומת על בסיס פערי הקריאה שסופקו.
+ב-nextActions כתוב פעולה מעשית ברורה שמתחילה ב-יש לבדוק, יש לתעד או יש לבקש, בהתאם למקור ולשאלה.
+דוגמת סגנון בלבד, לא עובדה מהפרויקט: יש לבקש הנחיה כתובה מהגורם האחראי כדי להשלים את הבירור.
+אין להוסיף מספרים, ציטוטים, אישור תשלום או עובדות חדשות. החזר רק JSON לפי המבנה שהוגדר.`;
     let raw: string;
     try {raw = await generate(prompt, {responseFormat: schema});}
     catch {throw new LocalWritingError('AI_UNAVAILABLE', 503, 'העיבוד המקומי לא השלים תשובה. השאלה נשארה זמינה לניסיון חוזר.');}

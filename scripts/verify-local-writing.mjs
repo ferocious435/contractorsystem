@@ -48,6 +48,13 @@ test('invented financial values, quotations, unallowed sources and malformed loc
  }
  assert.equal(typeof localLetter.generateLocalLetter,'function');await assert.rejects(localLetter.generateLocalLetter({payload,projectName:'סינתטי',preview},async()=>'{broken'),e=>e.code==='LOCAL_RESPONSE_INVALID');
 });
+test('observed incoherent repetitive local prose is refused instead of becoming a draft or advice',async()=>{
+ const repetitive='ההצטברות של בדיקת הצינ: בדיקת הצינור תיעוד בדיקת הצינור בדיקת הצינור';
+ await assert.rejects(genLetter({...safeLetter,background:repetitive}),error=>error.code==='LOCAL_RESPONSE_INVALID');
+ const context=await getContext();await assert.rejects(consultant.answerLocalConsultant({context,messages:[{role:'user',content:'איך לתעד צינור?'}]},async()=>JSON.stringify({...safeAnswer,inference:[repetitive]})),error=>error.code==='LOCAL_RESPONSE_INVALID');
+ const ordinary='בדיקת הצינור נקבעה בתיאום עם המפקח לאחר עיון במסמכים. לקראת בדיקת הצינור יש להכין יומן מסודר ולציין את התנאים בשטח. לאחר בדיקת הצינור מומלץ לקבל הנחיה כתובה לפני המשך העבודה.';
+ assert.ok((await genLetter({...safeLetter,background:ordinary})).letter.includes(ordinary));
+});
 test('consultant known facts are rendered from source IDs while inference and unread sources stay separate',async()=>{
  const context=await getContext();assert.equal(typeof consultant.answerLocalConsultant,'function');const result=await consultant.answerLocalConsultant({context,messages:[{role:'user',content:'איך לתעד צינור?'}]},async()=>JSON.stringify(safeAnswer));
  assert.deepEqual(result.sourceIds,['S1']);for(const expected of [quote,'מסקנה','לא אומת','פעולה','100.00','0.12'])assert.ok(result.response.includes(expected),expected);

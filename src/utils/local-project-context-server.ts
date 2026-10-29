@@ -112,6 +112,15 @@ export async function loadLocalProjectContext(client: SupabaseClient, projectId:
 export function checkedLocalProse(value: unknown): string {
     if (typeof value !== 'string' || !value.trim() || value.length > 3000 || !/[א-ת]{2,}/u.test(value)
         || /[\p{N}₪$€£%"“”«»]|https?:|(?<![א-ת])(?:[בכלמה]?שקלים?|ש[״']?ח|אחוזים?)(?![א-ת])/iu.test(value)) throw localInvalidResponse();
+    const words = value.match(/[א-ת]+/gu) || [];
+    if (words.length >= 10 && new Set(words).size / words.length < .65) {
+        const pairs = new Map<string, number>();
+        for (let index = 1; index < words.length; index++) {
+            const pair = words[index - 1] + ' ' + words[index], count = (pairs.get(pair) || 0) + 1;
+            if (count >= 3) throw localInvalidResponse();
+            pairs.set(pair, count);
+        }
+    }
     return value.trim();
 }
 export function checkedSourceIds(value: unknown, allowed: Set<string>): string[] {
