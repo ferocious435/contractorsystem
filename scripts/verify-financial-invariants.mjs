@@ -788,26 +788,10 @@ function verifyServerDocumentAndLetterBoundaryStatics() {
     ".from(\"contradictions\")",
     "letter generation must load contradiction evidence from the server"
   );
-  assertIncludes(
-    "src/app/api/pricing/vo-letters/route.ts",
-    "getOfficialLetterEvidenceBlockers",
-    "official VO save must reject rows without server-verified evidence"
-  );
-  assertIncludes(
-    "src/app/api/pricing/vo-letters/route.ts",
-    "buildOfficialVoServerContent",
-    "official VO save must build the persisted letter text on the server"
-  );
-  assertIncludes(
-    "src/app/api/pricing/vo-letters/route.ts",
-    "content: contentToStore",
-    "official VO save must not persist raw client-provided content"
-  );
-  assertIncludes(
-    "src/app/api/pricing/vo-letters/route.ts",
-    "Client-provided letter text is not used for this official document.",
-    "official VO saved content must document that client text is ignored"
-  );
+  
+  
+  
+  
   assertIncludes(
     "src/app/api/documents/route.ts",
     "export async function POST",
@@ -3769,21 +3753,9 @@ assertIncludes(
   "forceContractBoq: true",
   "Excel BOQ upload must trigger contract ledger sync"
 );
-assertIncludes(
-  "src/app/api/pricing/vo-letters/route.ts",
-  '.in("type", ["PENDING_VO", "APPROVED_VO"])',
-  "VO letter API must fetch only VO rows server-side"
-);
-assertIncludes(
-  "src/app/api/pricing/vo-letters/route.ts",
-  "getLedgerRowAmount",
-  "VO letter API must recalculate totals server-side"
-);
-assertIncludes(
-  "src/app/api/pricing/vo-letters/route.ts",
-  "voItemIds.length !== requestedItemIds.length",
-  "VO letter API must reject mixed or invalid ledger item IDs"
-);
+
+
+
 assertIncludes(
   "src/app/api/generate-letter/route.ts",
   ".eq(\"contractor_id\", user.id)",
@@ -3834,11 +3806,12 @@ assertNotIncludes(
   "viewParams?.contradictionId ? [viewParams.contradictionId] : []",
   "Dashboard must not treat contradiction ids as selected VO letter item ids"
 );
-assertIncludes(
-  "src/components/features/smart-letter/api/smartLetterApi.ts",
-  'fetch("/api/pricing/vo-letters"',
-  "Smart letter save must use the server VO letter API"
-);
+// R02/R03 moves validation and money into the checked RPC. Exercise the real HTTP
+// and client boundary here without requiring Docker; PostgreSQL rollback/rights
+// are verified separately by verify-letter-transactions.mjs.
+execFileSync(process.execPath, ['--test', '--test-name-pattern',
+  'the actual POST|authentication and owner|partial input|database money|preview and separate|client preview|client save|legacy client input',
+  'scripts/verify-letter-routes.mjs'], {cwd: root, stdio: 'pipe', windowsHide: true});
 assertIncludes(
   "src/components/features/smart-letter/api/smartLetterApi.ts",
   'method: "DELETE"',
@@ -3854,26 +3827,10 @@ assertNotIncludes(
   ".delete()",
   "Smart letter API client must not delete VO letters directly through Supabase"
 );
-assertIncludes(
-  "src/app/api/pricing/vo-letters/route.ts",
-  "export async function DELETE",
-  "VO letter API must expose a server-side delete endpoint"
-);
-assertIncludes(
-  "src/app/api/pricing/vo-letters/route.ts",
-  ".eq(\"projects.contractor_id\", user.id)",
-  "VO letter delete must verify project ownership before deletion"
-);
-assertIncludes(
-  "src/app/api/pricing/vo-letters/route.ts",
-  ".from(\"vo_letter_items\")",
-  "VO letter delete must remove linked letter item rows server-side"
-);
-assertIncludes(
-  "src/app/api/pricing/vo-letters/route.ts",
-  ".eq(\"project_id\", letter.project_id)",
-  "VO letter delete must constrain deletion to the owned project"
-);
+
+
+
+
 assertNotIncludes(
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
   ".update({ type: 'SENT_VO' })",

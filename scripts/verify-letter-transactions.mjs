@@ -5,22 +5,12 @@ import {randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {runLettersSql,jsonSql,verifyTestTarget} from './letters-db.mjs';
-import {createSyntheticLetterClient,syntheticIds as id} from './fixtures/letter-rpc-test-adapter.mjs';
+import {createSyntheticLetterClient,seedLettersTestData,syntheticIds as id} from './fixtures/letter-rpc-test-adapter.mjs';
 const client=createSyntheticLetterClient();
 const fixture=JSON.parse(readFileSync(new URL('./fixtures/letter-financial-cases.json',import.meta.url),'utf8'));
 const auth={role:'authenticated',userId:id.userA};
 const quoteWork='לבצע צינור בקוטר 200';
 const quoteContract='לבצע צינור בקוטר 100';
-export function seedLettersTestData(){
- runLettersSql(`set local session_replication_role=replica;
- truncate public.vo_letter_items,public.vo_letters,public.pricing_ledger,public.contradictions,public.documents,public.projects cascade;
- insert into public.projects(id,name,contractor_id) values('${id.projectA}','Synthetic A','${id.userA}'),('${id.projectB}','Synthetic B','${id.userB}');
- insert into public.documents(id,project_id,title,extracted_text,ocr_status) values('${id.work}','${id.projectA}','Synthetic work.txt','${quoteWork}','COMPLETED'),('${id.contract}','${id.projectA}','Synthetic contract.txt','${quoteContract}','COMPLETED');
- insert into public.contradictions(id,project_id,status,source_execution_doc_id,target_contract_doc_id,evidence_data) values('${id.finding}','${id.projectA}','OPEN','${id.work}','${id.contract}',jsonb_build_object('work_quote','${quoteWork}','contract_quote','${quoteContract}','evidence_status','VERIFIED','source_verification',jsonb_build_object('contract_quote_matched',true,'work_quote_matched',true,'source_reading_complete',true,'comparison_context_complete',true,'quality_gate_passed',true),'semantic_assessment',jsonb_build_object('version','evidence-relation-v1','relation','INCOMPATIBLE','resultType','CONTRADICTION')));
- insert into public.pricing_ledger(id,project_id,type,source,description,quantity,unit_price_excl_vat,vat_rate,contradiction_id,evidence_data)
- select r.id,r.project,'PENDING_VO','CUSTOM_ANALYSIS','תמחור סינתטי',1,.03,.18,r.finding,jsonb_build_object('individual_pricing_terms',jsonb_build_object('version','individual-pricing-v1','basis','MANUAL','includes_adjustments',true,'quantity',1,'unit_price_excl_vat',.03,'vat_rate',.18,'note','כל התנאים כלולים')) from (values('${id.rowA}'::uuid,'${id.projectA}'::uuid,null::uuid),('${id.rowB}'::uuid,'${id.projectA}'::uuid,null::uuid),('${id.rowC}'::uuid,'${id.projectA}'::uuid,null::uuid),('${id.official}'::uuid,'${id.projectA}'::uuid,'${id.finding}'::uuid),('${id.foreign}'::uuid,'${id.projectB}'::uuid,null::uuid)) r(id,project,finding);
- insert into public.vo_letters(id,project_id,letter_number,subject,status,content,total_amount_excl_vat) values('${id.legacy}','${id.projectA}','LEGACY-01','Old synthetic','SENT','Historical text',9.75);`);
-}
 beforeEach(()=>seedLettersTestData());
 const preview=(items=[id.rowA,id.rowB,id.rowC],docType='general',c=client)=>c.rpc('preview_letter_draft',{p_project_id:id.projectA,p_doc_type:docType,p_item_ids:items});
 function saveInput(previewValue,patch={}){return {p_project_id:id.projectA,p_client_draft_id:randomUUID(),p_expected_revision:0,p_operation_id:randomUUID(),p_subject:'Synthetic letter',p_recipient_name:'Synthetic recipient',p_doc_type:'general',p_content:'טקסט לבדיקה בלבד',p_item_ids:[id.rowA,id.rowB,id.rowC],p_expected_sources:previewValue.sourceRevisions,...patch};}

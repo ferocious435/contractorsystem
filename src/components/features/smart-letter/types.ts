@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { LucideIcon } from "lucide-react";
 import type {LetterPrintContext} from './letterPrintContext';
+export type { PreviewLetterRequest, SaveLetterDraftRequest, MarkLetterSentRequest, LetterDraftPreview, SavedLetterResult } from '@/utils/letter-draft-types';
 
 export type LetterTypeValue =
   | "claim"

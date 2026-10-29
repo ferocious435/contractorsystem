@@ -1,4 +1,4 @@
-import {jsonSql,containerName as defaultContainer} from '../letters-db.mjs';
+import {runLettersSql,jsonSql,containerName as defaultContainer} from '../letters-db.mjs';
 export const syntheticIds={userA:'10000000-0000-4000-8000-000000000001',userB:'10000000-0000-4000-8000-000000000002',
  projectA:'20000000-0000-4000-8000-000000000001',projectB:'20000000-0000-4000-8000-000000000002',
  rowA:'30000000-0000-4000-8000-000000000001',rowB:'30000000-0000-4000-8000-000000000002',rowC:'30000000-0000-4000-8000-000000000003',
@@ -38,4 +38,16 @@ export function createSyntheticLetterClient({userId=syntheticIds.userA,container
    };return query;
   }
  };
+}
+
+export function seedLettersTestData(){
+ const id=syntheticIds,quoteWork='לבצע צינור בקוטר 200',quoteContract='לבצע צינור בקוטר 100';
+ runLettersSql(`set local session_replication_role=replica;
+ truncate public.vo_letter_items,public.vo_letters,public.pricing_ledger,public.contradictions,public.documents,public.projects cascade;
+ insert into public.projects(id,name,contractor_id) values('${id.projectA}','Synthetic A','${id.userA}'),('${id.projectB}','Synthetic B','${id.userB}');
+ insert into public.documents(id,project_id,title,extracted_text,ocr_status) values('${id.work}','${id.projectA}','Synthetic work.txt','${quoteWork}','COMPLETED'),('${id.contract}','${id.projectA}','Synthetic contract.txt','${quoteContract}','COMPLETED');
+ insert into public.contradictions(id,project_id,status,source_execution_doc_id,target_contract_doc_id,evidence_data) values('${id.finding}','${id.projectA}','OPEN','${id.work}','${id.contract}',jsonb_build_object('work_quote','${quoteWork}','contract_quote','${quoteContract}','evidence_status','VERIFIED','source_verification',jsonb_build_object('contract_quote_matched',true,'work_quote_matched',true,'source_reading_complete',true,'comparison_context_complete',true,'quality_gate_passed',true),'semantic_assessment',jsonb_build_object('version','evidence-relation-v1','relation','INCOMPATIBLE','resultType','CONTRADICTION')));
+ insert into public.pricing_ledger(id,project_id,type,source,description,quantity,unit_price_excl_vat,vat_rate,contradiction_id,evidence_data)
+ select r.id,r.project,'PENDING_VO','CUSTOM_ANALYSIS','תמחור סינתטי',1,.03,.18,r.finding,jsonb_build_object('individual_pricing_terms',jsonb_build_object('version','individual-pricing-v1','basis','MANUAL','includes_adjustments',true,'quantity',1,'unit_price_excl_vat',.03,'vat_rate',.18,'note','כל התנאים כלולים')) from (values('${id.rowA}'::uuid,'${id.projectA}'::uuid,null::uuid),('${id.rowB}'::uuid,'${id.projectA}'::uuid,null::uuid),('${id.rowC}'::uuid,'${id.projectA}'::uuid,null::uuid),('${id.official}'::uuid,'${id.projectA}'::uuid,'${id.finding}'::uuid),('${id.foreign}'::uuid,'${id.projectB}'::uuid,null::uuid)) r(id,project,finding);
+ insert into public.vo_letters(id,project_id,letter_number,subject,status,content,total_amount_excl_vat) values('${id.legacy}','${id.projectA}','LEGACY-01','Old synthetic','SENT','Historical text',9.75);`);
 }
