@@ -788,10 +788,10 @@ function verifyServerDocumentAndLetterBoundaryStatics() {
     ".from(\"contradictions\")",
     "letter generation must load contradiction evidence from the server"
   );
-  
-  
-  
-  
+
+
+
+
   assertIncludes(
     "src/app/api/documents/route.ts",
     "export async function POST",
