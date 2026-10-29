@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { LucideIcon } from "lucide-react";
 import type {LetterPrintContext} from './letterPrintContext';
 import type {LetterDraftSnapshot} from '@/utils/letter-draft-types';
+import type {ClientAiReadiness} from '@/hooks/useAiReadiness';
 export type { PreviewLetterRequest, SaveLetterDraftRequest, MarkLetterSentRequest, LetterDraftPreview, SavedLetterResult } from '@/utils/letter-draft-types';
 
 export type LetterTypeValue =
@@ -106,6 +107,8 @@ export interface GenerateSmartLetterResponse {
   success?: boolean;
   letter?: string;
   error?: string;
+  code?: string;
+  snapshot?: LetterDraftSnapshot;
 }
 
 export interface SaveSmartLetterPayload {
@@ -118,6 +121,7 @@ export interface SaveSmartLetterPayload {
 }
 
 export interface SmartLetterState {
+  aiReadiness?: ClientAiReadiness | null;
   operationError?: {kind: 'ledger' | 'history' | 'generate' | 'save' | 'delete' | 'copy' | 'print' | 'preview' | 'sent'; message: string} | null;
   isLoadingLedger?: boolean;
   ledgerReadFailed?: boolean;
@@ -187,6 +191,7 @@ export interface SmartLetterDerivedState {
 }
 
 export interface SmartLetterActions {
+  refreshAiReadiness?: () => void;
   reviewLetter?: () => Promise<void>;
   markLetterSent?: () => Promise<void>;
   newDraft?: () => void;

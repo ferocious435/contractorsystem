@@ -11,6 +11,7 @@ interface ConsultantViewProps {
     messages: Message[];
     input: string;
     isLoading: boolean;
+    canSend?: boolean;
     suggestedQuestions: string[];
     errorIndexes?: number[];
     inputRef?: RefObject<HTMLTextAreaElement | null>;
@@ -20,7 +21,7 @@ interface ConsultantViewProps {
     onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void;
 }
 
-export function ConsultantView({messages,input,isLoading,suggestedQuestions,errorIndexes=[],inputRef,messagesEndRef,onInput,onSend,onKeyDown}: ConsultantViewProps): React.JSX.Element {
+export function ConsultantView({messages,input,isLoading,canSend=true,suggestedQuestions,errorIndexes=[],inputRef,messagesEndRef,onInput,onSend,onKeyDown}: ConsultantViewProps): React.JSX.Element {
     const inputId=useId(),helpId=useId();
     return <section className="ti-page ti-consultant" dir="rtl">
         <header className="ti-page-heading"><div><p className="ti-eyebrow">שאלות על הפרויקט</p><h1 className="ti-title">יועץ הפרויקט</h1><p className="ti-subtitle">התשובות מבוססות על הנתונים הזמינים ודורשות בדיקת מקורות.</p></div></header>
@@ -33,7 +34,7 @@ export function ConsultantView({messages,input,isLoading,suggestedQuestions,erro
                 {isLoading&&<Feedback aria-live="polite"><span className="ti-spinner" aria-hidden="true"/>ממתין לתשובת העוזר…</Feedback>}
                 <div ref={messagesEndRef}/>
             </div>
-            <div className="ti-consultant-compose"><label htmlFor={inputId} className="ti-field__label">השאלה שלך</label><div className="ti-consultant-compose__row"><textarea ref={inputRef} id={inputId} aria-describedby={helpId} className="ti-textarea" name="consultantQuestion" value={input} onChange={event=>onInput(event.target.value)} onKeyDown={onKeyDown} rows={3} placeholder="שאל שאלה על הפרויקט…"/><Button variant="primary" aria-label="שליחת שאלה" onClick={()=>void onSend()} disabled={isLoading||!input.trim()} pending={isLoading} busyLabel="ממתין לתשובה…"><Send size={18} aria-hidden="true"/>שליחה</Button></div><p id={helpId} className="ti-meta"><bdi dir="ltr">Enter</bdi> לשליחה · <bdi dir="ltr">Shift+Enter</bdi> לשורה חדשה. השיחה נשמרת בזיכרון המסך הנוכחי בלבד.</p></div>
+            <div className="ti-consultant-compose"><label htmlFor={inputId} className="ti-field__label">השאלה שלך</label><div className="ti-consultant-compose__row"><textarea ref={inputRef} id={inputId} aria-describedby={helpId} className="ti-textarea" name="consultantQuestion" value={input} onChange={event=>onInput(event.target.value)} onKeyDown={onKeyDown} rows={3} placeholder="שאל שאלה על הפרויקט…"/><Button variant="primary" aria-label="שליחת שאלה" onClick={()=>void onSend()} disabled={isLoading||!canSend||!input.trim()} pending={isLoading} busyLabel="ממתין לתשובה…"><Send size={18} aria-hidden="true"/>שליחה</Button></div><p id={helpId} className="ti-meta"><bdi dir="ltr">Enter</bdi> לשליחה · <bdi dir="ltr">Shift+Enter</bdi> לשורה חדשה. השיחה נשמרת בזיכרון המסך הנוכחי בלבד.</p></div>
         </Panel>
     </section>;
 }

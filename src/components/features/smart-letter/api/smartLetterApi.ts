@@ -72,24 +72,23 @@ export async function fetchSavedLetters(
 export async function generateLetter(
   payload: GenerateSmartLetterPayload,
 ): Promise<GenerateSmartLetterResponse> {
-  const response = await fetch("/api/generate-letter", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  return (await response.json()) as GenerateSmartLetterResponse;
+  const data = await postLetterRequest('/api/generate-letter', payload, 310_000);
+  if (typeof data.letter !== 'string' || !data.letter.trim() || !hasSnapshot(data.snapshot)) {
+    throw new LetterRequestError('התשובה המקומית אינה מלאה. הטקסט הקודם נשאר זמין.', 'LOCAL_RESPONSE_INVALID', 502);
+  }
+  return {success: true, letter: data.letter, snapshot: data.snapshot};
 }
 
 export class LetterRequestError extends Error {
   constructor(message: string, readonly code: string, readonly status: number) { super(message); }
 }
 
-async function postLetterRequest(url: string, payload: unknown): Promise<Record<string, unknown>> {
+async function postLetterRequest(url: string, payload: unknown, timeoutMs?: number): Promise<Record<string, unknown>> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    ...(timeoutMs ? {signal: AbortSignal.timeout(timeoutMs)} : {}),
   });
   let data: unknown;
   try { data = await response.json(); } catch { throw new LetterRequestError('התשובה אינה מלאה. הטקסט נשאר זמין לניסיון חוזר.', 'LETTER_RESPONSE_INVALID', response.status); }

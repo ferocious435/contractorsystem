@@ -11,6 +11,8 @@ import {deleteVoLetter as apiDeleteVoLetter, fetchContradictionsByIds, fetchLedg
 import type {SavedSmartLetter, SmartLetterLedgerItem, ToneValue, UseSmartLetterStateParams, UseSmartLetterStateResult, LetterTypeValue, SmartLetterState} from '../types';
 import {blockedLetterPrintContext, type LetterPrintContext} from '../letterPrintContext';
 import {LetterDraftSession, letterDraftSignature} from '../letterDraftSession';
+import {useAiReadiness, refreshAiReadiness} from '@/hooks/useAiReadiness';
+import {LocalWritingRequest, localWritingRequestMessage} from '@/utils/local-writing-request';
 
 function selectionKey(projectId: string, docType: string, ids: string[], rows: SmartLetterLedgerItem[]): string {
   return stableLetterValue([projectId, docType, ids, ids.map(id => rows.find(row => row.id === id) || null)]);
@@ -30,6 +32,7 @@ function matchesCurrentSnapshot(preview: LetterDraftPreview, rows: SmartLetterLe
 const message = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
 
 export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartLetterStateParams): UseSmartLetterStateResult {
+  const aiReadiness = useAiReadiness(), generation = useRef(new LocalWritingRequest());
   const session = useRef<LetterDraftSession | null>(null);
   if (!session.current) session.current = new LetterDraftSession(projectId);
   const [draft, setDraft] = useState(() => session.current!.state);
@@ -48,7 +51,7 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
   const [preview, setPreview] = useState<LetterDraftPreview | null>(null), [reviewedKey, setReviewedKey] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false), [isMarkingSent, setIsMarkingSent] = useState(false);
   const epoch = useRef(0), printRequest = useRef(0), ledgerRequest = useRef(0), historyRequest = useRef(0), busy = useRef(false);
-  const invalidateRequests = useCallback(() => {++epoch.current; ++printRequest.current; ++ledgerRequest.current; ++historyRequest.current;}, []);
+  const invalidateRequests = useCallback(() => {++epoch.current; ++printRequest.current; ++ledgerRequest.current; ++historyRequest.current; generation.current.cancel();}, []);
   const activeProject = useRef(projectId), initial = useRef(initialSelectedItems), initialApplied = useRef(false);
   initial.current = initialSelectedItems;
   if (activeProject.current !== projectId) { activeProject.current = projectId; ++epoch.current; session.current.reset(projectId); }
@@ -60,15 +63,16 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
   const key = selectionKey(projectId, docType, selectedLedgerItems, ledgerItems);
   const previewReady = Boolean(preview && reviewedKey === key);
   const signature = letterDraftSignature({projectId, docType, itemIds: selectedLedgerItems, subject, recipientName: recipient, content: generatedLetter});
+  const generationKey = stableLetterValue([signature, key, keyPoints, tone, draft.clientDraftId]);
   const isDirty = draft.savedSignature !== null ? signature !== draft.savedSignature
     || (previewReady && stableLetterValue(preview!.sourceRevisions) !== stableLetterValue(draft.sourceRevisions)) : Boolean(generatedLetter.trim());
   const readOnly = draft.status === 'SENT' || draft.isLegacy || draft.operationKind === 'sent' || Boolean(draft.letterId && !draft.snapshot);
-  const latest = useRef({projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly});
-  latest.current = {projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly};
+  const latest = useRef({projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly, generationKey});
+  latest.current = {projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly, generationKey};
 
   const clearPrintContext = useCallback(() => {++printRequest.current; setPrintContext(null); setIsLoadingPrintContext(false); setShowPrintPreview(false);}, []);
   const newDraft = useCallback(() => {
-    ++epoch.current; busy.current = false; session.current!.reset(projectId); setDraft(session.current!.state);
+    ++epoch.current; generation.current.cancel(); busy.current = false; session.current!.reset(projectId); setDraft(session.current!.state);
     clearPrintContext(); setPreview(null); setReviewedKey(null); setGeneratedLetter(''); setSubject(''); setRecipient(''); setKeyPoints('');
     setLetterType('general'); setSelectedLedgerItems([]); setSaveSuccess(false); setOperationError(null); setViewMode('edit');
     setIsSaving(false); setIsMarkingSent(false); setIsPreviewing(false); setIsGenerating(false); setIsDeleting(null); setIsCopied(false);
@@ -186,15 +190,19 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
     finally {if (token === epoch.current) {busy.current = false; setIsMarkingSent(false);}}
   }, [fetchLedgerItems, fetchSavedLetters]);
   const generateLetter = useCallback(async () => {
-    if (!letterType || latest.current.readOnly || busy.current) return;
-    const token = epoch.current; setOperationError(null); setIsGenerating(true); setGeneratedLetter('');
+    if (!letterType || latest.current.readOnly || latest.current.docType === 'official_vo' || busy.current) return;
+    if (aiReadiness?.available !== true) {setOperationError({kind: 'generate', message: 'העיבוד המקומי אינו זמין כעת. הטקסט נשאר לעריכה ולשמירה ידנית.'}); refreshAiReadiness(); return;}
+    const token = epoch.current, attempt = generation.current.begin(latest.current.generationKey);
+    busy.current = true; setOperationError(null); setIsGenerating(true);
     try {
       const data = await apiGenerateLetter({projectId, letterType, recipient, subject, keyPoints, tone, itemIds: selectedItems.map((item) => item.id)});
-      if (token !== epoch.current) return;
-      if (data.success) setGeneratedLetter(data.letter || ''); else setOperationError({kind: 'generate', message: data.error || 'הכנת הטיוטה לא הושלמה.'});
-    } catch {if (token === epoch.current) setOperationError({kind: 'generate', message: 'הכנת הטיוטה לא הושלמה בגלל בעיית חיבור. אפשר לנסות שוב.'});}
-    finally {if (token === epoch.current) setIsGenerating(false);}
-  }, [keyPoints, letterType, projectId, recipient, selectedItems, subject, tone]);
+      if (token !== epoch.current || !generation.current.accepts(attempt, latest.current.generationKey)) return;
+      if (data.success && data.letter) setGeneratedLetter(data.letter);
+    } catch (error) {
+      if (token === epoch.current && generation.current.accepts(attempt, latest.current.generationKey)) setOperationError({kind: 'generate', message: localWritingRequestMessage(error, 'הכנת הטיוטה לא הושלמה. הטקסט הקודם נשאר זמין לניסיון חוזר.')});
+      refreshAiReadiness();
+    } finally {if (token === epoch.current && generation.current.finish(attempt)) {busy.current = false; setIsGenerating(false);}}
+  }, [aiReadiness, keyPoints, letterType, projectId, recipient, selectedItems, subject, tone]);
   const copyLetter = useCallback(async () => {
     try {await navigator.clipboard.writeText(generatedLetter); setIsCopied(true); setOperationError(null);}
     catch {setOperationError({kind: 'copy', message: 'ההעתקה לא הושלמה. אפשר לבחור את הטקסט ולהעתיק ידנית.'});}
@@ -208,7 +216,7 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
   }, [fetchSavedLetters, newDraft]);
   const selectSavedLetter = useCallback((letter: SavedSmartLetter) => {
     if (letter.project_id !== projectId) return;
-    ++epoch.current; busy.current = false;
+    ++epoch.current; generation.current.cancel(); busy.current = false;
     session.current!.open(projectId, {...blockedLetterPrintContext(letter.id, 'קורא את המכתב השמור…'), projectId,
       mode: letter.calculation_version === 'letter-individual-v1' ? 'snapshot' : 'legacy', status: letter.status || 'UNKNOWN',
       clientDraftId: letter.client_draft_id || null, revision: letter.revision ?? null, docType: letter.doc_type || 'general',
@@ -230,18 +238,18 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
     : previewReady ? preview!.snapshot.totals : financials.ok ? financials.snapshot.totals : null;
   const available = !readOnly && !isLoadingLedger && !ledgerReadFailed && !isLoadingPrintContext;
   return {
-    state: {operationError, isLoadingLedger, ledgerReadFailed, isLoadingHistory, isLoadingPrintContext, printContext,
+    state: {aiReadiness, operationError, isLoadingLedger, ledgerReadFailed, isLoadingHistory, isLoadingPrintContext, printContext,
       letterType, recipient, subject, keyPoints, tone, generatedLetter, isGenerating, isCopied, isSaving, saveSuccess,
       ledgerItems, selectedLedgerItems, viewMode, savedLetters, isDeleting, showPrintPreview, projectName,
       clientDraftId: draft.clientDraftId, letterId: draft.letterId, revision: draft.revision, status: draft.status, isLegacy: draft.isLegacy,
       isDirty, snapshot: draft.snapshot, previewSnapshot: previewReady ? preview!.snapshot : null, sourceRevisions: previewReady ? preview!.sourceRevisions : draft.sourceRevisions,
       operationId: draft.operationId, operationKind: draft.operationKind, isPreviewing, isMarkingSent, sentMarkedAt: printContext?.sentMarkedAt || null},
     setters: {setLetterType, setRecipient, setSubject, setKeyPoints, setTone, setGeneratedLetter, setSelectedLedgerItems, setViewMode},
-    actions: {retryPrintContext: async () => {if (printContext?.letterId) await loadPrintContext(printContext.letterId, !session.current!.state.snapshot);},
+    actions: {refreshAiReadiness: () => refreshAiReadiness(), retryPrintContext: async () => {if (printContext?.letterId) await loadPrintContext(printContext.letterId, !session.current!.state.snapshot);},
       fetchContextDetails, fetchLedgerItems, fetchSavedLetters, reviewLetter, markLetterSent, newDraft, generateLetter, copyLetter, saveLetter,
       deleteLetter, openPrintPreview: () => {if (canPrint) setShowPrintPreview(true);}, closePrintPreview: () => setShowPrintPreview(false), selectSavedLetter, toggleLedgerItem},
     derived: {canPrint, selectedItems, subtotal: totals?.net ?? null, vat: totals?.vat ?? null, totalInclVat: totals?.gross ?? null,
-      canGenerate: available && Boolean(letterType && selectedItems.length), canPreview: available && financials.ok,
+      canGenerate: available && aiReadiness?.available === true && financials.ok && docType !== 'official_vo' && Boolean(letterType && selectedItems.length), canPreview: available && financials.ok,
       canSave: available && previewReady && Boolean(generatedLetter.trim() && subject.trim()) && (isDirty || Boolean(draft.operationId)),
       canMarkSent: draft.operationKind === 'sent' || available && Boolean(draft.letterId && draft.snapshot && !isDirty && previewReady && !draft.operationId && printContext?.matchesStoredTotals && printContext.revision === draft.revision),
       financialIssues: financials.ok ? [] : financials.issues},

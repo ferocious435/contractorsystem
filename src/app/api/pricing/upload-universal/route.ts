@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { geminiFlashModel, BOQ_PARSING_PROMPT } from '@/lib/gemini';
 import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
 import { parseMinistryHousingPricelistPdf } from '@/utils/ministry-housing-pricelist-parser';
 import { createHash } from 'crypto';
@@ -187,43 +186,20 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. Подготовка файла для Gemini
+    // Only the already verified deterministic PDF parser is supported here.
     const arrayBuffer = await file.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
-    const base64File = fileBuffer.toString('base64');
     const mimeType = file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
     const isPdf = mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    let parsedData: ParsedPricelistUploadDraft | null = isPdf
-      ? await parseMinistryHousingPricelistPdf(fileBuffer)
-      : null;
-
-    // 3. Вызов Gemini Vision для парсинга структуры
-    if (!parsedData) {
-      const result = await geminiFlashModel.generateContent([
-        {
-          inlineData: {
-            data: base64File,
-            mimeType: mimeType
-          }
-        },
-        BOQ_PARSING_PROMPT
-      ]);
-
-      const responseText = result.response.text();
-      const cleanJson = responseText.replace(/```json|```/g, '').trim();
-
-      try {
-        parsedData = JSON.parse(cleanJson);
-      } catch {
-        console.error('Failed to parse Gemini JSON:', cleanJson);
-        return NextResponse.json({ error: 'AI failed to generate valid JSON structure', raw: responseText }, { status: 500 });
-      }
-    }
+    let parsedData: ParsedPricelistUploadDraft | null = null;
+    try {if (isPdf) parsedData = await parseMinistryHousingPricelistPdf(fileBuffer);} catch { /* Unrecognized or unreadable input is refused before writes. */ }
 
     if (!hasParsedPricelistItems(parsedData)) {
       return NextResponse.json({
-        error: 'No pricelist items were extracted from this file',
-        details: 'המערכת לא מצאה סעיפי מחירון בקובץ. הקובץ לא נשמר כדי לא ליצור מחירון ריק.'
+        success: false,
+        code: 'LOCAL_FORMAT_UNSUPPORTED',
+        error: 'הפורמט או מבנה הקובץ אינם נתמכים בקורא המקומי המאומת.',
+        details: 'הקובץ לא נשלח לעיבוד חיצוני ולא נשמר. נתמך כאן רק PDF שמזוהה על ידי הקורא המקומי הקיים.'
       }, { status: 422 });
     }
 
@@ -245,7 +221,7 @@ export async function POST(req: Request) {
       .from('pricelists')
       .insert({
         name: pricelistName || parsedData.project_name || file.name,
-        description: `AI Parsed from ${file.name}. Client: ${parsedData.client_name || 'Unknown'}`,
+        description: `Locally parsed from ${file.name}. Client: ${parsedData.client_name || 'Unknown'}`,
         contractor_id: user.id,
         project_id: isGlobal ? null : projectId,
         is_global: isGlobal,

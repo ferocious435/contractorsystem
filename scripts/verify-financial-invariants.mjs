@@ -3607,16 +3607,16 @@ assertIncludes(
 assertIncludes(
   "src/app/api/pricing/upload-universal/route.ts",
   "normalizePricelistItemType",
-  "universal upload must normalize AI item types before storing pricelist items"
+  "universal upload must normalize parsed item types before storing pricelist items"
 );
 assertIncludes(
   "src/app/api/pricing/upload-universal/route.ts",
   "parseMinistryHousingPricelistPdf",
-  "universal upload must parse Ministry of Housing PDF pricelists deterministically before falling back to AI"
+  "universal upload must retain deterministic Ministry of Housing PDF parsing"
 );
 assertIncludes(
   "src/app/api/pricing/upload-universal/route.ts",
-  "No pricelist items were extracted from this file",
+  "LOCAL_FORMAT_UNSUPPORTED",
   "universal upload must reject empty parses instead of creating invisible empty pricelists"
 );
 assertIncludes(
@@ -3701,8 +3701,8 @@ assertIncludes(
 );
 assertIncludes(
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
-  "canGenerate: available && Boolean(letterType && selectedItems.length)",
-  "Smart letter generation must require selected VO rows and an available editable context"
+  "canGenerate: available && aiReadiness?.available === true && financials.ok && docType !== 'official_vo' && Boolean(letterType && selectedItems.length)",
+  "Smart letter generation must require local readiness, valid selected VO rows and an editable context"
 );
 assertIncludes(
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
