@@ -1,0 +1,18 @@
+{
+  "version": "letter-individual-v1",
+  "cases": [
+    {"id":"three-cents","quantity":1,"unitPrice":0.03,"vatRate":0.18,"expected":{"net":0.03,"vat":0.01,"gross":0.04}},
+    {"id":"positive-vat-half","quantity":1,"unitPrice":0.25,"vatRate":0.18,"expected":{"net":0.25,"vat":0.05,"gross":0.30}},
+    {"id":"negative-vat-half","quantity":1,"unitPrice":-0.25,"vatRate":0.18,"expected":{"net":-0.25,"vat":-0.04,"gross":-0.29}},
+    {"id":"positive-net-half","quantity":1,"unitPrice":0.025,"vatRate":0.18,"expected":{"net":0.03,"vat":0.01,"gross":0.04}},
+    {"id":"negative-net-half","quantity":1,"unitPrice":-0.025,"vatRate":0.18,"expected":{"net":-0.02,"vat":0,"gross":-0.02}},
+    {"id":"below-net-half","quantity":1,"unitPrice":0.024999,"vatRate":0.18,"expected":{"net":0.02,"vat":0,"gross":0.02}},
+    {"id":"above-negative-half","quantity":1,"unitPrice":-0.025001,"vatRate":0.18,"expected":{"net":-0.03,"vat":-0.01,"gross":-0.04}},
+    {"id":"negative-zero","quantity":1,"unitPrice":-0.001,"vatRate":0.18,"expected":{"net":0,"vat":0,"gross":0}},
+    {"id":"zero","quantity":1,"unitPrice":0,"vatRate":0.18,"expected":{"net":0,"vat":0,"gross":0}},
+    {"id":"zero-vat","quantity":2,"unitPrice":12.34,"vatRate":0,"expected":{"net":24.68,"vat":0,"gross":24.68}},
+    {"id":"quantity","quantity":3.5,"unitPrice":2.45,"vatRate":0.18,"expected":{"net":8.58,"vat":1.54,"gross":10.12}},
+    {"id":"credit","quantity":1,"unitPrice":-5.01,"vatRate":0.18,"expected":{"net":-5.01,"vat":-0.9,"gross":-5.91}},
+    {"id":"large-safe","quantity":1000000,"unitPrice":1000000,"vatRate":0.18,"expected":{"net":1000000000000,"vat":180000000000,"gross":1180000000000}}
+  ]
+}
