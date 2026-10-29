@@ -37,3 +37,19 @@ export const letterItems = [
 ];
 export const letterPaperProps = {projectName:'פרויקט סינתטי C-CE6070',recipient:'נמען לבדיקה בלבד',subject:'מכתב בדיקה · C-CE6070',legalText:'טקסט סינתטי לבדיקה בלבד. אין כאן דרישת תשלום אמיתית.\nEND_LETTER_TEXT',items:letterItems};
 export const longLetterPaperProps = {...letterPaperProps,legalText:('פסקה ארוכה לצורך בדיקת עימוד בלבד. המידע סינתטי ואינו הוראה או דרישה.\n'.repeat(90))+'END_LONG_LETTER_TEXT',items:Array.from({length:45},(_,index)=>({...letterItems[index%3],id:'long-letter-'+index,item_code:'UI-LETTER-'+String(index+1).padStart(3,'0')}))};
+
+export const letterDraftProject='20000000-0000-4000-8000-000000000001';
+export const letterDraftRows=[1,2,3].map(index=>ledgerFixture('30000000-0000-4000-8000-'+String(index).padStart(12,'0'),'PENDING_VO',{
+ project_id:letterDraftProject,quantity:1,unit_price_excl_vat:.03,total_price_excl_vat:.03,item_code:'DRAFT-'+index,description:'שורה סינתטית '+index,
+}));
+export const letterDraftSnapshot={calculationVersion:'letter-individual-v1',totals:{net:.09,vat:.03,gross:.12},items:letterDraftRows.map(row=>({
+ ledgerItemId:row.id,quantity:1,unitPriceExclVat:.03,net:.03,vatRate:.18,vat:.01,gross:.04,conditionBasis:'manual',
+ conditionNote:'תנאים סינתטיים כלולים',description:row.description,itemCode:row.item_code,unit:row.unit,
+ sources:[{documentId:null,title:null,pageLabel:null,quote:null,basis:'MANUAL',status:'REQUIRES_VERIFICATION',manualNote:'אושר ידנית לצורך בדיקה בלבד'}],
+}))};
+export const letterDraftHeader={id:'70000000-0000-4000-8000-000000000001',project_id:letterDraftProject,
+ client_draft_id:'80000000-0000-4000-8000-000000000001',revision:1,status:'DRAFT',doc_type:'general',calculation_version:'letter-individual-v1',
+ letter_number:'VO-FROZEN-001',created_at:'2026-10-29T10:11:12Z',updated_at:'2026-10-29T10:11:12Z',sent_marked_at:null,
+ subject:'טיוטה סינתטית שמורה',recipient_name:'נמען סינתטי',content:'טקסט שמור לבדיקה בלבד',total_amount_excl_vat:.09,vat_amount:.03,total_amount_incl_vat:.12};
+export const letterDraftLinks=letterDraftSnapshot.items.map(({sources,...pricing_snapshot},sort_order)=>({letter_id:letterDraftHeader.id,
+ ledger_item_id:pricing_snapshot.ledgerItemId,sort_order,pricing_snapshot,source_snapshot:sources,source_revision:'a'.repeat(64)}));

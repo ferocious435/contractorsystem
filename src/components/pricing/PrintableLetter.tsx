@@ -6,7 +6,10 @@ import { Button } from '@/components/ui/titanium/Button';
 import { Dialog } from '@/components/ui/titanium/Dialog';
 import type { LedgerItem } from '@/types';
 import { VAT_RATE, AI_MODEL_BRANDING } from '@/utils/constants';
-import { getAmountVat, getLedgerRowAmount, getMoneySum } from '@/utils/project-financials';
+import { getLedgerRowAmount } from '@/utils/project-financials';
+import { prepareLetterFinancialSnapshot } from '@/utils/letter-financials';
+import { isLetterDraftSnapshot } from '@/utils/letter-snapshot';
+import type { LetterDraftSnapshot } from '@/utils/letter-draft-types';
 
 interface PrintableLetterProps {
     projectName: string;
@@ -15,6 +18,11 @@ interface PrintableLetterProps {
     legalText: string;
     items: LedgerItem[];
     vatRate?: number;
+    snapshot?: LetterDraftSnapshot | null;
+    mode?: 'snapshot' | 'legacy' | 'preview';
+    letterNumber?: string | null;
+    createdAt?: string | null;
+    legacyTotals?: {net: number | null; vat: number | null; gross: number | null};
     onClose?: () => void;
 }
 
@@ -48,17 +56,35 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
     subject,
     legalText,
     items,
-    vatRate = VAT_RATE
+    vatRate = VAT_RATE,
+    snapshot,
+    mode = 'preview',
+    letterNumber,
+    createdAt,
+    legacyTotals,
 }) => {
-    const formatCurrency = (val: number) => {
-        return new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS' }).format(val);
+    const formatCurrency = (val: number | null | undefined) => {
+        return typeof val === 'number' && Number.isFinite(val)
+            ? new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS' }).format(val || 0) : '—';
     };
 
-    const letterItems = items.filter((item) => item.type !== 'BASE_CONTRACT');
+    const saved = isLetterDraftSnapshot(snapshot) ? snapshot : null;
+    const legacy = mode === 'legacy';
+    const letterItems: LedgerItem[] = legacy || (mode === 'snapshot' && !saved) ? [] : saved ? saved.items.map(item => ({
+        id: item.ledgerItemId, item_code: item.itemCode || '', description: item.description || '', unit: item.unit || '',
+        quantity: item.quantity, unit_price_excl_vat: item.unitPriceExclVat, total_price_excl_vat: item.net, vat_rate: item.vatRate,
+        type: 'PENDING_VO', source: 'CUSTOM_ANALYSIS', item_type: 'ITEM',
+        governing_notes: item.sources.map(source => source.basis === 'MANUAL' ? 'אישור ידני: ' + source.manualNote
+            : [source.status === 'VERIFIED' ? 'מקור שמור שנבדק' : 'מקור דורש בדיקה', source.title, source.pageLabel, source.quote].filter(Boolean).join(' · ')),
+    } as LedgerItem)) : items.filter((item) => item.type !== 'BASE_CONTRACT');
     const calculationItems = letterItems.filter(i => !i.item_type || i.item_type === 'ITEM');
-    const totalExclVat = calculationItems.reduce((sum, i) => getMoneySum([sum, getLedgerRowAmount(i)]), 0);
-    const totalVat = getAmountVat(totalExclVat, vatRate);
-    const totalInclVat = getMoneySum([totalExclVat, totalVat]);
+    const preview = saved ? null : prepareLetterFinancialSnapshot(calculationItems);
+    const totals = legacy ? legacyTotals : saved?.totals || (preview?.ok ? preview.snapshot.totals : null);
+    const totalExclVat = totals?.net ?? null, totalVat = totals?.vat ?? null, totalInclVat = totals?.gross ?? null;
+    const financialAvailable = !legacy && Boolean(saved || preview?.ok);
+    const reference = letterNumber || (mode === 'preview' ? new Date().getTime().toString().slice(-6) : '—');
+    const printDate = createdAt ? Number.isFinite(Date.parse(createdAt)) ? new Date(createdAt).toLocaleDateString('he-IL') : '—'
+        : mode === 'preview' ? new Date().toLocaleDateString('he-IL') : '—';
 
     return (
             <div className="max-w-[210mm] mx-auto my-8 p-[20mm] bg-white shadow-2xl print:shadow-none print:my-0 print:p-0 min-h-[297mm] text-slate-900 leading-relaxed font-sans">
@@ -67,10 +93,10 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
                 <div className="flex justify-between items-start border-b-2 border-slate-900 pb-6 mb-8">
                     <div>
                         <h1 className="text-3xl font-black tracking-tight text-slate-900 mb-2">מכתב דרישה חריגים</h1>
-                        <p className="text-lg font-bold text-slate-600">סימוכין: {new Date().getTime().toString().slice(-6)}</p>
+                        <p className="text-lg font-bold text-slate-600">סימוכין: {reference}</p>
                     </div>
                     <div className="text-left text-sm font-medium text-slate-500">
-                        <p>{new Date().toLocaleDateString('he-IL')}</p>
+                        <p>{printDate}</p>
                         <p>עמוד 1 מתוך 1</p>
                     </div>
                 </div>
@@ -100,7 +126,9 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
                 </div>
 
                 {/* Financial Table */}
-                <div className="mb-10 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+                {legacy && <p className="mb-10 text-sm text-slate-600">רשומה היסטורית · הטקסט והסכומים הידועים נשמרו. סכום לא ידוע: —. לא נשמר צילום מלא של השורות והמקורות.</p>}
+                {!legacy && !financialAvailable && <p className="mb-10 text-sm text-slate-600">לא אושר צירוף כספי מלא. אין לשחזר היסטוריה מנתוני תמחור נוכחיים.</p>}
+                {financialAvailable && <div className="mb-10 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
                     <table className="w-full text-sm text-right border-collapse">
                         <thead className="bg-slate-900 text-white font-bold">
                             <tr>
@@ -173,7 +201,7 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
                             })}
                         </tbody>
                     </table>
-                </div>
+                </div>}
 
                 {/* Summary Section */}
                 <div className="flex justify-end mb-16">
@@ -208,7 +236,7 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
                 </div>
 
                 {/* Evidence Appendix (New Page/Section) */}
-                <div className="break-before-page pt-12 border-t-4 border-slate-900">
+                {financialAvailable && <div className="break-before-page pt-12 border-t-4 border-slate-900">
                     <div className="flex items-center gap-4 mb-8">
                         <div className="bg-blue-600 text-white px-4 py-2 rounded-lg font-black text-xl">נספח א&apos;</div>
                         <h2 className="text-2xl font-black text-slate-900">נספח הוכחות וסימוכין (Evidence Appendix)</h2>
@@ -246,9 +274,9 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
                                         </div>
                                     </div>
                                     <div className="space-y-3">
-                                        <h4 className="text-[10px] font-black uppercase text-blue-600 tracking-widest">ניתוח בינה מלאכותית</h4>
+                                            <h4 className="text-[10px] font-black uppercase text-blue-600 tracking-widest">{saved ? 'תנאי המחיר השמורים' : 'ניתוח בינה מלאכותית'}</h4>
                                         <div className="text-sm text-slate-600 leading-relaxed italic border-r-2 border-blue-200 pr-4">
-                                            {item.ai_rationale || 'נדרש לבדוק את מקורות התמחור'}
+                                                {saved?.items.find(row => row.ledgerItemId === item.id)?.conditionNote || item.ai_rationale || 'נדרש לבדוק את מקורות התמחור'}
                                         </div>
                                     </div>
                                 </div>
@@ -265,10 +293,11 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
 
                     <div className="mt-12 p-6 bg-amber-50 rounded-xl border border-amber-200">
                         <p className="text-xs text-amber-800 leading-relaxed">
-                            <strong>הערה משפטית:</strong> כל הנתונים המפורטים בנספח זה הופקו על ידי מערכת {AI_MODEL_BRANDING} על בסיס הצלבת נתוני החוזה, מחירוני דקל וניתוח הנדסי. יש לוודא את הנתונים אל מול יומני עבודה ופרוטוקולים מהשטח לפני חתימה סופית.
+                            {saved ? <>הסכומים והמקורות מוצגים מתוך הצילום הכספי השמור. אישורים ידניים ומקורות שדורשים בדיקה מסומנים בנפרד.</>
+                                : <><strong>הערה משפטית:</strong> כל הנתונים המפורטים בנספח זה הופקו על ידי מערכת {AI_MODEL_BRANDING} על בסיס הצלבת נתוני החוזה, מחירוני דקל וניתוח הנדסי. יש לוודא את הנתונים אל מול יומני עבודה ופרוטוקולים מהשטח לפני חתימה סופית.</>}
                         </p>
                     </div>
-                </div>
+                </div>}
 
                 <div className="mt-20 text-center text-[10px] text-slate-400 font-medium tracking-widest uppercase">
                     Generated by {AI_MODEL_BRANDING} - Internal Document Verification Required

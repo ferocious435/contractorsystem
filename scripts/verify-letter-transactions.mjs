@@ -171,3 +171,19 @@ test('SQL source readability matches deterministic document checks on short, dra
  for(const doc of docs){const actual=jsonSql("select to_jsonb(public.letter_document_readable(:'document'::jsonb));",{...auth,params:{document:JSON.stringify(doc)}});
   assert.equal(actual,assessDocumentSourceReadiness(doc).canCompare,JSON.stringify(doc));}
 });
+test('SQL note trimming matches the shared individual contract before decoding a snapshot',async()=>{
+ const {getIndividualPricing}=await import('../src/utils/individual-pricing.ts');
+ for(const note of ['\t\n ','\u00a0 \ufeff','  תנאים כלולים \n']){
+  const row={id:id.rowA,type:'PENDING_VO',quantity:1,unit_price_excl_vat:.03,vat_rate:.18,evidence_data:{individual_pricing_terms:{version:'individual-pricing-v1',basis:'MANUAL',includes_adjustments:true,quantity:1,unit_price_excl_vat:.03,vat_rate:.18,note}}};
+  const result=jsonSql("select public.letter_individual_pricing(:'row'::jsonb);",{...auth,params:{row:JSON.stringify(row)}});
+  assert.equal(result.conditionNote,getIndividualPricing(row).conditionNote);
+ }
+});
+test('a zero reason must be nonblank text rather than a boolean or whitespace marker',async()=>{
+ const {getIndividualPricing}=await import('../src/utils/individual-pricing.ts');
+ for(const reason of [true,0,'\t\n','\u00a0']){
+  const row={id:id.rowA,type:'PENDING_VO',quantity:1,unit_price_excl_vat:0,vat_rate:.18,evidence_data:{zero_value_reason:reason}};
+  assert.equal(getIndividualPricing(row).status,'needs-review');
+  assert.throws(()=>jsonSql("select public.letter_individual_pricing(:'row'::jsonb);",{...auth,params:{row:JSON.stringify(row)}}),error=>error.code==='PT422');
+ }
+});

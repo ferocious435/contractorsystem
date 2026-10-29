@@ -8,7 +8,7 @@ import { VAT_RATE } from '@/utils/constants';
 
 export interface IndividualPricingInput {
     id?: string;
-    type?: string;
+    type?: string | null;
     quantity?: unknown;
     unit_price_excl_vat?: unknown;
     total_price_excl_vat?: unknown;

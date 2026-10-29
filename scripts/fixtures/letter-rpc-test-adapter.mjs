@@ -26,14 +26,16 @@ export function createSyntheticLetterClient({userId=syntheticIds.userA,container
   },
   from(table){
    if(!['projects','pricing_ledger','vo_letters','vo_letter_items','documents','contradictions'].includes(table))throw Error('Table not allowlisted');
-   const filters={};let remove=false,single=false;
+   const filters={},inFilters={};let remove=false,single=false,orderColumn='id',ascending=true;
    const query={select(){return query;},eq(key,value){if(!/^[a-z_]+$/.test(key))throw Error('Column invalid');filters[key]=value;return query;},
+    in(key,values){if(!/^[a-z_]+$/.test(key)||!Array.isArray(values))throw Error('Invalid in filter');inFilters[key]=values;return query;},
+    order(key,options={}){if(!/^[a-z_]+$/.test(key))throw Error('Invalid order');orderColumn=key;ascending=options.ascending!==false;return query;},
     delete(){remove=true;return query;},maybeSingle(){single=true;return query;},single(){single=true;return query;},
     then(resolve,reject){try{
      const sql=remove?`with removed as (delete from public.${table} t where to_jsonb(t) @> :'filters'::jsonb returning t.*) select coalesce(jsonb_agg(to_jsonb(removed)),'[]') from removed;`
-      :`select coalesce(jsonb_agg(to_jsonb(t)),'[]') from public.${table} t where to_jsonb(t) @> :'filters'::jsonb;`;
-     const rows=jsonSql(sql,{...options,params:{filters:JSON.stringify(filters)}});
-     return Promise.resolve({data:single?rows[0]??null:rows,error:null}).then(resolve,reject);
+      :`select coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)->:'order_column' ${ascending?'asc':'desc'}),'[]') from public.${table} t where to_jsonb(t) @> :'filters'::jsonb and not exists(select 1 from jsonb_each(:'in_filters'::jsonb) f where not f.value @> jsonb_build_array(to_jsonb(t)->f.key));`;
+     const rows=jsonSql(sql,{...options,params:{filters:JSON.stringify(filters),in_filters:JSON.stringify(inFilters),order_column:orderColumn}});
+     return Promise.resolve({data:single?rows[0]??null:rows,error:null,count:rows.length}).then(resolve,reject);
     }catch(error){return Promise.resolve({data:null,error:{code:error.code,message:error.message}}).then(resolve,reject);}}
    };return query;
   }

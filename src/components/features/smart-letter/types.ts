@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { LucideIcon } from "lucide-react";
 import type {LetterPrintContext} from './letterPrintContext';
+import type {LetterDraftSnapshot} from '@/utils/letter-draft-types';
 export type { PreviewLetterRequest, SaveLetterDraftRequest, MarkLetterSentRequest, LetterDraftPreview, SavedLetterResult } from '@/utils/letter-draft-types';
 
 export type LetterTypeValue =
@@ -82,6 +83,12 @@ export interface SavedSmartLetter {
   total_amount_incl_vat?: number | null;
   created_at: string;
   updated_at?: string | null;
+  calculation_version?: string | null;
+  client_draft_id?: string | null;
+  revision?: number | null;
+  status?: 'DRAFT' | 'SENT' | string | null;
+  vat_amount?: number | null;
+  sent_marked_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -111,12 +118,26 @@ export interface SaveSmartLetterPayload {
 }
 
 export interface SmartLetterState {
-  operationError?: {kind: 'ledger' | 'history' | 'generate' | 'save' | 'delete' | 'copy' | 'print'; message: string} | null;
+  operationError?: {kind: 'ledger' | 'history' | 'generate' | 'save' | 'delete' | 'copy' | 'print' | 'preview' | 'sent'; message: string} | null;
   isLoadingLedger?: boolean;
   ledgerReadFailed?: boolean;
   isLoadingHistory?: boolean;
   isLoadingPrintContext?: boolean;
   printContext?: LetterPrintContext | null;
+  clientDraftId?: string;
+  letterId?: string | null;
+  revision?: number;
+  status?: 'DRAFT' | 'SENT';
+  isLegacy?: boolean;
+  isDirty?: boolean;
+  snapshot?: LetterDraftSnapshot | null;
+  previewSnapshot?: LetterDraftSnapshot | null;
+  sourceRevisions?: Record<string, string>;
+  operationId?: string | null;
+  operationKind?: 'save' | 'sent' | null;
+  isPreviewing?: boolean;
+  isMarkingSent?: boolean;
+  sentMarkedAt?: string | null;
   letterType: LetterTypeValue | "";
   recipient: string;
   subject: string;
@@ -155,14 +176,20 @@ export interface SmartLetterSetters {
 export interface SmartLetterDerivedState {
   canPrint?: boolean;
   selectedItems: SmartLetterLedgerItem[];
-  subtotal: number;
-  vat: number;
-  totalInclVat: number;
+  subtotal: number | null;
+  vat: number | null;
+  totalInclVat: number | null;
+  canPreview?: boolean;
+  canMarkSent?: boolean;
+  financialIssues?: Array<{itemId: string; reason: string}>;
   canGenerate: boolean;
   canSave: boolean;
 }
 
 export interface SmartLetterActions {
+  reviewLetter?: () => Promise<void>;
+  markLetterSent?: () => Promise<void>;
+  newDraft?: () => void;
   retryPrintContext?: () => Promise<void>;
   fetchContextDetails: (ids: string[]) => Promise<void>;
   fetchLedgerItems: () => Promise<void>;

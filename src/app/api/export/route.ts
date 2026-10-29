@@ -1,18 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { VAT_RATE } from '@/utils/constants';
-import { syncProjectContractBase } from '@/utils/project-contract-base-server';
-import { syncContractBoqToLedger } from '@/utils/pricing-ledger-contract-sync';
-import {
-    getAmountVat,
-    getLedgerRowAmount,
-    getLedgerRowTotalInclVat,
-    getLedgerRowVatAmount,
-    getMoneySum,
-    getPreferredProjectAmount,
-    getVariationOrderAmount,
-    isVisibleLedgerRow,
-} from '@/utils/project-financials';
+import { buildLedgerCsv } from '@/utils/letter-export';
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
@@ -51,9 +39,6 @@ export async function GET(request: Request) {
             return NextResponse.json({ error: 'Project not found or forbidden' }, { status: 403 });
         }
 
-        await syncProjectContractBase(supabase, projectId);
-        await syncContractBoqToLedger(supabase, projectId, { contractorId: user.id });
-
         const [{ data, error }, { data: project, error: projectError }] = await Promise.all([
             supabase
                 .from('pricing_ledger')
@@ -82,70 +67,7 @@ export async function GET(request: Request) {
             return new NextResponse('No data found for project', { status: 404 });
         }
 
-        const visibleRows = data.filter(isVisibleLedgerRow);
-
-        const headers = [
-            'סוג',
-            'סעיף',
-            'תיאור',
-            'יחידה',
-            'כמות',
-            'מחיר יחידה ללא מע"מ',
-            'סה"כ ללא מע"מ',
-            'אחוז רווח',
-            'סכום מע"מ',
-            'סה"כ כולל מע"מ',
-        ];
-
-        const getTypeLabel = (type: string) => {
-            switch (type) {
-                case 'BASE_CONTRACT':
-                    return 'חוזה בסיס';
-                case 'APPROVED_VO':
-                    return 'חריג מאושר';
-                case 'PENDING_VO':
-                    return 'חריג לבדיקה';
-                case 'SENT_VO':
-                    return 'נשלח לדרישה';
-                default:
-                    return type;
-            }
-        };
-
-        const rows = visibleRows.map((item) => [
-            getTypeLabel(item.type),
-            item.item_code || '',
-            `"${(item.description || '').replace(/"/g, '""')}"`,
-            item.unit || '',
-            item.quantity || 0,
-            item.unit_price_excl_vat || 0,
-            getLedgerRowAmount(item),
-            item.markup_percentage || 0,
-            getLedgerRowVatAmount(item, VAT_RATE),
-            getLedgerRowTotalInclVat(item, VAT_RATE),
-        ]);
-
-        const totalBaseExclVat = getPreferredProjectAmount(project?.budget, data);
-        const totalVOExclVat = getVariationOrderAmount(visibleRows);
-        const grandTotalExclVat = getMoneySum([totalBaseExclVat, totalVOExclVat]);
-        const totalBaseVat = getAmountVat(totalBaseExclVat, VAT_RATE);
-        const totalVoVat = visibleRows
-            .filter((item) => item.type !== 'BASE_CONTRACT')
-            .reduce((sum, item) => getMoneySum([sum, getLedgerRowVatAmount(item, VAT_RATE)]), 0);
-        const grandTotalVat = getMoneySum([totalBaseVat, totalVoVat]);
-        const grandTotalInclVat = getMoneySum([grandTotalExclVat, grandTotalVat]);
-
-        rows.push(['', '', '', '', '', '', '', '', '', '']);
-        rows.push(['סה"כ חוזה בסיס ללא מע"מ', '', '', '', '', '', totalBaseExclVat, '', '', '']);
-        rows.push(['סה"כ חריגים ושינויים ללא מע"מ', '', '', '', '', '', totalVOExclVat, '', '', '']);
-        rows.push(['סה"כ הכל ללא מע"מ', '', '', '', '', '', grandTotalExclVat, '', '', '']);
-        rows.push(['סה"כ מע"מ', '', '', '', '', '', '', '', grandTotalVat, '']);
-        rows.push(['סה"כ כולל מע"מ', '', '', '', '', '', '', '', '', grandTotalInclVat]);
-
-        const csvContent = [
-            headers.join(','),
-            ...rows.map((row) => row.join(',')),
-        ].join('\n');
+        const csvContent = buildLedgerCsv(data, project.budget);
 
         const bom = '\uFEFF';
 

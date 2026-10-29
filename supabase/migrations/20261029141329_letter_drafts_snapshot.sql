@@ -40,17 +40,18 @@ declare
  q double precision; price double precision; rate double precision; net numeric; vat numeric; gross numeric;
  evidence jsonb:=coalesce(p_row->'evidence_data','{}'); ev jsonb; scope jsonb; approval jsonb; manual jsonb;
  manual_ok boolean; source_ok boolean; zero_ok boolean; basis text; note text;
+ trim_chars constant text:=U&'\0009\000a\000b\000c\000d\0020\00a0\feff\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200a\2028\2029\202f\205f\3000';
 begin
- q:=nullif(btrim(p_row->>'quantity'),'')::double precision;
- price:=nullif(btrim(p_row->>'unit_price_excl_vat'),'')::double precision;
- rate:=nullif(btrim(p_row->>'vat_rate'),'')::double precision;
+ q:=nullif(btrim(p_row->>'quantity',trim_chars),'')::double precision;
+ price:=nullif(btrim(p_row->>'unit_price_excl_vat',trim_chars),'')::double precision;
+ rate:=nullif(btrim(p_row->>'vat_rate',trim_chars),'')::double precision;
  if q is null or q<=0 or q='NaN'::double precision or price is null or price='NaN'::double precision
   or rate is null or rate<0 or rate>1 or rate='NaN'::double precision then
   raise exception using errcode='PT422',message='LETTER_MONEY_INCOMPLETE';
  end if;
  net:=public.letter_money_round(q*price);
- if nullif(btrim(p_row->>'total_price_excl_vat'),'') is not null
-  and public.letter_money_round((p_row->>'total_price_excl_vat')::double precision)<>net then
+ if nullif(btrim(p_row->>'total_price_excl_vat',trim_chars),'') is not null
+  and public.letter_money_round(btrim(p_row->>'total_price_excl_vat',trim_chars)::double precision)<>net then
   raise exception using errcode='PT422',message='LETTER_AMOUNT_MISMATCH';
  end if;
  ev:=coalesce(evidence->'pricing_evaluation','{}');scope:=coalesce(ev->'scope_review','{}');
@@ -67,7 +68,8 @@ begin
   and abs((approval->>'quantity')::double precision-q)<.000001
   and public.letter_money_round((approval->>'effective_unit_price_excl_vat')::double precision)=public.letter_money_round(price)
   and public.letter_money_round((approval->>'total_excl_vat')::double precision)=net,false);
- zero_ok:=net=0 and price=0 and coalesce(btrim(evidence->>'zero_value_reason'),'')<>'';
+ zero_ok:=net=0 and price=0 and jsonb_typeof(evidence->'zero_value_reason')='string'
+  and coalesce(btrim(evidence->>'zero_value_reason',trim_chars),'')<>'';
  if ev->'requires_user_answer_before_approval'='true'::jsonb
   or (scope->>'version'='price-scope-v1' and not coalesce(scope->>'status'='FULL'
     and scope->'requiresReview'='false'::jsonb and scope->'issues'='[]'::jsonb
@@ -77,8 +79,8 @@ begin
  end if;
  if not (manual_ok or source_ok or zero_ok) then raise exception using errcode='PT422',message='LETTER_TERMS_UNCONFIRMED';end if;
  basis:=case when manual_ok then 'manual' when source_ok then 'source' else 'confirmed-zero' end;
- note:=case when manual_ok then coalesce(nullif(btrim(manual->>'note'),''),'אושר ידנית: ההנחות והתוספות כבר נכללות במחיר היחידה')
-  when source_ok then 'המחיר לאחר ההתאמות שנכללו בבדיקת המקור השמורה' else btrim(evidence->>'zero_value_reason') end;
+ note:=case when manual_ok then coalesce(nullif(case when jsonb_typeof(manual->'note')='string' then btrim(manual->>'note',trim_chars) else '' end,''),'אושר ידנית: ההנחות והתוספות כבר נכללות במחיר היחידה')
+  when source_ok then 'המחיר לאחר ההתאמות שנכללו בבדיקת המקור השמורה' else btrim(evidence->>'zero_value_reason',trim_chars) end;
  vat:=public.letter_money_round(net::double precision*rate);
  gross:=public.letter_money_round(net::double precision+vat::double precision);
  return jsonb_build_object('ledgerItemId',p_row->>'id','quantity',q,'unitPriceExclVat',price,
@@ -244,11 +246,12 @@ create or replace function public.save_letter_draft(p_project_id uuid,p_client_d
 declare
  letter public.vo_letters;preview jsonb;request_hash text;item jsonb;ordinal integer:=0;letter_id uuid;
  content text:=p_content;subject text:=p_subject;
+ trim_chars constant text:=U&'\0009\000a\000b\000c\000d\0020\00a0\feff\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200a\2028\2029\202f\205f\3000';
 begin
  perform 1 from public.projects where id=p_project_id and contractor_id=auth.uid() for update;
  if not found or auth.uid() is null then raise exception using errcode='42501',message='LETTER_FORBIDDEN';end if;
  if p_client_draft_id is null or p_operation_id is null or p_expected_revision is null or p_expected_revision<0
-  or coalesce(btrim(p_subject),'')='' or coalesce(btrim(p_content),'')='' or coalesce(btrim(p_doc_type),'')=''
+  or coalesce(btrim(p_subject,trim_chars),'')='' or coalesce(btrim(p_content,trim_chars),'')='' or coalesce(btrim(p_doc_type),'')=''
   or jsonb_typeof(p_expected_sources) is distinct from 'object' then raise exception using errcode='PT422',message='LETTER_INPUT_INVALID';end if;
  request_hash:=encode(sha256(convert_to(jsonb_build_array(p_project_id,p_client_draft_id,p_expected_revision,p_subject,p_recipient_name,p_doc_type,p_content,p_item_ids,p_expected_sources)::text,'UTF8')),'hex');
  select * into letter from public.vo_letters where project_id=p_project_id and client_draft_id=p_client_draft_id for update;

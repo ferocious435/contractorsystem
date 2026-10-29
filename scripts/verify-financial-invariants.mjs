@@ -1833,8 +1833,8 @@ const filesToScanForInlineTotals = [
 for (const file of filesToScanForInlineTotals) {
   assertRegex(
     file,
-    /getLedgerRowAmount|getPreferredProjectAmount|getVariationOrderAmount|getLedgerRowVatAmount|getLedgerRowTotalInclVat|getAmountVat|getAmountInclVat|getMoneySum/,
-    "financial code must use shared project-financials helpers"
+    /getLedgerRowAmount|getPreferredProjectAmount|getVariationOrderAmount|getLedgerRowVatAmount|getLedgerRowTotalInclVat|getAmountVat|getAmountInclVat|getMoneySum|getIndividualPricing|prepareLetterFinancialSnapshot|buildLedgerCsv/,
+    "financial code must use shared project or individual financial helpers"
   );
 
   assert(
@@ -3105,7 +3105,7 @@ assertNotIncludes(
 );
 assertIncludes(
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
-  "initialSelectedItems.filter((id) => selectableIds.has(id))",
+  "(initial.current || []).filter(id => rows.some(row => row.id === id))",
   "letter generator must drop non-VO initial selections"
 );
 assertIncludes(
@@ -3557,23 +3557,10 @@ assertIncludes(
   ".eq('contractor_id', user.id)",
   "export financial context must verify project ownership"
 );
-assertIncludes(
-  "src/app/api/export/route.ts",
-  "await syncProjectContractBase(supabase, projectId)",
-  "export financial context must refresh project contract amount before ledger export"
-);
-assertIncludes(
-  "src/app/api/export/route.ts",
-  "await syncContractBoqToLedger(supabase, projectId, { contractorId: user.id })",
-  "export financial context must refresh trusted BOQ ledger rows before ledger export"
-);
-{
-  const exportRoute = read("src/app/api/export/route.ts");
-  assert(
-    exportRoute.indexOf("await syncContractBoqToLedger") < exportRoute.indexOf(".from('pricing_ledger')"),
-    "export route must run BOQ ledger sync before fetching pricing_ledger rows"
-  );
-}
+// R02/R03 requires read-only export. Run the actual GET with an adapter that
+// rejects every write/RPC, and check base scope, unknown values and row rounding.
+execFileSync(process.execPath, ['--test', 'scripts/verify-letter-export.mjs'],
+  {cwd: root, stdio: 'pipe', windowsHide: true});
 assertIncludes(
   "src/components/features/DashboardContent.tsx",
   "total_price_excl_vat, evidence_data",
@@ -3788,13 +3775,13 @@ assertIncludes(
 );
 assertIncludes(
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
-  "canGenerate: Boolean(letterType && selectedItems.length)",
-  "Smart letter generation must require at least one selected VO row"
+  "canGenerate: available && Boolean(letterType && selectedItems.length)",
+  "Smart letter generation must require selected VO rows and an available editable context"
 );
 assertIncludes(
   "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
-  "canSave: Boolean(generatedLetter && projectId && selectedLedgerItems.length)",
-  "Smart letter save must require at least one selected VO row"
+  "canSave: available && previewReady && Boolean(generatedLetter.trim() && subject.trim())",
+  "Smart letter save must require a reviewed financial selection and nonempty text"
 );
 assertNotIncludes(
   "src/components/features/ContradictionRadarFeedItem.tsx",
@@ -3843,19 +3830,13 @@ assertIncludes(
 );
 assertIncludes(
   "src/components/pricing/PrintableLetter.tsx",
-  "const letterItems = items.filter((item) => item.type !== 'BASE_CONTRACT')",
+  "items.filter((item) => item.type !== 'BASE_CONTRACT')",
   "printable VO letters must defensively exclude BASE_CONTRACT rows"
 );
-assertIncludes(
-  "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
-  "selectedItems.reduce(",
-  "Smart letter derived totals must aggregate selected rows through an explicit reducer"
-);
-assertIncludes(
-  "src/components/features/smart-letter/hooks/useSmartLetterState.ts",
-  "getMoneySum([sum, getLedgerRowAmount(item)])",
-  "Smart letter derived totals must use shared financial helpers instead of client-side row arithmetic"
-);
+// The approved snapshot replaces the old aggregate-net VAT reducer. Exercise
+// its actual money cases and the saved/legacy print consumers.
+execFileSync(process.execPath, ['--test', 'scripts/verify-letter-financials.mjs',
+  'scripts/redesign/verify-letter-drafts.mjs'], {cwd: root, stdio: 'pipe', windowsHide: true});
 assertIncludes(
   "src/components/features/contradiction-radar/api/contradictionRadarApi.ts",
   "fetch('/api/contradictions'",

@@ -1,5 +1,6 @@
 'use client';
 
+import {buildLedgerCsv} from '@/utils/letter-export';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { VAT_RATE } from '@/utils/constants';
 import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
@@ -772,11 +773,7 @@ export function usePricingLedgerState(
 
     const handleExportCSV = useCallback(async () => {
         if (isLocalPricingProject) {
-            const csvRows = [
-                ['item_code', 'description', 'quantity', 'unit_price_excl_vat', 'total_price_excl_vat'],
-                ...ledgerRows.map((row) => [row.item_code, row.description, row.quantity, row.unit_price_excl_vat, row.total_price_excl_vat]),
-            ];
-            const blob = new Blob([csvRows.map((row) => row.join(',')).join('\n')], { type: 'text/csv;charset=utf-8' });
+            const blob = new Blob(['\uFEFF' + buildLedgerCsv(ledgerRows, projectBudget)], { type: 'text/csv;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
@@ -799,7 +796,7 @@ export function usePricingLedgerState(
         link.download = `ledger_${projectId}.csv`;
         link.click();
         URL.revokeObjectURL(url);
-    }, [isLocalPricingProject, ledgerRows, projectId]);
+    }, [isLocalPricingProject, ledgerRows, projectId, projectBudget]);
 
     const handleCloseLetterModal = useCallback(async () => {
         setIsGeneratingLetter(false);

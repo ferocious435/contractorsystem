@@ -1,12 +1,12 @@
+import {isRecord, isLetterDraftSnapshot as hasSnapshot} from '@/utils/letter-snapshot';
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {assessLetterPrintContext, blockedLetterPrintContext, type LetterPrintContext} from '../letterPrintContext';
-import type { LetterDraftPreview, LetterDraftSnapshot, PreviewLetterRequest, SaveLetterDraftRequest, SavedLetterResult, MarkLetterSentRequest } from '@/utils/letter-draft-types';
+import type { LetterDraftPreview, PreviewLetterRequest, SaveLetterDraftRequest, SavedLetterResult, MarkLetterSentRequest } from '@/utils/letter-draft-types';
 
 import type {
   GenerateSmartLetterPayload,
   GenerateSmartLetterResponse,
   SavedSmartLetter,
-  SaveSmartLetterPayload,
   SmartLetterLedgerItem,
 } from "../types";
 
@@ -85,37 +85,6 @@ export class LetterRequestError extends Error {
   constructor(message: string, readonly code: string, readonly status: number) { super(message); }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-function hasSnapshot(value: unknown): value is LetterDraftSnapshot {
-  if (!isRecord(value) || value.calculationVersion !== 'letter-individual-v1' || !isRecord(value.totals)
-    || !['net', 'vat', 'gross'].every(key => typeof (value.totals as Record<string, unknown>)[key] === 'number'
-      && Number.isFinite((value.totals as Record<string, number>)[key])) || !Array.isArray(value.items) || !value.items.length) return false;
-  const seen = new Set<string>(), sums = {net: 0, vat: 0, gross: 0};
-  for (const item of value.items) {
-    if (!isRecord(item) || typeof item.ledgerItemId !== 'string' || !item.ledgerItemId || seen.has(item.ledgerItemId)
-      || !['quantity', 'unitPriceExclVat', 'vatRate'].every(key => typeof item[key] === 'number' && Number.isFinite(item[key]))
-      || Number(item.quantity) <= 0 || Number(item.vatRate) < 0 || Number(item.vatRate) > 1
-      || !['manual', 'source', 'confirmed-zero'].includes(String(item.conditionBasis))
-      || typeof item.conditionNote !== 'string' || !item.conditionNote.trim()
-      || !Array.isArray(item.sources) || !item.sources.length) return false;
-    seen.add(item.ledgerItemId);
-    for (const key of ['net', 'vat', 'gross'] as const) {
-      if (typeof item[key] !== 'number' || !Number.isFinite(item[key]) || !Number.isSafeInteger(Math.round(item[key] * 100))) return false;
-      sums[key] += Math.round(item[key] * 100);
-      if (!Number.isSafeInteger(sums[key])) return false;
-    }
-    for (const source of item.sources) {
-      if (!isRecord(source) || !['DOCUMENT', 'MANUAL'].includes(String(source.basis))
-        || !['VERIFIED', 'REQUIRES_VERIFICATION'].includes(String(source.status))
-        || !['documentId', 'title', 'pageLabel', 'quote', 'manualNote'].every(key => source[key] === null || typeof source[key] === 'string')
-        || (source.status === 'VERIFIED' && (source.basis !== 'DOCUMENT' || !source.documentId || !source.quote))
-        || (source.basis === 'MANUAL' && (typeof source.manualNote !== 'string' || !source.manualNote.trim()))) return false;
-    }
-  }
-  return (['net', 'vat', 'gross'] as const).every(key => sums[key] === Math.round(Number((value.totals as Record<string, unknown>)[key]) * 100));
-}
 async function postLetterRequest(url: string, payload: unknown): Promise<Record<string, unknown>> {
   const response = await fetch(url, {
     method: "POST",
@@ -146,10 +115,7 @@ export async function previewVoLetter(payload: PreviewLetterRequest): Promise<Le
   }
   return { snapshot: data.snapshot, sourceRevisions: data.sourceRevisions as Record<string, string> };
 }
-export function saveVoLetter(payload: SaveLetterDraftRequest): Promise<SavedLetterResult>;
-/** The pre-draft UI remains type-compatible until its state is migrated; it cannot write an incomplete request. */
-export function saveVoLetter(payload: SaveSmartLetterPayload): Promise<string | null>;
-export async function saveVoLetter(payload: SaveLetterDraftRequest | SaveSmartLetterPayload): Promise<SavedLetterResult | string | null> {
+export async function saveVoLetter(payload: SaveLetterDraftRequest): Promise<SavedLetterResult> {
   if (!('clientDraftId' in payload)) throw new LetterRequestError('יש לבדוק את הסכומים והמקורות לפני שמירת טיוטה.', 'LETTER_PREVIEW_REQUIRED', 400);
   return savedResponse(await postLetterRequest('/api/pricing/vo-letters', payload));
 }
@@ -163,22 +129,14 @@ export async function fetchLetterPrintContext(supabase: SupabaseClient, projectI
     .select('*').eq('id', letterId).eq('project_id', projectId).single();
   if (letterError) throw letterError;
   if (!letter || letter.id !== letterId || letter.project_id !== projectId) return blockedLetterPrintContext(letterId, 'המכתב אינו זמין בפרויקט הזה.');
+  if (letter.calculation_version !== 'letter-individual-v1') {
+    return assessLetterPrintContext({projectId, letterId, letter, links: [], linkedCount: 0});
+  }
   const {data: links, error: linkError, count: linkedCount} = await supabase.from('vo_letter_items')
-    .select('ledger_item_id, sort_order', {count: 'exact'}).eq('letter_id', letterId).order('sort_order', {ascending: true});
+    .select('letter_id, ledger_item_id, sort_order, pricing_snapshot, source_snapshot, source_revision', {count: 'exact'})
+    .eq('letter_id', letterId).order('sort_order', {ascending: true});
   if (linkError) throw linkError;
-  if (!Array.isArray(links) || linkedCount === null || linkedCount !== links.length) {
-    return assessLetterPrintContext({projectId, letterId, letter, links, rows: [], linkedCount: linkedCount ?? null});
-  }
-  const ids = Array.isArray(links) ? links.map(link => link.ledger_item_id).filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
-  if (!ids.length) return assessLetterPrintContext({projectId, letterId, letter, links, rows: [], linkedCount});
-  const rows: SmartLetterLedgerItem[] = [];
-  // Keep each read bounded even when a letter contains many linked rows.
-  for (let index = 0; index < ids.length; index += 100) {
-    const {data, error} = await supabase.from('pricing_ledger').select('*').eq('project_id', projectId).in('id', ids.slice(index, index + 100));
-    if (error) throw error;
-    if (data) rows.push(...data as SmartLetterLedgerItem[]);
-  }
-  return assessLetterPrintContext({projectId, letterId, letter, links, rows, linkedCount});
+  return assessLetterPrintContext({projectId, letterId, letter, links, linkedCount});
 }
 
 export async function deleteVoLetter(
