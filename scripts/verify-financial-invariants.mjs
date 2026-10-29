@@ -2175,7 +2175,7 @@ assertIncludes(
 
 assertIncludes(
   "src/components/pricing/PricingLedgerTable.tsx",
-  "formatCurrency(getLedgerRowAmount(form))",
+  "formatCurrency(getLedgerRowAmount(preview))",
   "pricing ledger add/edit row totals must still use the shared financial helper"
 );
 

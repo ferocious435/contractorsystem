@@ -22,7 +22,11 @@ export const radarFindings=[
  radarFixture('technical',{status:'ARCHIVED',title:'EXCLUDED_TECHNICAL_RECORD',evidence_data:{review_disposition:{type:'INVALID_AUTOMATIC_FINDING'}}}),
 ];
 
-export function ledgerFixture(id,type='PENDING_VO',overrides={}){return{id,project_id:'demo-ledger-redesign',type,source:type==='BASE_CONTRACT'?'BOQ':'CUSTOM_ANALYSIS',item_code:'40.020.0015',description:`תיאור עבודה ${id} · C-CE6070`,unit:'מ׳',quantity:2,unit_price_excl_vat:120,total_price_excl_vat:240,markup_percentage:0,vat_rate:.18,evidence_data:type==='BASE_CONTRACT'?{source:'pricelist_items',pricelist_item_id:'synthetic-boq-item'}:null,...overrides};}
+export function ledgerFixture(id,type='PENDING_VO',overrides={}){
+ const item={id,project_id:'demo-ledger-redesign',type,source:type==='BASE_CONTRACT'?'BOQ':'CUSTOM_ANALYSIS',item_code:'40.020.0015',description:`תיאור עבודה ${id} · C-CE6070`,unit:'מ׳',quantity:2,unit_price_excl_vat:120,total_price_excl_vat:240,markup_percentage:0,vat_rate:.18,evidence_data:type==='BASE_CONTRACT'?{source:'pricelist_items',pricelist_item_id:'synthetic-boq-item'}:null,...overrides};
+ if(!Object.hasOwn(overrides,'evidence_data'))item.evidence_data={...(item.evidence_data||{}),individual_pricing_terms:{version:'individual-pricing-v1',basis:'MANUAL',includes_adjustments:true,quantity:item.quantity,unit_price_excl_vat:item.unit_price_excl_vat,vat_rate:item.vat_rate,note:'תנאי מחיר סינתטיים כלולים במחיר היחידה'}};
+ return item;
+}
 export const ledgerRows=['BASE_CONTRACT','PENDING_VO','APPROVED_VO','SENT_VO'].map((type,index)=>ledgerFixture(`ledger-${index}`,type));
 
 export const letterItems = [

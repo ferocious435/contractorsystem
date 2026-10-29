@@ -61,6 +61,7 @@ async function requestJson(url, key, options = {}) {
     ...options,
     headers: {
       apikey: key,
+      ...(key.split('.').length === 3 ? { Authorization: `Bearer ${key}` } : {}),
       "User-Agent": "ContractorSystemRemoteFinancialVerifier/1.0",
       ...(options.headers || {}),
     },
