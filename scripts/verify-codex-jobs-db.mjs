@@ -126,3 +126,8 @@ test('failure releases only its own active lease and never replaces another save
   const failed=await store.readOwned(ownerId,project,second.id);assert.equal(failed.state,'FAILED');assert.ok(!JSON.stringify(failed).includes('PRIVATE_TOKEN'));
   assert.deepEqual((await store.readOwned(ownerId,project,first.id)).result,prepared.result);assert.equal(await store.claim('worker',Date.now()),null);
 });
+test('startup interrupts old queued work while preserving a new explicit action',async()=>{
+  const store=api(),old=await enqueue(store,'old-action');runSql(`update public.project_ai_jobs set created_at=clock_timestamp()-interval '1 minute' where id='${old.id}';`);
+  const fresh=await enqueue(store,'new-explicit-action');assert.equal(await store.interruptStale(Date.now(),Date.now()-30000),1);
+  assert.equal((await store.readOwned(ownerId,project,old.id)).state,'INTERRUPTED');assert.equal((await store.claim('worker',Date.now())).id,fresh.id);
+});

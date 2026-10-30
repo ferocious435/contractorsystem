@@ -58,14 +58,19 @@ begin
 end;$$;
 
 create or replace function public.contractor_ai_interrupt_stale(p jsonb) returns jsonb language plpgsql security invoker set search_path='' as $$
-declare n integer;cutoff timestamptz=least((p->>'now')::timestamptz,clock_timestamp());
+declare n integer;pending integer=0;cutoff timestamptz=least((p->>'now')::timestamptz,clock_timestamp());
 begin
  perform 1 from private.contractor_ai_lease where slot=1 for update;
  update public.project_ai_jobs set state='INTERRUPTED',error='{"code":"AI_INTERRUPTED","message":"Действие прервано. Можно повторить его кнопкой."}',revision=revision+1,lease_token=null,lease_expires_at=null,finished_at=clock_timestamp(),updated_at=clock_timestamp()
  where state='RUNNING' and lease_expires_at<=cutoff;
  get diagnostics n=row_count;
+ if p->>'pendingBefore' is not null then
+  update public.project_ai_jobs set state='INTERRUPTED',error='{"code":"AI_INTERRUPTED","message":"Действие прервано. Можно повторить его кнопкой."}',revision=revision+1,finished_at=clock_timestamp(),updated_at=clock_timestamp()
+  where state='QUEUED' and created_at<(p->>'pendingBefore')::timestamptz;
+  get diagnostics pending=row_count;
+ end if;
  update private.contractor_ai_lease set job_id=null,lease_token=null,expires_at=null where slot=1 and expires_at<=cutoff;
- return to_jsonb(n);
+ return to_jsonb(n+pending);
 end;$$;
 
 create or replace function public.contractor_ai_claim(p jsonb) returns jsonb language plpgsql security invoker set search_path='' as $$
