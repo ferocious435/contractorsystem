@@ -34,6 +34,12 @@ test('a comparison without a supplied schema returns checked plain text from a f
   await fx.enqueue();await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();assert.equal([...fx.rows.values()][0].result,'{"findings":[]}');
 });
 
+test('the radar array schema crosses the native object boundary and returns its original array text',async()=>{
+ const fx=queueFixture({onGenerate:async input=>{assert.equal(input.outputSchema.type,'object');assert.equal(input.outputSchema.properties.result.type,'array');return '{"result":[]}';}});
+ fx.handler={validate:raw=>raw,async execute(_payload,execution){return {result:await adapter.generateComparisonText('Return verified findings',execution,{responseFormat:{type:'array',items:{type:'object',additionalProperties:false,properties:{title:{type:'string'}},required:['title']}}}),effects:[]};}};
+ await fx.enqueue();await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();assert.equal([...fx.rows.values()][0].state,'SUCCEEDED');assert.equal([...fx.rows.values()][0].result,'[]');
+});
+
 test('an accepted historical opaque key is recovered for identical complete inputs without a model call',()=>{
   assert.equal(typeof reuse.reusableAnalysisKeys,'function');assert.equal(typeof reuse.findReusableAnalysis,'function');const packet=input(),oldKey=hash({...material.before,identity:oldIdentity,...material.after}),saved={sourceId:doc.id,quote:doc.extracted_text};const store={[oldKey]:saved};let modelCalls=0;
   const result=reuse.findReusableAnalysis(store,packet,identity,[oldIdentity],verified);if(result===null)modelCalls++;assert.deepEqual(result,saved);assert.equal(modelCalls,0);assert.ok(reuse.reusableAnalysisKeys(packet,identity,[oldIdentity]).includes(oldKey));

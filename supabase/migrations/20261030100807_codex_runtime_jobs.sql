@@ -36,7 +36,14 @@ create or replace function private.contractor_ai_context_hash(project uuid) retu
  'documents',(select jsonb_agg(jsonb_build_array(id,xmin::text) order by id) from public.documents where project_id=project),
  'findings',(select jsonb_agg(jsonb_build_array(id,xmin::text) order by id) from public.contradictions where project_id=project),
  'pricing',(select jsonb_agg(jsonb_build_array(id,xmin::text) order by id) from public.pricing_ledger where project_id=project),
- 'scan',(select jsonb_agg(jsonb_build_array(id,xmin::text) order by id) from public.document_scan_state where project_id=project))::text);
+ 'letters',(select jsonb_agg(jsonb_build_array(id,xmin::text) order by id) from public.vo_letters where project_id=project),
+ 'letter_items',(select jsonb_agg(jsonb_build_array(i.id,i.xmin::text) order by i.id) from public.vo_letter_items i where exists(select 1 from public.vo_letters l where l.id=i.letter_id and l.project_id=project) or exists(select 1 from public.pricing_ledger p where p.id=i.ledger_item_id and p.project_id=project)),
+ 'scan',(select jsonb_agg(jsonb_build_array(id,xmin::text) order by id) from public.document_scan_state where project_id=project),
+ 'references',(select jsonb_agg(jsonb_build_array(r.id,r.xmin::text) order by r.id) from public.reference_documents r where r.contractor_id=(select contractor_id from public.projects where id=project) and (r.project_id=project or r.project_id is null)),
+ 'reference_chunks',(select jsonb_agg(jsonb_build_array(c.id,c.xmin::text) order by c.id) from public.reference_document_chunks c join public.reference_documents r on r.id=c.reference_document_id where r.contractor_id=(select contractor_id from public.projects where id=project) and (r.project_id=project or r.project_id is null)),
+ 'incorporations',(select jsonb_agg(jsonb_build_array(i.id,i.xmin::text) order by i.id) from public.reference_document_incorporations i where i.project_id=project),
+ 'pricelists',(select jsonb_agg(jsonb_build_array(r.id,r.xmin::text) order by r.id) from public.pricelists r where r.is_global=true or r.contractor_id=(select contractor_id from public.projects where id=project) and (r.project_id=project or r.project_id is null)),
+ 'price_items',(select jsonb_agg(jsonb_build_array(c.id,c.xmin::text) order by c.id) from public.pricelist_items c join public.pricelists r on r.id=c.pricelist_id where r.is_global=true or r.contractor_id=(select contractor_id from public.projects where id=project) and (r.project_id=project or r.project_id is null)))::text);
 $$;
 revoke all on function private.contractor_ai_context_hash(uuid) from public,anon,authenticated;
 grant execute on function private.contractor_ai_context_hash(uuid) to service_role;
@@ -122,6 +129,17 @@ begin
   ledger=jsonb_populate_record(ledger,data);
   update public.pricing_ledger set ai_rationale=ledger.ai_rationale,governing_notes=ledger.governing_notes,expert_strategy=ledger.expert_strategy,evidence_data=ledger.evidence_data where id=target and project_id=project;
  elsif kind='SCAN_FINDING' then
+  if data='{"delete_automatic":true}'::jsonb then
+   select * into finding from public.contradictions where id=target and project_id=project for update;
+   select xmin::text into actual from public.contradictions where id=target and project_id=project;
+   if actual is null or actual is distinct from wanted then raise exception 'AI_SOURCE_CHANGED';end if;
+   if coalesce(finding.scan_signature,'')='' or finding.pricing_status='PRICED' or finding.status='MOVED_TO_PRICING'
+    or coalesce(finding.evidence_data,'{}') ?| array['manual_review','user_review','approved_by_user','issue_link','issue_reconciliation']
+    or coalesce(finding.evidence_data->'archive_meta'->>'resolution_document_id','')<>''
+    or exists(select 1 from public.pricing_ledger where contradiction_id=target)
+    or exists(select 1 from public.contradictions where related_contradiction_id=target) then raise exception 'AI_EFFECT_INVALID';end if;
+   delete from public.contradictions where id=target and project_id=project;return;
+  end if;
   if data-array['title','description','strategy_advice','severity','status','source_execution_doc_id','target_contract_doc_id','related_contradiction_id','pricing_status','evidence_data','category','scan_signature']<>'{}'::jsonb then raise exception 'AI_EFFECT_INVALID';end if;
   select * into finding from public.contradictions where id=target and project_id=project for update;
   select xmin::text into actual from public.contradictions where id=target and project_id=project;
@@ -167,6 +185,9 @@ begin
  perform 1 from public.contradictions where project_id=j.project_id for share;
  perform 1 from public.pricing_ledger where project_id=j.project_id for share;
  perform 1 from public.document_scan_state where project_id=j.project_id for share;
+ -- Global/owner-wide libraries have no project parent whose row lock prevents inserts.
+ -- Short SHARE locks close that insert race as well as protecting relevant child rows.
+ lock table public.reference_documents,public.reference_document_chunks,public.reference_document_incorporations,public.pricelists,public.pricelist_items,public.vo_letters,public.vo_letter_items in share mode;
  stamp=clock_timestamp();
  if l.expires_at<=stamp or j.lease_expires_at<=stamp then return 'false';end if;
  if private.contractor_ai_context_hash(j.project_id) is distinct from j.context_snapshot->>'sourcesHash' then raise exception 'AI_CONTEXT_CHANGED';end if;

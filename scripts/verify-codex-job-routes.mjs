@@ -48,3 +48,14 @@ test('consultant requires one matching saved conversation and editor identity',a
   assert.equal(fx.rows.size,0);
   assert.equal((await service.create(request(),'consultant',{...body,conversationId:projectId,clientContextId:projectId})).status,202);
 });
+
+test('reading after restart interrupts old queued actions without running a model',async()=>{
+ const fx=queueFixture({now:()=>1000});await fx.enqueue();const worker=workerModule.createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:{now:()=>2000,setTimeout,clearTimeout},startedAt:2000});
+ const service=serviceModule.createAiJobService({store:fx.store,worker,authenticate:async()=>({id:ownerId}),resolveOwner:async()=>ownerId,ownsProject:async()=>true,readProfile:async()=>savedProfile,handlerFor:()=>fx.handler});
+ const list=await service.list(request('?projectId='+projectId+'&kind=letter'));assert.equal((await list.json()).jobs[0].state,'INTERRUPTED');assert.equal(fx.modelTurns,0);
+});
+
+test('a scan result can be correlated only with the actual selected work document',async()=>{
+ const {fx,service}=setup({handlerFor:()=>({validate:raw=>raw,execute:async()=>({result:null,effects:[]})})});
+ assert.equal((await service.create(request(),'scan',{projectId,requestKey:'wrong-work-editor',workDocId:projectId,clientContextId:otherId})).status,400);assert.equal(fx.rows.size,0);
+});

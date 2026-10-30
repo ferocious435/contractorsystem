@@ -2,6 +2,8 @@ import { createClient } from '@/utils/supabase/client';
 import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
 import type { ContradictionItem } from '@/types';
 import { isTechnicalRadarExclusion } from '@/utils/radar-review-disposition';
+import {startAiAction,observeAiJob,restoreAiJobs,cancelAiJob} from '@/utils/ai-job-client';
+import {record,type JobDto} from '@/server/ai/contracts';
 
 export interface RadarProjectDocument {
     id: string;
@@ -21,6 +23,7 @@ interface ContradictionMutationResult {
 }
 
 export interface RadarScanProgress {
+    job?:JobDto|null;
     success: boolean;
     active: boolean;
     status: string;
@@ -129,18 +132,17 @@ async function parseContradictionMutationResponse(response: Response): Promise<C
     return payload as ContradictionMutationResult;
 }
 
-async function parseRadarScanResponse(response: Response): Promise<RadarScanResult> {
-    const payload = await response.json();
-
-    if (!response.ok) {
-        return {
-            success: false,
-            message: payload?.error || payload?.message || 'Radar scan failed',
-        };
-    }
-
-    return payload as RadarScanResult;
+const pendingKeys=new Map<string,string>();
+async function startRadar(projectId:string,payload:Record<string,unknown>,context:string|null,background:boolean):Promise<RadarScanResult>{
+    const scope=projectId+':'+(context||'project')+':'+Boolean(payload.retrySkipped),storageKey='contractorsystem:radar-action:'+scope;
+    let key=pendingKeys.get(scope);try{key??=globalThis.sessionStorage?.getItem(storageKey)||undefined;}catch{}
+    key??=crypto.randomUUID();pendingKeys.set(scope,key);try{globalThis.sessionStorage?.setItem(storageKey,key);}catch{}
+    const job=await startAiAction('/api/scan',{...payload,projectId,clientContextId:context},key);
+    pendingKeys.delete(scope);try{globalThis.sessionStorage?.removeItem(storageKey);}catch{}
+    if(background)return {success:true,scanStatus:{success:true,job,active:true,status:job.state,progress:0,processed:0,total:0,currentStep:'העוזר בודק את המסמכים…'}};
+    const result=job.state==='SUCCEEDED'?job.result:await observeAiJob(job.id,{projectId});if(!record(result))throw new Error('בדיקת המסמכים לא הושלמה.');return result as unknown as RadarScanResult;
 }
+export async function cancelRadarScan(projectId:string):Promise<void>{const jobs=await restoreAiJobs(projectId,'scan'),active=jobs.find(job=>job.state==='QUEUED'||job.state==='RUNNING');if(active)await cancelAiJob(active.id,active.revision);}
 
 async function parseRadarScanStatusResponse(response: Response): Promise<RadarScanProgress> {
     const payload = await response.json();
@@ -284,13 +286,7 @@ export async function scanRadarProject(
         return { success: true, found: isDemoProjectId(projectId) ? 1 : 0, message: 'Demo scan completed locally.' };
     }
 
-    const response = await fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, force, batchCursor, background, retrySkipped }),
-    });
-
-    return parseRadarScanResponse(response);
+    return startRadar(projectId,{force,batchCursor,background,retrySkipped},null,background);
 }
 
 export async function rescanRadarItem(
@@ -301,17 +297,7 @@ export async function rescanRadarItem(
         return { success: true, found: isDemoProjectId(projectId) ? 1 : 0, message: 'Demo rescan completed locally.' };
     }
 
-    const response = await fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            projectId,
-            force: false,
-            workDocId,
-        }),
-    });
-
-    return parseRadarScanResponse(response);
+    return startRadar(projectId,{workDocId:workDocId||null},workDocId||null,false);
 }
 
 export async function updateContradictionStatus(

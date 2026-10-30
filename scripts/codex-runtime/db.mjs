@@ -27,6 +27,7 @@ export async function prepare(){
   if(!present)docker(['run','-d','--rm','--pull=never','--name',containerName,'--label','contractorsystem.test-task='+label,'--label','contractorsystem.synthetic-only=true','--network','none','-e','POSTGRES_HOST_AUTH_METHOD=trust','-e','POSTGRES_DB=runtime','postgres:17.6']);
   const target=verifyTarget();for(let i=0;i<50;i++){try{docker(['exec',containerName,'pg_isready','-U','postgres','-d','runtime']);break;}catch(error){if(i===49)throw error;await delay(200);}}
   if(runSql("select to_regclass('public.projects') is not null;")!=='t')runSql(readFileSync('scripts/fixtures/codex-runtime-db.sql','utf8'));
+  runSql(readFileSync('scripts/fixtures/codex-runtime-source-tables.sql','utf8'));
   const migration=migrationPath();if(migration&&readFileSync(migration,'utf8').trim())runSql(readFileSync(migration,'utf8'));
   const directory='.superpowers/sdd/2026-10-30-codex-program-runtime';mkdirSync(directory,{recursive:true});writeFileSync(directory+'/test-db.json',JSON.stringify({id:target.Id,name:containerName,image:target.Image,migration,network:'none',ports:[],bindMounts:[]},null,2));
   console.log(JSON.stringify({name:containerName,migration,syntheticOnly:true}));

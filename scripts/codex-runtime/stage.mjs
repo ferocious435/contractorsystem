@@ -3,6 +3,7 @@ import {mkdir,readFile,writeFile,copyFile,lstat,symlink,unlink} from 'node:fs/pr
 import {createWriteStream} from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import {createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 
 const root=path.resolve(import.meta.dirname,'../..');
@@ -39,13 +40,18 @@ async function run(name,args,{cwd=control,environment=env}={}){
   console.log(`${name}: ${code===0?'PASS':'FAIL'} (${path.relative(root,log)})`);
   if(code!==0){console.log((await readFile(log,'utf8')).split(/\r?\n/).slice(-16).join('\n'));throw Error(name+' failed');}
 }
-const profiles={1:['protocol','metadata'],2:['jobs-db'],3:['worker','job-routes'],4:['ui'],5:['writing','letter-preview-db','job-routes','worker','ui'],6:['comparison'],7:['radar'],8:['pricing'],9:['documents']};
+const profiles={1:['protocol','metadata'],2:['jobs-db'],3:['worker','job-routes'],4:['ui'],5:['writing','letter-preview-db','job-routes','worker','ui'],6:['comparison'],7:['radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],8:['pricing'],9:['documents']};
 const names=task>=10?files.filter(file=>/^scripts\/verify-codex-[^/]+\.mjs$/.test(file)).map(file=>file.slice('scripts/verify-codex-'.length,-4)):profiles[task];
 if(!names?.length)throw Error('No verification profile');
 for(const name of names)if(!files.includes(`scripts/verify-codex-${name}.mjs`))throw Error('Unprepared verification file: '+name);
 if(task>=2)await run('synthetic-db',['scripts/codex-runtime/db.mjs','prepare']);
 if(task>=5)await run('synthetic-writing-db',['scripts/codex-runtime/writing-db.mjs']);
 await run('profile',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...names.map(name=>`scripts/verify-codex-${name}.mjs`)]);
+let radarFixture;
+if(task===7){const snapshot=path.join(root,'data/point1-audit/point14-current-mtm-verification-20261025.json'),before=createHash('sha256').update(await readFile(snapshot)).digest('hex');
+ await run('radar-regression',['--experimental-strip-types','--test','--test-concurrency=1',...['contract-scan-quality','radar-evidence-relation','semantic-scan-response','completion-deadline-review','requirement-basis','radar-issue-history','radar-issue-history-persistence','mtm-timing','issue-timing-display','scan-memory','scan-ai-response','scan-retry-queue','radar-step6','radar-step6-persistence','radar-financial-guards','radar-saved-review-ui','scan-chunk-coverage','document-source-readiness'].map(name=>'scripts/verify-'+name+'.mjs')],{environment:{...env,RADAR_MTM_SNAPSHOT:snapshot}});
+ if(createHash('sha256').update(await readFile(snapshot)).digest('hex')!==before)throw Error('Private read-only snapshot changed');radarFixture={path:snapshot,sha256:before,readOnly:true};
+}
 if(task===5)await run('writing-regression',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1','scripts/verify-local-writing.mjs','scripts/verify-letter-transactions.mjs','scripts/verify-letter-routes.mjs','scripts/verify-letter-export.mjs','scripts/verify-letter-financials.mjs','scripts/redesign/verify-letter-drafts.mjs','scripts/redesign/verify-consultant.mjs']);
 await run('typescript',['node_modules/typescript/bin/tsc','--noEmit','--incremental','false']);
 await run('financials',['scripts/verify-financial-invariants.mjs']);
@@ -65,7 +71,7 @@ try{
   await run('installed-runtime',['scripts/verify-open-workspace-runtime.mjs'],{environment:{...env,VERIFY_RUNTIME_BASE_URL:'http://127.0.0.1:3002'}});
   const buildId=(await readFile(path.join(control,dist,'BUILD_ID'),'utf8')).trim();
   if(git('write-tree').trim()!==indexTree)throw Error('Publication index changed during G');
-  await writeFile(path.join(workspace,`task-${task}-G.json`),JSON.stringify({task,buildId,controlUrl,results,indexTree,time:new Date().toISOString()},null,2));
+  await writeFile(path.join(workspace,`task-${task}-G.json`),JSON.stringify({task,buildId,controlUrl,results,indexTree,...(radarFixture?{radarFixture}:{}),time:new Date().toISOString()},null,2));
   console.log(`G task ${task}: PASS; build ${buildId}; installed A preserved`);
 }finally{
   if(server.exitCode===null){const exited=new Promise(resolve=>server.once('exit',resolve));server.kill();await Promise.race([exited,delay(3000)]);}

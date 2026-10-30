@@ -17,6 +17,7 @@ export async function prepareWritingDb(){
   alter table public.document_scan_state enable row level security;
   grant usage on schema public,auth to service_role;grant execute on all functions in schema auth to service_role;
   grant select,insert,update,delete on all tables in schema public to service_role;grant execute on all functions in schema public to service_role;`);
+  runLettersSql(readFileSync('scripts/fixtures/codex-runtime-source-tables.sql','utf8'));
   const migration=migrationPath();if(!migration)throw Error('Missing runtime migration');runLettersSql(readFileSync(migration,'utf8'));
 }
 export function writingRpc(){return {async rpc(name,{p}){if(!/^contractor_ai_[a-z_]+$/.test(name))throw Error('Unexpected runtime SQL function');try{return {data:jsonSql(`set local role service_role; select public.${name}(:'body'::jsonb);`,{params:{body:JSON.stringify(p)}}),error:null};}catch(error){return {data:null,error:{code:error.code,message:error.message}};}}};}

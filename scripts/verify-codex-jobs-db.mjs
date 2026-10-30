@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {runSql,runSqlAsync,jsonSql,databaseTransport} from './codex-runtime/db.mjs';
 import {ownerId,otherId,selectedModel} from './codex-runtime/fixtures.mjs';
+import {radarReadClient,radarIds} from './codex-runtime/radar-fixtures.mjs';
+import {createAiWorker} from '../src/server/ai/worker.server.ts';
+import {runRadarScan} from '../src/server/ai/radar-service.server.ts';
 const jobsModule=existsSync(new URL('../src/server/ai/jobs.server.ts',import.meta.url))?await import('../src/server/ai/jobs.server.ts'):{};
 const project='30000000-0000-4000-8000-000000000003',foreign='40000000-0000-4000-8000-000000000004';
 const doc='50000000-0000-4000-8000-000000000005',foreignDoc='60000000-0000-4000-8000-000000000006';
@@ -10,7 +13,8 @@ const profile={ownerId,model:selectedModel,effort:null,revision:1,accountFingerp
 const prepared={result:{message:'תשובה שמורה'},effects:[]};
 const api=()=>{assert.equal(typeof jobsModule.createAiJobStore,'function','Stored job contract is missing');return jobsModule.createAiJobStore(databaseTransport());};
 beforeEach(()=>{
-  runSql(`delete from public.document_scan_state; delete from public.contradictions; delete from public.pricing_ledger; delete from public.documents;
+  runSql(`delete from public.vo_letter_items;delete from public.vo_letters;delete from public.reference_document_incorporations;delete from public.reference_document_chunks;delete from public.reference_documents;delete from public.pricelist_items;delete from public.pricelists;
+  delete from public.document_scan_state; delete from public.contradictions; delete from public.pricing_ledger; delete from public.documents;
   insert into public.profiles values('${ownerId}','super_admin'),('${otherId}','member') on conflict(id) do nothing;
   insert into public.projects values('${project}','${ownerId}','synthetic'),('${foreign}','${otherId}','foreign') on conflict(id) do nothing;
   insert into public.documents(id,project_id,title,version,extracted_text,parsed_json,ai_status) values('${doc}','${project}','A',1,'complete text','{}','PENDING'),('${foreignDoc}','${foreign}','B',1,'other text','{}','PENDING');`);
@@ -130,4 +134,51 @@ test('startup interrupts old queued work while preserving a new explicit action'
   const store=api(),old=await enqueue(store,'old-action');runSql(`update public.project_ai_jobs set created_at=clock_timestamp()-interval '1 minute' where id='${old.id}';`);
   const fresh=await enqueue(store,'new-explicit-action');assert.equal(await store.interruptStale(Date.now(),Date.now()-30000),1);
   assert.equal((await store.readOwned(ownerId,project,old.id)).state,'INTERRUPTED');assert.equal((await store.claim('worker',Date.now())).id,fresh.id);
+});
+
+test('a changed global reference clause invalidates an answer before commit',async()=>{
+ const store=api(),reference='71000000-0000-4000-8000-000000000001',chunk='71000000-0000-4000-8000-000000000002';
+ runSql(`insert into public.reference_documents(id,contractor_id,project_id,title,status) values('${reference}','${ownerId}',null,'reference','READY');insert into public.reference_document_chunks(id,reference_document_id,text) values('${chunk}','${reference}','original clause');`);
+ await enqueue(store);const job=await store.claim('worker',Date.now());runSql(`update public.reference_document_chunks set text='later governing clause' where id='${chunk}';`);
+ await assert.rejects(store.complete(job.id,job.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');
+});
+test('a new global price list or changed price source invalidates an answer',async()=>{
+ const store=api(),list='72000000-0000-4000-8000-000000000001',item='72000000-0000-4000-8000-000000000002';await enqueue(store);const first=await store.claim('worker',Date.now());
+ runSql(`insert into public.pricelists(id,contractor_id,is_global,name) values('${list}','${otherId}',true,'global');insert into public.pricelist_items(id,pricelist_id,description,unit_price) values('${item}','${list}','actual source',.03);`);
+ await assert.rejects(store.complete(first.id,first.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');await store.fail(first.id,first.leaseToken,{code:'AI_FAILED',message:'changed'});
+ await enqueue(store,'changed-price');const second=await store.claim('worker',Date.now());runSql(`update public.pricelist_items set unit_price=.04 where id='${item}';`);await assert.rejects(store.complete(second.id,second.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');
+});
+test('an unrelated private source does not become this project context',async()=>{
+ const store=api();await enqueue(store);const job=await store.claim('worker',Date.now());runSql(`insert into public.reference_documents(id,contractor_id,project_id,title,status) values('73000000-0000-4000-8000-000000000001','${otherId}','${foreign}','private reference','READY');`);assert.equal(await store.complete(job.id,job.leaseToken,prepared),true);
+});
+test('only unreviewed automatic findings can be removed by verified replacement effects',async()=>{
+ const store=api(),finding='74000000-0000-4000-8000-000000000001';runSql(`insert into public.contradictions(id,project_id,scan_signature,status,pricing_status,evidence_data) values('${finding}','${project}','obsolete','OPEN','PENDING','{}');`);await enqueue(store);const job=await store.claim('worker',Date.now()),revision=await store.sourceRevision(project,'SCAN_FINDING',finding);
+ assert.equal(await store.complete(job.id,job.leaseToken,{result:{replaced:true},effects:[{type:'SCAN_FINDING',targetId:finding,expectedRevision:revision,data:{delete_automatic:true}}]}),true);assert.equal(jsonSql(`select to_jsonb(count(*)) from public.contradictions where id='${finding}';`),0);
+});
+test('replacement cannot delete reviewed or financially linked findings',async()=>{
+ const store=api(),reviewed='75000000-0000-4000-8000-000000000001',priced='75000000-0000-4000-8000-000000000002';
+ runSql(`insert into public.contradictions(id,project_id,scan_signature,status,pricing_status,evidence_data) values('${reviewed}','${project}','reviewed','OPEN','PENDING','{"user_review":{"note":"Keep my conclusion"}}'),('${priced}','${project}','financial','OPEN','PENDING','{}');insert into public.pricing_ledger(id,project_id,contradiction_id,quantity,unit_price_excl_vat,vat_rate) values('75000000-0000-4000-8000-000000000003','${project}','${priced}',3,.03,.18);`);
+ await enqueue(store);const job=await store.claim('worker',Date.now());for(const id of [reviewed,priced]){const revision=await store.sourceRevision(project,'SCAN_FINDING',id);await assert.rejects(store.complete(job.id,job.leaseToken,{result:{deleted:true},effects:[{type:'SCAN_FINDING',targetId:id,expectedRevision:revision,data:{delete_automatic:true}}]}),error=>error.code==='AI_EFFECT_INVALID');}assert.equal(jsonSql('select to_jsonb(count(*)) from public.contradictions;'),2);
+});
+
+test('a concurrent governing-source transaction cannot cross final result validation',async()=>{
+ const store=api(),reference='76000000-0000-4000-8000-000000000001',chunk='76000000-0000-4000-8000-000000000002';runSql(`insert into public.reference_documents(id,contractor_id,title,status) values('${reference}','${ownerId}','reference','READY');insert into public.reference_document_chunks(id,reference_document_id,text) values('${chunk}','${reference}','original clause');`);
+ await enqueue(store);const job=await store.claim('worker',Date.now());let signal;const locked=new Promise(resolve=>signal=resolve),updating=runSqlAsync(`update public.reference_document_chunks set text='concurrent later clause' where id='${chunk}';select 'REFERENCE_LOCKED';select pg_sleep(3);`,{onOutput:value=>{if(value.includes('REFERENCE_LOCKED'))signal();}});await locked;
+ try{await assert.rejects(store.complete(job.id,job.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');}finally{await updating;}
+ assert.equal((await store.readOwned(ownerId,project,job.id)).state,'RUNNING');
+});
+test('the actual radar service and worker commit their generated effects and reuse them through real SQL',async()=>{
+ const store=api(),work='עטיפת הצינור תבוצע בחול מצומנט 4%.',base='עטיפת הצינור תבוצע בחול מצומנט 8%.';let commitFailure;
+ const complete=store.complete;store.complete=async(...args)=>{try{return await complete(...args);}catch(error){commitFailure=error;throw error;}};
+ runSql(`insert into public.documents(id,project_id,title,category,extracted_text,ocr_status,content_hash) values('${radarIds.contract}','${project}','חוזה.txt','CONTRACT',:'base','COMPLETED','contract'),('${radarIds.work}','${project}','הוראה 01.01.2026.txt','EXECUTION',:'work','COMPLETED','work');`,{params:{base,work}});
+ const claim={role:'INSTRUCTION',subject:'עטיפת הצינור',attribute:'CEMENT_CONTENT',value:'4%',scope:null,location:null,party:null,condition:null,period:null};let turns=0;
+ const client={async runTurn(){turns++;return JSON.stringify({result:[{title:'עטיפת הצינור',category:'סתירה',work_quote:work,contract_quote:base,comparison:{work:claim,baseline:{...claim,role:'CONTRACT_RULE',value:'8%'}}}]});}};
+ const handler={validate:raw=>raw,async execute(payload,execution){const rows=jsonSql(`select jsonb_build_object('projects',(select jsonb_agg(to_jsonb(r)) from public.projects r where id='${project}'),'documents',(select jsonb_agg(to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text)) from public.documents r where project_id='${project}'),'contradictions',coalesce((select jsonb_agg(to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text)) from public.contradictions r where project_id='${project}'),'[]'::jsonb),'document_scan_state',coalesce((select jsonb_agg(to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text)) from public.document_scan_state r where project_id='${project}'),'[]'::jsonb),'pricing_ledger','[]'::jsonb,'reference_documents','[]'::jsonb,'pricelists','[]'::jsonb,'reference_document_incorporations','[]'::jsonb,'project_ai_jobs',coalesce((select jsonb_agg(to_jsonb(r)) from public.project_ai_jobs r where project_id='${project}'),'[]'::jsonb));`);return runRadarScan(radarReadClient(rows),payload,execution);}};
+ const worker=createAiWorker({store,client,handlerFor:()=>handler,startedAt:0}),first=await store.enqueue(ownerId,project,'scan',{},'actual-radar',profile,{});await worker.run();const firstSaved=await store.readOwned(ownerId,project,first.id);assert.equal(firstSaved.state,'SUCCEEDED',commitFailure?.code+' '+commitFailure?.stack+' '+JSON.stringify(firstSaved.error));assert.equal(turns,1);assert.equal(jsonSql(`select to_jsonb(count(*)) from public.contradictions where project_id='${project}';`),1);
+ const second=await store.enqueue(ownerId,project,'scan',{},'same-radar-sources',profile,{});await worker.run();const saved=await store.readOwned(ownerId,project,second.id);assert.equal(saved.state,'SUCCEEDED');assert.equal(turns,1);assert.equal(saved.result.memory.unchanged,1);
+});
+
+test('a new financial letter link invalidates a stale reconciliation answer',async()=>{
+ const store=api(),ledger='94000000-0000-4000-8000-000000000001',letter='95000000-0000-4000-8000-000000000001';runSql(`insert into public.pricing_ledger(id,project_id,quantity,unit_price_excl_vat,vat_rate) values('${ledger}','${project}',3,.03,.18);insert into public.vo_letters(id,project_id,status) values('${letter}','${project}','DRAFT');`);
+ await enqueue(store);const job=await store.claim('worker',Date.now());runSql(`insert into public.vo_letter_items(id,letter_id,ledger_item_id) values('96000000-0000-4000-8000-000000000001','${letter}','${ledger}');`);await assert.rejects(store.complete(job.id,job.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');
 });
