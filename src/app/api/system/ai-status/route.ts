@@ -1,14 +1,5 @@
-import { NextResponse } from 'next/server';
-import { getAiReadiness } from '@/utils/ai-readiness';
-import { checkOllamaRuntime } from '@/lib/ollama';
-import { isOllamaProvider } from '@/utils/ai-readiness';
+import {getRuntimeService} from '@/server/ai/runtime.server';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-    const localRuntime = isOllamaProvider(process.env)
-        ? await checkOllamaRuntime()
-        : undefined;
-
-    return NextResponse.json(getAiReadiness(process.env, localRuntime));
-}
+export const GET=(request:Request)=>getRuntimeService().get(request);

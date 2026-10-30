@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {queueFixture,projectId} from './codex-runtime/queue-fixtures.mjs';
-import {ownerId,otherId,flush} from './codex-runtime/fixtures.mjs';
+import {ownerId,otherId} from './codex-runtime/fixtures.mjs';
 const workerModule=existsSync(new URL('../src/server/ai/worker.server.ts',import.meta.url))?await import('../src/server/ai/worker.server.ts'):{};
 function worker(fx,options={}){assert.equal(typeof workerModule.createAiWorker,'function','Guarded worker is missing');return workerModule.createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0,...options});}
 test('duplicate wakeups and two workers never execute more than one simultaneous model turn',async()=>{

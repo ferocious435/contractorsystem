@@ -18,6 +18,7 @@ export interface CodexClient {
     runTurn(input:AiTurnInput,profile:RuntimeProfile|null,signal:AbortSignal):Promise<string>;
     interrupt(threadId:string,turnId:string):Promise<void>;
     close():Promise<void>;
+    startLogin():Promise<{loginId:string;authUrl:string}>;
 }
 interface Pending {resolve(value:unknown):void;reject(error:BusinessAiError):void;timer:unknown;}
 interface ActiveTurn {
@@ -144,6 +145,16 @@ export function createCodexClient(options:ClientOptions={}):CodexClient {
         if(!metadataMethods.has(method))throw new BusinessAiError('AI_METHOD_FORBIDDEN',undefined,403);
         await ensureReady();return rpc<T>(method,params);
     }
+    async function startLogin():Promise<{loginId:string;authUrl:string}>{
+        if(busy)throw new BusinessAiError('AI_BUSY',undefined,409);await ensureReady();
+        const account=await rpc<Record<string,unknown>>('account/read',{refreshToken:false});
+        if(record(account.account)&&account.account.type==='chatgpt')throw new BusinessAiError('AI_ALREADY_CONNECTED',undefined,409);
+        const value=await rpc<Record<string,unknown>>('account/login/start',{type:'chatgpt'});
+        if(value.type!=='chatgpt'||typeof value.loginId!=='string'||typeof value.authUrl!=='string')throw new BusinessAiError('AI_LOGIN_FAILED');
+        let url:URL;try{url=new URL(value.authUrl);}catch{throw new BusinessAiError('AI_LOGIN_FAILED');}
+        if(url.protocol!=='https:'||!['auth.openai.com','auth0.openai.com'].includes(url.hostname)||url.username||url.password||(url.port&&url.port!=='443'))throw new BusinessAiError('AI_LOGIN_FAILED');
+        return {loginId:value.loginId,authUrl:value.authUrl};
+    }
     async function runTurn(input:AiTurnInput,profile:RuntimeProfile|null,signal:AbortSignal):Promise<string>{
         if(!record(profile)||!validUuid(profile.ownerId)||typeof profile.accountFingerprint!=='string'||!profile.model||!Number.isSafeInteger(profile.revision)||profile.revision<1)throw new BusinessAiError('AI_PROFILE_REQUIRED');
         if(signal.aborted)throw new BusinessAiError('AI_CANCELLED',undefined,409);
@@ -205,7 +216,7 @@ export function createCodexClient(options:ClientOptions={}):CodexClient {
         const exited=previous?new Promise<void>(resolve=>{const timeout=setTimeout(()=>resolve(),1500);previous.once('exit',()=>{clearTimeout(timeout);resolve();});}):Promise.resolve();
         invalidate(new BusinessAiError('AI_CANCELLED',undefined,409));await exited;
     }
-    return {request,runTurn,interrupt,close};
+    return {request,runTurn,interrupt,close,startLogin};
 }
 let sharedClient:CodexClient|undefined;
 export function getCodexClient():CodexClient {return sharedClient??=createCodexClient();}

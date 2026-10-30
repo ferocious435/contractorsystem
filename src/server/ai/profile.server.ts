@@ -45,7 +45,7 @@ export function createRuntimeProfileStore(options:ProfileOptions) {
             await lock.close();await unlink(file+'.lock').catch(()=>{});await unlink(temporary).catch(()=>{});
         }
     }
-    return {read,save};
+    return {read,save,inspect:stored};
 }
 let defaultStore:ReturnType<typeof createRuntimeProfileStore>|undefined;
 function profiles(){return defaultStore??=createRuntimeProfileStore({runtimeDir:getRuntimeDirectory(),metadata:async()=>{
@@ -54,3 +54,4 @@ function profiles(){return defaultStore??=createRuntimeProfileStore({runtimeDir:
 }});}
 export const readRuntimeProfile=(ownerId:string)=>profiles().read(ownerId);
 export const saveRuntimeProfile=(ownerId:string,selection:unknown,expectedRevision:number)=>profiles().save(ownerId,selection,expectedRevision);
+export const inspectRuntimeProfile=(ownerId:string)=>profiles().inspect(ownerId);

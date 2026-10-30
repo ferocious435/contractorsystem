@@ -3,6 +3,9 @@ export type AiJobState = 'QUEUED'|'RUNNING'|'SUCCEEDED'|'FAILED'|'CANCELLED'|'IN
 export type JsonValue = null|boolean|number|string|JsonValue[]|{[key:string]:JsonValue};
 export type JsonObject = {[key:string]:JsonValue};
 export interface RuntimeProfile {ownerId:string; accountFingerprint:string; model:string; effort:string|null; revision:number;}
+export interface RuntimeModel {model:string;displayName:string;efforts:Array<{value:string;description:string}>;images:boolean;}
+export interface RuntimeDescriptor {provider:'Codex';authenticated:boolean;configured:boolean;available:boolean;reason:string|null;kinds:AiJobKind[];
+    profile:Pick<RuntimeProfile,'model'|'effort'|'revision'>|null;models:RuntimeModel[];}
 export interface JobDto {
     id:string; projectId:string; kind:AiJobKind; state:AiJobState; revision:number;
     conversationId:string|null; clientContextId:string|null; result:JsonValue|null;

@@ -136,3 +136,8 @@ test('a malformed persisted profile is not silently treated as an absent owner c
   const files=await jsonFiles(dir);assert.equal(files.length,1);const original=await readFile(files[0],'utf8');assert.ok(!original.includes(account.email));await writeFile(files[0],'{broken');
   await assert.rejects(api.read(ownerId),e=>e.code==='AI_PROFILE_INVALID');
 });
+test('explicit sign-in exposes only an approved ChatGPT authorization URL',async t=>{
+  const dir=await temporaryRuntime(t),fx=fakeCodex({onRequest(request,child){if(request.method==='account/login/start'){assert.deepEqual(request.params,{type:'chatgpt'});child.reply(request,{type:'chatgpt',loginId:'test-login',authUrl:'https://auth.openai.com/authorize?synthetic=1'});return false;}}}),api=client(fx,dir);t.after(()=>api.close());fx.account=null;
+  assert.equal(typeof api.startLogin,'function');assert.deepEqual(await api.startLogin(),{loginId:'test-login',authUrl:'https://auth.openai.com/authorize?synthetic=1'});assert.equal(fx.turnStartCalls,0);
+  await assert.rejects(api.request('account/login/start',{type:'apiKey',apiKey:'PRIVATE'}),e=>e.code==='AI_METHOD_FORBIDDEN');
+});
