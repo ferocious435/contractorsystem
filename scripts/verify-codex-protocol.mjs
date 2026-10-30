@@ -79,10 +79,41 @@ test('an unsolicited tool request is denied and cannot keep a business turn runn
   await assert.rejects(api.runTurn(input,await readyProfile(),new AbortController().signal),e=>e.code==='AI_TOOL_FORBIDDEN');
   assert.equal(fx.processes[0].killed,true);
 });
+
+// Break: a tool carried only in an early event or the final turn must not bypass isolation.
+for(const timing of ['started','early','terminal'])test(`operational tool items are rejected in ${timing} events`,async t=>{
+  const dir=await temporaryRuntime(t),fx=fakeCodex({onRequest(request,child){if(request.method==='turn/start'){
+    const item={type:'imageView',id:'outside-image',path:'C:/outside/canary.png'};
+    if(timing!=='early')child.reply(request,{turn:{id:'business-turn',items:[],status:'inProgress',error:null}});
+    if(timing==='terminal')child.send({method:'turn/completed',params:{threadId:'business-thread',turn:{id:'business-turn',status:'completed',items:[item,{type:'agentMessage',id:'answer',text:finalText,phase:'final_answer'}]}}});
+    else child.send({method:'item/started',params:{threadId:'business-thread',turnId:'business-turn',item}});
+    if(timing==='early')child.reply(request,{turn:{id:'business-turn',items:[],status:'inProgress',error:null}});
+    child.finish();return false;
+  }}}),api=client(fx,dir);t.after(()=>api.close());
+  await assert.rejects(api.runTurn(input,await readyProfile(),new AbortController().signal),e=>e.code==='AI_TOOL_FORBIDDEN');
+  assert.equal(fx.processes[0].killed,true);
+});
+
+test('business threads cannot advertise local image, browser, sleep or generation tools',async t=>{
+  const dir=await temporaryRuntime(t),fx=fakeCodex(),api=client(fx,dir);t.after(()=>api.close());
+  assert.equal(await api.runTurn(input,await readyProfile(),new AbortController().signal),finalText);
+  const thread=fx.frames.find(frame=>frame.method==='thread/start');
+  for(const name of ['view_image','browser_use','computer_use','image_generation','sleep_tool'])assert.equal(thread.params.config.features[name],false,`${name} must be disabled`);
+});
 test('all standalone MCP layers are excluded from the business thread',async t=>{
   const dir=await temporaryRuntime(t),fx=fakeCodex({configLayers:[{name:{type:'user'},version:'1',config:{mcp_servers:{outside:{enabled:true,required:true,env:{PRIVATE:'do-not-forward'}}}}}]}),api=client(fx,dir);t.after(()=>api.close());
   assert.equal(await api.runTurn(input,await readyProfile(),new AbortController().signal),finalText);
   assert.equal(fx.mcpStarts,0);
+});
+
+test('an unset provider reported as null still uses the explicitly pinned OpenAI thread',async t=>{
+  const dir=await temporaryRuntime(t),fx=fakeCodex({onRequest(request,child){if(request.method==='config/read'){child.reply(request,{config:{model_provider:null},layers:[],origins:{}});return false;}}}),api=client(fx,dir);t.after(()=>api.close());
+  assert.equal(await api.runTurn(input,await readyProfile(),new AbortController().signal),finalText);
+  assert.equal(fx.frames.find(frame=>frame.method==='thread/start').params.modelProvider,'openai');
+});
+test('an explicitly configured different provider cannot silently receive an operational turn',async t=>{
+  const dir=await temporaryRuntime(t),fx=fakeCodex({onRequest(request,child){if(request.method==='config/read'){child.reply(request,{config:{model_provider:'other-provider'},layers:[],origins:{}});return false;}}}),api=client(fx,dir);t.after(()=>api.close());
+  await assert.rejects(api.runTurn(input,await readyProfile(),new AbortController().signal),e=>e.code==='AI_POLICY_UNSAFE');assert.equal(fx.turnStartCalls,0);
 });
 test('child environment excludes application secrets and inherited source instructions',async t=>{
   const dir=await temporaryRuntime(t),fx=fakeCodex({threadSources:[path.join(process.cwd(),'AGENTS.md')]}),api=client(fx,dir,{environment:{PATH:process.env.PATH,LOCALAPPDATA:dir,SUPABASE_SERVICE_ROLE_KEY:'PRIVATE_DB',OPENAI_API_KEY:'PRIVATE_API'}});t.after(()=>api.close());

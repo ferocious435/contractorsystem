@@ -47,19 +47,19 @@ for(const name of names)if(!files.includes(`scripts/verify-codex-${name}.mjs`))t
 if(task>=2)await run('synthetic-db',['scripts/codex-runtime/db.mjs','prepare']);
 if(task>=5)await run('synthetic-writing-db',['scripts/codex-runtime/writing-db.mjs']);
 await run('profile',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...names.map(name=>`scripts/verify-codex-${name}.mjs`)]);
-if(task===9)await run('document-regression',['scripts/verify-document-runtime.mjs']);
-if(task===8)await run('pricing-regression',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...files.filter(file=>/^scripts\/verify-(?:pricing-scope|work-change|support)-[^/]+\.mjs$/.test(file)&&!file.includes('model'))]);
+if(task>=9)await run('document-regression',['scripts/verify-document-runtime.mjs']);
+if(task===8||task>=10)await run('pricing-regression',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...files.filter(file=>/^scripts\/verify-(?:pricing-scope|work-change|support)-[^/]+\.mjs$/.test(file)&&!file.includes('model'))]);
 let radarFixture;
-if(task===7){const snapshot=path.join(root,'data/point1-audit/point14-current-mtm-verification-20261025.json'),before=createHash('sha256').update(await readFile(snapshot)).digest('hex');
+if(task===7||task>=10){const snapshot=path.join(root,'data/point1-audit/point14-current-mtm-verification-20261025.json'),before=createHash('sha256').update(await readFile(snapshot)).digest('hex');
  await run('radar-regression',['--experimental-strip-types','--test','--test-concurrency=1',...['contract-scan-quality','radar-evidence-relation','semantic-scan-response','completion-deadline-review','requirement-basis','radar-issue-history','radar-issue-history-persistence','mtm-timing','issue-timing-display','scan-memory','scan-ai-response','scan-retry-queue','radar-step6','radar-step6-persistence','radar-financial-guards','radar-saved-review-ui','scan-chunk-coverage','document-source-readiness'].map(name=>'scripts/verify-'+name+'.mjs')],{environment:{...env,RADAR_MTM_SNAPSHOT:snapshot}});
  if(createHash('sha256').update(await readFile(snapshot)).digest('hex')!==before)throw Error('Private read-only snapshot changed');radarFixture={path:snapshot,sha256:before,readOnly:true};
 }
-if(task===5)await run('writing-regression',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1','scripts/verify-local-writing.mjs','scripts/verify-letter-transactions.mjs','scripts/verify-letter-routes.mjs','scripts/verify-letter-export.mjs','scripts/verify-letter-financials.mjs','scripts/redesign/verify-letter-drafts.mjs','scripts/redesign/verify-consultant.mjs']);
+if(task===5||task>=10)await run('writing-regression',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1','scripts/verify-local-writing.mjs','scripts/verify-letter-transactions.mjs','scripts/verify-letter-routes.mjs','scripts/verify-letter-export.mjs','scripts/verify-letter-financials.mjs','scripts/redesign/verify-letter-drafts.mjs','scripts/redesign/verify-consultant.mjs']);
 await run('typescript',['node_modules/typescript/bin/tsc','--noEmit','--incremental','false']);
 await run('financials',['scripts/verify-financial-invariants.mjs']);
 await run('lint',['node_modules/eslint/bin/eslint.js','.','--ignore-pattern',dist+'/**','--cache','--cache-location','.eslintcache','--cache-strategy','content']);
 await run('production',['node_modules/next/dist/bin/next','build']);
-if(task===9)await run('document-built-reader',['scripts/verify-docx-built-reader.mjs',dist]);
+if(task>=9)await run('document-built-reader',['scripts/verify-docx-built-reader.mjs',dist]);
 await run('typescript-built',['node_modules/typescript/bin/tsc','--noEmit','--incremental','false']);
 await new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',()=>reject(Error(`Control port ${controlPort} is occupied`)));server.listen(controlPort,'127.0.0.1',()=>server.close(resolve));});
 const serverLog=createWriteStream(path.join(workspace,`task-${task}-control-server.log`));

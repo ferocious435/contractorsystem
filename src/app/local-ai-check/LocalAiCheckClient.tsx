@@ -201,7 +201,7 @@ export function LocalAiResultView({findingRef,result,error,isExtracting,extracti
   <header className="ti-page-heading"><div><p className="ti-eyebrow">Локальная проверка · <BidiText kind="code" value={findingRef}/></p><h1 className="ti-title">Проверка расхождения</h1><p className="ti-subtitle">Результат чтения источников и отдельные действия с данными</p></div></header>
   {!result&&!error&&<Feedback>Загружаю сохранённые сведения и источники…</Feedback>}
   {error&&<Feedback tone="danger">Ошибка: {error}</Feedback>}
-  {result?.job?.state==='CANCELLED'&&!isChecking&&<Feedback>Проверка отменена. Предыдущий ответ сохранён.</Feedback>}
+  {result?.job?.state==='CANCELLED'&&!isChecking&&<Feedback>{result.localResult?'Проверка отменена. Предыдущий ответ сохранён.':'Проверка отменена. Новый запуск доступен по кнопке.'}</Feedback>}
   {result&&onCheck&&<div className="ti-actions"><Button variant="primary" disabled={busy} pending={isChecking} busyLabel="Помощник проверяет…" onClick={()=>void onCheck()}>Проверить с помощником</Button>{isChecking&&onCancel&&<Button onClick={()=>void onCancel()}>Отменить проверку</Button>}</div>}
   {result&&!result.localResult&&!isChecking&&<Feedback>{result.stale?'Документы изменились. Сохранённый ответ требует новой проверки.':'Проверка помощником запускается кнопкой.'}</Feedback>}
   {result&&<>

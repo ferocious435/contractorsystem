@@ -234,7 +234,7 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
     generationMetadata.current={selectionKey:latest.current.key,signature:attempt.signature,requestKey:attempt.requestKey};persistBuffer();
     let last:JobDto|null=null;busy.current = true; setOperationError(null); setIsGenerating(true);setPendingGeneration(null);setGenerationJob(null);
     try {
-      const data = await apiGenerateLetter({projectId, letterType, recipient, subject, keyPoints, tone, itemIds: selectedItems.map((item) => item.id)},
+      const data = await apiGenerateLetter({projectId, letterType, recipient, subject, keyPoints, currentText:latest.current.generatedLetter, tone, itemIds: selectedItems.map((item) => item.id)},
         {requestKey:attempt.requestKey,clientContextId:attempt.clientDraftId,signal:controller.signal,onProgress:job=>{last=job;if(token===epoch.current&&ticket===generationTicket.current){setGenerationJob(job);if(generationMetadata.current?.requestKey===attempt.requestKey)generationMetadata.current.jobId=job.id;persistBuffer();}}});
       if (token !== epoch.current||ticket!==generationTicket.current||controller.signal.aborted||!data.letter) return;
       const disposition=session.current!.generated(attempt,{letter:data.letter},latest.current.generationKey);

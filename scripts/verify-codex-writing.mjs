@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {LetterDraftSession} from '../src/components/features/smart-letter/letterDraftSession.ts';
 import {letterDraftSnapshot,letterDraftProject} from './redesign/fixtures.mjs';
-import {queueFixture} from './codex-runtime/queue-fixtures.mjs';
+import {queueFixture,savedProfile,projectId} from './codex-runtime/queue-fixtures.mjs';
+import {ownerId} from './codex-runtime/fixtures.mjs';
 import {createAiWorker} from '../src/server/ai/worker.server.ts';
 import {summarizeIndividualPricing} from '../src/utils/individual-pricing.ts';
 import {letterDraftRows} from './redesign/fixtures.mjs';
@@ -77,6 +78,15 @@ test('a letter handler sends the user tone and date through the existing parent 
   fx.handler=letters.createLetterHandler({load:async execution=>({projectName:'פרויקט סינתטי',preview:{snapshot,sourceRevisions:{}},ownerId:execution.ownerId,projectId:execution.projectId})});
   const job=await fx.store.enqueue(facts.ownerId??'10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000003','letter',payload,'letter-action',(await import('./codex-runtime/queue-fixtures.mjs')).savedProfile,{});
   await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();assert.equal(fx.rows.get(job.id).state,'SUCCEEDED');assert.equal(fx.modelTurns,1);assert.ok(prompt.includes('friendly'));assert.ok(prompt.includes('15.11.2026'));assert.ok(fx.rows.get(job.id).result.letter.includes(sources[6].quote));
+});
+
+test('regeneration receives the current manually edited letter and may retain its user date',async()=>{
+ const currentText='נא לתאם את העבודה ליום 23.12.2026 ולשמור על מעבר פתוח.',input={...payload,currentText};let prompt='';
+ const fx=queueFixture({onGenerate:async turn=>{prompt=turn.text;return JSON.stringify({body:'נבקש לתאם את העבודה ליום 23.12.2026 ולשמור על מעבר פתוח.',sourceIds:[]});}});
+ const handler=letters.createLetterHandler({load:async execution=>({projectName:'פרויקט סינתטי',preview:{snapshot,sourceRevisions:{}},ownerId:execution.ownerId,projectId:execution.projectId})});
+ const checked=handler.validate(input);await fx.store.enqueue(ownerId,projectId,'letter',checked,'edited-letter',savedProfile,{});
+ await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>handler,clock:fx.clock,startedAt:0}).run();
+ const job=[...fx.rows.values()][0];assert.equal(job.state,'SUCCEEDED');assert.ok(prompt.includes(currentText));assert.ok(job.result.letter.includes('23.12.2026'));assert.deepEqual(job.result.snapshot,snapshot);
 });
 test('an evidence blocker prevents generation before any model request',async()=>{
   assert.equal(typeof letters.createLetterHandler,'function');const fx=queueFixture();fx.handler=letters.createLetterHandler({load:async()=>{throw Object.assign(Error('unverified official evidence'),{code:'AI_SOURCE_UNVERIFIED'});}});await fx.enqueue();await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();assert.equal(fx.modelTurns,0);assert.equal([...fx.rows.values()][0].state,'FAILED');

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
-import {execFileSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {queueFixture,projectId} from './codex-runtime/queue-fixtures.mjs';
 import {ownerId,otherId} from './codex-runtime/fixtures.mjs';
 const workerModule=existsSync(new URL('../src/server/ai/worker.server.ts',import.meta.url))?await import('../src/server/ai/worker.server.ts'):{};
@@ -34,7 +34,11 @@ test('initialization interrupts previous queued work without generating it',asyn
 test('a browser-shaped execution object has no trusted server authority',async()=>{
   assert.equal(typeof workerModule.isAiExecutionContext,'function');assert.equal(workerModule.isAiExecutionContext({ownerId,projectId,generate:()=>{}}),false);
 });
-test('a startup database failure settles without an automatic retry spin',()=>{
-  const source=`import {createAiWorker} from './src/server/ai/worker.server.ts';import {queueFixture} from './scripts/codex-runtime/queue-fixtures.mjs';const fx=queueFixture();fx.store.interruptStale=async()=>{throw Error('offline');};const w=createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0});try{await w.run();}catch{}setTimeout(()=>console.log('settled'),0);`;
-  const output=execFileSync(process.execPath,['--import','./scripts/codex-runtime/load-server.mjs','--input-type=module','--eval',source],{windowsHide:true,encoding:'utf8',timeout:4000});assert.equal(output.trim(),'settled');
+test('a startup database failure settles without an automatic retry spin',async()=>{
+  const source=`import {createAiWorker} from './src/server/ai/worker.server.ts';import {queueFixture} from './scripts/codex-runtime/queue-fixtures.mjs';console.log('ready');const fx=queueFixture();fx.store.interruptStale=async()=>{throw Error('offline');};const w=createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0});try{await w.run();}catch{}setTimeout(()=>console.log('settled'),0);`;
+  const child=spawn(process.execPath,['--import','./scripts/codex-runtime/load-server.mjs','--input-type=module','--eval',source],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const output=await new Promise((resolve,reject)=>{let text='',ready=false;const expire=()=>{child.kill();reject(Error('Startup failure did not settle after the module loader became ready'));};let timer=setTimeout(expire,30000);
+    child.stdout.on('data',part=>{text+=part.toString();if(!ready&&text.includes('ready\n')){ready=true;clearTimeout(timer);timer=setTimeout(expire,4000);}});child.stderr.on('data',()=>{});
+    child.once('error',error=>{clearTimeout(timer);reject(error);});child.once('exit',code=>{clearTimeout(timer);if(code===0)resolve(text);else reject(Error('Isolated worker exited with '+code));});
+  });assert.equal(output.trim(),'ready\nsettled');
 });

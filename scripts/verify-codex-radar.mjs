@@ -173,8 +173,12 @@ test('a manually changed test profile reuses a zero-result context recorded beyo
  const run=await runScan(rows,{},[],client=>client,otherProfile);assert.equal(run.job.state,'SUCCEEDED',run.failure?.stack);assert.equal(run.fx.modelTurns,0);assert.equal(run.prepared.result.memory.unchanged,1);
 });
 
-test('an explicitly cancelled preview explains that the earlier answer was retained',async()=>{
- const {LocalAiResultView}=await import('../src/app/local-ai-check/LocalAiCheckClient.tsx'),html=renderToStaticMarkup(React.createElement(LocalAiResultView,{findingRef:'C-500000',result:{projectId,findingId:radarIds.finding,job:{state:'CANCELLED'}},error:'',isExtracting:false,extractionStatus:'',isApplyingReview:false,reviewStatus:'',onReextract:async()=>{},onApplyCorrection:async()=>{}}));assert.ok(html.includes('Проверка отменена. Предыдущий ответ сохранён.'));
+test('an explicitly cancelled preview explains that an existing earlier answer was retained',async()=>{
+ const {LocalAiResultView}=await import('../src/app/local-ai-check/LocalAiCheckClient.tsx'),html=renderToStaticMarkup(React.createElement(LocalAiResultView,{findingRef:'C-500000',result:{projectId,findingId:radarIds.finding,job:{state:'CANCELLED'},localResult:{explanation:'Сохранённый текст.'}},error:'',isExtracting:false,extractionStatus:'',isApplyingReview:false,reviewStatus:'',onReextract:async()=>{},onApplyCorrection:async()=>{}}));assert.ok(html.includes('Проверка отменена. Предыдущий ответ сохранён.'));
+});
+
+test('a first cancelled preview cannot claim that a previous answer exists',async()=>{
+ const {LocalAiResultView}=await import('../src/app/local-ai-check/LocalAiCheckClient.tsx'),html=renderToStaticMarkup(React.createElement(LocalAiResultView,{findingRef:'C-500000',result:{projectId,findingId:radarIds.finding,job:{state:'CANCELLED'}},error:'',isExtracting:false,extractionStatus:'',isApplyingReview:false,reviewStatus:'',onReextract:async()=>{},onApplyCorrection:async()=>{}}));assert.ok(html.includes('Проверка отменена.'));assert.ok(!html.includes('Предыдущий ответ сохранён.'));
 });
 
 test('replacing a previously reviewed supported issue preserves its archived history through the final cleanup',async()=>{

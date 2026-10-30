@@ -19,6 +19,10 @@ export async function restorePricingJob(projectId:string,findingId:string,kind:K
         if(['CANCELLED','FAILED','INTERRUPTED'].includes(job.state)){if(record(body.result))return {...body.result,lastActionState:job.state} as JsonValue;throw new BusinessAiError('AI_'+job.state,job.state==='CANCELLED'?'הבדיקה בוטלה. הנתונים נשמרו.':'הבדיקה הקודמת לא הושלמה. ניתן להפעיל בדיקה חדשה בכפתור.',409);}}
     return (body.result??null) as JsonValue;
 }
-export async function cancelPricingJob(projectId:string,findingId:string,kind:Kind):Promise<void>{
-    const jobs=await client.restore(projectId,kind,findingId),active=jobs.find(job=>job.state==='QUEUED'||job.state==='RUNNING');if(active)await client.cancel(active.id,active.revision);
+export async function cancelPricingJob(projectId:string,findingId:string,kind:Kind):Promise<JobDto>{
+    const prefix=[projectId,findingId,kind].join(':')+':';
+    if([...pending.keys()].some(key=>key.startsWith(prefix)))throw new BusinessAiError('AI_START_UNCONFIRMED','Запуск ещё не подтверждён. Отмена пока не подтверждена; данные сохранены.',409);
+    const jobs=await client.restore(projectId,kind,findingId),active=jobs.find(job=>job.state==='QUEUED'||job.state==='RUNNING'),job=active?await client.cancel(active.id,active.revision):jobs[0];
+    if(!job)throw new BusinessAiError('AI_START_UNCONFIRMED','Не найдено подтверждённое задание для отмены. Данные сохранены.',409);
+    if(!['SUCCEEDED','CANCELLED','FAILED','INTERRUPTED'].includes(job.state))throw new BusinessAiError('AI_CANCEL_UNCONFIRMED',undefined,409);return job;
 }

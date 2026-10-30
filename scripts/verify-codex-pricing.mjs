@@ -57,6 +57,26 @@ test('an applicable global price list survives the scoped PostgREST boolean filt
  fx.handler={validate:raw=>raw,async execute(_payload,execution){const transaction=await createProjectEffectClient(radarReadClient(rows),execution);found=await transaction.client.from('pricelists').select('*').or(`project_id.eq.${projectId},project_id.is.null,is_global.eq.true`);return {result:{done:true},effects:[]};}};await fx.enqueue();await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();assert.equal(found.data[0]?.id,id);
 });
 async function runPricingHandler(rows,kind='pricing',profile=savedProfile){const database=pricingReadClient(rows),fx=queueFixture({onGenerate:async input=>pricingReply(input)});let prepared,failure;const handler=kind==='support_enrichment'?support.createSupportHandler({database:()=>database}):handlers.createPricingHandler({database:()=>database});fx.handler={...handler,async execute(payload,execution){try{return prepared=await handler.execute(payload,execution);}catch(error){failure=error;throw error;}}};await fx.store.enqueue(ownerId,projectId,kind,kind==='pricing'?{contradictionId:pricingIds.finding,expertMode:false}:{},'pricing-handler',profile,{clientContextId:kind==='pricing'?pricingIds.finding:null});await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();return {prepared,fx,database,failure,job:[...fx.rows.values()][0]};}
+
+const safeExpert={technical_foundation:'יש לבחון את תנאי הביצוע לפי המקורות שנמצאו.',professional_argument:'יש להשוות את היקף העבודה למסמכים שנבחרו.',site_diary_instruction:'יש לתעד את העבודה שבוצעה ואת המקורות החסרים.'};
+for(const [label,expert]of [
+ ['invented money',{...safeExpert,professional_argument:'יש לשלם 9000 ₪.'}],
+ ['invented quote',{...safeExpert,technical_foundation:'במקור נכתב: "קיימת זכאות מאושרת לתשלום".'}],
+ ['an approval field',{...safeExpert,approved:true}],
+])test(`expert pricing prose cannot persist ${label}`,async()=>{
+ const database=pricingReadClient(),before=structuredClone(database.tables),fx=queueFixture({onGenerate:async input=>input.text.startsWith('Explain only')?JSON.stringify(expert):pricingReply(input)}),handler=handlers.createPricingHandler({database:()=>database});
+ await fx.store.enqueue(ownerId,projectId,'pricing',{contradictionId:pricingIds.finding,expertMode:true},'invalid-expert',savedProfile,{clientContextId:pricingIds.finding});
+ await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>handler,clock:fx.clock,startedAt:0}).run();
+ assert.equal([...fx.rows.values()][0].state,'FAILED');assert.deepEqual(database.tables,before);assert.equal(database.writes.length,0);
+});
+
+test('an unsafe cached expert explanation is replaced without repeating the valid price analysis',async()=>{
+ const rows=pricingRows(),first=await runPricingHandler(rows);applyPricingEffects(rows,first.prepared);rows.contradictions[0].evidence_data.expert_strategy={...safeExpert,professional_argument:'יש לשלם 9000 ₪.'};
+ const database=pricingReadClient(rows),fx=queueFixture({onGenerate:async input=>{assert.ok(input.text.startsWith('Explain only'),'The valid price analysis must stay reusable');return JSON.stringify(safeExpert);}}),handler=handlers.createPricingHandler({database:()=>database});
+ await fx.store.enqueue(ownerId,projectId,'pricing',{contradictionId:pricingIds.finding,expertMode:true},'cached-expert',savedProfile,{clientContextId:pricingIds.finding});
+ await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>handler,clock:fx.clock,startedAt:0}).run();
+ const job=[...fx.rows.values()][0];assert.equal(job.state,'SUCCEEDED');assert.equal(fx.modelTurns,1);assert.equal(job.result.total_excl_vat,150);assert.deepEqual(job.result.expert_strategy,safeExpert);
+});
 test('the production pricing handler prepares only checked evidence and repeats with zero turns',async()=>{
  const rows=pricingRows(),before=structuredClone(rows),first=await runPricingHandler(rows);assert.equal(first.job.state,'SUCCEEDED',first.failure?.stack);assert.equal(first.job.result.total_excl_vat,150);assert.equal(first.job.result.suggested_unit_price_excl_vat,75);assert.deepEqual(first.database.tables,pricingReadClient(before).tables);assert.equal(first.database.writes.length,0);assert.equal(first.prepared.effects.length,1);assert.deepEqual(Object.keys(first.prepared.effects[0].data),['evidence_data']);applyPricingEffects(rows,first.prepared);const again=await runPricingHandler(rows,'pricing',{...savedProfile,model:'owner-changed-profile',revision:2});assert.equal(again.job.state,'SUCCEEDED',again.failure?.stack);assert.equal(again.fx.modelTurns,0);assert.equal(again.job.result.total_excl_vat,150);
 });

@@ -15,7 +15,7 @@ const modelUrl = 'data:text/javascript,' + encodeURIComponent(`
     calls++; if(options.unavailable)throw new Error('Local offline');
     if(prompt.startsWith('PRICING_SCOPE_MATERIAL'))return JSON.stringify({verdict:options.reject?'MISMATCH':'MATCH'});
     if(prompt.startsWith('PRICING_SCOPE_PERMISSION'))return JSON.stringify({verdict:'MATCH',evidence:[prompt.match(/\\[CONTRACT SOURCE[^\\n]*\\]\\n\\[(Q\\d+)\\]/)?.[1]].filter(Boolean)});
-    if(prompt.startsWith('Explain only'))return JSON.stringify({technical_foundation:'לפי מקורות העבודה והמחיר',professional_argument:'לבדוק את ההפרש המתועד',site_diary_instruction:'לתעד כמות בפועל',suggested_unit_price_excl_vat:999999});
+    if(prompt.startsWith('Explain only'))return JSON.stringify({technical_foundation:'לפי מקורות העבודה והמחיר',professional_argument:'לבדוק את ההפרש המתועד',site_diary_instruction:'לתעד כמות בפועל',...(options.expertExtra?{suggested_unit_price_excl_vat:999999}:{})});
     if(prompt.startsWith('PRICING_SCOPE_WORK_PROFILE'))return JSON.stringify({operations:(options.partial?['אספקה','התקנה']:['אספקה ופיזור']).map(operation_quote=>({operation_quote})),quantity:options.noQuantity?null:2,unit:'מ"ק'});
     if(prompt.startsWith('PRICING_SCOPE_PRICE_COVERAGE'))return JSON.stringify({required_material_quote:'חומר מילוי מסוג C',priced_material_quote:'חומר מילוי מסוג C',
       reason:options.reject?'החומר שונה':'לפי תיאור המחיר',material:options.reject?'MISMATCH':'MATCH',work:'MATCH',method:'MATCH',unit:'MATCH',conditions:'MATCH',
@@ -170,6 +170,13 @@ test('an optional local explanation reuses the checked scope and cannot replace 
   assert.equal(result.suggested_unit_price_excl_vat, 75); assert.equal(result.total_excl_vat, 150);
   assert.ok(result.expert_strategy.technical_foundation); assert.ok(result.expert_strategy.site_diary_instruction);
   assert.equal(model.calls, 1); assert.equal(model.externalCalls, 0);
+});
+
+test('an explanation that adds a financial field is rejected while the checked price remains intact',async()=>{
+  model.reset();const db=pricingDatabase(sourceTables(),{allowWrites:true});await evaluate(db);
+  const before=structuredClone(db.tables.contradictions[0].evidence_data);model.reset({expertExtra:true});
+  await assert.rejects(new AiEstimatorService(db).evaluate({execution,projectId:'p',contradictionId:'finding',contractorId:'owner',expertMode:true}),error=>error.status===503);
+  assert.deepEqual(db.tables.contradictions[0].evidence_data,before);assert.equal(before.pricing_evaluation.suggested_unit_price_excl_vat,75);assert.equal(before.pricing_evaluation.total_excl_vat,150);assert.equal(model.calls,1);
 });
 
 for (const failure of ['external', 'unavailable']) test(`${failure} local inference never falls back or saves a ready result`, async () => {

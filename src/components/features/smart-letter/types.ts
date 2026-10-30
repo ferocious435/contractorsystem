@@ -99,6 +99,7 @@ export interface GenerateSmartLetterPayload {
   recipient: string;
   subject: string;
   keyPoints: string;
+  currentText?: string;
   tone: ToneValue | string;
   itemIds: string[];
 }

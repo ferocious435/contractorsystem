@@ -103,7 +103,7 @@ export function useAiEstimatorState({
         void restoreAiPricing(projectId,contradiction.id,controller.signal).then(data=>{if(controller.signal.aborted)return;setEstimateData(data);if(data?.lastActionState)setEstimationError('הבדיקה האחרונה לא הושלמה. מוצגת התוצאה השמורה הקודמת.');if(data)setFormDraft(previous=>previous.scope===scope&&previous.edited?previous:{scope,edited:false,form:toPricingScopeForm(data)});}).catch(error=>{if(!controller.signal.aborted)setEstimationError(error instanceof Error?error.message:'לא ניתן לשחזר את הבדיקה.');}).finally(()=>{if(!controller.signal.aborted)setIsLoading(false);});
         return()=>{controller.abort();observation.current?.abort();};
     }, [projectId,contradiction.id,scope,readDraft]);
-    const cancelEstimation=useCallback(async()=>{try{await cancelAiPricing(projectId,contradiction.id);observation.current?.abort();setIsLoading(false);setEstimationError('הבדיקה בוטלה. הנתונים שהיו בחלון נשמרו.');}catch{setEstimationError('לא ניתן לאשר שהבדיקה בוטלה. ניתן לנסות שוב.');}},[projectId,contradiction.id]);
+    const cancelEstimation=useCallback(async()=>{try{const job=await cancelAiPricing(projectId,contradiction.id);if(job.state==='SUCCEEDED')return;observation.current?.abort();setIsLoading(false);setEstimationError(job.state==='CANCELLED'?'הבדיקה בוטלה. הנתונים שהיו בחלון נשמרו.':'הבדיקה לא הושלמה. הנתונים שהיו בחלון נשמרו.');}catch{setEstimationError('לא ניתן לאשר שהבדיקה בוטלה. ניתן לנסות שוב.');}},[projectId,contradiction.id]);
 
     const handleFormChange = useCallback((
         event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>

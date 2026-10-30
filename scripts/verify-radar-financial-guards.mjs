@@ -1,20 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { createRequire } from 'node:module';
-const require=createRequire(import.meta.url), ts=require('typescript'), Module=require('node:module');
-const resolve=Module._resolveFilename;
-Module._resolveFilename=function(specifier,...args) { return resolve.call(this,
-  specifier.startsWith('@/')?path.resolve('src',specifier.slice(2)):specifier,...args); };
-require.extensions['.ts']=(module,file)=>module._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{
-  compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true},fileName:file}).outputText,file);
-const { BulkConfidencePreviewService }=require('../src/app/api/pricing/bulk-confidence-preview/bulk-confidence-preview-service.ts');
-// The real service runs; its external inference boundary cannot create a client or make a request.
-let inferenceCalls=0;
-require.cache[require.resolve('../src/lib/gemini.ts')]={exports:{geminiFlashModel:{generateContent(){inferenceCalls++;throw new Error('Inference is forbidden in the guard test');}}}};
-const { AiEstimatorService }=require('../src/app/api/pricing/evaluate-ai/ai-estimator-service.ts');
-const { saveLedgerItem }=require('../src/app/api/pricing/save-ledger/save-ledger-service.ts');
+import './codex-runtime/load-server.mjs';
+const { BulkConfidencePreviewService }=await import('../src/app/api/pricing/bulk-confidence-preview/bulk-confidence-preview-service.ts');
+// Actual services run without an execution context: an accidental model call fails closed.
+const { AiEstimatorService }=await import('../src/app/api/pricing/evaluate-ai/ai-estimator-service.ts');
+const { saveLedgerItem }=await import('../src/app/api/pricing/save-ledger/save-ledger-service.ts');
 const excluded={id:'excluded',project_id:'project',status:'OPEN',evidence_data:{review_disposition:{type:'INVALID_AUTOMATIC_FINDING'},pricing_evaluation:{confidence_score:0.99}}};
 function database(tables) {
   const state=structuredClone(tables),writes=[];
@@ -39,7 +29,7 @@ test('automatic estimation rejects an excluded record before synchronizing data 
   const db=database({contradictions:[excluded]}),originalFetch=globalThis.fetch;let calls=0;
   globalThis.fetch=()=>{calls++;throw new Error('No model or network is authorized in this test');};
   try{await assert.rejects(new AiEstimatorService(db).evaluate({projectId:'project',contradictionId:'excluded',contractorId:'owner'}),e=>e.status===409);
-    assert.equal(calls,0);assert.equal(inferenceCalls,0);assert.deepEqual(db.writes,[]);
+    assert.equal(calls,0);assert.deepEqual(db.writes,[]);
   }finally{globalThis.fetch=originalFetch;}
 });
 test('a new financial row cannot be created from an excluded record',async()=>{
