@@ -1,4 +1,5 @@
 import 'server-only';
+import {enrichProjectFindingsWithSupportSources} from '@/utils/support-source-enrichment-server';
 import { buildRadarEvidenceAssessment } from '@/utils/radar-saved-finding-review';
 import { refreshSavedIssueHistories, savedIssueHistory } from '@/utils/radar-issue-history-server';
 import {
@@ -630,9 +631,11 @@ export async function runRadarScan(database:SupabaseClient,payload:JsonObject,ex
     const results=await analyzeDirectly(supabase,projectId,contracts,work,timeline,execution,identities);
     warnings.push(...results.__analysisFailures||[]);
     if(!warnings.length){await deleteTemplatePlaceholderFindings(supabase,projectId);await deleteUnsupportedAutomaticFindings(supabase,projectId);await consolidateRepeatedAutomaticFindings(supabase,projectId);await deleteObsoleteAutomaticArchiveRows(supabase,projectId);}
+    const supportEnrichment=!warnings.length?await enrichProjectFindingsWithSupportSources({supabase,projectId,execution}):null;
+    if(supportEnrichment?.failed)warnings.push('בדיקת חלק ממקורות התמחור לא הושלמה; הפרטים מסומנים לבדיקה.');
     await execution.checkActive();
     const publicResults=results.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>key!=='xmin')));
-    return {result:{success:warnings.length===0,partial:warnings.length>0,found:results.length,contradictions:publicResults,warnings,memory:{scanned:results.__scannedDocuments||0,unchanged:results.__cachedDocuments||0,total:work.length},scanStatus:await loadProjectScanState(supabase,projectId),analysisIdentity:getComparisonAiIdentity(execution)} as unknown as JsonObject,effects:await transaction.effects()};
+    return {result:{success:warnings.length===0,partial:warnings.length>0,found:results.length,contradictions:publicResults,warnings,supportEnrichment,memory:{scanned:results.__scannedDocuments||0,unchanged:results.__cachedDocuments||0,total:work.length},scanStatus:await loadProjectScanState(supabase,projectId),analysisIdentity:getComparisonAiIdentity(execution)} as unknown as JsonObject,effects:await transaction.effects()};
 }
 
 async function analyzeDirectly(

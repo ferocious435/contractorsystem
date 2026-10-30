@@ -9,8 +9,7 @@ const modelUrl = 'data:text/javascript,' + encodeURIComponent(`
   export let calls=0, externalCalls=0;
   let options={};
   export function reset(next={}) { options=next; calls=0; externalCalls=0; }
-  export function getComparisonAiIdentity() { return {kind:options.external?'gemini':'ollama',provider:'fixture',model:'fixture'}; }
-  export const geminiFlashModel={generateContent(){externalCalls++;throw new Error('External inference forbidden');}};
+  export function getComparisonAiIdentity() { if(options.external)throw Object.assign(Error('Unverified execution'),{status:503});return {kind:'codex',provider:'Codex',model:'fixture'}; }
   export const ENGINEERING_STRATEGY_PROMPT='Only source-backed advice';
   export async function generateComparisonText(prompt) {
     calls++; if(options.unavailable)throw new Error('Local offline');
@@ -55,8 +54,8 @@ const hook = registerHooks({ load(url, context, nextLoad) {
   };
   return nextLoad(url, context);
 }, resolve(specifier, context, nextResolve) {
-  if (specifier === '@/lib/comparison-ai' || specifier === '@/lib/gemini') return { url: modelUrl, shortCircuit: true };
-  if (specifier.startsWith('@/')) return nextResolve(new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href, context);
+  if (specifier === '@/server/ai/comparison.server') return { url: modelUrl, shortCircuit: true };
+  if (specifier.startsWith('@/')) return nextResolve(new URL(`../src/${specifier.slice(2)}${specifier.endsWith('.json')?'':'.ts'}`, import.meta.url).href, context);
   try { return nextResolve(specifier, context); }
   catch (error) { if (error.code === 'ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !/\.[cm]?[jt]sx?$/u.test(specifier)) return nextResolve(`${specifier}.ts`, context); throw error; }
 } });
@@ -64,7 +63,8 @@ const { AiEstimatorService } = await import('../src/app/api/pricing/evaluate-ai/
 const { enrichProjectFindingsWithSupportSources } = await import('../src/utils/support-source-enrichment-server.ts');
 const { normalizePricingEvaluation, DEFAULT_PRICING_EVALUATION_TEXT_FALLBACKS } = await import('../src/app/api/pricing/evaluate-ai/evaluation-normalizers.ts');
 hook.deregister();
-const evaluate = db => new AiEstimatorService(db).evaluate({ contradictionId: 'finding', projectId: 'p', contractorId: 'owner' });
+const execution={projectId:'30000000-0000-4000-8000-000000000003',signal:new AbortController().signal,checkActive:async()=>{}};
+const evaluate = db => new AiEstimatorService(db).evaluate({execution,  contradictionId: 'finding', projectId: 'p', contractorId: 'owner' });
 
 for (const reject of [true, false]) test(`both consumers ${reject ? 'reject the wrong material' : 'accept a supported matching item'} through the common checker`, async () => {
   model.reset({ reject });
@@ -79,7 +79,7 @@ for (const reject of [true, false]) test(`both consumers ${reject ? 'reject the 
     && anchor.quote.includes('מחירון דקל')), 'The contract mechanism shown to the local reviewer must remain visible as source evidence');
   assert.equal(db.writes.filter(write => write.table !== 'contradictions').length, 0);
   const enriched = pricingDatabase(sourceTables(), { allowWrites: true });
-  await enrichProjectFindingsWithSupportSources({ supabase: enriched, projectId: 'p' });
+  await enrichProjectFindingsWithSupportSources({execution,  supabase: enriched, projectId: 'p' });
   const support = enriched.tables.contradictions[0].evidence_data.support_analysis;
   assert.equal(support.scope_review.status, reject ? 'REJECTED' : 'FULL');
   assert.equal(support.price_evidence.length, reject ? 0 : 1);
@@ -110,15 +110,15 @@ test('a technical exclusion is rejected before model use or financial writes', a
   model.reset(); const tables = sourceTables(); tables.contradictions[0].evidence_data.review_disposition = { type: 'INVALID_AUTOMATIC_FINDING' };
   const db = pricingDatabase(tables, { allowWrites: true });
   await assert.rejects(evaluate(db), error => error.status === 409);
-  await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+  await enrichProjectFindingsWithSupportSources({execution,  supabase: db, projectId: 'p' });
   assert.equal(model.calls, 0); assert.equal(model.externalCalls, 0); assert.equal(db.writes.length, 0);
 });
 
 test('an unchanged complete support cache does not trigger the new model logic', async () => {
   model.reset(); const db = pricingDatabase(sourceTables(), { allowWrites: true });
-  await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+  await enrichProjectFindingsWithSupportSources({execution,  supabase: db, projectId: 'p' });
   model.reset(); db.writes.length = 0;
-  const result = await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+  const result = await enrichProjectFindingsWithSupportSources({execution,  supabase: db, projectId: 'p' });
   assert.equal(result.skipped, 1); assert.equal(model.calls, 0); assert.equal(db.writes.length, 0);
 });
 
@@ -134,7 +134,7 @@ test('an unchanged checked estimate is returned without a model call or another 
 
 test('the calculator reuses the radar scope without repeating local inference', async () => {
   model.reset(); const db=pricingDatabase(sourceTables(),{allowWrites:true});
-  await enrichProjectFindingsWithSupportSources({supabase:db,projectId:'p'});
+  await enrichProjectFindingsWithSupportSources({execution, supabase:db,projectId:'p'});
   const scope=db.tables.contradictions[0].evidence_data.support_analysis.scope_review;
   model.reset(); db.writes.length=0;
   const result=await evaluate(db);
@@ -145,7 +145,7 @@ test('the radar reuses an unchanged calculator scope', async () => {
   model.reset(); const db=pricingDatabase(sourceTables(),{allowWrites:true});
   const estimate=await evaluate(db);
   model.reset();
-  await enrichProjectFindingsWithSupportSources({supabase:db,projectId:'p'});
+  await enrichProjectFindingsWithSupportSources({execution, supabase:db,projectId:'p'});
   const support=db.tables.contradictions[0].evidence_data.support_analysis;
   assert.deepEqual(support.scope_review,estimate.scope_review);
   assert.equal(model.calls,0,'No second price selection or free-form explanation is needed for an already checked price');
@@ -153,11 +153,11 @@ test('the radar reuses an unchanged calculator scope', async () => {
 
 test('an error preserves the last complete support result in one limitation write', async () => {
   model.reset(); const db=pricingDatabase(sourceTables(),{allowWrites:true});
-  await enrichProjectFindingsWithSupportSources({supabase:db,projectId:'p'});
+  await enrichProjectFindingsWithSupportSources({execution, supabase:db,projectId:'p'});
   const last=structuredClone(db.tables.contradictions[0].evidence_data.support_analysis);
-  db.tables.pricelists[0].content_hash='updated-book'; db.writes.length=0;
+  db.tables.pricelists[0].content_hash='updated-book'; db.tables.pricelist_items[0].rate=90; db.writes.length=0;
   model.reset({unavailable:true});
-  await enrichProjectFindingsWithSupportSources({supabase:db,projectId:'p'});
+  await enrichProjectFindingsWithSupportSources({execution, supabase:db,projectId:'p'});
   const support=db.tables.contradictions[0].evidence_data.support_analysis;
   assert.deepEqual(support.last_complete,last); assert.deepEqual(support.price_evidence,[]);
   assert.equal(db.writes.length,1);
@@ -166,7 +166,7 @@ test('an error preserves the last complete support result in one limitation writ
 test('an optional local explanation reuses the checked scope and cannot replace its money', async () => {
   model.reset(); const db = pricingDatabase(sourceTables(), { allowWrites: true });
   await evaluate(db); model.reset();
-  const result = await new AiEstimatorService(db).evaluate({ projectId: 'p', contradictionId: 'finding', contractorId: 'owner', expertMode: true });
+  const result = await new AiEstimatorService(db).evaluate({execution,  projectId: 'p', contradictionId: 'finding', contractorId: 'owner', expertMode: true });
   assert.equal(result.suggested_unit_price_excl_vat, 75); assert.equal(result.total_excl_vat, 150);
   assert.ok(result.expert_strategy.technical_foundation); assert.ok(result.expert_strategy.site_diary_instruction);
   assert.equal(model.calls, 1); assert.equal(model.externalCalls, 0);
@@ -176,7 +176,8 @@ for (const failure of ['external', 'unavailable']) test(`${failure} local infere
   model.reset({ [failure]: true });
   const db = pricingDatabase(sourceTables(), { allowWrites: true });
   await assert.rejects(evaluate(db), error => error.status === 503);
-  await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+  if(failure==='external')await assert.rejects(enrichProjectFindingsWithSupportSources({execution,supabase:db,projectId:'p'}),error=>error.status===503);
+  else await enrichProjectFindingsWithSupportSources({execution,supabase:db,projectId:'p'});
   assert.notEqual(db.tables.contradictions[0].evidence_data.support_analysis?.status, 'COMPLETE');
   assert.equal(model.externalCalls, 0); assert.equal(db.writes.filter(write => write.table !== 'contradictions').length, 0);
 });

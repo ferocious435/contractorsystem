@@ -4,6 +4,7 @@ import type {
     AiEstimatorSourceDocumentQuery,
     EvaluateAiPricingInput,
 } from '../types';
+import {requestPricingJob,restorePricingJob,cancelPricingJob} from '../../pricingJobApi';
 
 interface SupabaseDocumentQuery {
     eq(column: string, value: string): SupabaseDocumentQuery;
@@ -34,25 +35,12 @@ export async function evaluateAiPricing({
     contradictionId,
     projectId,
     expertMode,
+    signal,
 }: EvaluateAiPricingInput): Promise<AIPricingEvaluationResponse> {
-    const response = await fetch('/api/pricing/evaluate-ai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contradictionId,
-            projectId,
-            expertMode,
-        }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-        throw new Error(data?.error || 'AI pricing evaluation failed');
-    }
-
-    return data as AIPricingEvaluationResponse;
+    return await requestPricingJob(projectId,contradictionId,'pricing',expertMode,signal) as unknown as AIPricingEvaluationResponse;
 }
+export const restoreAiPricing=async(projectId:string,findingId:string,signal?:AbortSignal)=>await restorePricingJob(projectId,findingId,'pricing',signal) as AIPricingEvaluationResponse|null;
+export const cancelAiPricing=(projectId:string,findingId:string)=>cancelPricingJob(projectId,findingId,'pricing');
 
 export async function fetchAiEstimatorSourceDocument(
     supabase: SupabaseDocumentsClient,

@@ -1,44 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { registerHooks } from 'node:module';
-import { workChangeDatabase } from './fixtures/work-change-fixtures.mjs';
-const boundaryUrl='data:text/javascript,'+encodeURIComponent(`
- let database,fail=false;export const calls={legacy:0,review:0};
- export function reset(db,shouldFail=false){database=db;fail=shouldFail;calls.legacy=0;calls.review=0;}
- export async function createClient(){return database;}
- export class PricingEvaluationHttpError extends Error{}
- export class WorkChangeReviewHttpError extends Error{constructor(status,message){super(message);this.status=status;}}
- export class AiEstimatorService{async evaluate(){calls.legacy++;return{success:true,legacy:true};}}
- export async function reviewWorkChangeCase(){calls.review++;if(fail)throw new WorkChangeReviewHttpError(503,'Local unavailable');return{review:{version:'work-change-v1',facts:[],sources:[]},cached:false,updatedDocumentIds:[]};}
-`);
-const boundary=await import(boundaryUrl);
-const hook=registerHooks({resolve(specifier,context,next){
- if(specifier==='next/server')return next('next/server.js',context);
- if(['@/utils/supabase/server','@/utils/work-change-review-server','./ai-estimator-service'].includes(specifier))return{url:boundaryUrl,shortCircuit:true};
- if(specifier==='./evaluation-access')return next(new URL('../src/app/api/pricing/evaluate-ai/evaluation-access.ts',import.meta.url).href,context);
- if(specifier.startsWith('@/'))return next(new URL(`../src/${specifier.slice(2)}.ts`,import.meta.url).href,context);
- return next(specifier,context);
-}});
+import {pathToFileURL} from 'node:url';
+import {registerHooks} from 'node:module';
+import {createAiJobService,readAiRequest} from '../src/server/ai/service.server.ts';
+import {pricingHandler,workChangeHandler} from '../src/server/ai/handlers/pricing.ts';
+import {BusinessAiError} from '../src/server/ai/contracts.ts';
+import {queueFixture,projectId,savedProfile} from './codex-runtime/queue-fixtures.mjs';
+import {ownerId} from './codex-runtime/fixtures.mjs';
+import {pricingIds} from './codex-runtime/pricing-fixtures.mjs';
+let authenticated=true,owned=true,configured=true,fx,service;
+function reset(){authenticated=owned=configured=true;fx=queueFixture();service=createAiJobService({store:fx.store,worker:{initialize:async()=>{},run:async()=>{},abort(){}},authenticate:async()=>authenticated?{id:ownerId}:null,resolveOwner:async()=>ownerId,ownsProject:async(owner,project)=>owned&&owner===ownerId&&project===projectId,readProfile:async()=>configured?savedProfile:null,handlerFor:kind=>kind==='work_change'?workChangeHandler:pricingHandler});}
+globalThis.__workChangeRoute={authenticate:async()=>{if(!authenticated)throw new BusinessAiError('AI_UNAUTHORIZED',undefined,401);return ownerId;},create:(...args)=>service.create(...args),read:readAiRequest};
+const hook=registerHooks({resolve(specifier,context,next){if(specifier==='@/server/ai/service.server'&&/\/pricing\/evaluate-ai\/route\.ts$/.test(context.parentURL??''))return {url:'data:text/javascript,export const authenticateRuntimeOwner=r=>globalThis.__workChangeRoute.authenticate(r);export const createOwnedAiJob=(...a)=>globalThis.__workChangeRoute.create(...a);export const readAiRequest=r=>globalThis.__workChangeRoute.read(r);export const getAiJobService=()=>{throw Error("GET not requested in this profile");};',shortCircuit:true};return next(specifier,context);}});
 const file=process.env.WORK_CHANGE_ROUTE_FILE?pathToFileURL(path.resolve(process.env.WORK_CHANGE_ROUTE_FILE)).href:new URL('../src/app/api/pricing/evaluate-ai/route.ts',import.meta.url).href;
 const {POST}=await import(file);hook.deregister();
-const request=extra=>new Request('http://localhost/api/pricing/evaluate-ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId:'project',contradictionId:'change',reviewCaseOnly:true,...extra})});
-test('the actual API dispatches source review without running ordinary pricing',async()=>{
- boundary.reset(workChangeDatabase());const response=await POST(request());const payload=await response.json();
- assert.equal(response.status,200);assert.equal(payload.review?.version,'work-change-v1');assert.equal(boundary.calls.legacy,0);
-});
-test('the actual new mode retains authentication',async()=>{
- const db=workChangeDatabase();db.auth.getUser=async()=>({data:{user:null},error:null});boundary.reset(db);
- assert.equal((await POST(request())).status,401);assert.equal(boundary.calls.review,0);assert.equal(boundary.calls.legacy,0);
-});
-test('the actual new mode retains project ownership',async()=>{
- boundary.reset(workChangeDatabase({projects:[]}));assert.equal((await POST(request())).status,403);assert.equal(boundary.calls.review,0);
-});
-test('a local-review failure stays an explicit unavailable response',async()=>{
- boundary.reset(workChangeDatabase(),true);assert.equal((await POST(request())).status,503);assert.equal(boundary.calls.legacy,0);
-});
-test('ordinary pricing still uses its original API path',async()=>{
- boundary.reset(workChangeDatabase());const response=await POST(request({reviewCaseOnly:false}));
- assert.equal((await response.json()).legacy,true);assert.equal(boundary.calls.review,0);
-});
+const request=extra=>new Request('http://localhost/api/pricing/evaluate-ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId,contradictionId:pricingIds.finding,clientContextId:pricingIds.finding,requestKey:'work-change-button',reviewCaseOnly:true,...extra})});
+test('the API accepts a saved source-review job without doing pricing or inference inside HTTP',async()=>{reset();const response=await POST(request()),body=await response.json();assert.equal(response.status,202);assert.equal(body.job.kind,'work_change');assert.equal(body.job.state,'QUEUED');assert.equal(fx.rows.size,1);assert.equal(fx.modelTurns,0);});
+test('work-change mode authenticates before reading the submitted payload',async()=>{reset();authenticated=false;globalThis.__workChangeRoute.read=()=>{throw Error('Private payload must not be read');};assert.equal((await POST(request())).status,401);assert.equal(fx.rows.size,0);globalThis.__workChangeRoute.read=readAiRequest;});
+test('work-change mode keeps project ownership checks',async()=>{reset();owned=false;assert.equal((await POST(request())).status,403);assert.equal(fx.rows.size,0);});
+test('a missing manually saved profile stays an explicit unavailable response without fallback',async()=>{reset();configured=false;const response=await POST(request());assert.equal(response.status,503);assert.equal((await response.json()).code,'AI_PROFILE_REQUIRED');assert.equal(fx.rows.size,0);assert.equal(fx.modelTurns,0);});
+test('ordinary pricing accepts its own kind through the same program API',async()=>{reset();const response=await POST(request({reviewCaseOnly:false}));assert.equal(response.status,202);assert.equal((await response.json()).job.kind,'pricing');assert.equal(fx.modelTurns,0);});
+test('a different open form cannot borrow another work-change result',async()=>{reset();assert.equal((await POST(request({clientContextId:pricingIds.work}))).status,400);assert.equal(fx.rows.size,0);});

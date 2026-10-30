@@ -40,13 +40,14 @@ async function run(name,args,{cwd=control,environment=env}={}){
   console.log(`${name}: ${code===0?'PASS':'FAIL'} (${path.relative(root,log)})`);
   if(code!==0){console.log((await readFile(log,'utf8')).split(/\r?\n/).slice(-16).join('\n'));throw Error(name+' failed');}
 }
-const profiles={1:['protocol','metadata'],2:['jobs-db'],3:['worker','job-routes'],4:['ui'],5:['writing','letter-preview-db','job-routes','worker','ui'],6:['comparison'],7:['radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],8:['pricing'],9:['documents']};
+const profiles={1:['protocol','metadata'],2:['jobs-db'],3:['worker','job-routes'],4:['ui'],5:['writing','letter-preview-db','job-routes','worker','ui'],6:['comparison'],7:['radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],8:['pricing','radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],9:['documents']};
 const names=task>=10?files.filter(file=>/^scripts\/verify-codex-[^/]+\.mjs$/.test(file)).map(file=>file.slice('scripts/verify-codex-'.length,-4)):profiles[task];
 if(!names?.length)throw Error('No verification profile');
 for(const name of names)if(!files.includes(`scripts/verify-codex-${name}.mjs`))throw Error('Unprepared verification file: '+name);
 if(task>=2)await run('synthetic-db',['scripts/codex-runtime/db.mjs','prepare']);
 if(task>=5)await run('synthetic-writing-db',['scripts/codex-runtime/writing-db.mjs']);
 await run('profile',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...names.map(name=>`scripts/verify-codex-${name}.mjs`)]);
+if(task===8)await run('pricing-regression',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...files.filter(file=>/^scripts\/verify-(?:pricing-scope|work-change|support)-[^/]+\.mjs$/.test(file)&&!file.includes('model'))]);
 let radarFixture;
 if(task===7){const snapshot=path.join(root,'data/point1-audit/point14-current-mtm-verification-20261025.json'),before=createHash('sha256').update(await readFile(snapshot)).digest('hex');
  await run('radar-regression',['--experimental-strip-types','--test','--test-concurrency=1',...['contract-scan-quality','radar-evidence-relation','semantic-scan-response','completion-deadline-review','requirement-basis','radar-issue-history','radar-issue-history-persistence','mtm-timing','issue-timing-display','scan-memory','scan-ai-response','scan-retry-queue','radar-step6','radar-step6-persistence','radar-financial-guards','radar-saved-review-ui','scan-chunk-coverage','document-source-readiness'].map(name=>'scripts/verify-'+name+'.mjs')],{environment:{...env,RADAR_MTM_SNAPSHOT:snapshot}});

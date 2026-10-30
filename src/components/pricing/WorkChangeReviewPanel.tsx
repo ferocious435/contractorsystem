@@ -5,7 +5,7 @@ import {Dialog} from '@/components/ui/titanium/Dialog';
 import {Button} from '@/components/ui/titanium/Button';
 import {Feedback} from '@/components/ui/titanium/Feedback';
 import type { WorkChangeFact, WorkChangeReview } from '@/utils/work-change-review';
-import { requestWorkChangeReview } from './workChangeReviewApi';
+import { requestWorkChangeReview,restoreWorkChangeReview,cancelWorkChangeReview } from './workChangeReviewApi';
 import { WorkChangeFinancialReadiness } from './WorkChangeFinancialReadiness';
 
 const labels: Record<string, string> = {
@@ -160,20 +160,23 @@ interface PanelProps { findingId: string; projectId: string; onClose: () => void
 const WorkChangeReviewPanel: React.FC<PanelProps> = ({ findingId, projectId, onClose }) => {
     const [review, setReview] = React.useState<WorkChangeReview | null>(null);
     const [error, setError] = React.useState<string | null>(null);
-    const [attempt, setAttempt] = React.useState(0);
+    const [busy,setBusy]=React.useState(true),observation=React.useRef<AbortController|null>(null);
     React.useEffect(() => {
-        const controller = new AbortController(); let active = true;
+        const controller = new AbortController();observation.current=controller;let active = true;
         setReview(null); setError(null);
-        requestWorkChangeReview(projectId, findingId, controller.signal).then(result => { if (active) setReview(result.review); })
-            .catch(cause => { if (active && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'הבדיקה לא הושלמה.'); });
-        return () => { active = false; controller.abort(); };
-    }, [projectId, findingId, attempt]);
+        restoreWorkChangeReview(projectId, findingId, controller.signal).then(result => { if (active&&result){setReview(result.review);if(result.lastActionState)setError('הבדיקה האחרונה לא הושלמה. מוצגת התוצאה השמורה הקודמת.');} })
+            .catch(cause => { if (active && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'הבדיקה לא הושלמה.'); }).finally(()=>{if(active&&!controller.signal.aborted)setBusy(false);});
+        return () => { active = false; controller.abort();observation.current?.abort(); };
+    }, [projectId, findingId]);
 
-    const retry = React.useCallback(() => setAttempt(value => value + 1), []);
+    const retry=React.useCallback(async()=>{observation.current?.abort();const controller=new AbortController();observation.current=controller;setBusy(true);setError(null);try{const result=await requestWorkChangeReview(projectId,findingId,controller.signal);if(!controller.signal.aborted)setReview(result.review);}catch(cause){if(!controller.signal.aborted)setError(cause instanceof Error?cause.message:'הבדיקה לא הושלמה.');}finally{if(!controller.signal.aborted)setBusy(false);}},[projectId,findingId]);
+    const cancel=React.useCallback(async()=>{try{await cancelWorkChangeReview(projectId,findingId);observation.current?.abort();setBusy(false);setError('הבדיקה בוטלה. התוצאה הקודמת נשמרה אם הייתה זמינה.');}catch{setError('לא ניתן לאשר שהבדיקה בוטלה.');}},[projectId,findingId]);
     return <Dialog open labelledBy="work-change-review-heading" className="ti-dialog--wide ti-work-change-dialog" onClose={onClose}>
         <header className="ti-dialog__header"><div><h2 id="work-change-review-heading" className="ti-title">בדיקת מסמכי השינוי</h2><p className="ti-subtitle">העבודות המקוריות, החלופה והבסיס לסכומים</p></div><Button onClick={onClose}>סגירה</Button></header>
-        {!review&&!error&&<Feedback aria-live="polite"><span className="ti-spinner" aria-hidden="true"/><p>קורא את מקורות השינוי ובודק את ההשוואה. הבדיקה הראשונה עשויה להימשך מספר דקות.</p></Feedback>}
-        {error&&<Feedback tone="danger"><p>{error}</p><Button onClick={retry}>נסו שוב</Button></Feedback>}
+        <div className="ti-actions"><Button onClick={()=>void retry()} disabled={busy}>בדיקת מסמכי השינוי</Button>{busy&&<Button onClick={()=>void cancel()}>ביטול בדיקה</Button>}</div>
+        {busy&&<Feedback aria-live="polite"><span className="ti-spinner" aria-hidden="true"/><p>משחזר בדיקה שמורה או ממתין לבדיקה שהפעלת. אפשר לסגור ולחזור.</p></Feedback>}
+        {error&&<Feedback tone="danger"><p>{error}</p></Feedback>}
+        {!busy&&!review&&!error&&<Feedback><p>אפשר להפעיל בדיקה באמצעות הכפתור. פתיחת החלון אינה מפעילה ניתוח חדש.</p></Feedback>}
         {review&&<><p role="status" className="ti-copy">תוצאת הבדיקה זמינה. פרטים שאינם מאומתים מסומנים במפורש.</p><WorkChangeReviewContent review={review} projectId={projectId}/></>}
     </Dialog>;
 };

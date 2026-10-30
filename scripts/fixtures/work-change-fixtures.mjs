@@ -53,7 +53,7 @@ export function registerWorkChangeModules(overrides = {}) {
     if (overrides[specifier]) return { url: overrides[specifier], shortCircuit: true };
     if (specifier.startsWith('@/')) {
       const base = new URL(`../../src/${specifier.slice(2)}`, import.meta.url);
-      return next(existsSync(new URL(base.href + '.tsx')) ? base.href + '.tsx' : base.href + '.ts', context);
+      return next(existsSync(base)?base.href:existsSync(new URL(base.href + '.tsx')) ? base.href + '.tsx' : base.href + '.ts', context);
     }
     try { return next(specifier, context); }
     catch(error) {

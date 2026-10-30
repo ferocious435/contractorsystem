@@ -3175,9 +3175,11 @@ assertIncludes(
 );
 assertIncludes(
   "src/components/pricing/ai-estimator/api/aiEstimatorApi.ts",
-  "if (!response.ok)",
+  "requestPricingJob",
   "AI estimator API helper must not treat failed evaluations as usable prices"
 );
+assertIncludes("src/components/pricing/pricingJobApi.ts", "client.observe", "pricing must wait for the saved terminal result");
+assertIncludes("src/utils/ai-job-client.ts", "if(terminal.has(job.state))throw new BusinessAiError", "failed or cancelled actions cannot return usable prices");
 assertIncludes(
   "src/components/pricing/ai-estimator/api/aiEstimatorApi.ts",
   "const AI_ESTIMATOR_SOURCE_DOCUMENT_SELECT_COLUMNS = [",
@@ -3444,9 +3446,9 @@ assertNotIncludes(
   "AI estimator modal must not fallback to BOQ when the API did not explicitly return BOQ"
 );
 assertIncludes(
-  "src/app/api/pricing/evaluate-ai/route.ts",
-  "new AiEstimatorService(supabase)",
-  "AI evaluation route must delegate pricing orchestration to AiEstimatorService"
+  "src/server/ai/handlers/pricing.ts",
+  "new AiEstimatorService(transaction.client)",
+  "the pricing job must delegate orchestration through its isolated project client"
 );
 assertIncludes(
   "src/app/api/pricing/evaluate-ai/ai-estimator-service.ts",
@@ -3467,22 +3469,22 @@ assertNotIncludes(
 
 assertIncludes(
   "src/app/api/pricing/evaluate-ai/route.ts",
-  "requirePricingEvaluationProjectAccess(supabase, projectId)",
-  "AI evaluation route must delegate project access checks to the access helper"
+  "await authenticateRuntimeOwner(request)",
+  "AI evaluation must authenticate before accepting pricing input"
 );
 assertIncludes(
-  "src/app/api/pricing/evaluate-ai/evaluation-access.ts",
+  "src/server/ai/service.server.ts",
   "auth.getUser()",
   "AI evaluation must authenticate with getUser before reading project pricing context"
 );
 assertIncludes(
-  "src/app/api/pricing/evaluate-ai/evaluation-access.ts",
-  ".eq('contractor_id', user.id)",
+  "src/server/ai/service.server.ts",
+  ".eq('contractor_id',owner)",
   "AI evaluation must verify project ownership before reading project pricing context"
 );
 assertIncludes(
-  "src/app/api/pricing/evaluate-ai/evaluation-access.ts",
-  "Project not found or forbidden",
+  "src/server/ai/service.server.ts",
+  "if(!await options.ownsProject(ownerId,projectId))throw new BusinessAiError('AI_ACCESS_DENIED'",
   "AI evaluation access helper must reject missing or foreign projects"
 );
 assertRegex(

@@ -8,6 +8,8 @@ import {findingNeedsHistory} from '@/utils/scan-finding-retention-policy';
 
 type Row=Record<string,unknown>&{id:string};
 type Reply={data:unknown;count:number;error:{message:string;code?:string}|null};
+type ProjectEffects={client:SupabaseClient;effects():Promise<VerifiedAiEffect[]>};
+const preparedClients=new WeakMap<SupabaseClient,{execution:AiExecutionContext;transaction:ProjectEffects}>();
 const fields:Record<string,{type:VerifiedAiEffect['type'];columns:string[]}>= {
     documents:{type:'DOCUMENT_ANALYSIS',columns:['parsed_json','ai_status','ocr_status','extracted_text','content_hash','extracted_text_hash','processed_at']},
     contradictions:{type:'SCAN_FINDING',columns:['title','description','strategy_advice','severity','status','source_execution_doc_id','target_contract_doc_id','related_contradiction_id','pricing_status','evidence_data','category','scan_signature']},
@@ -35,8 +37,9 @@ async function countedRows(client:SupabaseClient,table:string,configure:(query:u
 }
 /** Runs the existing validators against an isolated project snapshot. Only effects() can leave it,
  * and only the job store may commit those effects with the current lease and source revisions. */
-export async function createProjectEffectClient(database:SupabaseClient,execution:AiExecutionContext):Promise<{client:SupabaseClient;effects():Promise<VerifiedAiEffect[]>}> {
+export async function createProjectEffectClient(database:SupabaseClient,execution:AiExecutionContext):Promise<ProjectEffects> {
     if(!isAiExecutionContext(execution)||execution.signal.aborted)throw new BusinessAiError('AI_EXECUTION_REQUIRED',undefined,409);await execution.checkActive();
+    const parent=preparedClients.get(database);if(parent){if(parent.execution!==execution)throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);return parent.transaction;}
     const owned=await database.from('projects').select('*').eq('id',execution.projectId).eq('contractor_id',execution.ownerId).maybeSingle();if(owned.error||!owned.data)throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);
     const tables=Object.keys(fields),loaded=await Promise.all(tables.map(table=>countedRows(database,table,query=>(query as unknown as {eq(key:string,value:string):unknown}).eq('project_id',execution.projectId))));
     const [references,prices,incorporations]=await Promise.all([
@@ -60,16 +63,16 @@ export async function createProjectEffectClient(database:SupabaseClient,executio
         ||[...current.get('contradictions')!.values()].some(item=>item.related_contradiction_id===row.id);
     class Query implements PromiseLike<Reply> {
         private filters:Array<(row:Row)=>boolean>=[];private orders:Array<{key:string;ascending:boolean}>=[];private start=0;private end=Infinity;private mode:'many'|'single'|'maybe'='many';private head=false;
-        private operation='select';private payload:unknown;private conflict='id';private response:Promise<Reply>|null=null;
+        private operation='select';private payload:unknown;private conflict='id';private response:Promise<Reply>|null=null;private columns='*';
         constructor(private table:string){}
-        select(_columns?:string,options?:{head?:boolean}){this.head=options?.head===true;return this;}
+        select(columns='*',options?:{head?:boolean}){this.columns=columns;this.head=options?.head===true;return this;}
         eq(key:string,value:unknown){this.filters.push(row=>compare(row,key,'eq',value));return this;}
         neq(key:string,value:unknown){this.filters.push(row=>compare(row,key,'neq',value));return this;}
         is(key:string,value:unknown){this.filters.push(row=>compare(row,key,'is',value));return this;}
         in(key:string,value:unknown[]){this.filters.push(row=>compare(row,key,'in',value));return this;}
         contains(key:string,value:unknown){this.filters.push(row=>compare(row,key,'contains',value));return this;}
         not(key:string,operator:string,value:unknown){this.filters.push(row=>field(row,key)!=null||operator==='is'? !compare(row,key,operator,value):false);return this;}
-        or(expression:string){this.filters.push(row=>expression.split(',').some(term=>{const [key,operator,...rest]=term.split('.');return compare(row,key,operator,rest.join('.')==='null'?null:rest.join('.'));}));return this;}
+        or(expression:string){this.filters.push(row=>expression.split(',').some(term=>{const [key,operator,...rest]=term.split('.'),raw=rest.join('.'),wanted=raw==='null'?null:raw==='true'?true:raw==='false'?false:raw;return compare(row,key,operator,wanted);}));return this;}
         order(key:string,options?:{ascending?:boolean}){this.orders.push({key,ascending:options?.ascending!==false});return this;}
         range(start:number,end:number){if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<start)throw invalid();this.start=start;this.end=end;return this;}
         limit(count:number){return this.range(this.start,this.start+count-1);}
@@ -102,7 +105,7 @@ export async function createProjectEffectClient(database:SupabaseClient,executio
                 selected=selected.filter(row=>this.table!=='contradictions'||!protectedFinding(row));for(const row of selected)rows.delete(row.id);
             }
             const count=selected.length;selected.sort((a,b)=>{for(const order of this.orders){const compared=String(field(a,order.key)??'').localeCompare(String(field(b,order.key)??''));if(compared)return compared*(order.ascending?1:-1);}return 0;});
-            const page=structuredClone(selected.slice(this.start,this.end+1));if(this.mode==='single'&&page.length!==1||this.mode==='maybe'&&page.length>1)return {data:null,count,error:{message:'Expected one row',code:'PGRST116'}};
+            const columns=this.columns.split(',').map(key=>key.trim()),page=structuredClone(selected.slice(this.start,this.end+1).map(row=>columns.includes('*')?row:Object.fromEntries(columns.map(key=>[key,field(row,key)??null]))));if(this.mode==='single'&&page.length!==1||this.mode==='maybe'&&page.length>1)return {data:null,count,error:{message:'Expected one row',code:'PGRST116'}};
             return {data:this.head?null:this.mode==='many'?page:page[0]??null,count,error:null};
         }
         then<TResult1=Reply,TResult2=never>(fulfilled?:((value:Reply)=>TResult1|PromiseLike<TResult1>)|null,rejected?:((reason:unknown)=>TResult2|PromiseLike<TResult2>)|null):PromiseLike<TResult1|TResult2>{return (this.response??=this.execute()).then(fulfilled,rejected);}
@@ -124,5 +127,5 @@ export async function createProjectEffectClient(database:SupabaseClient,executio
         }
         await execution.checkActive();return prepared;
     }
-    return {client,effects};
+    const transaction={client,effects};preparedClients.set(client,{execution,transaction});return transaction;
 }

@@ -13,18 +13,19 @@ export function pricingDatabase(overrides = {}, { allowWrites = false } = {}) {
     const run = () => {
       let rows = tables[table].filter(row => filters.every(f => f(row))).toSorted((a, b) => {
         for (const [key, ascending] of ordering) { if (a[key] < b[key]) return ascending ? -1 : 1; if (a[key] > b[key]) return ascending ? 1 : -1; } return 0;
-      }).slice(bounds[0], bounds[1] + 1);
+      });
+      const count=rows.length;rows=rows.slice(bounds[0],bounds[1]+1);
       if (mutation) {
         assert.ok(allowWrites, `Unexpected write to ${table}`);
         writes.push({ table, kind: mutation.kind, ids: rows.map(row => row.id), value: structuredClone(mutation.value) });
         if (mutation.kind === 'update') rows.forEach(row => Object.assign(row, structuredClone(mutation.value)));
         else { const inserted = { id: `created-${writes.length}`, ...structuredClone(mutation.value) }; tables[table].push(inserted); rows = [inserted]; }
       }
-      const selected = rows.map(row => columns === '*' ? structuredClone(row) : Object.fromEntries(
+      const selected = rows.map(row => columns.split(',').some(key=>key.trim()==='*') ? structuredClone(row) : Object.fromEntries(
         columns.split(/,(?![^()]*\))/).map(key => key.trim()).filter(Boolean).map(key => {
           const field = key.replace(/!.*$|\(.*$/g, ''); return [field, structuredClone(row[field] ?? null)];
         })));
-      return { data: one ? selected[0] ?? null : selected, error: null };
+      return { data: one ? selected[0] ?? null : selected, count, error: null };
     };
     const query = {
       select(value = '*') { columns = value; reads.push({ table, columns }); return query; },

@@ -7,15 +7,15 @@ import { registerHooks } from 'node:module';
 const modelUrl = 'data:text/javascript,' + encodeURIComponent(`
   let response = null; export let calls = 0;
   export function reset(value = null) { response = value; calls = 0; }
-  export function getComparisonAiIdentity() { return { kind: 'ollama', provider: 'fixture', model: 'fixture' }; }
+  export function getComparisonAiIdentity() { return { kind: 'codex', provider: 'Codex', model: 'fixture' }; }
   export async function generateComparisonText() {
     calls++; if (response === null) throw new Error('Unexpected model call'); return response;
   }
 `);
 const model = await import(modelUrl);
 const hook = registerHooks({ resolve(specifier, context, nextResolve) {
-  if (specifier === '@/lib/comparison-ai') return { url: modelUrl, shortCircuit: true };
-  if (specifier.startsWith('@/')) return nextResolve(new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href, context);
+  if (specifier === '@/server/ai/comparison.server') return { url: modelUrl, shortCircuit: true };
+  if (specifier.startsWith('@/')) return nextResolve(new URL(`../src/${specifier.slice(2)}${specifier.endsWith('.json')?'':'.ts'}`, import.meta.url).href, context);
   try { return nextResolve(specifier, context); }
   catch (error) { if (error.code === 'ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !/\.[cm]?[jt]sx?$/u.test(specifier)) return nextResolve(`${specifier}.ts`, context); throw error; }
 } });
@@ -23,6 +23,7 @@ const { enrichProjectFindingsWithSupportSources } = await import('../src/utils/s
 const { loadProjectReferenceAuthority } = await import('../src/utils/document-reference-authority-server.ts');
 const { supportSourceSignature } = await import('../src/utils/support-source-enrichment.ts');
 hook.deregister();
+const execution={projectId:'30000000-0000-4000-8000-000000000003',signal:new AbortController().signal,checkActive:async()=>{}};
 
 const reading = { version: 'page-coverage-v1', complete: true, totalPages: 1, readPages: [1], unreadablePages: [] };
 const contract = { id: 'contract', project_id: 'p', title: 'מפרט מיוחד.pdf', category: 'CONTRACT', doc_type: 'SPECS',
@@ -85,7 +86,7 @@ test('enrichment and ordinary loading retain the same contract authority after c
   const data = tables();
   const db = database(data);
   const normal = await loadProjectReferenceAuthority({ supabase: database(data), projectId: 'p' });
-  const result = await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+  const result = await enrichProjectFindingsWithSupportSources({execution,  supabase: db, projectId: 'p' });
   assert.equal(normal.graph.documents.filter(row => row.role === 'PROJECT_CONTRACT').length, 1);
   assert.equal(result.sourceSignature, supportSourceSignature([normal.signature, ['blue', 'reference-hash', 'READY']]));
   const selected = db.reads.find(row => row.table === 'documents').columns.split(',').map(key => key.trim());
@@ -105,7 +106,7 @@ for (const type of ['INVALID_AUTOMATIC_FINDING', 'DUPLICATE']) {
     model.reset(modelResponse);
     const data = tables({ contradictions: [{ ...finding, evidence_data: { ...finding.evidence_data, review_disposition: { type } } }] });
     const db = database(data, { allowWrites: true });
-    const result = await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+    const result = await enrichProjectFindingsWithSupportSources({execution,  supabase: db, projectId: 'p' });
     assert.equal(result.total, 0);
     assert.equal(db.writes.length, 0);
     assert.equal(model.calls, 0);
@@ -116,7 +117,7 @@ test('a contractually excluded reference cannot enter the model recommendation o
   model.reset(modelResponse);
   const data = tables({ documents: [{ ...contract, extracted_text: 'פרק 57 של המפרט הכללי לא יחול על העבודה.' }], contradictions: [finding] });
   const db = database(data, { allowWrites: true });
-  const result = await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+  const result = await enrichProjectFindingsWithSupportSources({execution,  supabase: db, projectId: 'p' });
   assert.equal(result.failed, 0);
   assert.equal(db.writes.length, 1);
   assert.deepEqual(db.writes[0].value.evidence_data.support_analysis.reference_evidence, []);
@@ -127,7 +128,7 @@ test('unverified model prose cannot cancel a contract in the published recommend
   const fabricated='UNPROVED_CONTRACT_CANCELLATION';
   model.reset(JSON.stringify({impact_summary:fabricated,recommended_action:fabricated,reference_ids:['R1'],price_item_ids:[]}));
   const db=database(tables({contradictions:[finding]}),{allowWrites:true});
-  const result=await enrichProjectFindingsWithSupportSources({supabase:db,projectId:'p'});
+  const result=await enrichProjectFindingsWithSupportSources({execution, supabase:db,projectId:'p'});
   assert.equal(result.failed,0); assert.equal(model.calls,1);
   const stored=db.writes[0].value.evidence_data.support_analysis;
   assert.equal(stored.reference_evidence.length,1);
@@ -147,7 +148,7 @@ for (const path of ['library', 'fallback']) {
       reference_documents: path === 'fallback' ? [] : [reference],
       reference_document_chunks: path === 'fallback' ? [] : [{ ...page, text: unmappedText }] });
     const db = database(data, { allowWrites: true });
-    const result = await enrichProjectFindingsWithSupportSources({ supabase: db, projectId: 'p' });
+    const result = await enrichProjectFindingsWithSupportSources({execution,  supabase: db, projectId: 'p' });
     assert.equal(result.failed, 0);
     assert.equal(model.calls, 0, 'An unknown scope cannot be asserted to lie outside the exclusion');
     assert.deepEqual(db.writes[0].value.evidence_data.support_analysis.reference_evidence, []);

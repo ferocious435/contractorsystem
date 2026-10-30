@@ -6,7 +6,7 @@ const proposal='קידוח אופקי ברחוב הרימון: 80 מטר. מחי
 const modelUrl='data:text/javascript,'+encodeURIComponent(`
  let options={};export const calls=[];
  export function reset(value={}){options=value;calls.length=0;}
- export function getComparisonAiIdentity(){return{kind:options.external?'gemini':'ollama',model:'fixture'};}
+ export function getComparisonAiIdentity(){if(options.external)throw Object.assign(Error('Unverified execution'),{status:503});return{kind:'codex',provider:'Codex',model:'fixture'};}
  export async function generateComparisonText(prompt){
   calls.push(prompt);if(options.unavailable)throw Error('Local offline');if(options.onGenerate)options.onGenerate(prompt);
   const line=prompt.match(/^WORK_CHANGE_INPUT (.+)$/m);if(line){const input=JSON.parse(line[1]);return JSON.stringify({facts:(options.facts?.[input.sourceId]||[]).map(fact=>{
@@ -16,9 +16,10 @@ const modelUrl='data:text/javascript,'+encodeURIComponent(`
   return JSON.stringify({comparisons:[{baselineId:'F1',proposalId:'F2',composition:'SAME'}]});
  }
 `);
-const hook=registerWorkChangeModules({'@/lib/comparison-ai':modelUrl});
+const hook=registerWorkChangeModules({'@/server/ai/comparison.server':modelUrl});
 const {reviewWorkChangeCase}=await import('../src/utils/work-change-review-server.ts');
 const model=await import(modelUrl);hook.deregister();
+const execution={projectId:'30000000-0000-4000-8000-000000000003',signal:new AbortController().signal,checkActive:async()=>{}};
 function setup(){
  const item=finding();item.evidence_data.manual_note='owner keeps this';
  const db=workChangeDatabase({contradictions:[item],documents:[
@@ -27,7 +28,7 @@ function setup(){
  ]});
  let value=null;const cache={async load(){return structuredClone(value);},async save(_project,_finding,next){value=structuredClone(next);}};
  const options={facts:{old:[{kind:'BASELINE_WORK',quote:baseline,quantity:100,unit:'מטר',amountExclVat:200000}],offer:[{kind:'PROPOSED_WORK',quote:proposal,quantity:80,unit:'מטר',amountExclVat:240000}]}};
- return{db,cache,options,run:extra=>reviewWorkChangeCase({supabase:db,projectId:'project',findingId:'change',refreshReading:false,cache,...extra})};
+ return{db,cache,options,run:extra=>reviewWorkChangeCase({supabase:db,projectId:'project',findingId:'change',refreshReading:false,cache,execution,...extra})};
 }
 test('case review uses related documents and makes no database or financial mutation',async()=>{
  const {db,options,run}=setup();model.reset(options);
@@ -49,7 +50,7 @@ test('changed source text is analysed while unchanged source jobs are reused',as
 test('a local failure cannot call an external provider or return a made-up review',async()=>{
  const {options,run,db}=setup();model.reset({...options,unavailable:true});
  await assert.rejects(run(),error=>error.status===503);assert.equal(db.writes.length,0);
- model.reset({...options,external:true});await assert.rejects(run(),error=>error.status===503);assert.equal(model.calls.length,0);
+ model.reset({...options,external:true});await assert.rejects(async()=>run(),error=>error.status===503);assert.equal(model.calls.length,0);
 });
 test('technical exclusions remain blocked before model or reading',async()=>{
  const {db,run}=setup();db.tables.contradictions[0].evidence_data.review_disposition={type:'INVALID_AUTOMATIC_FINDING'};model.reset();
@@ -119,7 +120,7 @@ test('scope review uses structured rows with locked sides and keeps an unknown f
  assert.equal(result.review.scopeComparisons[0].arithmeticDeltaExclVat,null);
  assert.equal(db.writes.length,0);
  const count=model.calls.length,again=await run();
- assert.equal(again.cached,true);assert.equal(model.calls.length,count);
+ assert.equal(again.cached,true,JSON.stringify(model.calls.slice(count).map(prompt=>prompt.split('\n')[0]+':'+(prompt.match(/"sourceId":"([^"]+)"/)?.[1]||''))));assert.equal(model.calls.length,count);
 });
 
 test('new scope context reuses unchanged source jobs and analyses only the changed combination',async()=>{
@@ -132,7 +133,7 @@ test('new scope context reuses unchanged source jobs and analyses only the chang
  db.tables.contradictions[0].evidence_data.issue_owner_notes=[{origin:'OWNER_NOTE',text:'יש לבדוק את אספקת הצנרת בנפרד.'}];
  const result=await run(),newCalls=model.calls.slice(count);
  assert.equal(result.cached,false);
- assert.equal(newCalls.filter(prompt=>prompt.startsWith('WORK_CHANGE_SOURCE_FACTS')).length,0);
+ assert.equal(newCalls.filter(prompt=>prompt.startsWith('WORK_CHANGE_SOURCE_FACTS')).length,0,JSON.stringify(newCalls.map(prompt=>prompt.split('\n')[0]+':'+(prompt.match(/"sourceId":"([^"]+)"/)?.[1]||''))));
  assert.equal(newCalls.filter(prompt=>prompt.startsWith('WORK_CHANGE_SCOPE_COMPARE')).length,1);
  assert.equal(result.review.scopeComparisons.length,1);
 });
