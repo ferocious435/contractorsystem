@@ -1,0 +1,128 @@
+import test,{beforeEach} from 'node:test';
+import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
+import {runSql,runSqlAsync,jsonSql,databaseTransport} from './codex-runtime/db.mjs';
+import {ownerId,otherId,selectedModel} from './codex-runtime/fixtures.mjs';
+const jobsModule=existsSync(new URL('../src/server/ai/jobs.server.ts',import.meta.url))?await import('../src/server/ai/jobs.server.ts'):{};
+const project='30000000-0000-4000-8000-000000000003',foreign='40000000-0000-4000-8000-000000000004';
+const doc='50000000-0000-4000-8000-000000000005',foreignDoc='60000000-0000-4000-8000-000000000006';
+const profile={ownerId,model:selectedModel,effort:null,revision:1,accountFingerprint:'a'.repeat(64)};
+const prepared={result:{message:'תשובה שמורה'},effects:[]};
+const api=()=>{assert.equal(typeof jobsModule.createAiJobStore,'function','Stored job contract is missing');return jobsModule.createAiJobStore(databaseTransport());};
+beforeEach(()=>{
+  runSql(`delete from public.document_scan_state; delete from public.contradictions; delete from public.pricing_ledger; delete from public.documents;
+  insert into public.profiles values('${ownerId}','super_admin'),('${otherId}','member') on conflict(id) do nothing;
+  insert into public.projects values('${project}','${ownerId}','synthetic'),('${foreign}','${otherId}','foreign') on conflict(id) do nothing;
+  insert into public.documents(id,project_id,title,version,extracted_text,parsed_json,ai_status) values('${doc}','${project}','A',1,'complete text','{}','PENDING'),('${foreignDoc}','${foreign}','B',1,'other text','{}','PENDING');`);
+  if(jsonSql("select to_jsonb(to_regclass('public.project_ai_jobs') is not null);"))runSql('delete from public.project_ai_jobs; update private.contractor_ai_lease set job_id=null,lease_token=null,expires_at=null;');
+});
+const enqueue=(store,key='button-1',payload={text:'business input'},context={})=>store.enqueue(ownerId,project,'letter',payload,key,profile,context);
+
+// Break: a user must never write jobs or invoke privileged transitions via the browser key.
+test('job RLS and grants protect foreign rows and all browser writes',async()=>{
+  assert.equal(jsonSql("select to_jsonb(to_regclass('public.project_ai_jobs') is not null);"),true,'Durable job table is missing');
+  const store=api(),job=await enqueue(store);
+  assert.equal(jsonSql('select to_jsonb(count(*)) from public.project_ai_jobs;',{role:'authenticated',userId:ownerId}),1);
+  assert.equal(jsonSql('select to_jsonb(count(*)) from public.project_ai_jobs;',{role:'authenticated',userId:otherId}),0);
+  for(const statement of ["insert into public.project_ai_jobs default values;","update public.project_ai_jobs set state='SUCCEEDED';","delete from public.project_ai_jobs;","select public.contractor_ai_claim('{}');"]){
+    assert.throws(()=>runSql(statement,{role:'authenticated',userId:ownerId}),/permission denied/);
+  }
+  assert.throws(()=>runSql('select profile_snapshot from public.project_ai_jobs;',{role:'authenticated',userId:ownerId}),/permission denied/);
+  assert.throws(()=>runSql('select id from public.project_ai_jobs;',{role:'anon'}),/permission denied/);
+  assert.equal((await store.readOwned(ownerId,project,job.id)).id,job.id);
+  assert.equal(await store.readOwned(otherId,project,job.id),null);
+});
+test('the same owned request key returns one job while a changed payload conflicts',async()=>{
+  const store=api();const [a,b]=await Promise.all([enqueue(store),enqueue(store)]);assert.equal(a.id,b.id);
+  await assert.rejects(enqueue(store,'button-1',{text:'changed'}),e=>e.code==='AI_KEY_CONFLICT');
+  assert.equal(jsonSql('select to_jsonb(count(*)) from public.project_ai_jobs;'),1);
+});
+test('ownership and manual profile cannot be reassigned by a queued request',async()=>{
+  const store=api();await assert.rejects(store.enqueue(ownerId,foreign,'letter',{},'k',profile,{}),e=>e.code==='AI_ACCESS_DENIED');
+  await assert.rejects(store.enqueue(otherId,foreign,'letter',{},'k',profile,{}),e=>e.code==='AI_PROFILE_INVALID');
+  assert.equal(jsonSql('select to_jsonb(count(*)) from public.project_ai_jobs;'),0);
+});
+test('two concurrent database claimants share one global execution lease',async()=>{
+  const store=api();await enqueue(store);await enqueue(store,'button-2');
+  const claimed=await Promise.all([store.claim('worker-a',Date.now()),store.claim('worker-b',Date.now())]);assert.equal(claimed.filter(Boolean).length,1);
+  const first=claimed.find(Boolean);await store.heartbeat(first.id,first.leaseToken);assert.equal(await store.complete(first.id,first.leaseToken,prepared),true);
+  assert.equal(await store.complete(first.id,first.leaseToken,prepared),false);
+  const second=await store.claim('worker-b',Date.now());assert.ok(second);assert.notEqual(second.id,first.id);
+});
+test('cancellation invalidates the old lease and late business effects',async()=>{
+  const store=api(),queued=await enqueue(store),job=await store.claim('worker',Date.now());
+  const cancelled=await store.cancel(ownerId,job.id,job.revision);assert.equal(cancelled.state,'CANCELLED');
+  const revision=runSql(`select xmin::text from public.documents where id='${doc}';`);
+  assert.equal(await store.complete(job.id,job.leaseToken,{result:{done:true},effects:[{type:'DOCUMENT_ANALYSIS',targetId:doc,expectedRevision:revision,data:{parsed_json:{changed:true},ai_status:'COMPLETED'}}]}),false);
+  assert.deepEqual(jsonSql(`select parsed_json from public.documents where id='${doc}';`),{});
+  await assert.rejects(store.cancel(ownerId,job.id,queued.revision),e=>e.code==='AI_JOB_CONFLICT');
+});
+test('an expired lease cannot heartbeat or finish and is interrupted without replay',async()=>{
+  const store=api();await enqueue(store);const job=await store.claim('worker',Date.now());
+  runSql("update private.contractor_ai_lease set expires_at=clock_timestamp()-interval '1 second'; update public.project_ai_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where state='RUNNING';");
+  await assert.rejects(store.heartbeat(job.id,job.leaseToken),e=>e.code==='AI_LEASE_LOST');assert.equal(await store.complete(job.id,job.leaseToken,prepared),false);
+  assert.equal(await store.interruptStale(Date.now()),1);assert.equal(await store.claim('new-worker',Date.now()),null);
+  assert.equal((await store.readOwned(ownerId,project,job.id)).state,'INTERRUPTED');
+});
+test('all verified effects and success commit atomically with source revisions',async()=>{
+  const store=api();await enqueue(store);const job=await store.claim('worker',Date.now());
+  const revision=runSql(`select xmin::text from public.documents where id='${doc}';`);
+  const effect={type:'DOCUMENT_ANALYSIS',targetId:doc,expectedRevision:revision,data:{parsed_json:{read:true},ai_status:'COMPLETED'}};
+  await assert.rejects(store.complete(job.id,job.leaseToken,{result:{done:true},effects:[effect,{...effect,expectedRevision:'incorrect'}]}),e=>e.code==='AI_SOURCE_CHANGED');
+  assert.deepEqual(jsonSql(`select parsed_json from public.documents where id='${doc}';`),{});assert.equal((await store.readOwned(ownerId,project,job.id)).state,'RUNNING');
+  assert.equal(await store.complete(job.id,job.leaseToken,{result:{done:true},effects:[effect]}),true);
+  assert.deepEqual(jsonSql(`select parsed_json from public.documents where id='${doc}';`),{read:true});assert.equal((await store.readOwned(ownerId,project,job.id)).state,'SUCCEEDED');
+});
+test('a document changed or added during generation refuses stale results',async()=>{
+  const store=api();await enqueue(store);const job=await store.claim('worker',Date.now());
+  runSql(`update public.documents set extracted_text='later approval',version=2 where id='${doc}';`);
+  await assert.rejects(store.complete(job.id,job.leaseToken,prepared),e=>e.code==='AI_CONTEXT_CHANGED');
+  assert.equal((await store.readOwned(ownerId,project,job.id)).result,null);
+});
+test('a concurrent source transaction cannot cross the final success check',async()=>{
+  const store=api();await enqueue(store);const job=await store.claim('worker',Date.now());
+  let signalLocked;const locked=new Promise(resolve=>signalLocked=resolve);
+  const updating=runSqlAsync(`update public.documents set extracted_text='concurrent approval',version=3 where id='${doc}';select 'SOURCE_LOCKED';select pg_sleep(3);`,{onOutput:text=>{if(text.includes('SOURCE_LOCKED'))signalLocked();}});
+  await locked;
+  try{await assert.rejects(store.complete(job.id,job.leaseToken,prepared),e=>e.code==='AI_CONTEXT_CHANGED');}finally{await updating;}
+  assert.equal((await store.readOwned(ownerId,project,job.id)).state,'RUNNING');
+});
+test('effect targets cannot escape their project or alter financial amounts',async()=>{
+  const store=api();await enqueue(store);const job=await store.claim('worker',Date.now());
+  for(const effect of [{type:'DOCUMENT_ANALYSIS',targetId:foreignDoc,expectedRevision:'new',data:{parsed_json:{bad:true}}},{type:'PRICING_EVIDENCE',targetId:doc,expectedRevision:'new',data:{quantity:100000}},{type:'arbitrary_sql',targetId:doc,expectedRevision:'new',data:{}}]){
+    await assert.rejects(store.complete(job.id,job.leaseToken,{result:null,effects:[effect]}),e=>['AI_EFFECT_INVALID','AI_SOURCE_CHANGED'].includes(e.code));
+  }
+  assert.deepEqual(jsonSql(`select parsed_json from public.documents where id='${foreignDoc}';`),{});
+});
+test('safe DTOs and correlated lists restore stored results without internal credentials',async()=>{
+  const store=api(),job=await enqueue(store,'chat-1',{question:'saved'}, {conversationId:doc,clientContextId:doc});const running=await store.claim('worker',Date.now());await store.complete(running.id,running.leaseToken,prepared);
+  const list=await store.listOwned(ownerId,project,'letter',doc);assert.equal(list.length,1);assert.equal(list[0].id,job.id);assert.deepEqual(list[0].result,prepared.result);
+  for(const key of ['ownerId','leaseToken','profile','accountFingerprint','payload','inputHash'])assert.equal(Object.hasOwn(list[0],key),false);
+  assert.deepEqual(await store.listOwned(ownerId,foreign,'letter',doc),[]);
+});
+test('verified finding and scan progress persist in the same successful transaction',async()=>{
+  const store=api(),finding='70000000-0000-4000-8000-000000000007',scan='80000000-0000-4000-8000-000000000008';
+  assert.equal(await store.sourceRevision(project,'SCAN_FINDING',finding),'new');
+  await enqueue(store);const job=await store.claim('worker',Date.now());
+  assert.equal(await store.complete(job.id,job.leaseToken,{result:{findings:1},effects:[
+    {type:'SCAN_FINDING',targetId:finding,expectedRevision:'new',data:{title:'verified instruction',description:'grounded synthetic result',source_execution_doc_id:doc,target_contract_doc_id:doc,evidence_data:{source:doc}}},
+    {type:'SCAN_STATE',targetId:scan,expectedRevision:'new',data:{work_doc_id:doc,contract_doc_ids:[doc],contract_signature:'contract',work_signature:'work',scan_signature:'fixture-signature',status:'COMPLETED',findings_count:1}}
+  ]}),true);
+  assert.equal(jsonSql(`select to_jsonb(findings_count) from public.document_scan_state where id='${scan}';`),1);
+  assert.equal(jsonSql(`select to_jsonb(status) from public.contradictions where id='${finding}';`),'OPEN');
+});
+test('pricing annotations leave quantity, unit price and VAT unchanged',async()=>{
+  const store=api(),item='90000000-0000-4000-8000-000000000009';
+  runSql(`insert into public.pricing_ledger(id,project_id,quantity,unit_price_excl_vat,vat_rate) values('${item}','${project}',3,.03,.18);`);
+  const revision=await store.sourceRevision(project,'PRICING_EVIDENCE',item);await enqueue(store);const job=await store.claim('worker',Date.now());
+  assert.equal(await store.complete(job.id,job.leaseToken,{result:{reviewed:true},effects:[{type:'PRICING_EVIDENCE',targetId:item,expectedRevision:revision,data:{ai_rationale:'saved explanation',evidence_data:{source:doc}}}]}),true);
+  assert.deepEqual(jsonSql(`select jsonb_build_array(quantity,unit_price_excl_vat,vat_rate,ai_rationale) from public.pricing_ledger where id='${item}';`),[3,.03,.18,'saved explanation']);
+});
+test('failure releases only its own active lease and never replaces another saved answer',async()=>{
+  const store=api();await enqueue(store);const first=await store.claim('worker',Date.now());await store.complete(first.id,first.leaseToken,prepared);
+  await enqueue(store,'next-action');const second=await store.claim('worker',Date.now());
+  assert.equal(await store.fail(second.id,first.leaseToken,{code:'AI_FAILED',message:'PRIVATE_TOKEN'}),false);
+  assert.equal(await store.fail(second.id,second.leaseToken,{code:'AI_FAILED',message:'PRIVATE_TOKEN'}),true);
+  const failed=await store.readOwned(ownerId,project,second.id);assert.equal(failed.state,'FAILED');assert.ok(!JSON.stringify(failed).includes('PRIVATE_TOKEN'));
+  assert.deepEqual((await store.readOwned(ownerId,project,first.id)).result,prepared.result);assert.equal(await store.claim('worker',Date.now()),null);
+});

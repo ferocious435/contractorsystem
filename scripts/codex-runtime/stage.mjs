@@ -12,6 +12,7 @@ const workspace=path.join(root,'.superpowers/sdd/2026-10-30-codex-program-runtim
 const control=path.join(root,'.superpowers/codex-program-runtime-2026-10-30/control-source');
 const dist='.next-codex-runtime-control';
 const git=(...args)=>execFileSync('git',args,{cwd:root,encoding:'utf8',windowsHide:true});
+const indexTree=git('write-tree').trim();
 const files=git('ls-files','-z').split('\0').filter(Boolean);
 const node=process.execPath;
 const results=[];
@@ -36,15 +37,17 @@ async function run(name,args,{cwd=control,environment=env}={}){
   console.log(`${name}: ${code===0?'PASS':'FAIL'} (${path.relative(root,log)})`);
   if(code!==0){console.log((await readFile(log,'utf8')).split(/\r?\n/).slice(-16).join('\n'));throw Error(name+' failed');}
 }
-const profiles={1:['protocol','metadata'],2:['jobs'],3:['worker','jobs-api'],4:['readiness'],5:['writing'],6:['reuse'],7:['radar'],8:['pricing','support'],9:['documents']};
+const profiles={1:['protocol','metadata'],2:['jobs-db'],3:['worker','job-routes'],4:['ui'],5:['writing'],6:['comparison'],7:['radar'],8:['pricing'],9:['documents']};
 const names=task>=10?files.filter(file=>/^scripts\/verify-codex-[^/]+\.mjs$/.test(file)).map(file=>file.slice('scripts/verify-codex-'.length,-4)):profiles[task];
 if(!names?.length)throw Error('No verification profile');
 for(const name of names)if(!files.includes(`scripts/verify-codex-${name}.mjs`))throw Error('Unprepared verification file: '+name);
-await run('profile',['--import','./scripts/codex-runtime/load-server.mjs','--test',...names.map(name=>`scripts/verify-codex-${name}.mjs`)]);
+if(task>=2)await run('synthetic-db',['scripts/codex-runtime/db.mjs','prepare']);
+await run('profile',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...names.map(name=>`scripts/verify-codex-${name}.mjs`)]);
 await run('typescript',['node_modules/typescript/bin/tsc','--noEmit','--incremental','false']);
 await run('financials',['scripts/verify-financial-invariants.mjs']);
-await run('lint',['node_modules/eslint/bin/eslint.js']);
+await run('lint',['node_modules/eslint/bin/eslint.js','.','--ignore-pattern',dist+'/**','--cache','--cache-location','.eslintcache','--cache-strategy','content']);
 await run('production',['node_modules/next/dist/bin/next','build']);
+await run('typescript-built',['node_modules/typescript/bin/tsc','--noEmit','--incremental','false']);
 await new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',()=>reject(Error('Control port 3003 is occupied')));server.listen(3003,'127.0.0.1',()=>server.close(resolve));});
 const serverLog=createWriteStream(path.join(workspace,`task-${task}-control-server.log`));
 const server=spawn(node,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','3003'],{cwd:control,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
@@ -57,7 +60,8 @@ try{
   await run('control-runtime',['scripts/verify-open-workspace-runtime.mjs'],{environment:{...env,VERIFY_RUNTIME_BASE_URL:'http://127.0.0.1:3003'}});
   await run('installed-runtime',['scripts/verify-open-workspace-runtime.mjs'],{environment:{...env,VERIFY_RUNTIME_BASE_URL:'http://127.0.0.1:3002'}});
   const buildId=(await readFile(path.join(control,dist,'BUILD_ID'),'utf8')).trim();
-  await writeFile(path.join(workspace,`task-${task}-G.json`),JSON.stringify({task,buildId,results,indexTree:git('write-tree').trim(),time:new Date().toISOString()},null,2));
+  if(git('write-tree').trim()!==indexTree)throw Error('Publication index changed during G');
+  await writeFile(path.join(workspace,`task-${task}-G.json`),JSON.stringify({task,buildId,results,indexTree,time:new Date().toISOString()},null,2));
   console.log(`G task ${task}: PASS; build ${buildId}; installed A preserved`);
 }finally{
   if(server.exitCode===null){const exited=new Promise(resolve=>server.once('exit',resolve));server.kill();await Promise.race([exited,delay(3000)]);}
