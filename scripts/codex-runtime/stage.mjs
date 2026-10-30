@@ -40,13 +40,14 @@ async function run(name,args,{cwd=control,environment=env}={}){
   console.log(`${name}: ${code===0?'PASS':'FAIL'} (${path.relative(root,log)})`);
   if(code!==0){console.log((await readFile(log,'utf8')).split(/\r?\n/).slice(-16).join('\n'));throw Error(name+' failed');}
 }
-const profiles={1:['protocol','metadata'],2:['jobs-db'],3:['worker','job-routes'],4:['ui'],5:['writing','letter-preview-db','job-routes','worker','ui'],6:['comparison'],7:['radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],8:['pricing','radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],9:['documents']};
+const profiles={1:['protocol','metadata'],2:['jobs-db'],3:['worker','job-routes'],4:['ui'],5:['writing','letter-preview-db','job-routes','worker','ui'],6:['comparison'],7:['radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],8:['pricing','radar','comparison','job-routes','worker','ui','jobs-db','letter-preview-db'],9:['documents','radar','pricing','comparison','job-routes','worker','ui','jobs-db','letter-preview-db']};
 const names=task>=10?files.filter(file=>/^scripts\/verify-codex-[^/]+\.mjs$/.test(file)).map(file=>file.slice('scripts/verify-codex-'.length,-4)):profiles[task];
 if(!names?.length)throw Error('No verification profile');
 for(const name of names)if(!files.includes(`scripts/verify-codex-${name}.mjs`))throw Error('Unprepared verification file: '+name);
 if(task>=2)await run('synthetic-db',['scripts/codex-runtime/db.mjs','prepare']);
 if(task>=5)await run('synthetic-writing-db',['scripts/codex-runtime/writing-db.mjs']);
 await run('profile',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...names.map(name=>`scripts/verify-codex-${name}.mjs`)]);
+if(task===9)await run('document-regression',['scripts/verify-document-runtime.mjs']);
 if(task===8)await run('pricing-regression',['--import','./scripts/codex-runtime/load-server.mjs','--test','--test-concurrency=1',...files.filter(file=>/^scripts\/verify-(?:pricing-scope|work-change|support)-[^/]+\.mjs$/.test(file)&&!file.includes('model'))]);
 let radarFixture;
 if(task===7){const snapshot=path.join(root,'data/point1-audit/point14-current-mtm-verification-20261025.json'),before=createHash('sha256').update(await readFile(snapshot)).digest('hex');
@@ -58,6 +59,7 @@ await run('typescript',['node_modules/typescript/bin/tsc','--noEmit','--incremen
 await run('financials',['scripts/verify-financial-invariants.mjs']);
 await run('lint',['node_modules/eslint/bin/eslint.js','.','--ignore-pattern',dist+'/**','--cache','--cache-location','.eslintcache','--cache-strategy','content']);
 await run('production',['node_modules/next/dist/bin/next','build']);
+if(task===9)await run('document-built-reader',['scripts/verify-docx-built-reader.mjs',dist]);
 await run('typescript-built',['node_modules/typescript/bin/tsc','--noEmit','--incremental','false']);
 await new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',()=>reject(Error(`Control port ${controlPort} is occupied`)));server.listen(controlPort,'127.0.0.1',()=>server.close(resolve));});
 const serverLog=createWriteStream(path.join(workspace,`task-${task}-control-server.log`));

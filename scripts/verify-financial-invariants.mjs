@@ -832,8 +832,18 @@ function verifyServerDocumentAndLetterBoundaryStatics() {
   );
   assertIncludes(
     "src/app/api/documents/process/route.ts",
-    ".update({ ai_status: 'ERROR' })",
-    "document processing failures must persist ERROR status"
+    "createOwnedAiJobFromRequest(request,'document_analysis')",
+    "document processing must use the authenticated durable job boundary"
+  );
+  assertIncludes(
+    "src/server/ai/worker.server.ts",
+    "await options.store.fail(job.id,job.leaseToken",
+    "model failures must be recorded on the owned job without replacing saved document data"
+  );
+  assertIncludes(
+    "src/server/ai/handlers/document.ts",
+    "financial_data_verification:'REQUIRES_MANUAL_REVIEW'",
+    "document analysis must not approve extracted financial proposals"
   );
 }
 

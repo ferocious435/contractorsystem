@@ -29,6 +29,7 @@ export function createAiJobService(options:ServiceOptions) {
         if(kind==='scan_preview'&&context.clientContextId!==raw.findingId)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         if(kind==='scan'&&context.clientContextId!==(raw.workDocId||raw.retryDocumentId||null))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         if((kind==='pricing'||kind==='work_change')&&context.clientContextId!==raw.contradictionId)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
+        if(kind==='document_analysis'&&context.clientContextId!==raw.documentId)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         const business=Object.fromEntries(Object.entries(raw).filter(([key])=>!['projectId','requestKey','conversationId','clientContextId'].includes(key)));
         let payload:JsonObject;try{payload=handler.validate(business);}catch{throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);}
         const profile=await options.readProfile(ownerId);if(!profile)throw new BusinessAiError('AI_PROFILE_REQUIRED');if(profile.ownerId!==ownerId)throw new BusinessAiError('AI_PROFILE_INVALID',undefined,400);

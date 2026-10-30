@@ -9,6 +9,8 @@ import { Feedback } from '@/components/ui/titanium/Feedback';
 import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
 import type { DocumentCategory, ParsedDocumentJson, ProjectDocument } from './types';
 import { useAiReadiness } from '@/hooks/useAiReadiness';
+import {requestDocumentAnalysis,observeDocumentJob,restoreDocumentJobs,cancelDocumentJob,fetchSavedDocument} from './documentAiApi';
+import type {JobDto} from '@/server/ai/contracts';
 
 interface DocumentsPageClientProps {
     projectId: string;
@@ -53,6 +55,30 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     const [sourceReadErrors, setSourceReadErrors] = useState<Record<string, string>>({});
     const [deleteDocument, setDeleteDocument] = useState<ProjectDocument | null>(null);
     const [deleting, setDeleting] = useState(false);
+
+    const [processingJob,setProcessingJob]=useState<JobDto|null>(null);
+    const [analysisReady,setAnalysisReady]=useState(isLocalProject);
+    const analysisObserver=useRef<AbortController|null>(null);
+    React.useEffect(()=>{
+        if(isLocalProject)return;let active=true;const controller=new AbortController();analysisObserver.current=controller;setAnalysisReady(false);
+        void restoreDocumentJobs(projectId).then(async jobs=>{
+            if(!active||controller.signal.aborted||analysisObserver.current!==controller)return;
+            setAnalysisReady(true);const job=jobs.find(value=>value.state==='QUEUED'||value.state==='RUNNING');
+            if(!job){if(jobs[0]&&['FAILED','CANCELLED','INTERRUPTED'].includes(jobs[0].state))setActionError('הניתוח האחרון לא הושלם. הנתונים השמורים נשמרו.');return;}
+            setProcessingJob(job);setProcessingId(job.clientContextId);
+            const result=await observeDocumentJob(job,controller.signal),saved=await fetchSavedDocument(projectId,String(job.clientContextId));
+            if(!active||controller.signal.aborted)return;setDocuments(previous=>previous.map(value=>value.id===saved.id?saved:value));
+            if(result.partial===true)setActionError('הניתוח חלקי. קריאת המקור והפרטים החסרים מסומנים לבדיקה.');
+        }).catch(()=>{if(active&&!controller.signal.aborted)setActionError('לא ניתן להשלים או לשחזר את הניתוח. הנתונים נשמרו.');}).finally(()=>{if(active){setAnalysisReady(true);if(analysisObserver.current===controller){setProcessingId(null);setProcessingJob(null);}}});
+        return()=>{active=false;controller.abort();analysisObserver.current?.abort();};
+    },[projectId,isLocalProject]);
+    const cancelAnalysis=async()=>{
+        if(!processingJob)return;
+        try{const stopped=await cancelDocumentJob(processingJob);analysisObserver.current?.abort();
+            const saved=await fetchSavedDocument(projectId,String(processingJob.clientContextId));setDocuments(previous=>previous.map(value=>value.id===saved.id?saved:value));
+            setActionError(stopped.state==='SUCCEEDED'?'הניתוח כבר הסתיים. התוצאה השמורה זמינה.':'הניתוח בוטל. הנתונים השמורים נשמרו.');setProcessingId(null);setProcessingJob(null);
+        }catch{setActionError('לא ניתן לאשר שהניתוח בוטל. אפשר לנסות שוב.');}
+    };
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -167,6 +193,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         if (processingId) return;
         if (!isLocalProject && aiStatus?.available !== true) return;
         setProcessingId(doc.id);
+        analysisObserver.current?.abort();const controller=new AbortController();analysisObserver.current=controller;setActionError(null);
 
         if (isLocalProject) {
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'SCANNED', parsed_json: { document_type: 'Demo document', confidence: 0.8 } } : d));
@@ -190,31 +217,13 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'PROCESSING' } : d));
 
-            const res = await fetch('/api/documents/process', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId, documentId: doc.id }),
-            });
-
-            const data = await res.json();
-
-            if (!res.ok || data.success === false) {
-                setDocuments(prev => prev.map(d => d.id === doc.id ? {
-                    ...d,
-                    ai_status: data.ai_status || 'ERROR',
-                    parsed_json: data.parsed_json || d.parsed_json,
-                    category: data.parsed_json?.category || d.category,
-                } : d));
-                return;
-            }
-
-            setDocuments(prev => prev.map(d => d.id === doc.id ? {
-                ...d,
-                ai_status: 'SCANNED',
-                parsed_json: data.parsed_json,
-                category: data.parsed_json?.category || d.category,
-            } : d));
+            controller.signal.throwIfAborted();
+            const result=await requestDocumentAnalysis(projectId,doc.id,{signal:controller.signal,onAccepted:job=>{if(!controller.signal.aborted)setProcessingJob(job);}});
+            if(controller.signal.aborted)return;
+            if(result.partial===true)setActionError(typeof result.message==='string'?result.message:'הניתוח חלקי. הפרטים והמקורות החסרים נשמרו לבדיקה.');
         } catch (e) {
+            if(controller.signal.aborted)return;
+            setActionError('הניתוח לא הושלם. הנתונים השמורים נשמרו.');
             console.error(e);
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'ERROR' } : d));
         } finally {
@@ -230,7 +239,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             } catch {
                 setSourceReadErrors(previous => ({ ...previous, [doc.id]: 'הטקסט העדכני לא נקרא למסך. יש לנסות לקרוא אותו שוב; קובץ המקור השמור עדיין זמין לפתיחה.' }));
             }
-            setProcessingId(null);
+            if(analysisObserver.current===controller){setProcessingId(null);setProcessingJob(null);}
         }
     };
 
@@ -298,8 +307,9 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
     return <>
         {actionError && <Feedback tone="danger">{actionError}</Feedback>}
+        {processingJob&&processingId&&<Feedback aria-live="polite"><p>הניתוח נשמר כמשימה. ממתין לתוצאה; אפשר לסגור ולחזור.</p><Button onClick={()=>void cancelAnalysis()}>ביטול ניתוח</Button></Feedback>}
         <DocumentsCatalogView documents={documents} category={category} activeFilter={activeFilter} uploading={isUploading} processingId={processingId} selectedId={selectedId} loadError={loadError} loading={loading} sourceReadErrors={sourceReadErrors}
-            analysisAvailable={isLocalProject || aiStatus?.available === true} analysisDisabledReason={aiStatus?.available === false ? 'שירות הניתוח אינו זמין כרגע. אפשר לפתוח את המקור השמור.' : 'בודק זמינות שירות הניתוח…'}
+            analysisAvailable={isLocalProject || (analysisReady && aiStatus?.available === true)} analysisDisabledReason={aiStatus?.available === false ? 'שירות הניתוח אינו זמין כרגע. אפשר לפתוח את המקור השמור.' : 'בודק זמינות שירות הניתוח…'}
             onSelect={setSelectedId} onFilter={setActiveFilter} onRetryRead={retryRead} onUpload={handleFiles} onAnalyze={runAIParsing} onPreview={setSelectedDocForVerification} onDelete={async doc => { setDeleteDocument(doc); }} />
         {verificationDocument && <ScreenOfTruthModal document={verificationDocument} sourceReadError={sourceReadErrors[verificationDocument.id]} onRetryRead={retryRead} retryingRead={loading || Boolean(processingId)} projectId={projectId} onClose={() => setSelectedDocForVerification(null)} onValidate={handleValidate} />}
         <Dialog open={Boolean(deleteDocument)} labelledBy="document-delete-title" onClose={() => { if (!deleting) setDeleteDocument(null); }}>

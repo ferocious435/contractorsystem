@@ -45,6 +45,7 @@ export function hasIncompleteAiAnalysis(doc: ProjectDocument) {
         || (Array.isArray(parsed.system_errors) && parsed.system_errors.length > 0)
         || parsed.ai_degraded === true
         || analysisStatus === 'AI_ERROR'
+        || analysisStatus === 'PARTIAL'
         || analysisStatus.includes('AI_PENDING')
         || analysisSource.includes('fallback')
         || summary.includes('סיווג לפי שם הקובץ')

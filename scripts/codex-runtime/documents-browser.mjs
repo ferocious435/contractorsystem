@@ -1,0 +1,40 @@
+import './load-server.mjs';
+import {createRequire,registerHooks} from 'node:module';
+import {createServer} from 'node:http';
+import {readFileSync,mkdirSync,writeFileSync} from 'node:fs';
+import path from 'node:path';
+import {createAiWorker} from '../../src/server/ai/worker.server.ts';
+import {createAiJobService,readAiRequest} from '../../src/server/ai/service.server.ts';
+import {createDocumentHandler} from '../../src/server/ai/handlers/document.ts';
+import {queueFixture,projectId,savedProfile} from './queue-fixtures.mjs';
+import {ownerId} from './fixtures.mjs';
+import {pricingRows,pricingReadClient,pricingIds,applyPricingEffects} from './pricing-fixtures.mjs';
+const require=createRequire(import.meta.url),root=process.cwd(),out=path.resolve('.superpowers/codex-program-runtime-2026-10-30/documents-browser');mkdirSync(out,{recursive:true});
+const bundle=require('next/dist/compiled/webpack/webpack');bundle.init();
+await new Promise((resolve,reject)=>{const compiler=bundle.webpack({mode:'development',devtool:false,plugins:[new bundle.webpack.DefinePlugin({'process.env':'{}'})],entry:path.resolve('scripts/codex-runtime/browser/documents.tsx'),output:{path:out,filename:'app.js'},resolve:{extensions:['.tsx','.ts','.mjs','.js'],alias:{'@':path.resolve('src')}},module:{rules:[{test:/\.tsx?$/,use:path.resolve('scripts/codex-runtime/browser/typescript-loader.cjs')}]},optimization:{minimize:false}});compiler.run((error,stats)=>compiler.close(()=>error||stats.hasErrors()?reject(error??Error(stats.toString({all:false,errors:true}))):resolve()));});
+if(process.argv.includes('--build-only'))process.exit(0);
+const sourceText='נדרש לתאם את מועד ביצוע העבודה.',rows=pricingRows();rows.documents=[{id:pricingIds.work,project_id:projectId,title:'הוראת עבודה סינתטית.txt',category:'EXECUTION',doc_type:'LETTER',extracted_text:sourceText,ocr_status:'COMPLETED',ai_status:'PENDING',parsed_json:{},storage_path:projectId+'/synthetic.txt',storage_bucket:'documents',created_at:'2026-01-01T10:00:00.000Z',xmin:'3'}];rows.contradictions=[];rows.pricelists=[];rows.pricelist_items=[];
+const database=pricingReadClient(rows),fx=queueFixture({now:()=>Date.now()}),store=fx.store;database.storage={from:()=>({download:async()=>({data:new Blob([sourceText]),error:null})})};
+const list=store.listOwned;store.listOwned=async(...args)=>(await list(...args)).reverse();const complete=store.complete;store.complete=async(id,lease,prepared)=>{const accepted=await complete(id,lease,prepared);if(accepted)applyPricingEffects(database.tables,prepared);return accepted;};
+const handler=createDocumentHandler({database:()=>database});let gate=null,turns=0,posts=0;
+const worker=createAiWorker({store,startedAt:0,handlerFor:()=>handler,client:{async runTurn(){turns++;await new Promise(resolve=>gate=resolve);gate=null;return JSON.stringify({type:'הוראת עבודה',category:'EXECUTION',is_reference:false,reference_family:null,authority_scope:null,incorporated_by_contract:null,summary:'נדרש לתאם את מועד הביצוע.',full_markdown:'',date:null,parties:[],key_terms:[],financial_data:{total_amount:null,items:[]},warnings:[]});}}});
+const service=createAiJobService({store,worker,authenticate:async()=>({id:ownerId}),resolveOwner:async()=>ownerId,ownsProject:async(owner,project)=>owner===ownerId&&project===projectId,readProfile:async()=>savedProfile,handlerFor:()=>handler});globalThis.__documentBrowser={service,readAiRequest};
+registerHooks({resolve(specifier,context,next){if(specifier==='@/server/ai/service.server'&&/\/api\/documents\/process\/route\.ts$/.test(context.parentURL??''))return {url:'data:text/javascript,export const createOwnedAiJobFromRequest=(r,k)=>globalThis.__documentBrowser.service.createRequest(r,k);',shortCircuit:true};return next(specifier,context);}});
+const processRoute=await import('../../src/app/api/documents/process/route.ts'),stats=()=>({syntheticOnly:true,posts,turns,jobs:[...fx.rows.values()].map(job=>({id:job.id,kind:job.kind,state:job.state,result:job.result})),documents:database.tables.documents,realDatabaseWrites:database.writes.length});
+const html='<!doctype html><html lang="ru"><meta charset="utf-8"><title>Синтетическая проверка документов</title><style>body{font:16px Arial;background:#f5f6f8;color:#17202c;margin:0}main{padding:20px}button,select,input{font:inherit;padding:8px;margin:4px}button{cursor:pointer}button:disabled{opacity:.5}.ti-page__header,.ti-actions,.ti-doc-row{display:flex;gap:12px;align-items:center;justify-content:space-between}.ti-panel{background:white;padding:18px;margin:12px 0}.ti-feedback{padding:12px;background:#e8eef7;margin:12px 0}.ti-document-catalog{display:grid;grid-template-columns:1fr 1fr;gap:16px}.ti-preserve-lines{white-space:pre-wrap}svg{width:20px;height:20px}</style><div id="root"></div><script src="/app.js"></script></html>';
+const server=createServer(async(req,res)=>{try{const url=new URL(req.url,'http://127.0.0.1:3006');if(req.method==='GET'&&url.pathname==='/'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(html);return;}if(req.method==='GET'&&url.pathname==='/app.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');res.end(readFileSync(path.join(out,'app.js')));return;}if(url.pathname==='/fixture/source.txt'){res.setHeader('Content-Type','text/plain; charset=utf-8');res.end(sourceText);return;}
+ const parts=[];let size=0;for await(const part of req){size+=part.length;if(size>2_000_000)throw Error('Fixture input too large');parts.push(part);}const raw=Buffer.concat(parts).toString(),request=new Request(url,{method:req.method,headers:{'Content-Type':'application/json'},...(raw?{body:raw}:{})});let response;
+ if(url.pathname==='/fixture/release'){gate?.();response=Response.json({success:true});}
+ else if(url.pathname==='/fixture/stats')response=Response.json(stats());
+ else if(url.pathname==='/api/system/ai-status')response=Response.json({available:true,provider:'Codex',reason:null});
+ else if(url.pathname==='/api/documents'&&req.method==='GET')response=Response.json({success:true,documents:database.tables.documents});
+ else if(url.pathname==='/api/documents/signed-url')response=Response.json({success:true,url:'http://127.0.0.1:3006/fixture/source.txt',signedUrl:'http://127.0.0.1:3006/fixture/source.txt'});
+ else if(url.pathname==='/api/documents/extract-text')response=Response.json({success:true,extracted_text:sourceText});
+ else if(url.pathname==='/api/documents/process'){posts++;response=await processRoute.POST(request);}
+ else if(url.pathname==='/api/ai/jobs')response=await service.list(request);
+ else if(/^\/api\/ai\/jobs\/[a-f\d-]+\/cancel$/.test(url.pathname))response=await service.cancelRequest(request,url.pathname.split('/')[4]);
+ else if(/^\/api\/ai\/jobs\/[a-f\d-]+$/.test(url.pathname))response=await service.read(request,url.pathname.split('/')[4]);
+ else response=Response.json({error:'Synthetic route unavailable'},{status:404});
+ res.writeHead(response.status,Object.fromEntries(response.headers));res.end(await response.text());writeFileSync(path.join(out,'evidence.json'),JSON.stringify(stats(),null,2));
+ }catch(error){res.statusCode=500;res.end(JSON.stringify({error:error.message}));console.error(error.message);}});
+server.listen(3006,'127.0.0.1',()=>{writeFileSync(path.join(out,'process.json'),JSON.stringify({pid:process.pid,cwd:root,port:3006}));console.log('Synthetic document browser http://127.0.0.1:3006; no native inference or real document writes.');});

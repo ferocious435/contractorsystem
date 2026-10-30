@@ -13,7 +13,7 @@
     "verify:open-workspace-runtime": "node scripts/verify-open-workspace-runtime.mjs",
     "verify:remote-financials": "node scripts/verify-remote-financial-state.mjs",
     "verify:boq-scale": "node scripts/verify-enterprise-boq-scale.mjs",
-    "verify:documents": "node scripts/verify-document-workflow.mjs",
+    "verify:documents": "node scripts/verify-document-runtime.mjs",
     "verify:goal-readiness": "node scripts/verify-enterprise-goal-readiness.mjs",
     "verify:runtime-smoke": "node scripts/verify-runtime-smoke.mjs",
     "verify:runtime-pricing": "node scripts/verify-runtime-pricing.mjs",

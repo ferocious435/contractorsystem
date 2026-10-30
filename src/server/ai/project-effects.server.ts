@@ -5,6 +5,7 @@ import {BusinessAiError,record,validUuid,type AiExecutionContext,type JsonObject
 import {isAiExecutionContext} from './worker.server';
 import {getAiJobStore} from './jobs.server';
 import {findingNeedsHistory} from '@/utils/scan-finding-retention-policy';
+import {getDocumentStoragePath,getDocumentStorageBucket} from '@/utils/document-storage';
 
 type Row=Record<string,unknown>&{id:string};
 type Reply={data:unknown;count:number;error:{message:string;code?:string}|null};
@@ -114,7 +115,14 @@ export async function createProjectEffectClient(database:SupabaseClient,executio
     const client=new Proxy(database,{get(target,key){
         if(key==='from')return(table:string)=>{if(current.has(table))return new Query(table);if(table==='reference_document_chunks')return readOnly(database.from(table),query=>(query as {in(key:string,ids:string[]):object}).in('reference_document_id',referenceRows.map(row=>row.id)));if(table==='pricelist_items')return readOnly(database.from(table),query=>(query as {in(key:string,ids:string[]):object}).in('pricelist_id',priceRows.map(row=>row.id)));throw invalid();};
         if(key==='rpc')return()=>{throw invalid();};
-        if(key==='storage')return new Proxy(database.storage,{get(storage,property){if(property==='from')return(bucket:string)=>new Proxy(storage.from(bucket),{get(api,method){if(!['download','createSignedUrl','createSignedUrls','getPublicUrl'].includes(String(method)))throw invalid();const fn=Reflect.get(api,method);return typeof fn==='function'?fn.bind(api):fn;}});return Reflect.get(storage,property);}});
+        if(key==='storage')return {from(bucket:string){
+            const allowed=(value:unknown)=>typeof value==='string'&&value.startsWith(execution.projectId+'/')&&!/[\\%\0]/u.test(value)&&value.split('/').every(part=>part!=='.'&&part!=='..'&&Boolean(part))
+                &&[...current.get('documents')!.values()].some(row=>{try{return getDocumentStorageBucket(row as {storage_bucket?:string})===bucket&&getDocumentStoragePath(row as {storage_path?:string;file_url?:string})===value;}catch{return false;}});
+            return new Proxy({},{get(_api,method){if(!['download','createSignedUrl','createSignedUrls','getPublicUrl'].includes(String(method)))throw invalid();return(...args:unknown[])=>{
+                const paths=method==='createSignedUrls'?args[0]:[args[0]];if(!Array.isArray(paths)||!paths.length||!paths.every(allowed))throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);
+                const api=database.storage.from(bucket),fn=Reflect.get(api,method);return fn.apply(api,args);
+            };}});
+        }};
         const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
     }}) as SupabaseClient;
     async function effects():Promise<VerifiedAiEffect[]>{await execution.checkActive();const prepared:VerifiedAiEffect[]=[];

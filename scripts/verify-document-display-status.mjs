@@ -91,3 +91,13 @@ test('a long PDF with an unread page remains visibly incomplete', () => {
     assert.equal(state.textRead, false);
     assert.equal(state.humanValidated, true);
 });
+
+test('complete reading with a partial Codex analysis stays visibly unfinished', () => {
+    const state = statusModule.getDocumentDisplayState({ id: 'partial-codex', title: 'note.txt',
+        ai_status: 'PENDING', ocr_status: 'COMPLETED', extracted_text: 'נא לתאם את מועד העבודה.',
+        parsed_json: { analysis_source: 'Codex', analysis_status: 'PARTIAL', analysis_context_truncated: true } });
+    assert.equal(state.key, 'AI_INCOMPLETE');
+    assert.equal(state.textRead, true);
+    assert.equal(state.aiCompleted, false);
+    assert.equal(state.needsAction, true);
+});
