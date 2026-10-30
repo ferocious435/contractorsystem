@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "purpose": "Historical cache signature lookup only. Never choose an engine, model, effort or fallback for generation.",
+  "observedAt": "2026-10-30T12:35:46.390Z",
+  "identities": [
+    {
+      "kind": "ollama",
+      "provider": "Local AI",
+      "model": "qwen3:4b"
+    }
+  ],
+  "sourceHashes": {
+    "src/lib/comparison-ai.ts": "279ae3b23fc4b34fdbf7faca8d66067b45060721cba405f0927c90f1fb2a4a24",
+    "src/utils/document-scan-memory.ts": "84c943e72eb1d4797afdfe61141fbf236fdecae5dbadcf8f76cf081d187d84ce",
+    "src/utils/work-change-review-server.ts": "206df0bd54157d01bdb96397274f44271a6e5a135db8c86cab3173c1cc7162d9",
+    "src/utils/pricing-scope-signature.ts": "d76536dc23fe95ce757b7977e22300b59b4e1e1e36d99269ed11cff301b286cd"
+  },
+  "cacheManifestSha256": "dda4233ad530813eaae7e391bc30345c2481be05dd50f32040ecbfead38509f5",
+  "observedCacheFiles": 27
+}
