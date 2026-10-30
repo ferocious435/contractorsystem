@@ -1,10 +1,12 @@
 import type { LetterDraftSnapshot, MarkLetterSentRequest, SavedLetterResult, SaveLetterDraftRequest } from '@/utils/letter-draft-types';
-import { stableLetterValue } from '@/utils/letter-snapshot';
+import { stableLetterValue, isRecord, isLetterDraftSnapshot } from '@/utils/letter-snapshot';
+import {validUuid} from '@/server/ai/contracts';
 import type { LetterPrintContext } from './letterPrintContext';
 
 type DraftInput = Omit<SaveLetterDraftRequest, 'clientDraftId' | 'expectedRevision' | 'operationId'>;
 export type LetterSaveAttempt = { epoch: number; request: SaveLetterDraftRequest };
 export type LetterSentAttempt = { epoch: number; request: MarkLetterSentRequest };
+export interface LetterGenerationAttempt {epoch:number;clientDraftId:string;signature:string;requestKey:string;}
 export interface LetterDraftSessionState {
     projectId: string; clientDraftId: string; letterId: string | null; revision: number;
     status: 'DRAFT' | 'SENT'; isLegacy: boolean; snapshot: LetterDraftSnapshot | null;
@@ -20,20 +22,55 @@ function freeze<T>(value: T): T {
     return value;
 }
 
-/** In-memory request identity for one editor. It does not store letters or send them. */
+/** Request identity for one editor. A browser checkpoint is a work buffer, never a saved business letter. */
 export class LetterDraftSession {
     private epoch = 0;
     private current: LetterDraftSessionState;
     private pendingSave: LetterSaveAttempt | null = null;
     private pendingSent: LetterSentAttempt | null = null;
+    private pendingGeneration:LetterGenerationAttempt|null=null;
     constructor(projectId: string) { this.current = this.initial(projectId); }
     private initial(projectId: string): LetterDraftSessionState {
         return { projectId, clientDraftId: crypto.randomUUID(), letterId: null, revision: 0, status: 'DRAFT', isLegacy: false,
             snapshot: null, sourceRevisions: {}, docType: 'general', savedSignature: null, operationId: null, operationKind: null };
     }
     get state(): LetterDraftSessionState { return { ...this.current }; }
+    checkpoint(): unknown {return structuredClone({version:1,epoch:this.epoch,current:this.current,pendingSave:this.pendingSave,pendingSent:this.pendingSent,pendingGeneration:this.pendingGeneration});}
+    static resume(projectId:string,raw:unknown):LetterDraftSession {
+        const session=new LetterDraftSession(projectId);
+        if(!isRecord(raw)||raw.version!==1||!Number.isSafeInteger(raw.epoch)||Number(raw.epoch)<0||!isRecord(raw.current))return session;
+        const state=raw.current;
+        if(state.projectId!==projectId||!validUuid(state.clientDraftId)||(state.letterId!==null&&!validUuid(state.letterId))
+            ||!Number.isSafeInteger(state.revision)||Number(state.revision)<0||!['DRAFT','SENT'].includes(String(state.status))||typeof state.isLegacy!=='boolean'
+            ||(state.snapshot!==null&&!isLetterDraftSnapshot(state.snapshot))||!isRecord(state.sourceRevisions)||!Object.values(state.sourceRevisions).every(value=>typeof value==='string')
+            ||typeof state.docType!=='string'||(state.savedSignature!==null&&typeof state.savedSignature!=='string')
+            ||(state.operationId!==null&&!validUuid(state.operationId))||![null,'save','sent'].includes(state.operationKind as null|'save'|'sent'))return session;
+        const generation=raw.pendingGeneration;
+        if(generation!==null&&(!isRecord(generation)||generation.epoch!==raw.epoch||generation.clientDraftId!==state.clientDraftId||typeof generation.signature!=='string'||!validUuid(generation.requestKey)))return session;
+        for(const [kind,value] of [['save',raw.pendingSave],['sent',raw.pendingSent]] as const){
+            if(value===null)continue;
+            if(!isRecord(value)||value.epoch!==raw.epoch||!isRecord(value.request)||value.request.projectId!==projectId||!validUuid(value.request.operationId)
+                ||value.request.operationId!==state.operationId||state.operationKind!==kind||value.request.expectedRevision!==state.revision)return session;
+            const request=value.request;
+            if(kind==='save'&&(request.clientDraftId!==state.clientDraftId||!Array.isArray(request.itemIds)||!request.itemIds.every(validUuid)
+                ||!['docType','subject','recipientName','content'].every(key=>typeof request[key]==='string')||!isRecord(request.sourceRevisions)))return session;
+            if(kind==='sent'&&request.letterId!==state.letterId)return session;
+        }
+        if((state.operationKind==='save')!==(raw.pendingSave!==null)||(state.operationKind==='sent')!==(raw.pendingSent!==null))return session;
+        session.current=structuredClone(state) as unknown as LetterDraftSessionState;session.epoch=Number(raw.epoch);
+        session.pendingSave=freeze(structuredClone(raw.pendingSave)) as LetterSaveAttempt|null;
+        session.pendingSent=freeze(structuredClone(raw.pendingSent)) as LetterSentAttempt|null;
+        session.pendingGeneration=structuredClone(generation) as LetterGenerationAttempt|null;return session;
+    }
+    generationStopped(attempt:LetterGenerationAttempt):void {if(attempt.epoch===this.epoch&&attempt.requestKey===this.pendingGeneration?.requestKey)this.pendingGeneration=null;}
+    generationAttempt(signature:string):LetterGenerationAttempt{if(this.pendingGeneration?.signature===signature)return this.pendingGeneration;return this.pendingGeneration={epoch:this.epoch,clientDraftId:this.current.clientDraftId,signature,requestKey:crypto.randomUUID()};}
+    generated(attempt:LetterGenerationAttempt,result:{letter:string},currentSignature:string):'apply'|'pending'|'ignore'{
+        if(attempt.epoch!==this.epoch||attempt.clientDraftId!==this.current.clientDraftId||this.pendingGeneration?.requestKey!==attempt.requestKey||this.current.status==='SENT'||typeof result.letter!=='string')return 'ignore';
+        if(this.pendingGeneration?.requestKey===attempt.requestKey)this.pendingGeneration=null;
+        return attempt.signature===currentSignature?'apply':'pending';
+    }
     reset(projectId: string): void {
-        ++this.epoch; this.current = this.initial(projectId); this.pendingSave = null; this.pendingSent = null;
+        ++this.epoch; this.current = this.initial(projectId); this.pendingSave = null; this.pendingSent = null;this.pendingGeneration=null;
     }
     open(projectId: string, context: LetterPrintContext): void {
         if (context.projectId !== projectId) throw new Error('DRAFT_PROJECT_CHANGED');

@@ -141,6 +141,9 @@ export interface SmartLetterState {
   operationKind?: 'save' | 'sent' | null;
   isPreviewing?: boolean;
   isMarkingSent?: boolean;
+  generationState?: string | null;
+  pendingGeneration?: {letter:string;selectionKey:string|null} | null;
+  bufferUnavailable?: boolean;
   sentMarkedAt?: string | null;
   letterType: LetterTypeValue | "";
   recipient: string;
@@ -178,6 +181,7 @@ export interface SmartLetterSetters {
 }
 
 export interface SmartLetterDerivedState {
+  canApplyGeneratedOption?: boolean;
   canPrint?: boolean;
   selectedItems: SmartLetterLedgerItem[];
   subtotal: number | null;
@@ -200,6 +204,8 @@ export interface SmartLetterActions {
   fetchLedgerItems: () => Promise<void>;
   fetchSavedLetters: () => Promise<void>;
   generateLetter: () => Promise<void>;
+  cancelGeneration?: () => Promise<void>;
+  applyGeneratedOption?: () => void;
   copyLetter: () => void;
   saveLetter: () => Promise<void>;
   deleteLetter: (id: string, confirmed?: boolean) => Promise<void>;

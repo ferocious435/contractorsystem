@@ -25,6 +25,7 @@ export function createAiJobService(options:ServiceOptions) {
         if(!record(raw)||Object.keys(raw).some(key=>forbidden.has(key))||typeof raw.requestKey!=='string'||!raw.requestKey.trim()||raw.requestKey.length>128)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         const projectId=await project(ownerId,raw.projectId),handler=options.handlerFor(kind);if(!handler)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         const context={conversationId:raw.conversationId??null,clientContextId:raw.clientContextId??null};for(const value of Object.values(context))if(value!==null&&!validUuid(value))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
+        if(kind==='consultant'&&(!context.conversationId||context.clientContextId!==context.conversationId))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         const business=Object.fromEntries(Object.entries(raw).filter(([key])=>!['projectId','requestKey','conversationId','clientContextId'].includes(key)));
         let payload:JsonObject;try{payload=handler.validate(business);}catch{throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);}
         const profile=await options.readProfile(ownerId);if(!profile)throw new BusinessAiError('AI_PROFILE_REQUIRED');if(profile.ownerId!==ownerId)throw new BusinessAiError('AI_PROFILE_INVALID',undefined,400);
@@ -33,6 +34,7 @@ export function createAiJobService(options:ServiceOptions) {
         void options.worker.run().catch(()=>{});return Response.json({success:true,job},{status:202,headers});
     }
     async function create(request:Request,kind:AiJobKind,payload:unknown):Promise<Response>{try{return await createAuthorized(await owner(request),kind,payload);}catch(error){return failure(error);}}
+    async function createRequest(request:Request,kind:AiJobKind):Promise<Response>{try{const ownerId=await owner(request);return await createAuthorized(ownerId,kind,await readAiRequest(request));}catch(error){return failure(error);}}
     async function post(request:Request):Promise<Response>{try{const ownerId=await owner(request),raw=await readAiRequest(request);if(Object.keys(raw).some(key=>!['kind','projectId','requestKey','payload','conversationId','clientContextId'].includes(key))||!kinds.has(String(raw.kind))||!record(raw.payload)||Object.keys(raw.payload).some(key=>['projectId','requestKey','conversationId','clientContextId'].includes(key)))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         return await createAuthorized(ownerId,raw.kind as AiJobKind,{...raw.payload,projectId:raw.projectId,requestKey:raw.requestKey,conversationId:raw.conversationId??null,clientContextId:raw.clientContextId??null});}catch(error){return failure(error);}}
     async function read(request:Request,id:string):Promise<Response>{try{const ownerId=await owner(request),projectId=await project(ownerId,new URL(request.url).searchParams.get('projectId'));if(!validUuid(id))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);await options.store.interruptStale(Date.now());const job=await options.store.readOwned(ownerId,projectId,id);if(!job)throw new BusinessAiError('AI_JOB_NOT_FOUND',undefined,404);return Response.json({success:true,job},{headers});}catch(error){return failure(error);}}
@@ -41,7 +43,7 @@ export function createAiJobService(options:ServiceOptions) {
     async function cancelAuthorized(request:Request,ownerId:string,id:string,revision:number):Promise<Response>{const projectId=await project(ownerId,new URL(request.url).searchParams.get('projectId'));if(!validUuid(id))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);const current=await options.store.readOwned(ownerId,projectId,id);if(!current)throw new BusinessAiError('AI_JOB_NOT_FOUND',undefined,404);const job=await options.store.cancel(ownerId,id,revision);options.worker.abort(id);return Response.json({success:true,job},{headers});}
     async function cancel(request:Request,id:string,revision:number):Promise<Response>{try{return await cancelAuthorized(request,await owner(request),id,revision);}catch(error){return failure(error);}}
     async function cancelRequest(request:Request,id:string):Promise<Response>{try{const ownerId=await owner(request),body=await readAiRequest(request);if(Object.keys(body).some(key=>key!=='expectedRevision')||!Number.isSafeInteger(body.expectedRevision))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);return await cancelAuthorized(request,ownerId,id,Number(body.expectedRevision));}catch(error){return failure(error);}}
-    return {create,post,read,list,cancel,cancelRequest};
+    return {create,createRequest,post,read,list,cancel,cancelRequest};
 }
 export async function authenticateRuntimeOwner(request:Request):Promise<string>{
     void request;const client=await createClient(),{data:{user},error}=await client.auth.getUser();if(error||!user)throw new BusinessAiError('AI_UNAUTHORIZED','Нужно войти в программу.',401);
@@ -51,5 +53,6 @@ let shared:ReturnType<typeof createAiJobService>|undefined;
 export function getAiJobService(){return shared??=createAiJobService({store:getAiJobStore(),worker:getAiWorker(),authenticate:async request=>({id:await authenticateRuntimeOwner(request)}),resolveOwner:()=>resolveRuntimeOwner(createAdminClient()),
     ownsProject:async(owner,project)=>{const result=await createAdminClient().from('projects').select('id').eq('id',project).eq('contractor_id',owner).maybeSingle();if(result.error)throw new BusinessAiError('AI_UNAVAILABLE');return Boolean(result.data);},readProfile:readRuntimeProfile,handlerFor:getAiHandler});}
 export const createOwnedAiJob=(request:Request,kind:AiJobKind,payload:unknown):Promise<Response>=>getAiJobService().create(request,kind,payload);
+export const createOwnedAiJobFromRequest=(request:Request,kind:AiJobKind):Promise<Response>=>getAiJobService().createRequest(request,kind);
 export const getOwnedAiJob=(request:Request,id:string):Promise<Response>=>getAiJobService().read(request,id);
 export const cancelOwnedAiJob=(request:Request,id:string,revision:number):Promise<Response>=>getAiJobService().cancel(request,id,revision);

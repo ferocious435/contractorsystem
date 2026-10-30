@@ -1,11 +1,9 @@
 # Состояние: ContractorSystem
 
-open_plays:
-  - R01: текущая операционная доступность восстановлена, EV4–EV6; Windows/restart не проверялся
-  - R02–R04: проект и план одобрены EV10/EV13; выполнение разрешено в новом контексте, первой задача1
-waiting_on_user:
-  - Нет повторного согласования: владелец поручил начать выполнение по порядку в новом контексте
+План одобрен EV30, implementation разрешён. Задачи1–4 завершены и отправлены, последний a82a3327; выполняется задача5/11. Прогресс, факты RED/GREEN и решения: .superpowers/sdd/2026-10-30-codex-program-runtime/progress.md.
 
-Источники: docs/WORK_PLAN_CURRENT_RU.md, docs/HANDOFF_CURRENT_RU.md, registers/evidence.md, registers/decisions.md.
-Установленный продукт:3002/r8/fDpUdouOo75PwPCCKc6nY. Ранее доступность восстановлена EV4–EV6; при подготовке плана продуктовый код/БД не менялись. Одобренный проект сохраняется в принятой редакции; прогресс отдельно. Метод — текущий помощник через executing-plans; исполнители/модель/worktree не меняются.
-last_session:2026-10-29 — план принят EV13, gate implementation прошёл; передача docs/HANDOFF_R02_R04_START_2026_10_29_RU.md. Продуктовая задача1 ещё не начата до переноса.
+Следующий шаг: продолжить задачу5 из её brief, провести G/коммит, затем остальные задачи без промежуточных вопросов. Исполнитель — текущий чат; другие AI-исполнители и движки запрещены. Модель чата не менять.
+
+Установленный A: http://localhost:3002/, BUILD_ID _wZyE8ITUneSTBiuh3DJW; новый выпуск ещё не установлен. Синтетическая DB: contractorsystem-codex-runtime-test, network none, собственные task labels. M: supabase/migrations/20261030100807_codex_runtime_jobs.sql; в облако не применена. Модельных запросов0.
+
+Последний отправленный commit a82a33279ddfceae449d10a4bbc08ee758a06cad. План/проект заморожены; фактическое согласование .superpowers/codex-program-runtime-2026-10-30/plan-approval-evidence.json. last_session:2026-10-30.

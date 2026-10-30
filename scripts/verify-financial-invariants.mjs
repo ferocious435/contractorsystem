@@ -778,7 +778,8 @@ function verifyServerDocumentAndLetterBoundaryStatics() {
     "getOfficialLetterEvidenceBlockers",
     "official letter evidence gate must live in a shared server helper"
   );
-  assertIncludes("src/app/api/generate-letter/route.ts", "previewVoLetterDraft", "local generation must use the same server preview and official admission gate as saving");
+  assertIncludes("src/server/ai/handlers/letter.ts", "contractor_ai_letter_preview", "the background letter must load the authoritative preview for its active owned job");
+  assertIncludes("supabase/migrations/20261030100807_codex_runtime_jobs.sql", "public.preview_letter_draft", "background generation must delegate to the unchanged preview and official admission gate");
   assertIncludes(
     "src/app/api/documents/route.ts",
     "export async function POST",
@@ -1804,9 +1805,11 @@ assert(
 }
 
 const filesToScanForInlineTotals = [
-  "src/app/api/generate-letter/route.ts",
+  "src/server/ai/handlers/letter.ts",
+  "src/utils/business-writing-result.ts",
+  "src/utils/project-writing-context-server.ts",
   "src/app/api/export/route.ts",
-  "src/app/api/chat/route.ts",
+  "src/server/ai/handlers/consultant.ts",
   "src/components/features/AIPanel.tsx",
   "src/components/features/LedgerTable.tsx",
   "src/components/features/pricing-ledger/hooks/usePricingLedgerState.ts",
@@ -1820,7 +1823,7 @@ const filesToScanForInlineTotals = [
 for (const file of filesToScanForInlineTotals) {
   assertRegex(
     file,
-    /getLedgerRowAmount|getPreferredProjectAmount|getVariationOrderAmount|getLedgerRowVatAmount|getLedgerRowTotalInclVat|getAmountVat|getAmountInclVat|getMoneySum|getIndividualPricing|prepareLetterFinancialSnapshot|buildLedgerCsv|generateLocalLetter|loadLocalProjectContext/,
+    /getLedgerRowAmount|getPreferredProjectAmount|getVariationOrderAmount|getLedgerRowVatAmount|getLedgerRowTotalInclVat|getAmountVat|getAmountInclVat|getMoneySum|getIndividualPricing|prepareLetterFinancialSnapshot|buildLedgerCsv|isLetterDraftSnapshot|loadProjectWritingContext/,
     "financial code must use shared project or individual financial helpers"
   );
 

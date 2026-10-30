@@ -7,12 +7,14 @@ import {stableLetterValue} from '@/utils/letter-snapshot';
 import type {LetterDraftPreview} from '@/utils/letter-draft-types';
 import {deleteVoLetter as apiDeleteVoLetter, fetchContradictionsByIds, fetchLedgerItems as apiFetchLedgerItems,
   fetchProjectName, fetchLetterPrintContext, fetchSavedLetters as apiFetchSavedLetters, generateLetter as apiGenerateLetter,
-  previewVoLetter, saveVoLetter, markVoLetterSent, LetterRequestError} from '../api/smartLetterApi';
+  previewVoLetter, saveVoLetter, markVoLetterSent, LetterRequestError, generatedLetterResponse} from '../api/smartLetterApi';
 import type {SavedSmartLetter, SmartLetterLedgerItem, ToneValue, UseSmartLetterStateParams, UseSmartLetterStateResult, LetterTypeValue, SmartLetterState} from '../types';
 import {blockedLetterPrintContext, type LetterPrintContext} from '../letterPrintContext';
 import {LetterDraftSession, letterDraftSignature} from '../letterDraftSession';
 import {useAiReadiness, refreshAiReadiness} from '@/hooks/useAiReadiness';
-import {LocalWritingRequest, localWritingRequestMessage} from '@/utils/local-writing-request';
+import {restoreAiJobs,observeAiJob,cancelAiJob} from '@/utils/ai-job-client';
+import {BusinessAiError,record,type JobDto} from '@/server/ai/contracts';
+import {readWritingBuffer,writeWritingBuffer} from '@/utils/writing-work-buffer';
 
 function selectionKey(projectId: string, docType: string, ids: string[], rows: SmartLetterLedgerItem[]): string {
   return stableLetterValue([projectId, docType, ids, ids.map(id => rows.find(row => row.id === id) || null)]);
@@ -32,7 +34,11 @@ function matchesCurrentSnapshot(preview: LetterDraftPreview, rows: SmartLetterLe
 const message = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
 
 export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartLetterStateParams): UseSmartLetterStateResult {
-  const aiReadiness = useAiReadiness(), generation = useRef(new LocalWritingRequest());
+  const aiReadiness = useAiReadiness(), generationObserver = useRef<AbortController|null>(null);
+  const [generationJob,setGenerationJob]=useState<JobDto|null>(null),generationTicket=useRef(0);
+  const [pendingGeneration,setPendingGeneration]=useState<{letter:string;selectionKey:string|null}|null>(null);
+  const [bufferUnavailable,setBufferUnavailable]=useState(false),[hydratedProject,setHydratedProject]=useState<string|null>(null);
+  const generationMetadata=useRef<{selectionKey:string;signature:string;requestKey:string;jobId?:string}|null>(null);
   const session = useRef<LetterDraftSession | null>(null);
   if (!session.current) session.current = new LetterDraftSession(projectId);
   const [draft, setDraft] = useState(() => session.current!.state);
@@ -51,7 +57,7 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
   const [preview, setPreview] = useState<LetterDraftPreview | null>(null), [reviewedKey, setReviewedKey] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false), [isMarkingSent, setIsMarkingSent] = useState(false);
   const epoch = useRef(0), printRequest = useRef(0), ledgerRequest = useRef(0), historyRequest = useRef(0), busy = useRef(false);
-  const invalidateRequests = useCallback(() => {++epoch.current; ++printRequest.current; ++ledgerRequest.current; ++historyRequest.current; generation.current.cancel();}, []);
+  const invalidateRequests = useCallback(() => {++epoch.current; ++printRequest.current; ++ledgerRequest.current; ++historyRequest.current; generationObserver.current?.abort();}, []);
   const activeProject = useRef(projectId), initial = useRef(initialSelectedItems), initialApplied = useRef(false);
   initial.current = initialSelectedItems;
   if (activeProject.current !== projectId) { activeProject.current = projectId; ++epoch.current; session.current.reset(projectId); }
@@ -67,12 +73,15 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
   const isDirty = draft.savedSignature !== null ? signature !== draft.savedSignature
     || (previewReady && stableLetterValue(preview!.sourceRevisions) !== stableLetterValue(draft.sourceRevisions)) : Boolean(generatedLetter.trim());
   const readOnly = draft.status === 'SENT' || draft.isLegacy || draft.operationKind === 'sent' || Boolean(draft.letterId && !draft.snapshot);
-  const latest = useRef({projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly, generationKey});
-  latest.current = {projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly, generationKey};
+  const latest = useRef({projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly, generationKey,letterType,keyPoints,tone});
+  latest.current = {projectId, docType, selectedLedgerItems, subject, recipient, generatedLetter, key, signature, ledgerItems, preview, previewReady, readOnly, generationKey,letterType,keyPoints,tone};
+  const persistBuffer=useCallback(()=>{const view=latest.current;if(view.projectId!==session.current!.state.projectId)return;setBufferUnavailable(!writeWritingBuffer(view.projectId,'letter',{
+    session:session.current!.checkpoint(),letterType:view.letterType,recipient:view.recipient,subject:view.subject,keyPoints:view.keyPoints,tone:view.tone,text:view.generatedLetter,itemIds:view.selectedLedgerItems,generationMetadata:generationMetadata.current}));},[]);
 
   const clearPrintContext = useCallback(() => {++printRequest.current; setPrintContext(null); setIsLoadingPrintContext(false); setShowPrintPreview(false);}, []);
   const newDraft = useCallback(() => {
-    ++epoch.current; generation.current.cancel(); busy.current = false; session.current!.reset(projectId); setDraft(session.current!.state);
+    ++epoch.current; generationObserver.current?.abort(); busy.current = false; session.current!.reset(projectId); setDraft(session.current!.state);
+    generationMetadata.current=null;setGenerationJob(null);setPendingGeneration(null);
     clearPrintContext(); setPreview(null); setReviewedKey(null); setGeneratedLetter(''); setSubject(''); setRecipient(''); setKeyPoints('');
     setLetterType('general'); setSelectedLedgerItems([]); setSaveSuccess(false); setOperationError(null); setViewMode('edit');
     setIsSaving(false); setIsMarkingSent(false); setIsPreviewing(false); setIsGenerating(false); setIsDeleting(null); setIsCopied(false);
@@ -133,10 +142,37 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
     finally {if (activeProject.current === projectId && request === historyRequest.current) setIsLoadingHistory(false);}
   }, [projectId, supabase]);
   useEffect(() => {
-    newDraft(); initialApplied.current = false; setLedgerItems([]); setSavedLetters([]); setProjectName('');
-    void fetchLedgerItems(); void fetchSavedLetters();
-    return invalidateRequests;
-  }, [fetchLedgerItems, fetchSavedLetters, invalidateRequests, newDraft]);
+    let active=true;
+    void Promise.resolve().then(()=>{
+      if(!active)return;const saved=readWritingBuffer(projectId,'letter');newDraft();initialApplied.current=false;setLedgerItems([]);setSavedLetters([]);setProjectName('');
+      if(saved&&typeof saved.text==='string'&&typeof saved.subject==='string'&&typeof saved.recipient==='string'&&typeof saved.keyPoints==='string'
+        &&['claim','notice','vo_request','response','general'].includes(String(saved.letterType))&&['professional','formal','firm','aggressive','friendly','skeleton'].includes(String(saved.tone))
+        &&Array.isArray(saved.itemIds)&&saved.itemIds.every(id=>typeof id==='string')){
+        session.current=LetterDraftSession.resume(projectId,saved.session);setDraft(session.current.state);setGeneratedLetter(saved.text);setSubject(saved.subject);setRecipient(saved.recipient);setKeyPoints(saved.keyPoints);
+        setLetterType(saved.letterType as LetterTypeValue);setTone(saved.tone as ToneValue);setSelectedLedgerItems(saved.itemIds as string[]);initialApplied.current=true;
+        const metadata=saved.generationMetadata;if(record(metadata)&&['selectionKey','signature','requestKey'].every(key=>typeof metadata[key]==='string'))generationMetadata.current=metadata as {selectionKey:string;signature:string;requestKey:string};
+        if(session.current.state.letterId)void loadPrintContext(session.current.state.letterId);
+      }
+      setHydratedProject(projectId);void fetchLedgerItems();void fetchSavedLetters();
+    });
+    return()=>{active=false;invalidateRequests();};
+  }, [fetchLedgerItems, fetchSavedLetters, invalidateRequests, newDraft,projectId,loadPrintContext]);
+  useEffect(()=>{if(hydratedProject===projectId)persistBuffer();},[hydratedProject,projectId,draft,generatedLetter,letterType,recipient,subject,keyPoints,tone,selectedLedgerItems,persistBuffer]);
+  useEffect(()=>{
+    if(hydratedProject!==projectId)return;let active=true;const token=epoch.current,ticket=++generationTicket.current,context=draft.clientDraftId,controller=new AbortController();
+    void restoreAiJobs(projectId,'letter',context).then(async jobs=>{
+      if(!active||token!==epoch.current||ticket!==generationTicket.current)return;const job=jobs[0];if(!job)return;setGenerationJob(job);
+      if(!['QUEUED','RUNNING','SUCCEEDED'].includes(job.state)){
+        if(generationMetadata.current?.jobId===job.id){session.current!.generationStopped(session.current!.generationAttempt(generationMetadata.current.signature));persistBuffer();}return;
+      }
+      const running=job.state!=='SUCCEEDED';if(running){generationObserver.current=controller;busy.current=true;setIsGenerating(true);}
+      try{const result=generatedLetterResponse(running?await observeAiJob(job.id,{projectId,signal:controller.signal,onProgress:next=>{if(active&&token===epoch.current&&ticket===generationTicket.current)setGenerationJob(next);}}):job.result);
+        if(active&&token===epoch.current&&ticket===generationTicket.current&&result.letter)setPendingGeneration({letter:result.letter,selectionKey:generationMetadata.current?.selectionKey??null});
+      }catch{if(active&&!controller.signal.aborted&&token===epoch.current&&ticket===generationTicket.current)setOperationError({kind:'generate',message:'לא ניתן לקרוא את תוצאת ההכנה. הטקסט נשמר; אפשר לנסות שוב.'});}
+      finally{if(active&&token===epoch.current&&ticket===generationTicket.current&&running){busy.current=false;setIsGenerating(false);}}
+    }).catch(()=>{if(active&&token===epoch.current&&ticket===generationTicket.current)setOperationError({kind:'generate',message:'קריאת ההכנה השמורה לא הושלמה. הטקסט נשאר זמין.'});});
+    return()=>{active=false;controller.abort();};
+  },[hydratedProject,projectId,draft.clientDraftId,persistBuffer]);
 
   const reviewLetter = useCallback(async () => {
     if (busy.current || latest.current.readOnly) return;
@@ -156,6 +192,7 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
       attempt = session.current!.saveAttempt({projectId, docType: view.docType, itemIds: view.selectedLedgerItems, subject: view.subject,
         recipientName: view.recipient, content: view.generatedLetter, sourceRevisions: view.preview.sourceRevisions});
       setDraft(session.current!.state);
+      persistBuffer();
       const result = await saveVoLetter(attempt.request);
       if (token !== epoch.current || !session.current!.saved(attempt, result)) return;
       setDraft(session.current!.state); setSaveSuccess(latest.current.signature === letterDraftSignature(attempt.request));
@@ -165,8 +202,8 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
         session.current!.rejectedSave(attempt); setPreview(null); setReviewedKey(null);
       }
       setDraft(session.current!.state); setOperationError({kind: 'save', message: message(error, 'שמירת הטיוטה לא הושלמה. הטקסט נשמר בחלון.')});}}
-    finally {if (token === epoch.current) {busy.current = false; setIsSaving(false);}}
-  }, [fetchSavedLetters, loadPrintContext, projectId]);
+    finally {if (token === epoch.current) {busy.current = false; setIsSaving(false);persistBuffer();}}
+  }, [fetchSavedLetters, loadPrintContext, projectId,persistBuffer]);
   const markLetterSent = useCallback(async () => {
     if (busy.current) return;
     const view = latest.current, current = session.current!.state;
@@ -176,7 +213,7 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
     const token = epoch.current; busy.current = true; setIsMarkingSent(true); setOperationError(null);
     let attempt: ReturnType<LetterDraftSession['sentAttempt']> | null = null;
     try {
-      attempt = session.current!.sentAttempt(); setDraft(session.current!.state);
+      attempt = session.current!.sentAttempt(); setDraft(session.current!.state);persistBuffer();
       const result = await markVoLetterSent(attempt.request);
       if (token !== epoch.current) return;
       if (!session.current!.markedSent(attempt, result)) throw new Error('אישור הסימון אינו תואם למכתב השמור. יש לקרוא אותו שוב.');
@@ -187,22 +224,37 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
         session.current!.rejectedSent(attempt); setPreview(null); setReviewedKey(null);
       }
       setDraft(session.current!.state); setOperationError({kind: 'sent', message: message(error, 'הסימון לא הושלם. המכתב נשאר זמין לבדיקה.')}); throw error;}}
-    finally {if (token === epoch.current) {busy.current = false; setIsMarkingSent(false);}}
-  }, [fetchLedgerItems, fetchSavedLetters]);
+    finally {if (token === epoch.current) {busy.current = false; setIsMarkingSent(false);persistBuffer();}}
+  }, [fetchLedgerItems, fetchSavedLetters,persistBuffer]);
   const generateLetter = useCallback(async () => {
     if (!letterType || latest.current.readOnly || latest.current.docType === 'official_vo' || busy.current) return;
-    if (aiReadiness?.available !== true) {setOperationError({kind: 'generate', message: 'העיבוד המקומי אינו זמין כעת. הטקסט נשאר לעריכה ולשמירה ידנית.'}); refreshAiReadiness(); return;}
-    const token = epoch.current, attempt = generation.current.begin(latest.current.generationKey);
-    busy.current = true; setOperationError(null); setIsGenerating(true);
+    if (aiReadiness?.available !== true) {setOperationError({kind: 'generate', message: 'העוזר אינו זמין כעת. אפשר להמשיך לערוך ולשמור טיוטה ידנית.'}); refreshAiReadiness(); return;}
+    const ticket=++generationTicket.current;generationObserver.current?.abort();const controller=new AbortController();generationObserver.current=controller;
+    const token = epoch.current, attempt = session.current!.generationAttempt(latest.current.generationKey);
+    generationMetadata.current={selectionKey:latest.current.key,signature:attempt.signature,requestKey:attempt.requestKey};persistBuffer();
+    let last:JobDto|null=null;busy.current = true; setOperationError(null); setIsGenerating(true);setPendingGeneration(null);setGenerationJob(null);
     try {
-      const data = await apiGenerateLetter({projectId, letterType, recipient, subject, keyPoints, tone, itemIds: selectedItems.map((item) => item.id)});
-      if (token !== epoch.current || !generation.current.accepts(attempt, latest.current.generationKey)) return;
-      if (data.success && data.letter) setGeneratedLetter(data.letter);
+      const data = await apiGenerateLetter({projectId, letterType, recipient, subject, keyPoints, tone, itemIds: selectedItems.map((item) => item.id)},
+        {requestKey:attempt.requestKey,clientContextId:attempt.clientDraftId,signal:controller.signal,onProgress:job=>{last=job;if(token===epoch.current&&ticket===generationTicket.current){setGenerationJob(job);if(generationMetadata.current?.requestKey===attempt.requestKey)generationMetadata.current.jobId=job.id;persistBuffer();}}});
+      if (token !== epoch.current||ticket!==generationTicket.current||controller.signal.aborted||!data.letter) return;
+      const disposition=session.current!.generated(attempt,{letter:data.letter},latest.current.generationKey);
+      if(disposition==='apply')setGeneratedLetter(data.letter);else if(disposition==='pending')setPendingGeneration({letter:data.letter,selectionKey:generationMetadata.current?.selectionKey??null});
     } catch (error) {
-      if (token === epoch.current && generation.current.accepts(attempt, latest.current.generationKey)) setOperationError({kind: 'generate', message: localWritingRequestMessage(error, 'הכנת הטיוטה לא הושלמה. הטקסט הקודם נשאר זמין לניסיון חוזר.')});
+      if(token===epoch.current&&ticket===generationTicket.current&&!controller.signal.aborted){
+        if((last!==null&&!['QUEUED','RUNNING'].includes((last as JobDto).state))||(error instanceof BusinessAiError&&error.status>=400&&error.status<500))session.current!.generationStopped(attempt);
+        setOperationError({kind:'generate',message:'הכנת הטיוטה לא הושלמה. הטקסט הקודם נשאר זמין; אפשר לנסות שוב.'});
+      }
       refreshAiReadiness();
-    } finally {if (token === epoch.current && generation.current.finish(attempt)) {busy.current = false; setIsGenerating(false);}}
-  }, [aiReadiness, keyPoints, letterType, projectId, recipient, selectedItems, subject, tone]);
+    } finally {if (token === epoch.current&&ticket===generationTicket.current) {busy.current = false; setIsGenerating(false);persistBuffer();}}
+  }, [aiReadiness, keyPoints, letterType, projectId, recipient, selectedItems, subject, tone,persistBuffer]);
+  const cancelGeneration=useCallback(async()=>{
+    if(!generationJob)return;const token=epoch.current;
+    try{const job=await cancelAiJob(generationJob.id,generationJob.revision);if(token!==epoch.current)return;++generationTicket.current;generationObserver.current?.abort();setGenerationJob(job);busy.current=false;setIsGenerating(false);
+      if(job.state==='SUCCEEDED'){const result=generatedLetterResponse(job.result);setPendingGeneration({letter:result.letter!,selectionKey:generationMetadata.current?.selectionKey??null});}
+      else if(generationMetadata.current)session.current!.generationStopped(session.current!.generationAttempt(generationMetadata.current.signature));persistBuffer();
+    }catch{if(token===epoch.current)setOperationError({kind:'generate',message:'הביטול לא אושר. הטקסט נשאר זמין; אפשר לנסות שוב.'});}
+  },[generationJob,persistBuffer]);
+  const applyGeneratedOption=useCallback(()=>{if(pendingGeneration&&pendingGeneration.selectionKey===latest.current.key&&!latest.current.readOnly){setGeneratedLetter(pendingGeneration.letter);setPendingGeneration(null);}},[pendingGeneration]);
   const copyLetter = useCallback(async () => {
     try {await navigator.clipboard.writeText(generatedLetter); setIsCopied(true); setOperationError(null);}
     catch {setOperationError({kind: 'copy', message: 'ההעתקה לא הושלמה. אפשר לבחור את הטקסט ולהעתיק ידנית.'});}
@@ -216,7 +268,7 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
   }, [fetchSavedLetters, newDraft]);
   const selectSavedLetter = useCallback((letter: SavedSmartLetter) => {
     if (letter.project_id !== projectId) return;
-    ++epoch.current; generation.current.cancel(); busy.current = false;
+    ++epoch.current; generationObserver.current?.abort(); busy.current = false;generationMetadata.current=null;setGenerationJob(null);setPendingGeneration(null);
     session.current!.open(projectId, {...blockedLetterPrintContext(letter.id, 'קורא את המכתב השמור…'), projectId,
       mode: letter.calculation_version === 'letter-individual-v1' ? 'snapshot' : 'legacy', status: letter.status || 'UNKNOWN',
       clientDraftId: letter.client_draft_id || null, revision: letter.revision ?? null, docType: letter.doc_type || 'general',
@@ -243,12 +295,13 @@ export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartL
       ledgerItems, selectedLedgerItems, viewMode, savedLetters, isDeleting, showPrintPreview, projectName,
       clientDraftId: draft.clientDraftId, letterId: draft.letterId, revision: draft.revision, status: draft.status, isLegacy: draft.isLegacy,
       isDirty, snapshot: draft.snapshot, previewSnapshot: previewReady ? preview!.snapshot : null, sourceRevisions: previewReady ? preview!.sourceRevisions : draft.sourceRevisions,
-      operationId: draft.operationId, operationKind: draft.operationKind, isPreviewing, isMarkingSent, sentMarkedAt: printContext?.sentMarkedAt || null},
+      operationId: draft.operationId, operationKind: draft.operationKind, isPreviewing, isMarkingSent, sentMarkedAt: printContext?.sentMarkedAt || null,
+      generationState:generationJob?.state??null,pendingGeneration,bufferUnavailable},
     setters: {setLetterType, setRecipient, setSubject, setKeyPoints, setTone, setGeneratedLetter, setSelectedLedgerItems, setViewMode},
     actions: {refreshAiReadiness: () => refreshAiReadiness(), retryPrintContext: async () => {if (printContext?.letterId) await loadPrintContext(printContext.letterId, !session.current!.state.snapshot);},
-      fetchContextDetails, fetchLedgerItems, fetchSavedLetters, reviewLetter, markLetterSent, newDraft, generateLetter, copyLetter, saveLetter,
+      fetchContextDetails, fetchLedgerItems, fetchSavedLetters, reviewLetter, markLetterSent, newDraft, generateLetter,cancelGeneration,applyGeneratedOption, copyLetter, saveLetter,
       deleteLetter, openPrintPreview: () => {if (canPrint) setShowPrintPreview(true);}, closePrintPreview: () => setShowPrintPreview(false), selectSavedLetter, toggleLedgerItem},
-    derived: {canPrint, selectedItems, subtotal: totals?.net ?? null, vat: totals?.vat ?? null, totalInclVat: totals?.gross ?? null,
+    derived: {canPrint,canApplyGeneratedOption:Boolean(pendingGeneration&&pendingGeneration.selectionKey===key&&!readOnly&&!isGenerating), selectedItems, subtotal: totals?.net ?? null, vat: totals?.vat ?? null, totalInclVat: totals?.gross ?? null,
       canGenerate: available && aiReadiness?.available === true && financials.ok && docType !== 'official_vo' && Boolean(letterType && selectedItems.length), canPreview: available && financials.ok,
       canSave: available && previewReady && Boolean(generatedLetter.trim() && subject.trim()) && (isDirty || Boolean(draft.operationId)),
       canMarkSent: draft.operationKind === 'sent' || available && Boolean(draft.letterId && draft.snapshot && !isDirty && previewReady && !draft.operationId && printContext?.matchesStoredTotals && printContext.revision === draft.revision),

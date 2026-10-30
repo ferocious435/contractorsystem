@@ -1,7 +1,11 @@
 import 'server-only';
 import {BusinessAiError,type AiJobHandler,type AiJobKind} from '../contracts';
+import {letterHandler} from './letter';
+import {consultantHandler} from './consultant';
 const allowed=new Set(['letter','consultant','scan','scan_preview','pricing','work_change','support_enrichment','document_analysis']);
 const handlers=new Map<AiJobKind,AiJobHandler>();
+handlers.set('letter',letterHandler);
+handlers.set('consultant',consultantHandler);
 export function registerAiHandler(kind:AiJobKind,handler:AiJobHandler):void {
     if(!allowed.has(kind)||typeof handler?.validate!=='function'||typeof handler?.execute!=='function')throw new BusinessAiError('AI_HANDLER_INVALID');
     if(handlers.has(kind)&&handlers.get(kind)!==handler)throw new BusinessAiError('AI_HANDLER_CONFLICT');handlers.set(kind,handler);

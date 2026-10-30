@@ -224,3 +224,30 @@ end;$$;
 
 revoke all on function public.contractor_ai_enqueue(jsonb),public.contractor_ai_claim(jsonb),public.contractor_ai_heartbeat(jsonb),public.contractor_ai_complete(jsonb),public.contractor_ai_fail(jsonb),public.contractor_ai_cancel(jsonb),public.contractor_ai_interrupt_stale(jsonb),public.contractor_ai_read(jsonb),public.contractor_ai_list(jsonb),public.contractor_ai_source_revision(jsonb) from public,anon,authenticated;
 grant execute on function public.contractor_ai_enqueue(jsonb),public.contractor_ai_claim(jsonb),public.contractor_ai_heartbeat(jsonb),public.contractor_ai_complete(jsonb),public.contractor_ai_fail(jsonb),public.contractor_ai_cancel(jsonb),public.contractor_ai_interrupt_stale(jsonb),public.contractor_ai_read(jsonb),public.contractor_ai_list(jsonb),public.contractor_ai_source_revision(jsonb) to service_role;
+
+-- Delegate the existing read-only preview to the verified job principal, not browser-provided claims.
+-- Only the server role can call this. No user JWT is copied into the queue or model process.
+create or replace function public.contractor_ai_letter_preview(p jsonb) returns jsonb language plpgsql security invoker set search_path='' as $$
+declare j public.project_ai_jobs;l private.contractor_ai_lease;preview jsonb;previous_sub text;project_name text;ids uuid[];
+begin
+ if jsonb_typeof(p)<>'object' or p-array['jobId']<>'{}'::jsonb then raise exception 'AI_INPUT_INVALID';end if;
+ select * into l from private.contractor_ai_lease where slot=1 for share;
+ select * into j from public.project_ai_jobs where id=(p->>'jobId')::uuid for share;
+ if j.id is null or j.kind<>'letter' or j.state<>'RUNNING' or l.job_id is distinct from j.id or l.lease_token is distinct from j.lease_token
+  or l.expires_at<=clock_timestamp() or j.lease_expires_at<=clock_timestamp() then raise exception 'AI_LEASE_LOST';end if;
+ select coalesce(name,'') into project_name from public.projects where id=j.project_id and contractor_id=j.owner_id for update;
+ if not found or not exists(select 1 from public.profiles where id=j.owner_id and role='super_admin') then raise exception 'AI_ACCESS_DENIED';end if;
+ if private.contractor_ai_context_hash(j.project_id) is distinct from j.context_snapshot->>'sourcesHash' then raise exception 'AI_CONTEXT_CHANGED';end if;
+ select array_agg(value::uuid order by ordinal) into ids from jsonb_array_elements_text(j.payload->'itemIds') with ordinality as requested(value,ordinal);
+ previous_sub=current_setting('request.jwt.claim.sub',true);
+ perform set_config('request.jwt.claim.sub',j.owner_id::text,true);
+ begin
+  preview=public.preview_letter_draft(j.project_id,j.payload->>'letterType',ids);
+  perform set_config('request.jwt.claim.sub',coalesce(previous_sub,''),true);
+ exception when others then
+  perform set_config('request.jwt.claim.sub',coalesce(previous_sub,''),true);raise;
+ end;
+ return jsonb_build_object('ownerId',j.owner_id,'projectId',j.project_id,'projectName',project_name,'preview',preview);
+end;$$;
+revoke all on function public.contractor_ai_letter_preview(jsonb) from public,anon,authenticated;
+grant execute on function public.contractor_ai_letter_preview(jsonb) to service_role;

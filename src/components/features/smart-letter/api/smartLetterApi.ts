@@ -1,4 +1,6 @@
 import {isRecord, isLetterDraftSnapshot as hasSnapshot} from '@/utils/letter-snapshot';
+import {startAiAction,observeAiJob} from '@/utils/ai-job-client';
+import type {JobDto} from '@/server/ai/contracts';
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {assessLetterPrintContext, blockedLetterPrintContext, type LetterPrintContext} from '../letterPrintContext';
 import type { LetterDraftPreview, PreviewLetterRequest, SaveLetterDraftRequest, SavedLetterResult, MarkLetterSentRequest } from '@/utils/letter-draft-types';
@@ -71,12 +73,16 @@ export async function fetchSavedLetters(
 
 export async function generateLetter(
   payload: GenerateSmartLetterPayload,
+  options: {requestKey:string;clientContextId:string;signal?:AbortSignal;onProgress?:(job:JobDto)=>void},
 ): Promise<GenerateSmartLetterResponse> {
-  const data = await postLetterRequest('/api/generate-letter', payload, 310_000);
-  if (typeof data.letter !== 'string' || !data.letter.trim() || !hasSnapshot(data.snapshot)) {
-    throw new LetterRequestError('התשובה המקומית אינה מלאה. הטקסט הקודם נשאר זמין.', 'LOCAL_RESPONSE_INVALID', 502);
-  }
-  return {success: true, letter: data.letter, snapshot: data.snapshot};
+  const job=await startAiAction('/api/generate-letter',{...payload,clientContextId:options.clientContextId},options.requestKey);
+  if(job.kind!=='letter'||job.clientContextId!==options.clientContextId)throw new LetterRequestError('התשובה שייכת לפנייה אחרת.', 'AI_CONTEXT_MISMATCH',502);
+  options.onProgress?.(job);
+  return generatedLetterResponse(job.state==='SUCCEEDED'?job.result:await observeAiJob(job.id,{projectId:payload.projectId,signal:options.signal,onProgress:options.onProgress}));
+}
+export function generatedLetterResponse(data:unknown):GenerateSmartLetterResponse {
+  if(!isRecord(data)||data.success!==true||typeof data.letter!=='string'||!data.letter.trim()||!hasSnapshot(data.snapshot))throw new LetterRequestError('לא התקבלה טיוטה מלאה. הטקסט הקודם נשאר זמין.', 'AI_RESPONSE_INVALID',502);
+  return {success:true,letter:data.letter,snapshot:data.snapshot};
 }
 
 export class LetterRequestError extends Error {

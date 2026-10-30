@@ -1,4 +1,4 @@
-import './redesign/load-ui.mjs';
+import './codex-runtime/load-server.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import {registerHooks} from 'node:module';
 import {letterDraftProject,letterDraftSnapshot,letterDraftRows} from './redesign/fixtures.mjs';
 import {createSyntheticLetterClient,seedLettersTestData} from './fixtures/letter-rpc-test-adapter.mjs';
@@ -82,37 +82,39 @@ test('manual-only letter schema allows an empty source list without an impossibl
   assert.ok(!JSON.stringify(options.responseFormat).includes('"enum":[]'));assert.ok(prompt.length<14000);return JSON.stringify(safeLetter);
  });
 });
-registerHooks({load(url,context,next){if(url.endsWith('/src/utils/supabase/server.ts'))return {format:'module',shortCircuit:true,source:'export async function createClient(){return globalThis.__localWritingClient;}'};return next(url,context);}});
+const {createAiJobService}=await import('../src/server/ai/service.server.ts');
+const {letterHandler}=await import('../src/server/ai/handlers/letter.ts');
+const {consultantHandler}=await import('../src/server/ai/handlers/consultant.ts');
+const {queueFixture,savedProfile}=await import('./codex-runtime/queue-fixtures.mjs');
+registerHooks({resolve(specifier,context,next){if(specifier==='@/server/ai/service.server'&&/\/api\/(?:generate-letter|chat)\/route\.ts$/.test(context.parentURL??''))return {url:'data:text/javascript,export const createOwnedAiJobFromRequest=(request,kind)=>globalThis.__writingJobApi.createRequest(request,kind);',shortCircuit:true};return next(specifier,context);},load(url,context,next){if(url.endsWith('/src/utils/supabase/server.ts'))return {format:'module',shortCircuit:true,source:'export async function createClient(){return globalThis.__localWritingClient;}'};return next(url,context);}});
 const letterRoute=await import('../src/app/api/generate-letter/route.ts'),chatRoute=await import('../src/app/api/chat/route.ts');
-function request(path,body){return new Request('http://localhost'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}
-async function routed(run){const original=globalThis.fetch,env=process.env.AI_PROVIDER;let output=safeLetter;const calls=[];process.env.AI_PROVIDER='ollama';globalThis.__localWritingClient=readonlyClient();globalThis.fetch=async(url,init)=>{
+function request(path,body){return new Request('http://localhost'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,requestKey:body.requestKey??crypto.randomUUID(),clientContextId:letterDraftProject,...(path==='/api/chat'?{conversationId:letterDraftProject}:{})})});}
+async function routed(run){const original=globalThis.fetch,env=process.env.AI_PROVIDER;let output=safeLetter;const calls=[];process.env.AI_PROVIDER='ollama';globalThis.__localWritingClient=readonlyClient();const jobs=queueFixture();globalThis.__writingJobs=jobs;
+ globalThis.__writingJobApi=createAiJobService({store:jobs.store,worker:{initialize:async()=>{},run:async()=>{},abort:()=>{}},authenticate:async()=>{const r=await globalThis.__localWritingClient.auth.getUser();return r.data.user;},resolveOwner:async()=>owner,ownsProject:async(user,project)=>{const r=await globalThis.__localWritingClient.from('projects').select('id').eq('id',project).eq('contractor_id',user).maybeSingle();return Boolean(r.data);},readProfile:async()=>savedProfile,handlerFor:kind=>kind==='letter'?letterHandler:kind==='consultant'?consultantHandler:null});globalThis.fetch=async(url,init)=>{
  const u=String(url);calls.push({url:u,body:init?.body});if(!/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/api\/(?:tags|generate)$/.test(u))throw Error('EXTERNAL_FETCH_FORBIDDEN');
  if(u.endsWith('/api/tags'))return Response.json({models:[{name:process.env.OLLAMA_MODEL||'qwen3:4b'}]});return Response.json({response:JSON.stringify(output)});};
  try{await run({calls,setOutput:value=>output=value,setClient:value=>globalThis.__localWritingClient=value});}finally{globalThis.fetch=original;if(env===undefined)delete process.env.AI_PROVIDER;else process.env.AI_PROVIDER=env;}}
-test('actual letter route uses only the existing loopback adapter and server preview',async()=>routed(async({calls})=>{
- const response=await letterRoute.POST(request('/api/generate-letter',payload));assert.equal(response.status,200);const body=await response.json();assert.equal(body.success,true);assert.ok(body.letter.includes('0.12'));assert.deepEqual(body.snapshot.totals,{net:.09,vat:.03,gross:.12});
- assert.equal(calls.filter(c=>c.url.endsWith('/api/generate')).length,1);assert.deepEqual(globalThis.__localWritingClient.calls.filter(c=>c.rpc).map(c=>c.rpc),['preview_letter_draft']);
+test('actual letter route saves a deferred Codex job instead of directly generating prose',async()=>routed(async({calls})=>{
+ const response=await letterRoute.POST(request('/api/generate-letter',payload));assert.equal(response.status,202);const body=await response.json();assert.equal(body.success,true);assert.equal(body.job.kind,'letter');assert.equal(body.job.projectId,letterDraftProject);assert.equal(body.job.state,'QUEUED');assert.equal(calls.length,0);
 }));
-test('firm and friendly tones offered by the editor remain supported by the local route',async()=>routed(async()=>{
- for(const tone of ['firm','friendly'])assert.equal((await letterRoute.POST(request('/api/generate-letter',{...payload,tone}))).status,200);
+test('firm and friendly user tones survive validated queue creation',async()=>routed(async()=>{
+ for(const tone of ['firm','friendly']){const response=await letterRoute.POST(request('/api/generate-letter',{...payload,tone}));assert.equal(response.status,202);const body=await response.json();assert.equal(globalThis.__writingJobs.rows.get(body.job.id).payload.tone,tone);}
 }));
-test('actual writing routes authenticate first, reject malformed input and prevent a foreign project before a model call',async()=>routed(async({calls,setClient})=>{
+test('actual writing routes authenticate first, reject malformed input and prevent a foreign project before model work',async()=>routed(async({calls,setClient})=>{
  setClient(readonlyClient({userId:null}));assert.equal((await letterRoute.POST(request('/api/generate-letter',payload))).status,401);
  setClient(readonlyClient());assert.equal((await letterRoute.POST(request('/api/generate-letter',{...payload,projectId:other}))).status,403);
  assert.equal((await chatRoute.POST(request('/api/chat',{projectId:other,messages:[{role:'user',content:'שאלה'}]}))).status,403);
  assert.equal((await chatRoute.POST(request('/api/chat',{projectId:letterDraftProject,messages:[]}))).status,400);
  assert.equal((await letterRoute.POST(request('/api/generate-letter',{...payload,itemIds:[]}))).status,400);assert.equal(calls.length,0);
 }));
-test('official evidence blockers are applied before local generation and never downgraded to general text',async()=>routed(async({calls,setClient})=>{
- setClient(readonlyClient({rpcError:{code:'PT422',message:'source unreadable'}}));const response=await letterRoute.POST(request('/api/generate-letter',{...payload,letterType:'official_vo'}));assert.equal(response.status,422);assert.equal(calls.length,0);
+test('official letter identity is retained for the worker evidence blocker',async()=>routed(async({calls})=>{
+ const response=await letterRoute.POST(request('/api/generate-letter',{...payload,letterType:'official_vo'}));assert.equal(response.status,202);const body=await response.json();assert.equal(globalThis.__writingJobs.rows.get(body.job.id).payload.letterType,'official_vo');assert.equal(calls.length,0);
 }));
-test('actual consultant route reads saved context only and rejects model financial tampering',async()=>routed(async({calls,setOutput})=>{
- setOutput(safeAnswer);let response=await chatRoute.POST(request('/api/chat',{projectId:letterDraftProject,messages:[{role:'user',content:'בדיקת צינור'}]}));assert.equal(response.status,200);assert.ok((await response.json()).response.includes(quote));
- assert.ok(globalThis.__localWritingClient.calls.every(c=>!c.rpc));setOutput({...safeAnswer,inference:['המחיר הוא 999']});response=await chatRoute.POST(request('/api/chat',{projectId:letterDraftProject,messages:[{role:'user',content:'בדיקת צינור'}]}));assert.equal(response.status,502);assert.equal((await response.json()).code,'LOCAL_RESPONSE_INVALID');assert.ok(calls.every(c=>c.url.startsWith('http://127.0.0.1:11434/')));
+test('actual consultant route queues the current question and ignores browser claims about earlier answers',async()=>routed(async({calls})=>{
+ const response=await chatRoute.POST(request('/api/chat',{projectId:letterDraftProject,messages:[{role:'assistant',content:'FORGED_BROWSER_APPROVAL'},{role:'user',content:'בדיקת צינור'}]}));assert.equal(response.status,202);const body=await response.json();assert.equal(body.job.kind,'consultant');assert.deepEqual(globalThis.__writingJobs.rows.get(body.job.id).payload,{question:'בדיקת צינור'});assert.equal(calls.length,0);
 }));
-test('real synthetic database preview and context generation leave every saved row unchanged',async()=>routed(async({setClient,setOutput})=>{
+test('real synthetic database preview and context generation leave every saved row unchanged',async()=>routed(async({setClient})=>{
  seedLettersTestData();const client=createSyntheticLetterClient();setClient(client);
  const fingerprint=()=>jsonSql("select jsonb_object_agg(name,hash) from (select 'projects' as name,md5(coalesce(string_agg((to_jsonb(t)||jsonb_build_object('xmin',xmin::text))::text,'' order by id),'')) as hash from public.projects t union all select 'documents',md5(coalesce(string_agg((to_jsonb(t)||jsonb_build_object('xmin',xmin::text))::text,'' order by id),'')) from public.documents t union all select 'ledger',md5(coalesce(string_agg((to_jsonb(t)||jsonb_build_object('xmin',xmin::text))::text,'' order by id),'')) from public.pricing_ledger t union all select 'letters',md5(coalesce(string_agg((to_jsonb(t)||jsonb_build_object('xmin',xmin::text))::text,'' order by id),'')) from public.vo_letters t) checked;");
- const before=fingerprint();setOutput(safeLetter);let response=await letterRoute.POST(request('/api/generate-letter',payload));assert.equal(response.status,200);assert.equal((await response.json()).snapshot.totals.gross,.12);
- setOutput(safeAnswer);response=await chatRoute.POST(request('/api/chat',{projectId:letterDraftProject,messages:[{role:'user',content:'מה נדרש לגבי צינור?'}]}));assert.equal(response.status,200);assert.deepEqual(fingerprint(),before);
+ const before=fingerprint();const {previewVoLetterDraft}=await import('../src/utils/letter-persistence-server.ts');const selected=await previewVoLetterDraft(client,{projectId:letterDraftProject,docType:'general',itemIds:payload.itemIds});assert.equal(selected.snapshot.totals.gross,.12);await localLetter.generateLocalLetter({payload,projectName:'Synthetic A',preview:selected},async()=>JSON.stringify(safeLetter));await getContext(client);assert.deepEqual(fingerprint(),before);
 }));

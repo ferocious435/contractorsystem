@@ -1,0 +1,1 @@
+module.exports=function(source){const callback=this.async();void import('typescript').then(ts=>callback(null,ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX},fileName:this.resourcePath}).outputText),callback);};

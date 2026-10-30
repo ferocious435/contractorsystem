@@ -1,0 +1,45 @@
+import './load-server.mjs';
+import {createRequire} from 'node:module';
+import {createServer} from 'node:http';
+import {readFileSync,mkdirSync,writeFileSync,existsSync} from 'node:fs';
+import path from 'node:path';
+import {prepareWritingDb,writingRpc} from './writing-db.mjs';
+import {seedLettersTestData,syntheticIds as id,createSyntheticLetterClient} from '../fixtures/letter-rpc-test-adapter.mjs';
+import {runLettersSql,jsonSql} from '../letters-db.mjs';
+import {createAiJobStore} from '../../src/server/ai/jobs.server.ts';
+import {createAiWorker} from '../../src/server/ai/worker.server.ts';
+import {createAiJobService} from '../../src/server/ai/service.server.ts';
+import {createLetterHandler} from '../../src/server/ai/handlers/letter.ts';
+import {createConsultantHandler} from '../../src/server/ai/handlers/consultant.ts';
+import {loadProjectWritingContext} from '../../src/utils/project-writing-context-server.ts';
+import {createLetterHttpHandlers} from '../../src/utils/letter-persistence-server.ts';
+import {savedProfile} from './queue-fixtures.mjs';
+const require=createRequire(import.meta.url),root=process.cwd(),out=path.resolve('.superpowers/codex-program-runtime-2026-10-30/writing-browser');mkdirSync(out,{recursive:true});
+const bundle=require('next/dist/compiled/webpack/webpack');bundle.init();
+await new Promise((resolve,reject)=>{const compiler=bundle.webpack({mode:'development',devtool:false,entry:path.resolve('scripts/codex-runtime/browser/writing.tsx'),output:{path:out,filename:'app.js'},resolve:{extensions:['.tsx','.ts','.mjs','.js'],alias:{'@/utils/supabase/client$':path.resolve('scripts/codex-runtime/browser/client.mjs'),'@':path.resolve('src')}},module:{rules:[{test:/\.tsx?$/,use:path.resolve('scripts/codex-runtime/browser/typescript-loader.cjs')}]},optimization:{minimize:false}});compiler.run((error,stats)=>compiler.close(()=>{if(error||stats.hasErrors())reject(error??Error(stats.toString({all:false,errors:true})));else resolve();}));});
+await prepareWritingDb();if(!process.argv.includes('--resume'))seedLettersTestData();runLettersSql(`insert into public.profiles values('${id.userA}','super_admin'),('${id.userB}','member') on conflict(id) do update set role=excluded.role;insert into private.contractor_ai_lease(slot) values(1) on conflict do nothing;`);
+const client=createSyntheticLetterClient(),transport=writingRpc(),store=createAiJobStore(transport),letterHttp=createLetterHttpHandlers({createClient:async()=>client});
+const handlers={letter:createLetterHandler({load:async execution=>{const response=await transport.rpc('contractor_ai_letter_preview',{p:{jobId:execution.jobId}});if(response.error)throw response.error;return response.data;}}),consultant:createConsultantHandler({load:execution=>loadProjectWritingContext(client,execution.projectId,execution.ownerId,'צינור'),history:async execution=>{const current=await store.readOwned(execution.ownerId,execution.projectId,execution.jobId),jobs=await store.listOwned(execution.ownerId,execution.projectId,'consultant',current.conversationId);return jobs.filter(job=>job.state==='SUCCEEDED').reverse().flatMap(job=>[{role:'user',content:job.result.question},{role:'assistant',content:job.result.response}]);}})};
+let gate=null,turns=process.argv.includes('--resume')&&existsSync(path.join(out,'evidence.json'))?JSON.parse(readFileSync(path.join(out,'evidence.json'),'utf8')).turns:0;
+const worker=createAiWorker({store,handlerFor:kind=>handlers[kind]??null,client:{async runTurn(input,_profile,signal){turns++;await new Promise((resolve,reject)=>{if(signal.aborted)return reject(signal.reason);gate=resolve;signal.addEventListener('abort',()=>{gate=null;reject(signal.reason);},{once:true});});gate=null;return JSON.stringify(input.outputSchema.required.includes('unknowns')?{body:'יש לתאם את העבודה לפי המסמכים השמורים.',sourceIds:[],unknowns:['לא הוצג אישור סופי.'],nextActions:['יש לבקש הנחיה כתובה.']}:{body:'שלום, נבקש לתאם את העבודה לפי הנתונים שנמסרו. תודה על שיתוף הפעולה.',sourceIds:[]});}}});
+const service=createAiJobService({store,worker,authenticate:async()=>({id:id.userA}),resolveOwner:async()=>id.userA,ownsProject:async(owner,project)=>Boolean((await client.from('projects').select('id').eq('id',project).eq('contractor_id',owner).maybeSingle()).data),readProfile:async()=>savedProfile,handlerFor:kind=>handlers[kind]??null});
+const stats=()=>({syntheticOnly:true,turns,jobs:jsonSql("select coalesce(jsonb_agg(jsonb_build_object('id',id,'kind',kind,'state',state,'revision',revision)),'[]') from public.project_ai_jobs;"),letters:jsonSql('select coalesce(jsonb_agg(to_jsonb(t)),\'[]\') from public.vo_letters t;')});
+const html='<!doctype html><html lang="he"><meta charset="utf-8"><title>Синтетическая проверка писем</title><style>body{font:16px Arial;margin:0;background:#f5f6f8;color:#17202c}button,select,input,textarea{font:inherit;padding:8px;margin:4px}button{cursor:pointer}button:disabled{opacity:.5}textarea{width:92%;min-height:100px}.ti-letter-grid{display:grid;grid-template-columns:40% 60%}.ti-panel,.ti-letter-parameters,.ti-letter-result{padding:20px}section,article{margin:10px 0}.ti-preserve-lines,.ti-letter-text,.ti-consultant-message__content{white-space:pre-wrap}.ti-dialog-backdrop{position:fixed;inset:0;background:#0007}.ti-dialog{position:fixed;inset:5%;overflow:auto;background:white;padding:24px}.ti-letter-ledger label{display:block}.ti-field{display:block}details{padding:12px;background:#d9f2ff}</style><div id="root"></div><script src="/app.js"></script></html>';
+const server=createServer(async(req,res)=>{try{const url=new URL(req.url,'http://127.0.0.1:3006');if(req.method==='GET'&&url.pathname==='/'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(html);return;}if(req.method==='GET'&&url.pathname==='/app.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');res.end(readFileSync(path.join(out,'app.js')));return;}
+    const parts=[];for await(const part of req){parts.push(part);if(Buffer.concat(parts).length>2_000_000)throw Error('Fixture input too large');}const raw=Buffer.concat(parts).toString(),request=new Request(url,{method:req.method,headers:{'Content-Type':'application/json'},...(raw?{body:raw}:{})});let response;
+    if(url.pathname==='/fixture/release'){gate?.();response=Response.json({success:true});}
+    else if(url.pathname==='/fixture/stats')response=Response.json(stats());
+    else if(url.pathname==='/fixture/read'){const {table,calls}=JSON.parse(raw);let query=client.from(table);for(const {method,args}of calls){if(!['select','eq','in','is','order','range','single','maybeSingle'].includes(method))throw Error('Fixture read method rejected');query=query[method](...args);}response=Response.json(await query);}
+    else if(url.pathname==='/api/system/ai-status')response=Response.json({available:true,provider:'Codex',reason:null});
+    else if(url.pathname==='/api/generate-letter')response=await service.createRequest(request,'letter');
+    else if(url.pathname==='/api/chat')response=await service.createRequest(request,'consultant');
+    else if(url.pathname==='/api/ai/jobs')response=await service.list(request);
+    else if(/^\/api\/ai\/jobs\/[a-f\d-]+\/cancel$/.test(url.pathname))response=await service.cancelRequest(request,url.pathname.split('/')[4]);
+    else if(/^\/api\/ai\/jobs\/[a-f\d-]+$/.test(url.pathname))response=await service.read(request,url.pathname.split('/')[4]);
+    else if(url.pathname==='/api/pricing/vo-letters/preview')response=await letterHttp.preview(request);
+    else if(url.pathname==='/api/pricing/vo-letters/sent')response=await letterHttp.markSent(request);
+    else if(url.pathname==='/api/pricing/vo-letters')response=await letterHttp.save(request);
+    else response=Response.json({error:'Fixture route not available'},{status:404});
+    res.writeHead(response.status,Object.fromEntries(response.headers));res.end(await response.text());writeFileSync(path.join(out,'evidence.json'),JSON.stringify(stats(),null,2));
+}catch(error){res.statusCode=500;res.end(JSON.stringify({error:error.message}));console.error(error.message);}});
+server.listen(3006,'127.0.0.1',()=>{writeFileSync(path.join(out,'process.json'),JSON.stringify({pid:process.pid,cwd:root,port:3006}));console.log('Synthetic writing browser http://127.0.0.1:3006; no native inference; existing A/picker preserved.');});

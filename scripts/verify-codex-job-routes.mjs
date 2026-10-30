@@ -37,3 +37,14 @@ test('generic request parsing authenticates first and accepts only the fixed env
 test('cancel request parsing also authenticates before reading an invalid body',async()=>{
   const {fx,service}=setup({authenticate:async()=>null});const response=await service.cancelRequest(new Request('http://localhost/api/ai/jobs/fake/cancel',{method:'POST',body:'{bad'}),otherId);assert.equal(response.status,401);assert.equal(fx.modelTurns,0);
 });
+test('a fixed business route authenticates before parsing and enqueues its validated action',async()=>{
+  const unauth=setup({authenticate:async()=>null});assert.equal(typeof unauth.service.createRequest,'function');assert.equal((await unauth.service.createRequest(new Request('http://localhost/api/generate-letter',{method:'POST',body:'{bad'}),'letter')).status,401);
+  const {fx,service,worker}=setup();assert.equal((await service.createRequest(request('',body),'letter')).status,202);await worker.run();assert.equal(fx.modelTurns,1);
+});
+
+test('consultant requires one matching saved conversation and editor identity',async()=>{
+  const {fx,service}=setup({handlerFor:()=>({validate:raw=>raw,execute:async()=>({result:null,effects:[]})})});
+  for(const context of [{},{conversationId:projectId},{clientContextId:projectId},{conversationId:projectId,clientContextId:otherId}])assert.equal((await service.create(request(),'consultant',{...body,...context})).status,400);
+  assert.equal(fx.rows.size,0);
+  assert.equal((await service.create(request(),'consultant',{...body,conversationId:projectId,clientContextId:projectId})).status,202);
+});
