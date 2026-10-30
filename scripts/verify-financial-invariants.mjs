@@ -3499,7 +3499,7 @@ assertIncludes(
 );
 // R04 uses read-only saved context and checked local prose; these actual-route tests
 // replace the old requirements for chat synchronization and aggregate VO money.
-execFileSync(process.execPath, ['--test', '--test-name-pattern', '^(?!real synthetic database)',
+execFileSync(process.execPath, ['--test', '--test-skip-pattern', 'real synthetic database',
   'scripts/verify-local-writing.mjs'], {cwd: root, stdio: 'pipe', windowsHide: true});
 assertIncludes(
   "src/app/api/export/route.ts",
