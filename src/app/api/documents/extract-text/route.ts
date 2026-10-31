@@ -5,6 +5,7 @@ import { downloadDocumentBuffer } from "@/utils/document-storage";
 import { prepareDocumentAnalysisInput } from "@/utils/document-text-extraction";
 import { createClient } from "@/utils/supabase/server";
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
+import { preserveStableDocumentText } from '@/utils/stable-document-reading';
 
 type OwnedDocumentForExtraction = {
     id: string;
@@ -72,7 +73,9 @@ export async function POST(req: NextRequest) {
         const fileBuffer = await downloadDocumentBuffer(supabase, doc);
         const contentHash = sha256(fileBuffer);
 
-        const prepared = await prepareDocumentAnalysisInput(fileBuffer, doc.title || "document");
+        const prepared = preserveStableDocumentText(
+            await prepareDocumentAnalysisInput(fileBuffer, doc.title || "document"), doc, contentHash
+        );
 
         if (prepared.kind === "direct") {
             const { error: updateError } = await supabase

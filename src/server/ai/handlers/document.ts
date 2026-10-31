@@ -6,8 +6,9 @@ import path from 'node:path';
 import type {SupabaseClient} from '@supabase/supabase-js';
 import {createAdminClient} from '@/utils/supabase/admin';
 import {downloadDocumentBuffer} from '@/utils/document-storage';
-import {makeTextInput,prepareDocumentAnalysisInput,type PreparedDocumentAnalysisInput} from '@/utils/document-text-extraction';
-import {assessDocumentSourceReadiness,type DocumentSourceInput} from '@/utils/document-source-readiness';
+import {prepareDocumentAnalysisInput,type PreparedDocumentAnalysisInput} from '@/utils/document-text-extraction';
+import {assessDocumentSourceReadiness} from '@/utils/document-source-readiness';
+import {preserveStableDocumentText} from '@/utils/stable-document-reading';
 import {prepareDocumentAiInput,type DocumentAiProfile} from '@/utils/document-ai-input';
 import {DOCUMENT_ANALYSIS_VERSION,DOCUMENT_ANALYSIS_SCHEMA,DOCUMENT_ANALYSIS_PROMPT} from '@/utils/document-analysis-prompt';
 import {isReferenceDocument} from '@/utils/contract-document-hierarchy';
@@ -16,16 +17,7 @@ import {createProjectEffectClient} from '../project-effects.server';
 import {getCodexClient,getRuntimeDirectory} from '../codex-client.server';
 type SavedReading=PreparedDocumentAnalysisInput&{title:string};
 const digest=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
-/** A renderer update may repad Markdown tables. Keep the complete saved source
- * representation so existing exact citations remain valid for identical bytes. */
-export function preserveStableDocumentText(prepared:PreparedDocumentAnalysisInput,saved:DocumentSourceInput,fileHash:string):PreparedDocumentAnalysisInput{
-    if(prepared.kind!=='text'||prepared.readingVerification?.version!=='docx-image-coverage-v1'||prepared.requiresReview||saved.content_hash!==fileHash||typeof saved.extracted_text!=='string')return prepared;
-    const current={...saved,extracted_text:prepared.extractedText,ocr_status:'COMPLETED',parsed_json:{source_reading:prepared.readingVerification}};
-    if(!assessDocumentSourceReadiness(saved).extractionComplete||!assessDocumentSourceReadiness(current).extractionComplete)return prepared;
-    const tables=(text:string)=>text.replaceAll('\r\n','\n').split('\n').map(line=>/^\s*\|.*\|\s*$/.test(line)?line.trim().split('|').map(cell=>cell.trim()).join('|'):line).join('\n');
-    if(tables(saved.extracted_text)!==tables(prepared.extractedText))return prepared;
-    return makeTextInput(prepared.fileBuffer,prepared.extractionSource,saved.extracted_text,{readingVerification:prepared.readingVerification,requiresReview:prepared.requiresReview,ocrConfidence:prepared.ocrConfidence});
-}
+export {preserveStableDocumentText};
 const numberIn=(body:string,value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&[...body.matchAll(/(?<![\p{L}\d])\d[\d,.]*(?![\p{L}\d])/gu)].some(match=>[Number(match[0].replace(/,/g,'')),Number(match[0].replace(',','.'))].includes(value));
 type DocumentSchema={type?:string|readonly string[];enum?:readonly unknown[];required?:readonly string[];properties?:Record<string,DocumentSchema>;items?:DocumentSchema;additionalProperties?:boolean};
 function matchesDocumentSchema(value:unknown,schema:DocumentSchema):boolean{

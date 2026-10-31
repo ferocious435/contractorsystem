@@ -32,7 +32,7 @@ function database(bytes,patch={}){
  }};
  return {db,row,calls};
 }
-const request=()=>new NextRequest('http://localhost/api/documents/extract-text',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectId:'p',documentId:'d'})});
+const request=(extra={})=>new NextRequest('http://localhost/api/documents/extract-text',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectId:'p',documentId:'d',...extra})});
 
 test('the real extraction route replaces an unverified legacy DOCX read with source coverage',async()=>{
  const state=database(docx({body:paragraph('Complete native instruction.'),media:{},rels:[]}));setClient(state.db);
@@ -47,6 +47,20 @@ test('the real route reuses complete unchanged DOCX coverage without downloading
  const state=database(bytes,{extracted_text:prepared.extractedText,content_hash:createHash('sha256').update(bytes).digest('hex'),parsed_json:{source_reading:prepared.readingVerification}});setClient(state.db);
  const response=await POST(request());assert.equal((await response.json()).alreadyExtracted,true);
  assert.deepEqual(state.calls,{downloads:0,updates:0});
+});
+
+test('forced rereading preserves exact saved citations when an unchanged DOCX table is repadded',async()=>{
+ const cell=text=>'<w:tc>'+paragraph(text)+'</w:tc>';
+ const bytes=docx({body:'<w:tbl><w:tr>'+cell('נושא')+cell('מצב')+'</w:tr><w:tr>'+cell('טרפו 705')+cell('ללא אישור')+'</w:tr></w:tbl>',media:{},rels:[]});
+ const prepared=await prepareDocumentAnalysisInput(bytes,'fixture.docx');assert.equal(prepared.kind,'text');assert.match(prepared.extractedText,/\|/);
+ const saved=prepared.extractedText.split('\n').map(line=>line.includes('|')?line.replaceAll(' |','    |').trimEnd():line).join('\n').trim();
+ assert.notEqual(saved,prepared.extractedText,'The fixture must reproduce a changed table representation');
+ const savedHash=createHash('sha256').update(saved).digest('hex'),quote=saved.split('\n').find(line=>line.includes('705'));
+ const state=database(bytes,{extracted_text:saved,content_hash:createHash('sha256').update(bytes).digest('hex'),extracted_text_hash:savedHash,parsed_json:{source_reading:prepared.readingVerification,full_markdown:saved,analysis_input_hash:'saved-analysis',owner_note:'keep'}});setClient(state.db);
+ const response=await POST(request({force:true}));assert.equal(response.status,200);assert.equal((await response.json()).requiresReview,false);
+ assert.equal(state.row.extracted_text,saved);assert.equal(state.row.extracted_text_hash,savedHash);assert.ok(state.row.extracted_text.includes(quote));
+ assert.equal(state.row.parsed_json.full_markdown,saved);assert.equal(state.row.parsed_json.analysis_input_hash,'saved-analysis');assert.equal(state.row.parsed_json.owner_note,'keep');
+ assert.deepEqual(state.calls,{downloads:1,updates:1});assert.equal(financial.financialUpdates,0);
 });
 test('the real route preserves image text and numeric review metadata in the saved document',async()=>{
  const {default:sharp}=await import('sharp');
