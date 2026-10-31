@@ -14,6 +14,13 @@ import type {LetterSourceRef} from '@/utils/letter-draft-types';
 import {checkedCorrespondenceResult as checkedResult,generationIdentityAfterFailure,type CorrespondenceResult as Generated} from '@/utils/correspondence-result';
 import {TONE_OPTIONS} from '../smart-letter/constants';
 import {fetchSavedCorrespondence,writeSavedCorrespondence,isSavedCorrespondence,type SavedCorrespondence as Saved} from '@/utils/correspondence-client';
+import {letterTextDownload} from '@/utils/correspondence-download';
+
+export function CorrespondenceDownload({subject,text,disabled}:{subject:string;text:string;disabled:boolean}){
+    if(disabled||!text.trim())return <Button disabled>הורדת המכתב</Button>;
+    const file=letterTextDownload(subject,text);
+    return <a className="ti-button ti-button--secondary" href={file.href} download={file.filename}>הורדת המכתב</a>;
+}
 
 export function CorrespondenceHistory({letters,loading,error,busy,onOpen,onRetry}:{letters:Saved[];loading:boolean;error:string;busy:boolean;onOpen:(letter:Saved)=>void;onRetry:()=>void}){
     return <Panel><h2 className="ti-section-title">מכתבי עבודה שמורים</h2>
@@ -89,7 +96,6 @@ export function ProjectCorrespondence({projectId}:{projectId:string}){
     }
     function open(letter:Saved){++ticket.current;observer.current?.abort();changed();setBusy(false);setGenerating(false);setDraftId(letter.client_draft_id);setSaved(letter);setSubject(letter.subject);setRecipient(letter.recipient);setText(letter.content);setSources(letter.source_refs);setPoints('');setPending(null);setError('');operation.current=null;generation.current=null;}
     function newLetter(){++ticket.current;observer.current?.abort();changed();setBusy(false);setGenerating(false);setDraftId(crypto.randomUUID());setSaved(null);setSubject('');setRecipient('');setPoints('');setText('');setSources([]);setPending(null);setJob(null);setError('');operation.current=null;generation.current=null;}
-    function download(){const blob=new Blob(['\ufeff'+text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(subject||'מכתב עבודה').replace(/[\\/:*?"<>|]/g,'_')+'.txt';link.click();URL.revokeObjectURL(url);}
     return <div dir="rtl" className="ti-stack" aria-label="מכתבי עבודה">
         <Panel><div className="ti-actions"><h2 className="ti-section-title">מכתב עבודה</h2><Button onClick={newLetter} disabled={busy}>מכתב חדש</Button></div><p className="ti-copy">פנייה, בקשת הבהרה או תשובה. אפשר לכתוב ידנית או לבקש מהעוזר להכין מכתב לפי מסמכי הפרויקט.</p>
             {error&&<Feedback tone="danger">{error}</Feedback>}{message&&<Feedback tone="success">{message}</Feedback>}{bufferFailed&&<Feedback tone="warning">שמירה זמנית במכשיר אינה זמינה. אפשר לשמור טיוטה במערכת.</Feedback>}
@@ -104,7 +110,7 @@ export function ProjectCorrespondence({projectId}:{projectId:string}){
             {pending&&<Feedback>קיימת הצעה מוכנה. הטקסט הנוכחי נשמר.<Button onClick={()=>apply(pending)} disabled={busy||readOnly}>הצגת ההצעה במכתב</Button></Feedback>}
             <div className="ti-field"><label htmlFor={textId} className="ti-field__label">תוכן המכתב</label><textarea id={textId} className="ti-input" rows={18} value={text} maxLength={100000} readOnly={readOnly} onChange={e=>{changed();setText(e.target.value);}}/></div>
             {sources.length>0&&<details className="ti-source-text"><summary>מקורות המכתב ({sources.length})</summary>{sources.map((source,index)=><section key={index}><h3 className="ti-section-title">{source.title||'מקור שמור'}</h3><p className="ti-meta">קטע מהמקור שנבחר להכנת המכתב</p><pre style={{whiteSpace:'pre-wrap'}}>{source.quote}</pre>{source.documentId&&<a className="ti-button ti-button--secondary" target="_blank" rel="noreferrer" href={'/api/documents/file?'+new URLSearchParams({projectId,documentId:source.documentId})}>פתיחת המקור המלא</a>}</section>)}</details>}
-            <div className="ti-actions"><Button variant="primary" pending={busy&&!generating} busyLabel="שומר טיוטה…" disabled={busy||readOnly||!dirty||!subject.trim()||!text.trim()} onClick={()=>void save()}>שמירת טיוטה</Button><Button disabled={busy||!text.trim()} onClick={()=>setPrinting(true)}>תצוגת הדפסה</Button><Button disabled={busy||!text.trim()} onClick={download}>הורדת המכתב</Button>
+            <div className="ti-actions"><Button variant="primary" pending={busy&&!generating} busyLabel="שומר טיוטה…" disabled={busy||readOnly||!dirty||!subject.trim()||!text.trim()} onClick={()=>void save()}>שמירת טיוטה</Button><Button disabled={busy||!text.trim()} onClick={()=>setPrinting(true)}>תצוגת הדפסה</Button><CorrespondenceDownload subject={subject} text={text} disabled={busy}/>
                 {saved&&<Button disabled={busy||dirty||readOnly} onClick={()=>setSentOpen(true)}>{readOnly?'סומן כנשלח ידנית':'סימון כנשלח'}</Button>}</div>
             <p className="ti-meta">שמירה אינה שולחת את המכתב. לאחר שליחה מחוץ למערכת אפשר לסמן זאת בנפרד.</p>
         </Panel>
