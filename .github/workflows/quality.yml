@@ -67,5 +67,19 @@ jobs:
           npm run verify:financials
           npm run verify:boq-scale
 
+      - name: Check saved correspondence, assistant actions and source reading
+        run: >-
+          node --import ./scripts/codex-runtime/load-server.mjs --test
+          scripts/verify-open-workspace.mjs
+          scripts/verify-project-writing-context.mjs
+          scripts/verify-action-readiness.mjs
+          scripts/verify-correspondence-state.mjs
+          scripts/verify-correspondence-print.mjs
+          scripts/verify-consultant-display.mjs
+          scripts/verify-codex-documents.mjs
+          scripts/verify-codex-integration.mjs
+          scripts/verify-document-source-actions.mjs
+          scripts/verify-request-origin.mjs
+
       - name: Build production application
         run: npm run build

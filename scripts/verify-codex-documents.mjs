@@ -92,3 +92,14 @@ test('stable long DOCX keeps the full saved text and a bounded model excerpt',()
  const result=document.preserveStableDocumentText(textInput(rendered,{aiText:rendered.slice(0,120000),wasTruncated:true,readingVerification:reading}),{title:'long.docx',content_hash:hash,extracted_text:saved,ocr_status:'COMPLETED',parsed_json:{source_reading:reading}},hash);
  assert.equal(result.extractedText,saved);assert.equal(result.wasTruncated,true);assert.ok(result.aiText.length<121000);assert.match(result.aiText,/Document text was truncated/);
 });
+
+test('a complete analysis returned through PostgreSQL JSONB is reused without another model turn',async()=>{
+ const rows=pricingRows();
+ const jsonb=value=>Array.isArray(value)?value.map(jsonb):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,jsonb(value[key])])):value;
+ async function run(){let prepared;const fx=queueFixture({onGenerate:async()=>JSON.stringify(reply())}),handler=document.createDocumentHandler({database:()=>pricingReadClient(rows),download:async()=>Buffer.from(body),prepare:async()=>textInput()});
+  fx.handler={...handler,async execute(payload,execution){return prepared=await handler.execute(payload,execution);}};
+  await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work},'jsonb-cache',savedProfile,{clientContextId:pricingIds.work});
+  await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();return {prepared,fx,job:[...fx.rows.values()][0]};}
+ const first=await run();assert.equal(first.job.state,'SUCCEEDED');applyPricingEffects(rows,first.prepared);rows.documents[0].parsed_json=jsonb(rows.documents[0].parsed_json);
+ const again=await run();assert.equal(again.job.state,'SUCCEEDED');assert.equal(again.fx.modelTurns,0);assert.equal(again.job.result.cached,true);
+});

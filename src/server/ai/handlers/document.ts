@@ -1,5 +1,6 @@
 import 'server-only';
 import {createHash} from 'node:crypto';
+import {isDeepStrictEqual} from 'node:util';
 import {mkdir,realpath,rm} from 'node:fs/promises';
 import path from 'node:path';
 import type {SupabaseClient} from '@supabase/supabase-js';
@@ -65,7 +66,7 @@ export function createDocumentHandler({database=createAdminClient,download=downl
         const inputHash=digest(JSON.stringify({version:DOCUMENT_ANALYSIS_VERSION,prompt:DOCUMENT_ANALYSIS_PROMPT,schema:DOCUMENT_ANALYSIS_SCHEMA,projectId:execution.projectId,documentId:document.id,title:document.title,category:document.category,file:digest(file),text:digest(prepared.extractedText),aiText:digest(prepared.aiText),truncated:prepared.wasTruncated,reading:prepared.kind==='text'?prepared.readingVerification??null:null}));
         if(prepared.kind==='text'&&previous.analysis_input_hash===inputHash&&previous.analysis_version===DOCUMENT_ANALYSIS_VERSION&&previous.analysis_status==='COMPLETE'&&previous.autoValidated===false&&previous.full_markdown===prepared.extractedText){
             try{const cached=validateDocumentAnalysis(JSON.stringify(Object.fromEntries(Object.keys(DOCUMENT_ANALYSIS_SCHEMA.properties).map(key=>[key,previous[key]]))),{...prepared,title:String(document.title||'')});
-                if(cached.analysis_status==='COMPLETE'&&JSON.stringify(cached.financial_data)===JSON.stringify(previous.financial_data))return {result:{success:true,partial:false,cached:true,documentId:document.id,ai_status:document.ai_status,autoValidated:false,inputHash} as JsonObject,effects:[]};
+                if(cached.analysis_status==='COMPLETE'&&isDeepStrictEqual(cached.financial_data,previous.financial_data))return {result:{success:true,partial:false,cached:true,documentId:document.id,ai_status:document.ai_status,autoValidated:false,inputHash} as JsonObject,effects:[]};
             }catch{/* An invalid saved proposal never grants reuse. */}
         }
         const profile:DocumentAiProfile={...execution.profile,images:false};
