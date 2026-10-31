@@ -55,7 +55,7 @@ async function savedLedgerRows(client: SupabaseClient, projectId: string): Promi
     return result;
 }
 /** Reads saved data only. A context excerpt never establishes contractual authority. */
-export async function loadProjectWritingContext(client: SupabaseClient, projectId: string, userId: string, question: string): Promise<ProjectWritingContext> {
+export async function loadProjectWritingContext(client: SupabaseClient, projectId: string, userId: string, question: string, previousQuestion = ''): Promise<ProjectWritingContext> {
     const project = await ownedWritingProject(client, projectId, userId);
     const [documents, rows] = await Promise.all([
         savedProjectDocuments(client, projectId),
@@ -63,12 +63,15 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
     ]);
     const unverified: ProjectWritingContext['unverified'] = [];
     const readable = documents.filter(document => assessDocumentSourceReadiness(document).canCompare);
-    const retrievalQuery = writingRetrievalQuery(question);
-    // Rank the question against the project corpus. Per-document weights gave
-    // common administrative words the same importance as the actual subject.
-    const weights = contractRetrievalWeights(readable.map(document => document.extracted_text || ''), meaningfulRetrievalTerms(retrievalQuery));
-    const acronyms = writingRetrievalQuery((question.match(/[א-ת]{1,5}[״"׳'][א-ת]{1,3}|\b[A-Z]{2,6}\b/gu)||[]).join(' '));
-    for(const term of meaningfulRetrievalTerms(acronyms)) weights.set(term,Math.max(1,weights.get(term)||0)*12);
+    // The latest question chooses its own excerpts. Earlier topics are fallback
+    // context for follow-ups; combining them could clip away the current subject.
+    const queries = [question, ...(previousQuestion.trim() ? [previousQuestion] : [])].map(value => {
+        const query = writingRetrievalQuery(value);
+        const weights = contractRetrievalWeights(readable.map(document => document.extracted_text || ''), meaningfulRetrievalTerms(query));
+        const acronyms = writingRetrievalQuery((value.match(/[א-ת]{1,5}[״"׳'][א-ת]{1,3}|\b[A-Z]{2,6}\b/gu)||[]).join(' '));
+        for(const term of meaningfulRetrievalTerms(acronyms)) weights.set(term,Math.max(1,weights.get(term)||0)*12);
+        return {query, weights};
+    });
     const candidates = documents.flatMap(document => {
         const readiness = assessDocumentSourceReadiness(document);
         const label = document.title ? document.title + ' — ' : '';
@@ -76,17 +79,24 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
             const reasons = {UNREADABLE: 'לא נקרא תוכן מהימן', EXTRACTION_INCOMPLETE: 'קריאת המקור לא הושלמה', DRAFT: 'מסמך מסומן כטיוטה', FRAGMENT: 'המקור מסומן כקטע בלבד'};
             unverified.push({documentId: document.id, reason: label + (reasons[readiness.status as keyof typeof reasons] || 'מצב המקור דורש בדיקה')}); return [];
         }
-        const selection = selectContractContext({id: document.id, extracted_text: document.extracted_text || ''}, retrievalQuery, 2400, weights);
-        if (selection.limitations.some(reason => reason !== 'no_subject_match')) unverified.push({documentId: document.id, reason: label + 'נבחר קטע מוגבל; יש לבדוק את ההקשר וההפניות המלאים'});
-        return selection.source_anchors.map((anchor, part) => ({document, anchor, part, score: selection.relevance_score || 0}));
-    }).sort((a, b) => a.part - b.part || b.score - a.score || a.document.id.localeCompare(b.document.id));
-    const sources: ProjectWritingContext['sources'] = []; let characters = 0;
+        let limited = false;
+        const excerpts = queries.flatMap(({query, weights}, priority) => {
+            const selection = selectContractContext({id: document.id, extracted_text: document.extracted_text || ''}, query, 2400, weights);
+            if (selection.limitations.some(reason => reason !== 'no_subject_match')) limited = true;
+            return selection.source_anchors.map((anchor, part) => ({document, anchor, part, priority, score: selection.relevance_score || 0}));
+        });
+        if (limited) unverified.push({documentId: document.id, reason: label + 'נבחר קטע מוגבל; יש לבדוק את ההקשר וההפניות המלאים'});
+        return excerpts;
+    }).sort((a, b) => a.priority - b.priority || a.part - b.part || b.score - a.score || a.document.id.localeCompare(b.document.id));
+    const sources: ProjectWritingContext['sources'] = []; const seen = new Set<string>(); let characters = 0;
     for (const {document, anchor} of candidates) {
+        const key = JSON.stringify([document.id, anchor.start, anchor.end]);
+        if (seen.has(key)) continue;
         if (sources.length >= 32 || characters + anchor.quote.length > 32000) continue;
         if (!anchor.quote.trim() || document.extracted_text?.slice(anchor.start, anchor.end) !== anchor.quote) continue;
         sources.push({sourceId: 'S' + (sources.length + 1), documentId: document.id, title: document.title || null,
             pageLabel: anchor.page === null ? null : String(anchor.page), quote: anchor.quote,
-            basis: 'DOCUMENT', status: 'VERIFIED', manualNote: null}); characters += anchor.quote.length;
+            basis: 'DOCUMENT', status: 'VERIFIED', manualNote: null}); characters += anchor.quote.length; seen.add(key);
     }
     const traced = rows.filter(row => isTrustedBaseContractRow(row as LedgerLikeRow));
     const tracedComplete = traced.length > 0 && traced.every(row => finite(row.quantity) && row.quantity >= 0 && finite(row.unit_price_excl_vat));

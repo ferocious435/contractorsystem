@@ -2,6 +2,7 @@ import './codex-runtime/load-server.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const {loadProjectWritingContext}=await import('../src/utils/project-writing-context-server.ts');
+const {createConsultantHandler}=await import('../src/server/ai/handlers/consultant.ts');
 const owner='10000000-0000-4000-8000-000000000001',project='30000000-0000-4000-8000-000000000003';
 const doc=(id,text,title='פרוטוקול.txt')=>({id,project_id:project,title,extracted_text:text,ocr_status:'COMPLETED',deleted_at:null});
 function clientFor(documents){
@@ -39,4 +40,20 @@ test('an explicit draft and a PDF with an unread page remain reading gaps rather
  const context=await loadProjectWritingContext(clientFor([doc('draft','טיוטה\nמת״מ: אישור.'),incomplete]),project,owner,'מה מצב מת״מ?');
  assert.equal(context.sources.length,0);
  assert.deepEqual(context.unverified.map(row=>row.documentId).sort(),['draft','partial']);
+});
+test('a new consultant subject keeps its detailed condition despite earlier questions on another subject',async()=>{
+ const oldQuestion='מה מתועד במסמך החפיפה על חדרי תאורה, תיאום תכנון התאורה, מיקומי התאורה והתוכנית האחרונה?';
+ const detail='| תחנות שאיבה | החלפת המשאבות הוסכמה בכפוף למסמך אחריות חתום. | ממתין לחתימה |';
+ const text='מסמך חפיפה\nחדרי תאורה: תיאום תכנון התאורה ומיקומי התאורה עדיין בטיפול.\nתחנות שאיבה: שינוי המשאבות בבדיקה.\n'+('נתוני גינון וריצוף מעודכנים.\n'.repeat(160))+detail+'\n'+('המשך רשימת עבודות תחזוקה.\n'.repeat(60));
+ let selected;
+ const handler=createConsultantHandler({history:async()=>[{role:'user',content:oldQuestion},{role:'assistant',content:'התאורה בבדיקה.'}],
+  load:async(execution,question,previousQuestion)=>selected=await loadProjectWritingContext(clientFor([doc('handover',text)]),project,owner,question,previousQuestion)});
+ await handler.execute({question:'לפי מסמך החפיפה, מה הוסכם על החלפת המשאבות בתחנות שאיבה ואיזה מסמך אחריות נדרש?'},{projectId:project,ownerId:owner,generate:async()=>JSON.stringify({body:'יש לברר את מצב ההסכמה ולבקש מסמך חתום.',sourceIds:[],unknowns:[],nextActions:[]})});
+ assert.ok(selected.sources.some(source=>source.quote.includes('החלפת המשאבות הוסכמה בכפוף למסמך אחריות חתום.')),'latest subject lost its detailed condition');
+ for(const source of selected.sources)assert.ok(text.includes(source.quote));
+});
+test('a consultant follow-up retains the saved source for the previous subject',async()=>{
+ const source='משאבות: החלופה ממתינה למסמך אחריות חתום.';
+ const context=await loadProjectWritingContext(clientFor([doc('pump',source)]),project,owner,'אפשר להמשיך?','מה מצב המשאבות?');
+ assert.equal(context.sources.length,1);assert.equal(context.sources[0].documentId,'pump');assert.equal(context.sources[0].quote,source);
 });

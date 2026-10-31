@@ -14,15 +14,15 @@ async function loadHistory(execution:AiExecutionContext):Promise<HistoryMessage[
     return jobs.filter(job=>job.state==='SUCCEEDED').reverse().flatMap(job=>record(job.result)&&typeof job.result.question==='string'&&typeof job.result.response==='string'
         ?[{role:'user' as const,content:job.result.question},{role:'assistant' as const,content:consultantDisplay(job.result).content}]:[]).slice(-12);
 }
-export function createConsultantHandler({load=(execution,question)=>loadProjectWritingContext(createAdminClient(),execution.projectId,execution.ownerId,question),history=loadHistory}:{load?:(execution:AiExecutionContext,question:string)=>Promise<ProjectWritingContext>;history?:(execution:AiExecutionContext)=>Promise<HistoryMessage[]>}={}):AiJobHandler{return {
+export function createConsultantHandler({load=(execution,question,previousQuestion)=>loadProjectWritingContext(createAdminClient(),execution.projectId,execution.ownerId,question,previousQuestion),history=loadHistory}:{load?:(execution:AiExecutionContext,question:string,previousQuestion:string)=>Promise<ProjectWritingContext>;history?:(execution:AiExecutionContext)=>Promise<HistoryMessage[]>}={}):AiJobHandler{return {
     validate(raw){if(!record(raw)||Object.keys(raw).some(key=>!['question','messages'].includes(key))||('question' in raw&&'messages' in raw))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
         let question=raw.question;
         if('messages' in raw){if(!Array.isArray(raw.messages)||!raw.messages.length||raw.messages.length>100||raw.messages.some(message=>!record(message)||!['user','assistant'].includes(String(message.role))||typeof message.content!=='string'||!message.content.trim()||message.content.length>8000)||raw.messages.at(-1)?.role!=='user')throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);question=raw.messages.at(-1).content;}
         if(typeof question!=='string'||!question.trim()||question.length>8000)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);return {question:question.trim()};},
     async execute(payload,execution){
         const question=String(payload.question),previous=await history(execution);
-        const retrievalQuestion=[...previous.filter(message=>message.role==='user').slice(-2).map(message=>message.content),question].join('\n');
-        const context=await load(execution,retrievalQuestion);if(context.project.id!==execution.projectId)throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);
+        const previousQuestion=previous.filter(message=>message.role==='user').slice(-2).map(message=>message.content).join('\n');
+        const context=await load(execution,question,previousQuestion);if(context.project.id!==execution.projectId)throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);
         const sources=context.sources.filter(source=>source.basis==='DOCUMENT'&&source.status==='VERIFIED'&&source.quote);
         const facts:WritingFacts={kind:'consultant',projectName:context.project.name,userText:[...previous.filter(message=>message.role==='user').map(message=>message.content),question].join('\n'),sources};
         const list={type:'array',items:{type:'string'}},ids=sources.length?{type:'array',items:{type:'string',enum:sources.map(source=>source.sourceId)}}:{type:'array',maxItems:0,items:{type:'string'}};

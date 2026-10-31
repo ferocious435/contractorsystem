@@ -74,6 +74,7 @@ jobs:
           scripts/verify-project-writing-context.mjs
           scripts/verify-action-readiness.mjs
           scripts/verify-correspondence-state.mjs
+          scripts/verify-correspondence-loading.mjs
           scripts/verify-correspondence-print.mjs
           scripts/verify-consultant-display.mjs
           scripts/verify-codex-documents.mjs
