@@ -11,6 +11,78 @@ const {getDocumentDisplayState}=await import('../../src/components/documents/doc
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 const rowProps={selected:false,processing:false,analysisAvailable:true,onSelect:()=>{},onAnalyze:async()=>{},onPreview:()=>{},onDelete:async()=>{}};
 
+const imageReading=(part,index,overrides={})=>({part,anchor:`${part}#rId${index}:${index}`,mediaName:`word/media/image${index}.png`,sha256:'b'.repeat(64),status:'READ',confidence:92,numericReviewRequired:false,reason:null,...overrides});
+const embeddedImageDocument=(overrides={})=>documentFixture('embedded-images',{title:'הוראות.docx',content_hash:'a'.repeat(64),ocr_status:'COMPLETED',extracted_text:'הוראה שלמה עם תמונות בכותרת המסמך.',parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:false,sourceHash:'a'.repeat(64),expectedImageReferences:3,images:[imageReading('word/header1.xml',1),imageReading('word/header1.xml',2),imageReading('word/header1.xml',3,{status:'REQUIRES_REVIEW',confidence:68,numericReviewRequired:true,reason:'OCR_NUMBERS_REQUIRE_REVIEW'})],issues:[]}},...overrides});
+const visibleText=html=>html.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+
+test('an unread Word header image identifies the affected part and numeric review without hiding two read images',()=>{
+  const document=embeddedImageDocument();
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text}),text=visibleText(html);
+  assert.ok(text.includes('2 / 3'),text);
+  assert.match(html,/<ul[^>]*aria-label="תמונות שדורשות בדיקה"/u);
+  assert.match(text,/כותרת עליונה.*תמונה 3.*מספרים/u);
+  assert.ok(!/תמונה [12] —/.test(text));
+  assert.ok(html.includes('data-source-status="EXTRACTION_INCOMPLETE"'));
+});
+
+test('completed Word image coverage has a complete count and no unread-image list',()=>{
+  const document=embeddedImageDocument({parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:true,sourceHash:'a'.repeat(64),expectedImageReferences:2,images:[imageReading('word/document.xml',1),imageReading('word/footer1.xml',2)],issues:[]}}});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text});
+  assert.ok(visibleText(html).includes('2 / 2'));
+  assert.ok(!html.includes('aria-label="תמונות שדורשות בדיקה"'));
+  assert.ok(html.includes('data-source-status="READABLE"'));
+});
+
+test('a missing Word image record remains visible as a coverage gap',()=>{
+  const document=embeddedImageDocument({parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:false,sourceHash:'a'.repeat(64),expectedImageReferences:3,images:[imageReading('word/document.xml',1),imageReading('word/document.xml',2)],issues:[]}}});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text}),text=visibleText(html);
+  assert.ok(text.includes('2 / 3'));
+  assert.match(text,/חסרות תוצאות קריאה/u);
+  assert.ok(html.includes('data-source-status="EXTRACTION_INCOMPLETE"'));
+});
+
+test('malformed Word image metadata is reported as unread instead of crashing or appearing complete',()=>{
+  const document=embeddedImageDocument({parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:false,sourceHash:'a'.repeat(64),expectedImageReferences:1,images:[null],issues:[]}}});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text}),text=visibleText(html);
+  assert.ok(text.includes('0 / 1'));
+  assert.match(text,/קריאת התמונה לא אומתה/u);
+  assert.ok(html.includes('data-source-status="EXTRACTION_INCOMPLETE"'));
+});
+
+test('a legacy Word source cannot display unknown image coverage as complete zero of zero',()=>{
+  const document=embeddedImageDocument({parsed_json:{}});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text});
+  assert.match(visibleText(html),/מספר התמונות לא אומת/u);
+  assert.ok(!visibleText(html).includes('0 / 0'));
+});
+
+test('Word image verification for different file bytes cannot be presented as current coverage',()=>{
+  const document=embeddedImageDocument({content_hash:'c'.repeat(64)});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text});
+  assert.match(visibleText(html),/אימות התמונות אינו תואם לקובץ השמור/u);
+  assert.ok(!visibleText(html).includes('2 / 3'));
+  assert.ok(html.includes('data-source-status="EXTRACTION_INCOMPLETE"'));
+});
+
+test('duplicate Word image anchors cannot inflate the visible coverage count',()=>{
+  const document=embeddedImageDocument({parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:true,sourceHash:'a'.repeat(64),expectedImageReferences:3,images:[imageReading('word/header1.xml',1),imageReading('word/header1.xml',1),imageReading('word/footer1.xml',2)],issues:[]}}});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text}),text=visibleText(html);
+  assert.ok(text.includes('2 / 3'));
+  assert.ok(!text.includes('3 / 3'));
+  assert.match(text,/חסרות תוצאות קריאה/u);
+  assert.ok(html.includes('data-source-status="EXTRACTION_INCOMPLETE"'));
+});
+
+test('unverified Word header and comment placement remains visible even when no image requires review',()=>{
+  const document=embeddedImageDocument({parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:false,sourceHash:'a'.repeat(64),expectedImageReferences:0,images:[],issues:['word/header1.xml:CONTENT_NOT_POSITIONED_BY_PARSER','word/comments.xml:CONTENT_NOT_POSITIONED_BY_PARSER']}}});
+  const html=render(DocumentSourceView,{document,fullText:document.extracted_text}),text=visibleText(html);
+  assert.match(html,/<ul[^>]*aria-label="חלקים נוספים שדורשים בדיקה"/u);
+  assert.match(text,/כותרת עליונה.*מיקום הטקסט/u);
+  assert.match(text,/הערות המסמך.*מיקום הטקסט/u);
+  assert.ok(!text.includes('CONTENT_NOT_POSITIONED_BY_PARSER'));
+  assert.ok(html.includes('data-source-status="EXTRACTION_INCOMPLETE"'));
+});
+
 for(const [key,document] of documentStates)test(`document state ${key} retains its existing domain classification and a readable label`,()=>{
   assert.equal(getDocumentDisplayState(document).key,key);
   const html=render(DocumentListRow,{...rowProps,document});

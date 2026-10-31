@@ -48,6 +48,9 @@ jobs:
       - name: Check documents
         run: npm run verify:documents
 
+      - name: Check document part coverage display
+        run: node --test scripts/redesign/verify-documents.mjs
+
       - name: Check interface and evidence display
         run: npm run verify:audit-ui
 

@@ -76,6 +76,21 @@ function findExplicitDocumentMarker(document: DocumentSourceInput) {
     return null;
 }
 
+function validHash(hash: unknown) {
+    return typeof hash === 'string' && /^[a-f\d]{64}$/i.test(hash);
+}
+
+export function isDocxImageReadingComplete(image: unknown): image is DocxReadingVerification['images'][number] {
+    if (!image || typeof image !== 'object') return false;
+    const record = image as Record<string, unknown>;
+    return typeof record.part === 'string' && /^word\/.+\.xml$/.test(record.part)
+        && typeof record.anchor === 'string' && record.anchor.startsWith(`${record.part}#`)
+        && typeof record.mediaName === 'string' && record.mediaName.length > 0 && validHash(record.sha256)
+        && record.status === 'READ' && record.numericReviewRequired === false && record.reason === null
+        && typeof record.confidence === 'number' && Number.isFinite(record.confidence)
+        && record.confidence >= 65 && record.confidence <= 100;
+}
+
 export function assessDocumentSourceReadiness(document: DocumentSourceInput) {
     const text = String(document.extracted_text || '');
     const hasReadableText = hasDocumentBodyText(text);
@@ -95,18 +110,13 @@ export function assessDocumentSourceReadiness(document: DocumentSourceInput) {
         && verifiedPages.size === verification.totalPages
         && [...verifiedPages].every((page) => Number.isInteger(page) && page >= 1 && page <= verification.totalPages);
     const docx = verification?.version === DOCX_READING_VERSION ? verification : undefined;
-    const validHash = (hash: unknown) => typeof hash === 'string' && /^[a-f\d]{64}$/i.test(hash);
     const completeDocxCoverage = Boolean(docx?.complete === true && validHash(docx.sourceHash)
         && (!document.content_hash || document.content_hash === docx.sourceHash)
         && Number.isInteger(docx.expectedImageReferences) && docx.expectedImageReferences >= 0
         && Array.isArray(docx.issues) && docx.issues.length === 0 && Array.isArray(docx.images)
         && docx.images.length === docx.expectedImageReferences
         && new Set(docx.images.map((image) => image?.anchor)).size === docx.expectedImageReferences
-        && docx.images.every((image) => image && typeof image.part === 'string' && /^word\/.+\.xml$/.test(image.part)
-            && typeof image.anchor === 'string' && image.anchor.startsWith(`${image.part}#`)
-            && typeof image.mediaName === 'string' && image.mediaName.length > 0 && validHash(image.sha256)
-            && image.status === 'READ' && image.numericReviewRequired === false && image.reason === null
-            && typeof image.confidence === 'number' && Number.isFinite(image.confidence) && image.confidence >= 65 && image.confidence <= 100));
+        && docx.images.every(isDocxImageReadingComplete));
     const incomplete = ['REQUIRES_REVIEW', 'ERROR', 'PENDING', 'PROCESSING'].includes(String(document.ocr_status || ''))
         || (isPdf && (document.ocr_status !== 'COMPLETED' || !completePageCoverage))
         || (isDocx && (document.ocr_status !== 'COMPLETED' || !completeDocxCoverage))
