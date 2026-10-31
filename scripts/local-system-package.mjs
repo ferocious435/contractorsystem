@@ -1,0 +1,24 @@
+import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import crypto from 'node:crypto';import {spawnSync} from 'node:child_process';
+const args=process.argv.slice(2),arg=name=>{const i=args.indexOf(name);return i<0?undefined:args[i+1];},legacy=args.includes('--legacy');
+const id=arg('--id'),source=path.resolve(arg('--source')||''),dist=arg('--dist'),dependencies=path.resolve(arg('--dependencies')||'node_modules'),home=path.resolve(process.env.LOCALAPPDATA||path.join(os.homedir(),'AppData/Local'),'ContractorSystem');
+if(!/^[a-z0-9-]{1,90}$/.test(id||'')||!/^\.next[-a-z0-9]*$/.test(dist||''))throw Error('Invalid release identity or build directory');
+const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex'),root=path.join(home,'releases',id);
+if(fs.existsSync(root))throw Error('Release already exists; it will not be overwritten');
+if(!legacy){const checks=JSON.parse(fs.readFileSync(arg('--checks')));if(checks.source!==source||!checks.sourceUnchanged||checks.checks.length!==2||checks.checks.some(c=>c.status!==0))throw Error('A verified build is required');for(const file of checks.builtFiles)if(hash(fs.readFileSync(path.join(source,file.path)))!==file.sha256)throw Error('Built source changed: '+file.path);}
+const lock=fs.readFileSync(path.join(source,'package-lock.json')),dependencyId=legacy?'working-a-20261029':hash(lock).slice(0,24),dependencyRoot=path.join(home,'dependencies',dependencyId);
+if(!fs.existsSync(path.join(dependencyRoot,'node_modules'))){const staging=dependencyRoot+'.building-'+Date.now();fs.mkdirSync(staging,{recursive:true});fs.cpSync(dependencies,path.join(staging,'node_modules'),{recursive:true});fs.writeFileSync(path.join(staging,'package-lock.json'),lock);fs.renameSync(staging,dependencyRoot);}
+fs.mkdirSync(root,{recursive:true});
+for(const folder of ['public',...(legacy?[]:['src']),dist]){const from=path.join(source,folder);if(fs.existsSync(from))fs.cpSync(from,path.join(root,folder),{recursive:true,filter:file=>folder!==dist||!path.relative(from,file).split(path.sep).some(part=>part==='cache'||part==='trace')});}
+for(const file of ['package.json','package-lock.json','next.config.ts','tsconfig.json','next-env.d.ts','postcss.config.mjs'])if(fs.existsSync(path.join(source,file)))fs.writeFileSync(path.join(root,file),fs.readFileSync(path.join(source,file)));
+for(const folder of ['scripts','ops']){fs.mkdirSync(path.join(root,folder));for(const file of folder==='scripts'?['local-system-backup.mjs','local-system-restore.mjs','local-system-launch.mjs']:['backup-schema.json'])fs.writeFileSync(path.join(root,folder,file),fs.readFileSync(path.join(process.cwd(),folder,file)));}
+// Use a real private copy: Windows reparse-point traversal can be unavailable
+// to a launched app even when the junction target itself is readable.
+fs.cpSync(path.join(dependencyRoot,'node_modules'),path.join(root,'node_modules'),{recursive:true});
+fs.mkdirSync(path.join(home,'runtime'),{recursive:true});const nodeBytes=fs.readFileSync(process.execPath),nodeSha256=hash(nodeBytes),nodeExe=path.join(home,'runtime','node-'+nodeSha256.slice(0,16)+'.exe');if(!fs.existsSync(nodeExe))fs.writeFileSync(nodeExe,nodeBytes);
+fs.mkdirSync(path.join(home,'config'),{recursive:true});const configuration=path.join(home,'config/system.env');if(!fs.existsSync(configuration))fs.writeFileSync(configuration,fs.readFileSync('.env.local'),{mode:0o600});
+const where=spawnSync('where.exe',['codex.exe'],{encoding:'utf8',windowsHide:true});if(where.status!==0)throw Error('The existing Codex business runtime was not found');const codexExe=where.stdout.trim().split(/\r?\n/)[0];
+const files=[];function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){if(entry.name==='node_modules')continue;const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile())files.push({path:path.relative(root,full),sha256:hash(fs.readFileSync(full))});}}walk(root);files.sort((a,b)=>a.path.localeCompare(b.path));
+const release={version:1,id,root,dist,buildId:fs.readFileSync(path.join(root,dist,'BUILD_ID'),'utf8').trim(),nodeExe,nodeSha256,nodeVersion:process.version,codexExe,dependencyRoot,dependencyLockSha256:hash(lock),legacyCompiledBuild:legacy,files,createdAt:new Date().toISOString()};
+fs.writeFileSync(path.join(root,'release.json'),JSON.stringify(release,null,2));fs.writeFileSync(path.join(home,'launcher.mjs'),fs.readFileSync('scripts/local-system-launch.mjs'));
+const command='@echo off\r\n"'+nodeExe+'" "'+path.join(home,'launcher.mjs')+'" start\r\nif errorlevel 1 pause\r\n';fs.writeFileSync(path.join(home,'Запустить ContractorSystem.cmd'),command);fs.writeFileSync(path.join(home,'start.cmd'),command);
+console.log(JSON.stringify({release:id,root,buildId:release.buildId,files:files.length,nodeExe,dependencies:dependencyRoot,legacyCompiledBuild:legacy}));
