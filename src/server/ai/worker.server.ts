@@ -9,7 +9,7 @@ interface WorkerOptions {store:AiJobStore;client:Pick<CodexClient,'runTurn'>;han
 const executionState=globalThis as typeof globalThis&{contractorAiExecutions?:WeakSet<object>};
 const trusted=executionState.contractorAiExecutions??=new WeakSet<object>();
 export const isAiExecutionContext=(value:unknown):value is AiExecutionContext=>record(value)&&trusted.has(value);
-const safeCodes=new Set(['AI_TIMEOUT','AI_RESPONSE_INCOMPLETE','AI_CANCELLED','AI_LEASE_LOST','AI_SOURCE_CHANGED','AI_CONTEXT_CHANGED','AI_ACCOUNT_CHANGED','AI_MODEL_UNAVAILABLE','AI_TOOL_FORBIDDEN','AI_PROFILE_INVALID']);
+const safeCodes=new Set(['AI_TIMEOUT','AI_UNAVAILABLE','AI_RESPONSE_INVALID','AI_RESPONSE_INCOMPLETE','AI_CANCELLED','AI_LEASE_LOST','AI_SOURCE_CHANGED','AI_CONTEXT_CHANGED','AI_ACCOUNT_CHANGED','AI_MODEL_UNAVAILABLE','AI_TOOL_FORBIDDEN','AI_PROFILE_INVALID','AI_FACT_UNVERIFIED','AI_AMOUNT_UNVERIFIED','AI_QUOTE_UNVERIFIED','AI_SOURCE_UNVERIFIED','AI_WRITING_INVALID']);
 export function createAiWorker(options:WorkerOptions) {
     const clock=options.clock??{now:()=>Date.now(),setTimeout:(fn:()=>void,ms:number)=>setTimeout(fn,ms),clearTimeout:(timer:unknown)=>clearTimeout(timer as NodeJS.Timeout)};
     const workerId=options.workerId??randomUUID(),startedAt=options.startedAt??clock.now();
@@ -35,7 +35,8 @@ export function createAiWorker(options:WorkerOptions) {
             await options.store.complete(job.id,job.leaseToken,prepared);
         }catch(error){
             controller.abort();const code=record(error)&&typeof error.code==='string'&&safeCodes.has(error.code)?error.code:'AI_FAILED';
-            await options.store.fail(job.id,job.leaseToken,{code,message:'Помощник не завершил действие. Данные сохранены.'}).catch(()=>false);
+            const message=code.endsWith('_UNVERIFIED')||code==='AI_WRITING_INVALID'?'התשובה כללה פרט שלא ניתן לאמת במקור. הטקסט הקודם נשמר; אפשר לבקש ניסוח מתוקן.':'העוזר לא השלים את הפעולה. הנתונים והטקסט הקודם נשמרו.';
+            await options.store.fail(job.id,job.leaseToken,{code,message}).catch(()=>false);
         }finally{
             closed=true;if(heartbeat!==undefined)clock.clearTimeout(heartbeat);await heartbeatWork;trusted.delete(execution);controller.abort();current=null;
             await options.store.interruptStale(clock.now()).catch(()=>0);

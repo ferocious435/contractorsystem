@@ -204,7 +204,7 @@ test('project retrieval keeps early and late documents when one document has man
 });
 
 test('scan route processes every work chunk and records complete coverage', () => {
-  const route = fs.readFileSync('src/server/ai/radar-service.server.ts', 'utf8').replace(/\r\n/g, '\n');
+  const route = fs.readFileSync('src/app/api/scan/route.ts', 'utf8').replace(/\r\n/g, '\n');
 
   assert.ok(route.includes('buildDocumentScanChunks'));
   assert.ok(route.includes('selectRelevantContractChunks'));

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {readFile,mkdtemp,mkdir,rm} from 'node:fs/promises';
 import os from 'node:os';
@@ -65,3 +66,29 @@ test('the document program client waits beyond202 for its saved terminal result'
 test('restoring document actions is read-only and stays within the current project',async()=>{assert.equal(typeof browser.restoreDocumentJobs,'function');const original=globalThis.fetch,requests=[];globalThis.fetch=async(url,options)=>{requests.push(options?.method??'GET');return Response.json({success:true,jobs:[]});};try{assert.deepEqual(await browser.restoreDocumentJobs(projectId),[]);assert.deepEqual(requests,['GET']);}finally{globalThis.fetch=original;}});
 test('a long saved source stays in the document while job history keeps a small reference',async()=>{const full=(body+'\n').repeat(10000),database=pricingReadClient(),fx=queueFixture({onGenerate:async()=>JSON.stringify(reply())}),handler=document.createDocumentHandler({database:()=>database,download:async()=>Buffer.from(full),prepare:async()=>textInput(full,{aiText:body,wasTruncated:true})});let prepared;fx.handler={...handler,async execute(payload,execution){return prepared=await handler.execute(payload,execution);}};await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work},'large-doc',savedProfile,{clientContextId:pricingIds.work});await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();assert.equal(prepared.effects[0].data.extracted_text,full);assert.ok(JSON.stringify(prepared.result).length<2000);assert.equal(prepared.result.partial,true);});
 test('a successful new analysis clears an old transport error while keeping owner notes',async()=>{const rows=pricingRows();rows.documents[0].parsed_json={system_error:'LEGACY_KEY_MISSING',system_errors:[{code:'LEGACY_KEY_MISSING'}],ai_degraded:true,owner_note:'תוספת ידנית'};const database=pricingReadClient(rows),fx=queueFixture({onGenerate:async()=>JSON.stringify(reply())}),handler=document.createDocumentHandler({database:()=>database,download:async()=>Buffer.from(body),prepare:async()=>textInput()});let prepared;fx.handler={...handler,async execute(payload,execution){return prepared=await handler.execute(payload,execution);}};await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work},'fresh-doc',savedProfile,{clientContextId:pricingIds.work});await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();const parsed=prepared.effects[0].data.parsed_json;assert.equal(parsed.system_error,undefined);assert.equal(parsed.ai_degraded,undefined);assert.equal(parsed.owner_note,'תוספת ידנית');});
+
+test('a new DOCX analysis preserves exact saved quotes when only table padding changed',async()=>{
+ const rows=pricingRows(),file=Buffer.from('same original DOCX bytes'),hash=createHash('sha256').update(file).digest('hex');
+ const saved='| נושא       | מצב       |\n| טרפו 705   | ללא אישור |',rendered='| נושא | מצב |\n| טרפו 705 | ללא אישור |';
+ const reading={version:'docx-image-coverage-v1',complete:true,sourceHash:hash,expectedImageReferences:0,images:[],issues:[]};
+ Object.assign(rows.documents[0],{title:'handover.docx',extracted_text:saved,content_hash:hash,ocr_status:'COMPLETED',parsed_json:{source_reading:reading}});
+ let generatedInput;const fx=queueFixture({onGenerate:async input=>{generatedInput=input.text;return JSON.stringify(reply());}}),handler=document.createDocumentHandler({database:()=>pricingReadClient(rows),download:async()=>file,prepare:async()=>textInput(rendered,{fileBuffer:file,readingVerification:reading,extractionSource:'officeparser_docx'})});
+ let result;fx.handler={...handler,async execute(payload,execution){return result=await handler.execute(payload,execution);}};
+ await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work},'stable-docx',savedProfile,{clientContextId:pricingIds.work});
+ await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();
+ assert.equal([...fx.rows.values()][0].state,'SUCCEEDED');applyPricingEffects(rows,result);assert.equal(rows.documents[0].extracted_text,saved);assert.equal(rows.documents[0].parsed_json.full_markdown,saved);assert.ok(generatedInput.includes(saved));
+});
+
+test('stable DOCX text never hides a changed file, content or incomplete reading',()=>{
+ const hash='a'.repeat(64),saved='| נושא       | מצב       |\n| טרפו 705   | ללא אישור |',rendered='| נושא | מצב |\n| טרפו 705 | ללא אישור |';
+ const reading={version:'docx-image-coverage-v1',complete:true,sourceHash:hash,expectedImageReferences:0,images:[],issues:[]};
+ const stored={title:'handover.docx',content_hash:hash,extracted_text:saved,ocr_status:'COMPLETED',parsed_json:{source_reading:reading}},prepared=textInput(rendered,{readingVerification:reading});
+ for(const [prior,fresh,fileHash] of [[{...stored,content_hash:'b'.repeat(64)},prepared,hash],[{...stored,ocr_status:'PENDING'},prepared,hash],[stored,{...prepared,readingVerification:{...reading,complete:false}},hash],[stored,{...prepared,extractedText:rendered.replace('ללא אישור','יש אישור')},hash]])assert.equal(document.preserveStableDocumentText(fresh,prior,fileHash),fresh);
+});
+
+test('stable long DOCX keeps the full saved text and a bounded model excerpt',()=>{
+ const hash='a'.repeat(64),saved=Array(5000).fill('| נושא       | מצב       |\n| טרפו 705   | ללא אישור |').join('\n'),rendered=Array(5000).fill('| נושא | מצב |\n| טרפו 705 | ללא אישור |').join('\n');
+ const reading={version:'docx-image-coverage-v1',complete:true,sourceHash:hash,expectedImageReferences:0,images:[],issues:[]};
+ const result=document.preserveStableDocumentText(textInput(rendered,{aiText:rendered.slice(0,120000),wasTruncated:true,readingVerification:reading}),{title:'long.docx',content_hash:hash,extracted_text:saved,ocr_status:'COMPLETED',parsed_json:{source_reading:reading}},hash);
+ assert.equal(result.extractedText,saved);assert.equal(result.wasTruncated,true);assert.ok(result.aiText.length<121000);assert.match(result.aiText,/Document text was truncated/);
+});

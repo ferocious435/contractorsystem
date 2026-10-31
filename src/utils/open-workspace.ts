@@ -1,5 +1,9 @@
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 
+// Creating a second magic link invalidates the first unused token. Keep the
+// generate/verify pair together; each visitor still receives its own session.
+const ownerEntries = new Map<string, Promise<void>>();
+
 export function workspaceEntryRedirectUrl(request: Pick<Request, 'url' | 'headers'>): URL {
     const url = new URL(request.url);
     const host = request.headers.get('host');
@@ -28,19 +32,30 @@ export async function signInOpenWorkspace(
         throw new Error('Open workspace account is unavailable');
     }
 
-    // This admin operation creates a server-only hash and sends no email.
-    const generated = await admin.auth.admin.generateLink({
-        type: 'magiclink',
-        email: account.data.user.email,
-    });
-    const tokenHash = generated.data.properties?.hashed_token;
-    if (generated.error || generated.data.user?.id !== ownerId || !tokenHash) {
-        throw new Error('Open workspace session is unavailable');
-    }
+    const previous = ownerEntries.get(ownerId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const queued = previous.then(() => gate);
+    ownerEntries.set(ownerId, queued);
+    await previous;
+    try {
+        // This admin operation creates a server-only hash and sends no email.
+        const generated = await admin.auth.admin.generateLink({
+            type: 'magiclink',
+            email: account.data.user.email,
+        });
+        const tokenHash = generated.data.properties?.hashed_token;
+        if (generated.error || generated.data.user?.id !== ownerId || !tokenHash) {
+            throw new Error('Open workspace session is unavailable');
+        }
 
-    const verified = await sessionClient.auth.verifyOtp({ type: 'email', token_hash: tokenHash });
-    if (verified.error || !verified.data.session || !verified.data.user || verified.data.user.id !== ownerId) {
-        throw new Error('Open workspace session could not be established');
+        const verified = await sessionClient.auth.verifyOtp({ type: 'email', token_hash: tokenHash });
+        if (verified.error || !verified.data.session || !verified.data.user || verified.data.user.id !== ownerId) {
+            throw new Error('Open workspace session could not be established');
+        }
+        return verified.data.user;
+    } finally {
+        release();
+        if (ownerEntries.get(ownerId) === queued) ownerEntries.delete(ownerId);
     }
-    return verified.data.user;
 }

@@ -19,7 +19,7 @@ export async function readAiRequest(request:Request):Promise<JsonObject>{
     if(!record(body))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);return body as JsonObject;
 }
 export function createAiJobService(options:ServiceOptions) {
-    async function owner(request:Request):Promise<string>{const user=await options.authenticate(request);if(!user)throw new BusinessAiError('AI_UNAUTHORIZED','Нужно войти в программу.',401);const owner=await options.resolveOwner();if(user.id!==owner)throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);return owner;}
+    async function owner(request:Request):Promise<string>{const user=await options.authenticate(request);if(!user)throw new BusinessAiError('AI_UNAUTHORIZED','יש להיכנס למערכת.',401);const owner=await options.resolveOwner();if(user.id!==owner)throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);return owner;}
     async function project(ownerId:string,projectId:unknown):Promise<string>{if(!validUuid(projectId))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);if(!await options.ownsProject(ownerId,projectId))throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);return projectId;}
     async function createAuthorized(ownerId:string,kind:AiJobKind,raw:unknown):Promise<Response>{
         if(!record(raw)||Object.keys(raw).some(key=>forbidden.has(key))||typeof raw.requestKey!=='string'||!raw.requestKey.trim()||raw.requestKey.length>128)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
@@ -50,7 +50,7 @@ export function createAiJobService(options:ServiceOptions) {
     return {create,createRequest,post,read,list,cancel,cancelRequest};
 }
 export async function authenticateRuntimeOwner(request:Request):Promise<string>{
-    void request;const client=await createClient(),{data:{user},error}=await client.auth.getUser();if(error||!user)throw new BusinessAiError('AI_UNAUTHORIZED','Нужно войти в программу.',401);
+    void request;const client=await createClient(),{data:{user},error}=await client.auth.getUser();if(error||!user)throw new BusinessAiError('AI_UNAUTHORIZED','יש להיכנס למערכת.',401);
     const owner=await resolveRuntimeOwner(createAdminClient());if(user.id!==owner)throw new BusinessAiError('AI_ACCESS_DENIED',undefined,403);return owner;
 }
 let shared:ReturnType<typeof createAiJobService>|undefined;

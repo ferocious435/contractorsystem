@@ -11,6 +11,19 @@ hook.deregister();
 const recognizeImage=async()=>({text:'Keep the gate open.',confidence:95});
 const read=(buffer,recognize=recognizeImage)=>extract(buffer,{recognizeImage:recognize});
 
+test('a standard Word horizontal rule is layout rather than an unread image',async()=>{
+ const rule='<w:p><w:r><w:pict><v:rect id="rule" style="width:0;height:1.5pt" o:hralign="right" o:hrstd="t" o:hr="t" fillcolor="#a0a0a0" stroked="f"/></w:pict></w:r></w:p>';
+ const result=await read(docx({body:paragraph('Before separator')+rule+paragraph('After separator'),media:{},rels:[]}));
+ assert.equal(result.readingVerification.complete,true);assert.deepEqual(result.readingVerification.issues,[]);
+ assert.ok(result.text.indexOf('Before separator')<result.text.indexOf('After separator'));assert.equal(result.readingVerification.expectedImageReferences,0);
+});
+test('a VML diagram or labelled shape still requires review even when styled as a horizontal rule',async()=>{
+ for(const shape of ['<v:rect style="width:80pt;height:40pt"/>','<v:rect o:hr="t"><v:textbox><w:txbxContent>'+paragraph('Approval conditions')+'</w:txbxContent></v:textbox></v:rect>']){
+  const result=await read(docx({body:paragraph('Context')+'<w:p><w:r><w:pict>'+shape+'</w:pict></w:r></w:p>',media:{},rels:[]}));
+  assert.equal(result.readingVerification.complete,false);assert.equal(result.requiresReview,true);
+ }
+});
+
 test('native_and_image_text_keep_order',async()=>{
  const r=await read(docx({body:paragraph('Before image')+image()+paragraph('After image')}));
  assert.ok(r.text.indexOf('Before image')<r.text.indexOf('Keep the gate open.'));
@@ -121,9 +134,13 @@ test('unsupported_drawings_retain_their_native_text',async()=>{
  assert.match(r.text,/Native text inside a shape/);assert.equal(r.requiresReview,true);
 });
 test('fallback_keeps_missing_content_without_repeating_placed_images',async()=>{
- const r=await read(docx({body:image()+`<w:sdt><w:sdtContent>${paragraph('Unpositioned content')+image()}</w:sdtContent></w:sdt>`}));
- assert.equal(r.text.match(/Keep the gate open\./g).length,2);assert.match(r.text,/Unpositioned content/);
- assert.equal(r.requiresReview,true);
+ // New parser versions understand structured document tags. Inject a renderer
+ // omission to keep testing the fallback rather than requiring an old bug.
+ const {OfficeParser}=await import('officeparser'),original=OfficeParser.parseOffice;
+ OfficeParser.parseOffice=async(...args)=>{const ast=await original.apply(OfficeParser,args),render=ast.to.bind(ast);ast.to=async(...values)=>{const result=await render(...values);return {...result,value:String(result.value).replaceAll('Unpositioned content','')};};return ast;};
+ try{const r=await read(docx({body:image()+`<w:sdt><w:sdtContent>${paragraph('Unpositioned content')+image()}</w:sdtContent></w:sdt>`}));
+  assert.equal(r.text.match(/Keep the gate open\./g).length,2);assert.match(r.text,/Unpositioned content/);assert.equal(r.requiresReview,true);assert.ok(r.readingVerification.issues.some(reason=>reason.includes('CONTENT_NOT_POSITIONED_BY_PARSER')));
+ }finally{OfficeParser.parseOffice=original;}
 });
 test('additional_image_relationships_inside_a_drawing_cannot_be_silently_omitted',async()=>{
  const body='<w:p><w:r><w:drawing><a:blip r:embed="rId1"><a:extLst><a:ext><custom:image xmlns:custom="urn:fixture" r:embed="rId2"/></a:ext></a:extLst></a:blip></w:drawing></w:r></w:p>';

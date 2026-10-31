@@ -2,10 +2,9 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { cookies, headers } from 'next/headers'
+import { headers } from 'next/headers'
 import { createClient } from '@/utils/supabase/server'
 import { createAdminClient } from '@/utils/supabase/admin'
-import { LOCAL_ACCESS_COOKIE } from '@/utils/local-access'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 type AuthFormState = {
@@ -144,45 +143,6 @@ function isAuthServiceUnavailable(error: unknown) {
 function authServiceUnavailableMessage() {
     return 'מערכת ההזדהות לא זמינה כרגע. זה לא אומר שהסיסמה שגויה. נסה שוב אחרי חיבור Supabase תקין.';
 }
-export async function login(prevState: AuthFormState, formData: FormData): Promise<AuthFormState> {
-    const supabase = await createClient()
-
-    const email = String(formData.get('email') || '')
-    const password = String(formData.get('password') || '')
-
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password }).catch((error: unknown) => ({
-        data: null,
-        error,
-    }))
-
-    if (error) {
-        const details = getAuthErrorDetails(error);
-        logAuthError('[Auth:Login] Supabase Error:', error)
-        if (isAuthServiceUnavailable(error)) {
-            return { error: authServiceUnavailableMessage() }
-        }
-        if (
-            details.code === 'invalid_credentials' ||
-            details.message.toLowerCase().includes('invalid login credentials') ||
-            details.message.toLowerCase().includes('invalid credentials')
-        ) {
-            return { error: 'Email או סיסמה שגויים. אם עדיין אין חשבון, עבור להרשמה.' }
-        }
-        return { error: 'לא ניתן להתחבר כרגע. נסה שוב בעוד רגע.' }
-    }
-
-    if (data?.user) {
-        await ensureUserProfile(data.user, supabase)
-        const cookieStore = await cookies()
-        cookieStore.delete(LOCAL_ACCESS_COOKIE)
-        revalidatePath('/', 'layout')
-        redirect('/')
-    }
-
-    return { error: 'אירעה שגיאה לא צפויה בכניסה.' }
-}
-
-
 export async function sendMagicLink(prevState: AuthFormState, formData: FormData): Promise<AuthFormState> {
     const supabase = await createClient()
     const email = String(formData.get('email') || '').trim()

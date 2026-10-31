@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, Dispatch, SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import { applyPricingScopeFormEdit, getPricingFormAmounts, getReviewedPricingFormAmounts, getPricingFormApproval, toPricingScopeForm } from '../pricingScopeForm';
 import { normalizeConfidenceScore } from '@/utils/pricing-confidence';
 import {
     evaluateAiPricing,
-    restoreAiPricing,
-    cancelAiPricing,
     fetchAiEstimatorSourceDocument,
 } from '../api/aiEstimatorApi';
 import type {
@@ -51,18 +49,12 @@ export function useAiEstimatorState({
     onClose,
     onApprove,
 }: UseAiEstimatorStateOptions) {
-    const projectId=String(contradiction.project_id||contradiction.projectId||''),scope=projectId+':'+contradiction.id;
-    const observation=useRef<AbortController|null>(null),currentScope=useRef(scope);currentScope.current=scope;
-    const readDraft=useCallback(()=>{try{const saved=JSON.parse(sessionStorage.getItem('pricing-form:'+scope)||'null');return saved?.version===1&&saved.form&&typeof saved.form.description==='string'&&typeof saved.form.unit==='string'?saved.form as AIEstimatorFormState:null;}catch{return null;}},[scope]);
     const [isLoading, setIsLoading] = useState(true);
     const [estimateData, setEstimateData] = useState<AIPricingEvaluationResponse | null>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [isExpertMode, setIsExpertMode] = useState(false);
     const [estimationError, setEstimationError] = useState<string | null>(null);
-    const [formDraft,setFormDraft]=useState(()=>({scope,form:readDraft()||createDefaultFormState(),edited:Boolean(readDraft())}));
-    const formState=formDraft.scope===scope?formDraft.form:createDefaultFormState();
-    const setFormState=useCallback<Dispatch<SetStateAction<AIEstimatorFormState>>>(update=>setFormDraft(previous=>({scope,edited:true,form:typeof update==='function'?update(previous.scope===scope?previous.form:createDefaultFormState()):update})),[scope]);
-    useEffect(()=>{if(formDraft.scope!==scope||!formDraft.edited)return;try{sessionStorage.setItem('pricing-form:'+scope,JSON.stringify({version:1,form:formDraft.form}));}catch{}},[formDraft,scope]);
+    const [formState, setFormState] = useState<AIEstimatorFormState>(createDefaultFormState);
     const [viewerDoc, setViewerDoc] = useState<AiEstimatorSourceDocument | null>(null);
     const [isViewerOpen, setIsViewerOpen] = useState(false);
     const [transactionDisplayId] = useState(createTransactionDisplayId);
@@ -74,7 +66,6 @@ export function useAiEstimatorState({
     );
 
     const runEstimation = useCallback(async (withExpert: boolean = false) => {
-        observation.current?.abort();const controller=new AbortController();observation.current=controller;
         setIsLoading(true);
         setEstimationError(null);
 
@@ -83,27 +74,22 @@ export function useAiEstimatorState({
                 contradictionId: contradiction.id,
                 projectId: String(contradiction.project_id || contradiction.projectId || ''),
                 expertMode: withExpert,
-                signal:controller.signal,
             });
-            if(controller.signal.aborted||currentScope.current!==scope)return;
+
             setEstimateData(data);
-            setFormDraft(previous=>previous.scope===scope&&previous.edited?previous:{scope,edited:false,form:toPricingScopeForm({ ...data, suggested_description: data.suggested_description || contradiction.description || '' })});
+
+            setFormState(toPricingScopeForm({ ...data, suggested_description: data.suggested_description || contradiction.description || '' }));
         } catch (error) {
-            if(controller.signal.aborted||currentScope.current!==scope)return;
             console.error('[AI_TERMINAL_ERROR]:', error);
             setEstimationError('בדיקת המחיר לא הושלמה. הנתונים נשארו לבדיקה.');
         } finally {
-            if(!controller.signal.aborted&&currentScope.current===scope)setIsLoading(false);
+            setIsLoading(false);
         }
-    }, [contradiction.description, contradiction.id, contradiction.projectId, contradiction.project_id,scope]);
+    }, [contradiction.description, contradiction.id, contradiction.projectId, contradiction.project_id]);
 
     useEffect(() => {
-        const controller=new AbortController();observation.current?.abort();observation.current=controller;setIsLoading(true);setEstimationError(null);setEstimateData(null);
-        const draft=readDraft();setFormDraft({scope,form:draft||createDefaultFormState(),edited:Boolean(draft)});
-        void restoreAiPricing(projectId,contradiction.id,controller.signal).then(data=>{if(controller.signal.aborted)return;setEstimateData(data);if(data?.lastActionState)setEstimationError('הבדיקה האחרונה לא הושלמה. מוצגת התוצאה השמורה הקודמת.');if(data)setFormDraft(previous=>previous.scope===scope&&previous.edited?previous:{scope,edited:false,form:toPricingScopeForm(data)});}).catch(error=>{if(!controller.signal.aborted)setEstimationError(error instanceof Error?error.message:'לא ניתן לשחזר את הבדיקה.');}).finally(()=>{if(!controller.signal.aborted)setIsLoading(false);});
-        return()=>{controller.abort();observation.current?.abort();};
-    }, [projectId,contradiction.id,scope,readDraft]);
-    const cancelEstimation=useCallback(async()=>{try{const job=await cancelAiPricing(projectId,contradiction.id);if(job.state==='SUCCEEDED')return;observation.current?.abort();setIsLoading(false);setEstimationError(job.state==='CANCELLED'?'הבדיקה בוטלה. הנתונים שהיו בחלון נשמרו.':'הבדיקה לא הושלמה. הנתונים שהיו בחלון נשמרו.');}catch{setEstimationError('לא ניתן לאשר שהבדיקה בוטלה. ניתן לנסות שוב.');}},[projectId,contradiction.id]);
+        void runEstimation(isExpertMode);
+    }, [isExpertMode, runEstimation]);
 
     const handleFormChange = useCallback((
         event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
@@ -111,7 +97,7 @@ export function useAiEstimatorState({
         const { name, value } = event.target;
 
         setFormState((prev) => applyPricingScopeFormEdit(prev, name, value));
-    }, [setFormState]);
+    }, []);
 
     const handleSubmit = useCallback(async () => {
         setIsSaving(true);
@@ -279,11 +265,10 @@ export function useAiEstimatorState({
         setIsExpertMode,
         setIsViewerOpen,
         setViewerDoc,
-    }), [setFormState]);
+    }), []);
 
     const actions = useMemo(() => ({
         runEstimation,
-        cancelEstimation,
         handleFormChange,
         handleSubmit,
         handleViewSource,
@@ -292,7 +277,6 @@ export function useAiEstimatorState({
         handleSubmit,
         handleViewSource,
         runEstimation,
-        cancelEstimation,
     ]);
 
     return {

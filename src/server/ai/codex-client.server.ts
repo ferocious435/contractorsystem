@@ -194,7 +194,7 @@ export function createCodexClient(options:ClientOptions={}):CodexClient {
             const thread=await rpc<Record<string,unknown>>('thread/start',{model:profile.model,modelProvider:'openai',allowProviderModelFallback:false,
                 cwd:runtimeDir,ephemeral:true,approvalPolicy:'never',sandbox:'read-only',environments:[],
                 baseInstructions:roleInstructions,developerInstructions:'Only supplied business context is available. No tools or code changes.',
-                config:{project_doc_max_bytes:0,features:Object.fromEntries(disabledFeatures.map(name=>[name,false])),mcp_servers:mcp,apps:{_default:{enabled:false}}},serviceName:'contractorsystem'});
+                config:{web_search:'disabled',project_doc_max_bytes:0,features:Object.fromEntries(disabledFeatures.map(name=>[name,false])),mcp_servers:mcp,apps:{_default:{enabled:false}}},serviceName:'contractorsystem'});
             if(!record(thread.thread)||typeof thread.thread.id!=='string')throw new BusinessAiError('AI_RESPONSE_INVALID');
             if(Array.isArray(thread.instructionSources)&&thread.instructionSources.some(source=>typeof source!=='string'||inside(repository,path.resolve(source))))throw new BusinessAiError('AI_POLICY_UNSAFE');
             let resolveResult!:(value:string)=>void,rejectResult!:(error:BusinessAiError)=>void;

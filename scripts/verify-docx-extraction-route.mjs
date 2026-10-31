@@ -8,7 +8,8 @@ import { docx, paragraph, image } from './fixtures/docx-image-fixtures.mjs';
 const require=createRequire(import.meta.url);
 const nextUrl=pathToFileURL(require.resolve('next/server')).href;
 const clientUrl='data:text/javascript,'+encodeURIComponent('let client; export const setClient=x=>{client=x}; export const createClient=async()=>client;');
-const syncUrl='data:text/javascript,'+encodeURIComponent('export const syncProjectContractBase=async(_client,projectId)=>{if(projectId!=="p")throw Error("wrong project")};');
+const syncUrl='data:text/javascript,'+encodeURIComponent('export let financialUpdates=0; export const syncProjectContractBase=async(_client,projectId)=>{if(projectId!=="p")throw Error("wrong project");financialUpdates++;};');
+const financial=await import(syncUrl);
 const {setClient}=await import(clientUrl);
 const hook=registerHooks({resolve(s,c,n){
  if(s==='@/utils/supabase/server')return {url:clientUrl,shortCircuit:true};
@@ -39,6 +40,7 @@ test('the real extraction route replaces an unverified legacy DOCX read with sou
  assert.equal(state.calls.downloads,1);assert.equal(state.calls.updates,1);
  assert.equal(state.row.parsed_json.owner_note,'keep');assert.equal(state.row.parsed_json.source_reading.expectedImageReferences,0);
  assert.equal(state.row.extracted_text,'Complete native instruction.');assert.equal(state.row.ocr_status,'COMPLETED');
+ assert.equal(financial.financialUpdates,0,'Reading document text must not recalculate the contract base');
 });
 test('the real route reuses complete unchanged DOCX coverage without downloading or OCR',async()=>{
  const bytes=docx({media:{},rels:[]});const prepared=await prepareDocumentAnalysisInput(bytes,'fixture.docx');

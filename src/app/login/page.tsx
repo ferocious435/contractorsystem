@@ -16,7 +16,7 @@ export default async function LoginPage({
                     <h1 className="text-3xl font-bold tracking-wider text-primary mb-2 drop-shadow-md">
                         קבלן<span className="text-white">PRO</span>
                     </h1>
-                    <p className="text-gray-400 text-sm">התחבר כדי לפתוח את רשימת הפרויקטים האמיתיים שלך</p>
+                    <p className="text-gray-400 text-sm">התחבר ללא סיסמה כדי לפתוח את הפרויקטים שלך</p>
                 </div>
 
                 {errorMessage && (

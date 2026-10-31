@@ -20,6 +20,8 @@ export interface ScreenOfTruthModalProps {
     sourceReadError?: string | null;
     onRetryRead?: () => Promise<void>;
     retryingRead?: boolean;
+    onCompleteReading?:()=>Promise<void>;
+    completingReading?:boolean;
     sourceContext?: { page?: number | null; quote?: string | null } | null;
 }
 
@@ -201,7 +203,7 @@ function isDocumentWarning(warning: string) {
     return !/GoogleGenerativeAI|Gemini|API key|Forbidden|fetching from|AI processing warning|reported as leaked|generateContent|quota|rate.?limit|429|RESOURCE_EXHAUSTED/i.test(warning);
 }
 
-export default function ScreenOfTruthModal({ document: doc, projectId, onClose, onValidate, readOnly = false, sourceContext, sourceReadError, onRetryRead, retryingRead }: ScreenOfTruthModalProps) {
+export default function ScreenOfTruthModal({ document: doc, projectId, onClose, onValidate, readOnly = false, sourceContext, sourceReadError, onRetryRead, retryingRead, onCompleteReading, completingReading }: ScreenOfTruthModalProps) {
     const [isValidating, setIsValidating] = useState(false);
     const [validationError, setValidationError] = useState<string | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -308,7 +310,7 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
         <header className="ti-dialog__header"><div><h2 id="source-dialog-title" className="ti-section-title"><BidiText kind="file" value={doc.title || 'מסמך ללא שם'} /></h2><p className="ti-meta">סקירת המקור והנתונים שנשמרו</p></div><Button aria-label="סגירה" onClick={onClose}><X size={18} aria-hidden="true" /></Button></header>
         {sourceContext && <section className="ti-source-reference" aria-label="ההפניה למקור"><p className="ti-meta">{contextPage ? <>עמוד בהפניה: <BidiText kind="code" value={String(contextPage)}/></> : 'לא צוין עמוד בהפניה.'}</p>{sourceContext.quote && <details><summary>ציטוט שהועבר מההערכה</summary><blockquote>{sourceContext.quote}</blockquote></details>}</section>}
         <div className="ti-source-dialog__columns">
-            <DocumentSourceView document={doc} fullText={readablePreviewText} sourceReadError={sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
+            <DocumentSourceView document={doc} fullText={readablePreviewText} sourceReadError={sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} onCompleteReading={onCompleteReading} completingReading={completingReading} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
             <section className="ti-source-analysis" aria-label="תוצאת הניתוח"><h3 className="ti-section-title">מה המערכת הבינה מהמסמך</h3>
                 {hasSystemError && <Feedback tone="warning" title={isAlreadyValidated ? 'האישור הידני נשמר; ניתוח AI לא הושלם' : 'ניתוח AI לא הושלם'}>{getSystemErrorText(systemErrors, jsonData.system_error)}</Feedback>}
                 {isStructured && !hasSystemError && <>

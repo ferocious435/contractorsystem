@@ -16,6 +16,7 @@
 
 # next.js
 /.next/
+/.next-*/
 /out/
 
 # production
@@ -52,6 +53,7 @@ next-env.d.ts
 /.gemini/
 /skills
 /global_archive_backup/
+/.superpowers/
 
 # local server logs
 *.log

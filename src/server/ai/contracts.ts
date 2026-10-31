@@ -26,7 +26,7 @@ export interface AiJobHandler {
     execute(payload:JsonObject,execution:AiExecutionContext):Promise<PreparedAiResult>;
 }
 export class BusinessAiError extends Error {
-    constructor(readonly code:string, message='Помощник не завершил действие. Данные сохранены.', readonly status=503) {super(message);this.name='BusinessAiError';}
+    constructor(readonly code:string, message='העוזר לא השלים את הפעולה. הנתונים נשמרו.', readonly status=503) {super(message);this.name='BusinessAiError';}
 }
 export const record = (value:unknown):value is Record<string,unknown> => value!==null && typeof value==='object' && !Array.isArray(value);
 export const validUuid = (value:unknown):value is string => typeof value==='string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(value);

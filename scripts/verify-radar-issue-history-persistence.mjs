@@ -70,12 +70,11 @@ test('a new verified message updates an existing issue without a new finding, mo
 
 test('history refresh is performed before candidate filtering and the explicit action exits before scanning', () => {
   const route = fs.readFileSync('src/app/api/scan/route.ts', 'utf8');
-  const action = route.slice(route.indexOf('if (body.revalidateSavedOnly === true)'), route.indexOf("return createOwnedAiJob(req,'scan',body)"));
+  const action = route.slice(route.indexOf('if (body.revalidateSavedOnly === true)'), route.indexOf('if (background && !workDocId)'));
   assert.ok(action.includes('if (body.issueHistoryOnly === true)'));
   assert.ok(action.includes('historyUpdated: history.updated, scanned: 0'));
   assert.ok(!/generateScan|extract|ollama|scanProject/.test(action));
-  const service=fs.readFileSync('src/server/ai/radar-service.server.ts','utf8');
-  const refresh = service.indexOf('await refreshSavedIssueHistories(supabase, projectId, issueHistoryDocuments)');
-  assert.ok(refresh >= 0 && refresh < service.indexOf('const assessedPoints = dedupeScanFindings'));
-  assert.ok(service.includes('const issueHistoryDocuments = [...contractDocs, ...projectWorkDocs]'));
+  const refresh = route.indexOf('await refreshSavedIssueHistories(supabase, projectId, issueHistoryDocuments)');
+  assert.ok(refresh >= 0 && refresh < route.indexOf('const assessedPoints = dedupeScanFindings'));
+  assert.ok(route.includes('const issueHistoryDocuments = [...contractDocs, ...projectWorkDocs]'));
 });

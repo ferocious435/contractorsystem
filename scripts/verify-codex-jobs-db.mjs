@@ -3,9 +3,6 @@ import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {runSql,runSqlAsync,jsonSql,databaseTransport} from './codex-runtime/db.mjs';
 import {ownerId,otherId,selectedModel} from './codex-runtime/fixtures.mjs';
-import {radarReadClient,radarIds} from './codex-runtime/radar-fixtures.mjs';
-import {createAiWorker} from '../src/server/ai/worker.server.ts';
-import {runRadarScan} from '../src/server/ai/radar-service.server.ts';
 const jobsModule=existsSync(new URL('../src/server/ai/jobs.server.ts',import.meta.url))?await import('../src/server/ai/jobs.server.ts'):{};
 const project='30000000-0000-4000-8000-000000000003',foreign='40000000-0000-4000-8000-000000000004';
 const doc='50000000-0000-4000-8000-000000000005',foreignDoc='60000000-0000-4000-8000-000000000006';
@@ -167,17 +164,6 @@ test('a concurrent governing-source transaction cannot cross final result valida
  try{await assert.rejects(store.complete(job.id,job.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');}finally{await updating;}
  assert.equal((await store.readOwned(ownerId,project,job.id)).state,'RUNNING');
 });
-test('the actual radar service and worker commit their generated effects and reuse them through real SQL',async()=>{
- const store=api(),work='עטיפת הצינור תבוצע בחול מצומנט 4%.',base='עטיפת הצינור תבוצע בחול מצומנט 8%.';let commitFailure;
- const complete=store.complete;store.complete=async(...args)=>{try{return await complete(...args);}catch(error){commitFailure=error;throw error;}};
- runSql(`insert into public.documents(id,project_id,title,category,extracted_text,ocr_status,content_hash) values('${radarIds.contract}','${project}','חוזה.txt','CONTRACT',:'base','COMPLETED','contract'),('${radarIds.work}','${project}','הוראה 01.01.2026.txt','EXECUTION',:'work','COMPLETED','work');`,{params:{base,work}});
- const claim={role:'INSTRUCTION',subject:'עטיפת הצינור',attribute:'CEMENT_CONTENT',value:'4%',scope:null,location:null,party:null,condition:null,period:null};let turns=0;
- const client={async runTurn(){turns++;return JSON.stringify({result:[{title:'עטיפת הצינור',category:'סתירה',work_quote:work,contract_quote:base,comparison:{work:claim,baseline:{...claim,role:'CONTRACT_RULE',value:'8%'}}}]});}};
- const handler={validate:raw=>raw,async execute(payload,execution){const rows=jsonSql(`select jsonb_build_object('projects',(select jsonb_agg(to_jsonb(r)) from public.projects r where id='${project}'),'documents',(select jsonb_agg(to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text)) from public.documents r where project_id='${project}'),'contradictions',coalesce((select jsonb_agg(to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text)) from public.contradictions r where project_id='${project}'),'[]'::jsonb),'document_scan_state',coalesce((select jsonb_agg(to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text)) from public.document_scan_state r where project_id='${project}'),'[]'::jsonb),'pricing_ledger','[]'::jsonb,'reference_documents','[]'::jsonb,'pricelists','[]'::jsonb,'reference_document_incorporations','[]'::jsonb,'project_ai_jobs',coalesce((select jsonb_agg(to_jsonb(r)) from public.project_ai_jobs r where project_id='${project}'),'[]'::jsonb));`);return runRadarScan(radarReadClient(rows),payload,execution);}};
- const worker=createAiWorker({store,client,handlerFor:()=>handler,startedAt:0}),first=await store.enqueue(ownerId,project,'scan',{},'actual-radar',profile,{});await worker.run();const firstSaved=await store.readOwned(ownerId,project,first.id);assert.equal(firstSaved.state,'SUCCEEDED',commitFailure?.code+' '+commitFailure?.stack+' '+JSON.stringify(firstSaved.error));assert.equal(turns,1);assert.equal(jsonSql(`select to_jsonb(count(*)) from public.contradictions where project_id='${project}';`),1);
- const second=await store.enqueue(ownerId,project,'scan',{},'same-radar-sources',profile,{});await worker.run();const saved=await store.readOwned(ownerId,project,second.id);assert.equal(saved.state,'SUCCEEDED');assert.equal(turns,1);assert.equal(saved.result.memory.unchanged,1);
-});
-
 test('a new financial letter link invalidates a stale reconciliation answer',async()=>{
  const store=api(),ledger='94000000-0000-4000-8000-000000000001',letter='95000000-0000-4000-8000-000000000001';runSql(`insert into public.pricing_ledger(id,project_id,quantity,unit_price_excl_vat,vat_rate) values('${ledger}','${project}',3,.03,.18);insert into public.vo_letters(id,project_id,status) values('${letter}','${project}','DRAFT');`);
  await enqueue(store);const job=await store.claim('worker',Date.now());runSql(`insert into public.vo_letter_items(id,letter_id,ledger_item_id) values('96000000-0000-4000-8000-000000000001','${letter}','${ledger}');`);await assert.rejects(store.complete(job.id,job.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');

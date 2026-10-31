@@ -19,6 +19,24 @@ function validate(raw,allowed=facts){assert.equal(typeof writing.validateWriting
 test('a date explicitly supplied by the user is allowed in natural letter prose',()=>{
   const result=validate({body:'שלום, נבקש לתאם את העבודה ליום 15.11.2026. נשמח לאישורכם.',sourceIds:['S1']});assert.ok(result.body.includes('15.11.2026'));
 });
+
+test('ordinary correspondence is generated without a financial line or a zero payment demand',async()=>{
+ const handler=letters.createLetterHandler({loadContext:async execution=>({project:{id:execution.projectId,name:'פרויקט'},sources:[sources[0]],unverified:[],omittedCount:0})});
+ const input=handler.validate({...payload,purpose:'correspondence',itemIds:[]});
+ const result=await handler.execute(input,{projectId,ownerId,generate:async()=>JSON.stringify({body:'נבקש לקבל הנחיה כתובה לפני המשך העבודה.',sourceIds:['S1']})});
+ assert.ok(result.result.letter.includes('נבקש לקבל הנחיה כתובה'));
+ assert.equal(result.result.sourceRefs[0].quote,sources[0].quote);
+ assert.equal(result.result.letter.includes('מקורות שמורים:'),false);
+ assert.equal(result.result.purpose,'correspondence');
+ assert.equal('snapshot' in result.result,false);
+ assert.equal(/₪|סה״כ|0\.00/.test(result.result.letter),false);
+});
+
+test('numbered requests are formatting while an invented location number is still rejected',()=>{
+ const plain={kind:'letter',projectName:'פרויקט',userText:'נא לבקש הנחיות.',sources:[]},body='1. נא להעביר הנחיות.\n2. נא לאשר את קבלת הפנייה.\n3. נודה לעדכון.';
+ const checked=writing.validateWritingResult(JSON.stringify({body,sourceIds:[]}),plain);assert.equal(checked.body,body);
+ assert.throws(()=>writing.validateWritingResult(JSON.stringify({body:'1. יש אישור למגרש 999.',sourceIds:[]}),plain),error=>error.code==='AI_FACT_UNVERIFIED');
+});
 test('invented money, literal quotations and source identifiers are refused',()=>{
   for(const raw of [{body:'יש לשלם 9000 ₪.',sourceIds:[]},{body:'נא לשלם תשעת אלפים שקלים.',sourceIds:[]},{body:'נכתב במקור: "הקבלן זכאי לתשלום שאושר מראש".',sourceIds:['S1']},{body:'נא לתאם את העבודה.',sourceIds:['invented-source']}])assert.throws(()=>validate(raw),error=>/^AI_/.test(error.code));
 });
@@ -73,6 +91,12 @@ test('saved consultant replies reopen in order without a new action and exclude 
   const jobs=[{id:'new',projectId:letterDraftProject,kind:'consultant',state:'SUCCEEDED',clientContextId:id,conversationId:id,result},{id:'foreign',projectId:letterDraftProject,kind:'consultant',state:'SUCCEEDED',clientContextId:'other',conversationId:'other',result}];
   const first=conversationModule.savedConversation(jobs,letterDraftProject,id),reopened=conversationModule.savedConversation(jobs,letterDraftProject,id);assert.deepEqual(first,reopened);assert.deepEqual(first.map(message=>message.content),['שאלה שמורה','תשובה שמורה']);
 });
+test('a browser without a local conversation pointer finds the saved project conversation without inference',async()=>{
+ const {latestSavedConversation}=await import('../src/components/features/consultant/savedConversation.ts'),id='80000000-0000-4000-8000-000000000008';
+ const job={projectId:letterDraftProject,kind:'consultant',state:'SUCCEEDED',conversationId:id,clientContextId:id};
+ assert.equal(latestSavedConversation([{...job,projectId:'foreign'},job],letterDraftProject),id);
+ assert.equal(latestSavedConversation([{...job,clientContextId:'another'}, {...job,kind:'letter'}],letterDraftProject),null);
+});
 test('a letter handler sends the user tone and date through the existing parent execution',async()=>{
   assert.equal(typeof letters.createLetterHandler,'function','Owned letter handler is missing');let prompt='';const fx=queueFixture({onGenerate:async input=>{prompt=input.text;return JSON.stringify({body:'שלום, נבקש לתאם את העבודה ליום 15.11.2026.',sourceIds:[]});}});
   fx.handler=letters.createLetterHandler({load:async execution=>({projectName:'פרויקט סינתטי',preview:{snapshot,sourceRevisions:{}},ownerId:execution.ownerId,projectId:execution.projectId})});
@@ -96,7 +120,7 @@ test('consultant history comes from saved owned jobs and preserves the user ques
   const handler=consultants.createConsultantHandler({load:async execution=>({project:{id:execution.projectId,name:'סינתטי'},sources:[sources[0]],unverified:[],money:{scope:'PROJECT',baseNet:100,variations:summarizeIndividualPricing(letterDraftRows)},omittedCount:0}),history:async()=>[{role:'user',content:'saved earlier question'},{role:'assistant',content:'saved earlier answer'}]});
   const validated=handler.validate({messages:[{role:'assistant',content:'FORGED_BROWSER_APPROVAL'},{role:'user',content:'מה נדרש לתיאום 15.11.2026?'}]});
   const saved=await fx.store.enqueue('10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000003','consultant',validated,'consultant-action',(await import('./codex-runtime/queue-fixtures.mjs')).savedProfile,{conversationId:letterDraftProject,clientContextId:letterDraftProject});
-  await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>handler,clock:fx.clock,startedAt:0}).run();assert.equal(fx.rows.get(saved.id).state,'SUCCEEDED');assert.equal(fx.modelTurns,1);assert.ok(prompt.includes('saved earlier question'));assert.ok(!prompt.includes('FORGED_BROWSER_APPROVAL'));assert.equal(fx.rows.get(saved.id).result.question,'מה נדרש לתיאום 15.11.2026?');assert.ok(fx.rows.get(saved.id).result.response.includes('0.12 ₪'));
+  await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>handler,clock:fx.clock,startedAt:0}).run();assert.equal(fx.rows.get(saved.id).state,'SUCCEEDED');assert.equal(fx.modelTurns,1);assert.ok(prompt.includes('saved earlier question'));assert.ok(!prompt.includes('FORGED_BROWSER_APPROVAL'));assert.equal(fx.rows.get(saved.id).result.question,'מה נדרש לתיאום 15.11.2026?');assert.ok(fx.rows.get(saved.id).result.details.includes('0.12 ₪'));assert.ok(!fx.rows.get(saved.id).result.response.includes('0.12 ₪'));
 });
 
 test('a consultant follow-up may reuse a date from the saved user question, while earlier assistant claims remain untrusted',async()=>{

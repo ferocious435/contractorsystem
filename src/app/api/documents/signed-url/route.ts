@@ -39,6 +39,16 @@ export async function GET(req: NextRequest) {
         );
 
         if (!ownership.ok) {
+            if (ownership.response.status === 403) {
+                const { data: reference, error: referenceError } = await supabase.from('reference_documents')
+                    .select('id, title').eq('id', documentId).eq('status', 'READY')
+                    .or(`project_id.eq.${projectId},project_id.is.null`).maybeSingle();
+                if (!referenceError && reference) {
+                    const url = `/api/reference-library/text?${new URLSearchParams({ projectId, referenceId: documentId }).toString()}`;
+                    return NextResponse.json({ success: true, signedUrl: url, inlineUrl: url,
+                        title: reference.title, contentType: 'text/html', previewKind: 'reference', canPreviewInline: true });
+                }
+            }
             return ownership.response;
         }
 

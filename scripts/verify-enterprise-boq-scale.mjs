@@ -139,21 +139,10 @@ assertIncludes(
   "requireOwnedDocument<SignedUrlDocument>",
   "signed document URLs must be created only after document ownership is proven"
 );
-assertIncludes(
-  "src/app/api/documents/process/route.ts",
-  "requireOwnedDocument<Record<string, unknown>>(supabase, documentId, '*')",
-  "document processing must require ownership before sending content for analysis"
-);
-assertIncludes(
-  "src/app/api/documents/process/route.ts",
-  "downloadDocumentBuffer(supabase, doc)",
-  "document processing must download private storage objects through Supabase storage"
-);
-assertNotIncludes(
-  "src/app/api/documents/process/route.ts",
-  "fetch(doc.file_url)",
-  "document processing must not fetch documents through public file URLs"
-);
+// Ownership, private downloads and complete document inputs moved to the owned
+// job/worker boundary. Exercise that boundary instead of requiring old route text.
+execFileSync(process.execPath, ['--import', './scripts/codex-runtime/load-server.mjs', '--test',
+  'scripts/verify-codex-job-routes.mjs', 'scripts/verify-codex-documents.mjs'], {stdio: 'inherit'});
 assertIncludes(
   "src/app/api/documents/delete/route.ts",
   "requireOwnedDocument<OwnedDocumentForDelete>",

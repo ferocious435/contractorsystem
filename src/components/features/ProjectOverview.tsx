@@ -15,7 +15,7 @@ interface ProjectOverviewProps {
 }
 
 export default function ProjectOverview({ projectId, onNavigate }: ProjectOverviewProps) {
-    const aiStatus = useAiReadiness();
+    const aiStatus = useAiReadiness('consultant');
     const [stats, setStats] = useState<OverviewStats>(emptyOverviewStats);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);

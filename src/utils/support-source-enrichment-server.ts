@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { generateComparisonText, getComparisonAiIdentity } from '@/server/ai/comparison.server';
+import { generateComparisonText, getComparisonAiIdentity } from '@/lib/comparison-ai';
 import { isReferenceDocument } from '@/utils/contract-document-hierarchy';
 import { buildDocumentScanChunks, selectRelevantContractChunks } from '@/utils/document-scan-chunks';
+import { extractFirstJsonObject } from '@/utils/local-ai-preview';
 import {
     buildSafeIlikeOrFilter,
     buildSupportAnalysisPrompt,
@@ -21,7 +22,6 @@ import { loadPricingScopeContext } from '@/utils/pricing-scope-sources-server';
 import { reviewPricingScope } from '@/utils/pricing-scope-review-server';
 import { validatePricingScope, type PricingScopeCandidate, type PricingScopeResult } from '@/utils/pricing-scope-review';
 import { cachedPricingScope, pricingScopeSignature } from '@/utils/pricing-scope-signature';
-import type { AiExecutionContext } from '@/server/ai/contracts';
 
 type AnyRecord = Record<string, unknown>;
 
@@ -106,7 +106,8 @@ async function loadReferenceRows(supabase: SupabaseClient, projectId: string) {
         .or(`project_id.eq.${projectId},project_id.is.null`)
         .eq('status', 'READY');
     if (error) {
-        throw new Error('Reference sources could not be read');
+        console.warn('[scan:support] Reference library is unavailable:', error.message);
+        return [] as ReferenceRow[];
     }
     return (data || []) as ReferenceRow[];
 }
@@ -117,7 +118,8 @@ async function loadPriceLists(supabase: SupabaseClient, projectId: string) {
         .select('id, name, source_type, content_hash, parse_status')
         .or(`project_id.eq.${projectId},project_id.is.null,is_global.eq.true`);
     if (error) {
-        throw new Error('Price sources could not be read');
+        console.warn('[scan:support] Price lists are unavailable:', error.message);
+        return [] as PriceListRow[];
     }
     return (data || []) as PriceListRow[];
 }
@@ -252,10 +254,8 @@ export async function enrichProjectFindingsWithSupportSources(params: {
     supabase: SupabaseClient;
     projectId: string;
     onProgress?: (progress: SupportEnrichmentProgress) => Promise<void> | void;
-    execution: AiExecutionContext;
 }) {
-    const { supabase, projectId, onProgress, execution } = params;
-    const identity = getComparisonAiIdentity(execution);
+    const { supabase, projectId, onProgress } = params;
     const [documentsResult, findingsResult, references, priceLists] = await Promise.all([
         supabase
             .from('documents')
@@ -285,6 +285,7 @@ export async function enrichProjectFindingsWithSupportSources(params: {
         ...fallbackReferenceDocuments.map((row) => [row.id, row.extracted_text_hash]),
         ...priceLists.map((row) => [row.id, row.content_hash, row.parse_status]),
     ]);
+    const identity = getComparisonAiIdentity();
     let processed = 0;
     let failed = 0;
     let skipped = 0;
@@ -292,8 +293,18 @@ export async function enrichProjectFindingsWithSupportSources(params: {
     for (const finding of findings) {
         const evidence = readRecord(finding.evidence_data);
         const existingSupport = readRecord(evidence.support_analysis);
+        if (
+            existingSupport.version === SUPPORT_ANALYSIS_VERSION
+            && existingSupport.source_signature === sourceSignature
+            && existingSupport.status === 'COMPLETE'
+        ) {
+            skipped += 1;
+            processed += 1;
+            await onProgress?.({ processed, total: findings.length, failed, currentTitle: text(finding.title) });
+            continue;
+        }
+
         try {
-            await execution.checkActive();
             const query = [
                 finding.title,
                 text(evidence.work_quote),
@@ -311,25 +322,19 @@ export async function enrichProjectFindingsWithSupportSources(params: {
             let scopeReview: PricingScopeResult | null = null;
             let scopeSignature: string | null = null;
             let priceCandidates: PricingScopeCandidate[] = [];
-            const pricingContext=needsCommercialReview?await loadPricingScopeContext({supabase,projectId,findingId:finding.id}):null;
-            if(pricingContext)scopeSignature=pricingScopeSignature(pricingContext);
-            const savedScope=pricingContext&&scopeSignature?cachedPricingScope(existingSupport,scopeSignature,pricingContext):null;
-            const contextSignature=supportSourceSignature([{version:SUPPORT_ANALYSIS_VERSION,sourceSignature,query,contractQuote:text(evidence.contract_quote),workQuote:text(evidence.work_quote),needsCommercialReview,scopeSignature,referenceCandidates}]);
-            if(existingSupport.version===SUPPORT_ANALYSIS_VERSION&&existingSupport.source_signature===sourceSignature&&existingSupport.status==='COMPLETE'
-                &&(existingSupport.context_signature===contextSignature||savedScope&&referenceCandidates.length===0&&Array.isArray(existingSupport.reference_evidence)&&existingSupport.reference_evidence.length===0)
-                &&(!needsCommercialReview||savedScope)){
-                skipped++;processed++;await onProgress?.({processed,total:findings.length,failed,currentTitle:text(finding.title)});continue;
-            }
             if (needsCommercialReview) {
-                scopeReview = savedScope || cachedPricingScope(evidence.pricing_evaluation, scopeSignature!,pricingContext!) || (pricingContext!.candidates.length ? await reviewPricingScope(pricingContext!, execution)
-                    : validatePricingScope(pricingContext!, { requirements: [], positions: [], lines: [] }));
+                const pricingContext = await loadPricingScopeContext({ supabase, projectId, findingId: finding.id });
+                scopeSignature = pricingScopeSignature(pricingContext);
+                scopeReview = cachedPricingScope(evidence.pricing_evaluation, scopeSignature, pricingContext) || (pricingContext.candidates.length ? await reviewPricingScope(pricingContext)
+                    : validatePricingScope(pricingContext, { requirements: [], positions: [], lines: [] }));
                 const selectedIds = new Set(scopeReview.lines.filter(line => line.unitPriceExclVat.value !== null).map(line => line.candidateId));
-                priceCandidates = pricingContext!.candidates.filter(candidate => selectedIds.has(candidate.id));
+                priceCandidates = pricingContext.candidates.filter(candidate => selectedIds.has(candidate.id));
             }
 
             let selectedReferenceIds: string[] = [];
 
             if (needsCommercialReview && referenceCandidates.length > 0) {
+                if (identity.kind !== 'ollama') throw new Error('הלוקאלי אינו זמין; המקורות הנוספים נשארים לבדיקה.');
                 const prompt = buildSupportAnalysisPrompt({
                     title: text(finding.title),
                     category: text(finding.category),
@@ -338,8 +343,15 @@ export async function enrichProjectFindingsWithSupportSources(params: {
                     referenceCandidates,
                     priceCandidates,
                 });
-                const modelText = await generateComparisonText(prompt, execution, {responseFormat:SUPPORT_ANALYSIS_RESPONSE_SCHEMA});
-                const modelResult = JSON.parse(modelText);
+                const modelText = await generateComparisonText(prompt, process.env, {
+                    numCtx: 8_192,
+                    numPredict: 384,
+                    timeoutMs: 180_000,
+                    responseFormat: SUPPORT_ANALYSIS_RESPONSE_SCHEMA,
+                    temperature: 0,
+                    seed: 42,
+                });
+                const modelResult = extractFirstJsonObject(modelText);
                 selectedReferenceIds = selectRelevantSupportIds({
                     value: modelResult.reference_ids,
                     prefix: 'R',
@@ -363,7 +375,6 @@ export async function enrichProjectFindingsWithSupportSources(params: {
                 version: SUPPORT_ANALYSIS_VERSION,
                 status: 'COMPLETE',
                 source_signature: sourceSignature,
-                context_signature: contextSignature,
                 analyzed_at: new Date().toISOString(),
                 impact_summary: impactSummary,
                 recommended_action: recommendedAction,
@@ -392,7 +403,6 @@ export async function enrichProjectFindingsWithSupportSources(params: {
                 .eq('project_id', projectId);
             if (error) throw error;
         } catch (error: unknown) {
-            await execution.checkActive();
             failed += 1;
             const message = error instanceof Error ? error.message : 'Support analysis failed';
             console.warn(`[scan:support] Failed to enrich ${finding.id}:`, message);

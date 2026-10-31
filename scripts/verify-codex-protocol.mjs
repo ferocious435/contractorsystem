@@ -100,6 +100,11 @@ test('business threads cannot advertise local image, browser, sleep or generatio
   const thread=fx.frames.find(frame=>frame.method==='thread/start');
   for(const name of ['view_image','browser_use','computer_use','image_generation','sleep_tool'])assert.equal(thread.params.config.features[name],false,`${name} must be disabled`);
 });
+test('operational threads disable hosted search even when the inherited configuration enables it',async t=>{
+  const dir=await temporaryRuntime(t),fx=fakeCodex({onRequest(request,child){if(request.method==='config/read'){child.reply(request,{config:{model_provider:null,web_search:'live'},layers:[],origins:{}});return false;}}}),api=client(fx,dir);t.after(()=>api.close());
+  assert.equal(await api.runTurn(input,await readyProfile(),new AbortController().signal),finalText);
+  assert.equal(fx.frames.find(frame=>frame.method==='thread/start').params.config.web_search,'disabled');
+});
 test('all standalone MCP layers are excluded from the business thread',async t=>{
   const dir=await temporaryRuntime(t),fx=fakeCodex({configLayers:[{name:{type:'user'},version:'1',config:{mcp_servers:{outside:{enabled:true,required:true,env:{PRIVATE:'do-not-forward'}}}}}]}),api=client(fx,dir);t.after(()=>api.close());
   assert.equal(await api.runTurn(input,await readyProfile(),new AbortController().signal),finalText);

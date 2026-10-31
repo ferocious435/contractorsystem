@@ -11,8 +11,8 @@ export function createAiJobClient({fetchImpl=fetch,sleep=wait}:{fetchImpl?:typeo
         const deadline=AbortSignal.timeout(15000),signal=options.signal?AbortSignal.any([options.signal,deadline]):deadline;
         try{const response=await fetchImpl(url,{cache:'no-store',...options,signal});let value:unknown;
             try{value=await response.json();}catch(error){if(signal.aborted)throw error;throw new BusinessAiError('AI_RESPONSE_INVALID');}
-            if(!response.ok||!record(value)||value.success!==true){const code=record(value)&&typeof value.code==='string'?value.code:'AI_UNAVAILABLE';throw new BusinessAiError(code,'Действие не завершено. Ваши данные сохранены.',response.status||503);}return value;
-        }catch(error){if(deadline.aborted&&!options.signal?.aborted)throw new BusinessAiError('AI_TIMEOUT','Не удалось вовремя подтвердить действие. Данные сохранены; можно проверить состояние повторно.',408);throw error;}
+            if(!response.ok||!record(value)||value.success!==true){const code=record(value)&&typeof value.code==='string'?value.code:'AI_UNAVAILABLE';throw new BusinessAiError(code,'הפעולה לא הושלמה. הנתונים נשמרו.',response.status||503);}return value;
+        }catch(error){if(deadline.aborted&&!options.signal?.aborted)throw new BusinessAiError('AI_TIMEOUT','לא התקבל אישור בזמן. הנתונים נשמרו; אפשר לבדוק שוב את מצב הפעולה.',408);throw error;}
     }
     function checked(value:unknown,project:string,id?:string):JobDto{if(!record(value)||!validUuid(value.id)||value.projectId!==project||(id!==undefined&&value.id!==id)||!states.has(String(value.state))||!Number.isSafeInteger(value.revision))throw new BusinessAiError('AI_CONTEXT_MISMATCH');projects.set(value.id,project);return value as unknown as JobDto;}
     function projectFor(id:string,provided?:string){const project=provided??projects.get(id);if(!validUuid(id)||!validUuid(project))throw new BusinessAiError('AI_CONTEXT_MISMATCH');return project;}
@@ -20,7 +20,7 @@ export function createAiJobClient({fetchImpl=fetch,sleep=wait}:{fetchImpl?:typeo
     async function read(id:string,project:string,signal?:AbortSignal):Promise<JobDto>{const response=await request(`/api/ai/jobs/${encodeURIComponent(id)}?projectId=${encodeURIComponent(project)}`,{signal});return checked(response.job,project,id);}
     async function observe(id:string,{signal,onProgress,projectId}:Observer={}):Promise<JsonValue>{const project=projectFor(id,projectId);let previous=-1,unchanged=0;
         while(true){signal?.throwIfAborted();const job=await read(id,project,signal);signal?.throwIfAborted();if(job.revision>=previous){if(job.revision!==previous){onProgress?.(job);unchanged=0;}else unchanged++;previous=job.revision;
-            if(job.state==='SUCCEEDED')return job.result;if(terminal.has(job.state))throw new BusinessAiError(job.error?.code??('AI_'+job.state),job.error?.message??'Действие прервано. Можно повторить его кнопкой.',409);}
+            if(job.state==='SUCCEEDED')return job.result;if(terminal.has(job.state))throw new BusinessAiError(job.error?.code??('AI_'+job.state),job.error?.message??'הפעולה הופסקה. אפשר לנסות שוב באמצעות הכפתור.',409);}
             signal?.throwIfAborted();await sleep(Math.min(5000,1000*2**Math.min(unchanged,3)),signal);
         }
     }

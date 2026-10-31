@@ -34,7 +34,7 @@ function matchesCurrentSnapshot(preview: LetterDraftPreview, rows: SmartLetterLe
 const message = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
 
 export function useSmartLetterState({projectId, initialSelectedItems}: UseSmartLetterStateParams): UseSmartLetterStateResult {
-  const aiReadiness = useAiReadiness(), generationObserver = useRef<AbortController|null>(null);
+  const aiReadiness = useAiReadiness('letter'), generationObserver = useRef<AbortController|null>(null);
   const [generationJob,setGenerationJob]=useState<JobDto|null>(null),generationTicket=useRef(0);
   const [pendingGeneration,setPendingGeneration]=useState<{letter:string;selectionKey:string|null}|null>(null);
   const [bufferUnavailable,setBufferUnavailable]=useState(false),[hydratedProject,setHydratedProject]=useState<string|null>(null);

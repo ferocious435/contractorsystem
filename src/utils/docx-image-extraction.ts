@@ -8,6 +8,8 @@ type ZipFile = { path: string; content: Buffer };
 type ImageRecord = DocxReadingVerification['images'][number];
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const VML_NS = 'urn:schemas-microsoft-com:vml';
+const OFFICE_NS = 'urn:schemas-microsoft-com:office:office';
 const BODY_PART = /^word\/(?:document\d*|header\d*|footer\d*|footnotes\d*|endnotes\d*|comments\d*)\.xml$/;
 const sha256 = (buffer: Buffer) => createHash('sha256').update(buffer).digest('hex');
 
@@ -36,6 +38,20 @@ function elements(node: Node): Element[] {
 
 function descendants(node: Node, predicate: (element: Element) => boolean): Element[] {
     return elements(node).flatMap((child) => [ ...(predicate(child) ? [child] : []), ...descendants(child, predicate) ]);
+}
+
+/** Word's explicit standard horizontal rule carries no textual/image content.
+ * Other VML shapes, text boxes, packages and links still require review.
+ * OOXML attribute reference: Microsoft VML Horizontal/HorizontalStandard. */
+function isStandardHorizontalRule(node: Element): boolean {
+    const children = elements(node), shape = children[0];
+    return node.namespaceURI === WORD_NS && node.localName === 'pict' && children.length === 1
+        && shape.namespaceURI === VML_NS && ['rect', 'line'].includes(shape.localName)
+        && ['t','true','1'].includes(shape.getAttributeNS(OFFICE_NS,'hr') || '')
+        && ['t','true','1'].includes(shape.getAttributeNS(OFFICE_NS,'hrstd') || '')
+        && elements(shape).length === 0 && !(shape.textContent || '').trim()
+        && !shape.getAttributeNS(OFFICE_NS,'gfxdata') && !shape.getAttribute('href')
+        && !Array.from(shape.attributes).some(attribute => attribute.namespaceURI === REL_NS);
 }
 
 function block(record: ImageRecord, text: string) {
@@ -86,7 +102,7 @@ export async function extractDocxWithImages(
                 }
                 if (['drawing', 'pict', 'object', 'altChunk'].includes(child.localName)) {
                     const refs = descendants(child, (el) => ['blip', 'imagedata'].includes(el.localName) || Boolean(rels.get(imageId(el))?.type.endsWith('/image')));
-                    const unsupported = ['object', 'altChunk'].includes(child.localName) || !refs.length;
+                    const unsupported = ['object', 'altChunk'].includes(child.localName) || (!refs.length && !isStandardHorizontalRule(child));
                     if (unsupported) issue(`${file.path}:UNSUPPORTED_${child.localName.toUpperCase()}`);
                     const drawingText = descendants(child, (el) => el.namespaceURI === WORD_NS && el.localName === 't')
                         .map((el) => el.textContent || '');

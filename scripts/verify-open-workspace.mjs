@@ -49,11 +49,18 @@ function authFixture(options = {}) {
     }
     if (url.pathname === '/auth/v1/admin/generate_link') {
       if (options.linkError) return respond({ msg: 'Unavailable', code: 'unexpected_failure' }, 500);
+      const tokenHash = options.tokenState ? 'fixture-hash-' + (++options.tokenState.version) : 'fixture-hash';
       return respond({ ...user, ...(options.linkUserId ? { id: options.linkUserId } : {}),
         action_link: 'https://auth.example.test/verify', email_otp: 'fixture-code',
-        hashed_token: 'fixture-hash', redirect_to: 'http://localhost:3002', verification_type: 'magiclink' });
+        hashed_token: tokenHash, redirect_to: 'http://localhost:3002', verification_type: 'magiclink' });
     }
     if (url.pathname === '/auth/v1/verify') {
+      if (options.tokenState) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+        if (body.token_hash !== 'fixture-hash-' + options.tokenState.version) {
+          return respond({ msg: 'One-time token not found', code: 'otp_expired' }, 403);
+        }
+      }
       return options.verifyError ? respond({ msg: 'Expired', code: 'otp_expired' }, 403) : respond(session);
     }
     throw new Error('Unexpected external request: ' + url.pathname);
@@ -134,4 +141,26 @@ test('verification returning another user cannot open the configured workspace',
   const { signInOpenWorkspace } = requireFeature();
   const f = authFixture({ sessionUser: { ...user, id: otherId } });
   await assert.rejects(signInOpenWorkspace(f.client, null, () => f.admin), /workspace/i);
+});
+
+test('parallel new visitors both receive an owner session when a new link invalidates the previous token', async () => {
+  const { signInOpenWorkspace } = requireFeature();
+  const tokenState = { version: 0 };
+  const visitors = [authFixture({ tokenState }), authFixture({ tokenState })];
+  const users = await Promise.all(visitors.map(f => signInOpenWorkspace(f.client, null, () => f.admin)));
+  assert.deepEqual(users.map(u => u.id), [ownerId, ownerId]);
+  for (const f of visitors) assert.equal((await f.client.auth.getSession()).data.session.user.id, ownerId);
+});
+
+test('a failed entry does not prevent the next queued visitor from opening the workspace', async () => {
+  const { signInOpenWorkspace } = requireFeature();
+  const first = authFixture({ verifyError: true });
+  const second = authFixture();
+  const result = await Promise.allSettled([
+    signInOpenWorkspace(first.client, null, () => first.admin),
+    signInOpenWorkspace(second.client, null, () => second.admin),
+  ]);
+  assert.equal(result[0].status, 'rejected');
+  assert.equal(result[1].status, 'fulfilled');
+  assert.equal((await second.client.auth.getSession()).data.session.user.id, ownerId);
 });

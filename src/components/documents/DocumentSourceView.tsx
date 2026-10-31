@@ -9,9 +9,10 @@ import { StatusChip } from '@/components/ui/titanium/StatusChip';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import type { ProjectDocument } from './types';
 
-export function DocumentSourceView({ document, fullText, previewUrl, previewKind, previewError, sourceUrl, sourceReadError, onRetryRead, retryingRead, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate }: {
+export function DocumentSourceView({ document, fullText, previewUrl, previewKind, previewError, sourceUrl, sourceReadError, onRetryRead, retryingRead, onCompleteReading, completingReading, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate }: {
   document: ProjectDocument; fullText?: string | null; previewUrl?: string | null; previewKind?: 'pdf' | 'image' | 'text' | 'office' | 'unsupported'; previewError?: string | null; sourceUrl?: string | null;
   sourceReadError?: string | null; onRetryRead?(): Promise<void>; retryingRead?: boolean;
+  onCompleteReading?():Promise<void>;completingReading?:boolean;
   onPreview?(): void; canValidate?: boolean; validating?: boolean; validationDisabledReason?: string; validationError?: string | null; onValidate?(): Promise<void>;
 }) {
   const readiness = assessDocumentSourceReadiness(document);
@@ -31,6 +32,7 @@ export function DocumentSourceView({ document, fullText, previewUrl, previewKind
     <div className="ti-source-states"><StatusChip tone="neutral">הקובץ נשמר</StatusChip>{document.ai_status === 'VALIDATED' && <StatusChip tone="success">אושר ידנית</StatusChip>}<StatusChip tone={readiness.extractionComplete ? 'info' : 'warning'}>{readiness.extractionComplete ? 'הטקסט נקרא' : 'הקריאה לא הושלמה'}</StatusChip><StatusChip tone={aiIncomplete ? 'warning' : 'neutral'}>{aiIncomplete ? 'ניתוח AI לא הושלם' : analysisComplete ? 'ניתוח הושלם' : 'השלמת ניתוח נבדקת בנפרד'}</StatusChip></div>
     {pdf && <p className="ti-meta">{pages ? <>נקראו <BidiText kind="code" value={`${readPages.length} / ${pages}`} /> עמודים{missing.length > 0 && <> · עמודים שלא נקראו: <BidiText kind="code" value={missing.join(', ')} /></>}</> : 'מספר העמודים לא אומת'}</p>}
     {!readiness.extractionComplete && <Feedback tone="warning">שלמות קריאת המקור טרם אומתה. אישור ידני אינו מעיד שכל העמודים נקראו.</Feedback>}
+    {!readiness.extractionComplete && onCompleteReading && <Button onClick={onCompleteReading} pending={completingReading} busyLabel="קורא את המקור…">השלמת קריאת המקור</Button>}
     {marker && <Feedback tone="warning" title={marker === 'DRAFT' ? 'טיוטה' : 'קטע מתוך מסמך'}>המקור מסומן כך במפורש ואינו הוראה מחייבת מאומתת. יש לבדוק את הגרסה המלאה ואת הקשר המסמך.</Feedback>}
     {previewError && <Feedback tone="warning">{previewError}</Feedback>}
     {previewUrl && (previewKind === 'pdf' || previewKind === 'text') && <iframe className="ti-source-frame" title="תצוגת מסמך מקור" src={previewUrl} />}

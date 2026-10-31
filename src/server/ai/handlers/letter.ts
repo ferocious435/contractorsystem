@@ -3,6 +3,8 @@ import {createAdminClient} from '@/utils/supabase/admin';
 import {isLetterDraftSnapshot} from '@/utils/letter-snapshot';
 import {validateWritingResult,renderBusinessLetter,type WritingFacts,type WritingResult} from '@/utils/business-writing-result';
 import type {LetterDraftPreview} from '@/utils/letter-draft-types';
+import {loadProjectWritingContext} from '@/utils/project-writing-context-server';
+import {executeCorrespondence,type CorrespondenceContext} from './correspondence';
 import {BusinessAiError,record,validUuid,type AiExecutionContext,type AiJobHandler,type JsonObject,type JsonValue} from '../contracts';
 interface LetterData {projectName:string;preview:LetterDraftPreview;ownerId:string;projectId:string;}
 async function loadOwnedLetter(execution:AiExecutionContext):Promise<LetterData>{
@@ -10,11 +12,13 @@ async function loadOwnedLetter(execution:AiExecutionContext):Promise<LetterData>
     if(!record(response.data)||response.data.ownerId!==execution.ownerId||response.data.projectId!==execution.projectId||!record(response.data.preview)||!isLetterDraftSnapshot(response.data.preview.snapshot))throw new BusinessAiError('AI_SOURCE_UNVERIFIED',undefined,422);
     return response.data as unknown as LetterData;
 }
-export function createLetterHandler({load=loadOwnedLetter}:{load?:(execution:AiExecutionContext,payload:JsonObject)=>Promise<LetterData>}={}):AiJobHandler{return {
-    validate(raw){if(!record(raw)||Object.keys(raw).some(key=>!['letterType','itemIds','recipient','subject','keyPoints','tone','currentText'].includes(key))||!['claim','notice','vo_request','response','general','official_vo'].includes(String(raw.letterType))
-        ||!Array.isArray(raw.itemIds)||!raw.itemIds.length||raw.itemIds.length>100||!raw.itemIds.every(validUuid)||!['recipient','subject','keyPoints','tone'].every(key=>typeof raw[key]==='string')
+export function createLetterHandler({load=loadOwnedLetter,loadContext=(execution,question)=>loadProjectWritingContext(createAdminClient(),execution.projectId,execution.ownerId,question)}:{load?:(execution:AiExecutionContext,payload:JsonObject)=>Promise<LetterData>;loadContext?:(execution:AiExecutionContext,question:string)=>Promise<CorrespondenceContext>}={}):AiJobHandler{return {
+    validate(raw){if(!record(raw)||Object.keys(raw).some(key=>!['purpose','letterType','itemIds','recipient','subject','keyPoints','tone','currentText'].includes(key))||!['claim','notice','vo_request','response','general','official_vo'].includes(String(raw.letterType))
+        ||raw.purpose!==undefined&&raw.purpose!=='correspondence'||raw.purpose==='correspondence'&&!['general','response','notice'].includes(String(raw.letterType))
+        ||!Array.isArray(raw.itemIds)||(!raw.itemIds.length&&raw.purpose!=='correspondence')||(raw.purpose==='correspondence'&&raw.itemIds.length!==0)||raw.itemIds.length>100||!raw.itemIds.every(validUuid)||!['recipient','subject','keyPoints','tone'].every(key=>typeof raw[key]==='string')
         ||!['professional','formal','firm','aggressive','friendly','skeleton'].includes(String(raw.tone))||String(raw.keyPoints).length>30000||raw.currentText!==undefined&&(typeof raw.currentText!=='string'||raw.currentText.length>100000))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);return raw as JsonObject;},
     async execute(payload,execution){
+        if(payload.purpose==='correspondence')return executeCorrespondence(payload,execution,await loadContext(execution,[payload.subject,payload.keyPoints].join('\n')));
         const data=await load(execution,payload);if(data.ownerId!==execution.ownerId||data.projectId!==execution.projectId||!isLetterDraftSnapshot(data.preview.snapshot))throw new BusinessAiError('AI_SOURCE_UNVERIFIED',undefined,422);
         const sources=data.preview.snapshot.items.flatMap(item=>item.sources).filter(source=>source.basis==='DOCUMENT'&&source.status==='VERIFIED').map((source,index)=>({...source,sourceId:'S'+(index+1)}));
         const items=data.preview.snapshot.items.map(item=>({itemCode:item.itemCode,description:item.description,unit:item.unit,conditionBasis:item.conditionBasis}));

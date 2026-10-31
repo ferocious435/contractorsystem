@@ -63,7 +63,6 @@ export interface AiEstimatorSourceDocument extends Record<string, unknown> {
 }
 
 export interface AIPricingEvaluationResponse {
-    lastActionState?:string;
     success?: boolean;
     item_code?: string;
     suggested_description?: string;
@@ -110,7 +109,6 @@ export interface EvaluateAiPricingInput {
     contradictionId: string;
     projectId: string;
     expertMode: boolean;
-    signal?: AbortSignal;
 }
 
 export interface AiEstimatorSourceDocumentQuery {

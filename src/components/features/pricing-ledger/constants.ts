@@ -140,7 +140,7 @@ export const SEVERITY_STYLES = {
 export const CURRENCY_FORMAT_OPTIONS = {
     style: 'currency',
     currency: 'ILS',
-    maximumFractionDigits: 0,
+    minimumFractionDigits:2,maximumFractionDigits:2,
 } as const satisfies Intl.NumberFormatOptions;
 
 export const FOCUSED_PRICING_RETURN_VIEW = 'radar';

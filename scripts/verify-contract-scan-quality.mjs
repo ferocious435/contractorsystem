@@ -745,16 +745,15 @@ test('prompt tells the model to use the full timeline and exact current evidence
   assert.equal(prompt.includes('כותרת קצרה בעברית'), false);
 });
 
-test('scan job preserves valid memory, removes placeholders and applies the existing quality gate', () => {
+test('scan route removes the false baseline, deletes placeholders, and applies the quality gate', () => {
   const route = fs.readFileSync('src/app/api/scan/route.ts', 'utf8').replace(/\r\n/g, '\n');
-  const service=fs.readFileSync('src/server/ai/radar-service.server.ts','utf8');
-  assert.ok(route.includes("createOwnedAiJob(req,'scan',body)"));
-  assert.equal(service.includes('initializeExistingScanMemory'), false);
-  assert.equal(service.includes('resetPrematureScanBaseline'), false);
-  assert.equal(service.includes('.update({ scan_signature: null })'), false);
-  assert.ok(service.includes('deleteTemplatePlaceholderFindings'));
-  assert.ok(/\.from\("contradictions"\)\s*\.delete\(\)/.test(service));
-  assert.ok(service.includes('assessContractScanFinding'));
-  assert.ok(service.includes('buildRadarEvidenceAssessment(p, assessment)'));
-  assert.ok(service.includes("status:'SKIPPED'"));
+
+  assert.equal(route.includes('initializeExistingScanMemory'), false);
+  assert.ok(route.includes('resetPrematureScanBaseline'));
+  assert.ok(route.includes('.update({ scan_signature: null })'));
+  assert.ok(route.includes('deleteTemplatePlaceholderFindings'));
+  assert.ok(/\.from\("contradictions"\)\s*\.delete\(\)/.test(route));
+  assert.ok(route.includes('assessContractScanFinding'));
+  assert.ok(route.includes('buildRadarEvidenceAssessment(p, assessment)'));
+  assert.ok(route.includes('status: "SKIPPED"'));
 });

@@ -15,7 +15,7 @@ export interface OverviewStats {
   originalBudget:number|null; approvedVO:number|null; pendingVO:number|null; criticalCount:number|null; totalDiscrepancies:number|null; documentCount:number|null; evidenceCoverage:number|null; clientName:string|null;
 }
 export const emptyOverviewStats: OverviewStats = {originalBudget:null,approvedVO:null,pendingVO:null,criticalCount:null,totalDiscrepancies:null,documentCount:null,evidenceCoverage:null,clientName:null};
-const moneyFormatter = new Intl.NumberFormat('he-IL',{style:'currency',currency:'ILS',maximumFractionDigits:0});
+const moneyFormatter = new Intl.NumberFormat('he-IL',{style:'currency',currency:'ILS',minimumFractionDigits:2,maximumFractionDigits:2});
 export function OverviewView({stats,loading,error,aiStatus,onNavigate}: {stats:OverviewStats;loading:boolean;error:string|null;aiStatus?:ClientAiReadiness|null;onNavigate(view:ProjectView):void}) {
   const data = loading || error ? emptyOverviewStats : stats;
   const totalProjected = data.originalBudget !== null && data.approvedVO !== null && data.pendingVO !== null ? data.originalBudget + data.approvedVO + data.pendingVO : null;

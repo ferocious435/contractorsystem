@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   distDir: process.env.CONTRACTOR_NEXT_DIST_DIR || '.next',
   skipMiddlewareUrlNormalize: true,
+  outputFileTracingRoot: process.cwd(),
   serverExternalPackages: [
     "officeparser",
     "pdf-parse",
@@ -12,9 +13,6 @@ const nextConfig: NextConfig = {
   ],
   eslint: {
     ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: true,
   },
 };
 

@@ -25,6 +25,12 @@ test('cancelled work discards a late final answer and preserves the cancelled st
 test('a model failure or incomplete stream is recorded without automatic replay',async()=>{
   for(const code of ['AI_TIMEOUT','AI_RESPONSE_INCOMPLETE']){const fx=queueFixture({onGenerate:async()=>{throw Object.assign(Error('PRIVATE_PROVIDER_DATA'),{code});}}),job=await fx.enqueue();await worker(fx).run();assert.equal(fx.modelTurns,1);assert.equal(fx.rows.get(job.id).state,'FAILED');assert.ok(!JSON.stringify(fx.rows.get(job.id).error).includes('PRIVATE_PROVIDER_DATA'));}
 });
+test('a rejected business answer retains a safe reason without saving private provider output',async()=>{
+  for(const code of ['AI_FACT_UNVERIFIED','AI_AMOUNT_UNVERIFIED','AI_QUOTE_UNVERIFIED','AI_SOURCE_UNVERIFIED','AI_WRITING_INVALID']){
+    const fx=queueFixture(),job=await fx.enqueue();fx.handler.execute=async()=>{throw Object.assign(Error('PRIVATE_REJECTED_ANSWER'),{code});};
+    await worker(fx).run();const failed=fx.rows.get(job.id);assert.equal(failed.state,'FAILED');assert.equal(failed.error.code,code);assert.ok(!JSON.stringify(failed.error).includes('PRIVATE_REJECTED_ANSWER'));
+  }
+});
 test('a failure between final model output and database commit never repeats generation',async()=>{
   const fx=queueFixture(),job=await fx.enqueue();fx.store.complete=async()=>{throw Error('synthetic connection lost');};await worker(fx).run();assert.equal(fx.modelTurns,1);assert.equal(fx.rows.get(job.id).state,'FAILED');assert.equal(fx.rows.get(job.id).result,null);
 });

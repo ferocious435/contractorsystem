@@ -3,7 +3,6 @@ import { createHash } from "crypto";
 import { requireOwnedDocument, requireOwnedProject } from "@/app/api/_utils/auth";
 import { downloadDocumentBuffer } from "@/utils/document-storage";
 import { prepareDocumentAnalysisInput } from "@/utils/document-text-extraction";
-import { syncProjectContractBase } from "@/utils/project-contract-base-server";
 import { createClient } from "@/utils/supabase/server";
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
 
@@ -130,14 +129,6 @@ export async function POST(req: NextRequest) {
                 { error: "Failed to save extracted text" },
                 { status: 500 }
             );
-        }
-
-        if (projectId) {
-            try {
-                await syncProjectContractBase(supabase, projectId);
-            } catch (syncError) {
-                console.error("[extract-text] Contract base sync error:", syncError);
-            }
         }
 
         return NextResponse.json({

@@ -61,9 +61,7 @@ test('scan memory changes only when the work, contract, related context, model, 
 });
 
 test('scan route uses per-document related memory and upload stores the file hash', () => {
-  const route = fs.readFileSync('src/server/ai/radar-service.server.ts', 'utf8');
-  const endpoint=fs.readFileSync('src/app/api/scan/route.ts','utf8');
-  const worker=fs.readFileSync('src/server/ai/worker.server.ts','utf8');
+  const route = fs.readFileSync('src/app/api/scan/route.ts', 'utf8');
   const uploadRoute = fs.readFileSync('src/app/api/documents/route.ts', 'utf8');
 
   assert.ok(route.includes('relatedWorkChunksByIndex'));
@@ -71,31 +69,33 @@ test('scan route uses per-document related memory and upload stores the file has
   assert.ok(route.includes('__cachedDocuments'));
   assert.ok(route.includes('__scannedDocuments'));
   assert.ok(route.includes('WORK_ROLES.has(storedCategory)'));
-  assert.ok(route.includes("getDocumentRole(document)==='WORK_EVIDENCE'"));
+  assert.ok(route.includes('documents.map((doc): ScanDocumentWithRole'));
   assert.equal(route.includes('const validatedDocuments ='), false);
   assert.ok(route.includes('generateScanChunkFindings'));
-  assert.ok(route.includes('generateScanChunkFindings(prompt, execution'));
+  assert.ok(route.includes('single most decisive finding'));
   assert.ok(route.includes('const WORK_CHUNK_CHARS = 7_000'));
   assert.ok(route.includes('const MAX_SELECTED_CONTRACT_CHARS = 2_500'));
   assert.ok(route.includes('const MAX_RELATED_WORK_CHARS = 2_100'));
   assert.ok(route.includes('withScanHeartbeat'));
   assert.ok(route.includes('const SCAN_HEARTBEAT_MS = 15_000'));
-  assert.ok(endpoint.includes("createOwnedAiJob(req,'scan',body)"));
-  assert.ok(worker.includes('await options.store.claim'));
-  assert.equal(route.includes('runProjectScanInBackground'),false);
-  assert.equal(route.includes('backgroundScanJobs'),false);
+  assert.ok(route.includes('body.batchCursor'));
+  assert.ok(route.includes('workDocs.slice(batchCursor, batchCursor + 1)'));
+  assert.ok(route.includes('offset: batchCursor'));
+  assert.ok(route.includes('runProjectScanInBackground'));
+  assert.ok(route.includes('backgroundScanJobs'));
   assert.ok(route.includes('latestRowsByDocument'));
   assert.ok(route.includes('deleteSupersededScanStates'));
-  assert.equal(route.includes('removePreferredPdfDuplicates'),false);
+  assert.ok(route.includes('findPreferredPdfDuplicates'));
+  assert.ok(route.includes('removePreferredPdfDuplicates'));
   assert.ok(route.includes('unsupported candidate(s)'));
   assert.equal(route.includes('throw new Error(`Model result failed evidence quality control:'), false);
-  assert.equal(route.includes('memory-baseline:v1:${projectId}'),false);
-  assert.equal(route.includes('resetPrematureScanBaseline'),false);
+  assert.ok(route.includes('memory-baseline:v1:${projectId}'));
+  assert.ok(route.includes('resetPrematureScanBaseline'));
   assert.equal(route.includes('initializeExistingScanMemory'), false);
   assert.ok(route.includes('isTemplatePlaceholderFinding'));
   assert.ok(route.includes('deleteTemplatePlaceholderFindings'));
   assert.ok(route.includes('assessContractScanFinding'));
-  assert.ok(route.includes("status:'SKIPPED'"));
+  assert.ok(route.includes('status: "SKIPPED"'));
   assert.ok(route.includes('const isPaused = !activeRow && total > 0 && processed < total'));
   assert.equal(route.includes('const projectWorkSignature ='), false);
   assert.ok(uploadRoute.includes('createHash("sha256").update(fileBuffer).digest("hex")'));

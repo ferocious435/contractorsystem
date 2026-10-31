@@ -405,7 +405,7 @@ function throwConverterRequired(extension: string) {
     throw new Error(`${item.code}: ${item.label} requires a converter or export`);
 }
 
-function makeTextInput(
+export function makeTextInput(
     fileBuffer: Buffer,
     extractionSource: string,
     text: string,

@@ -9,7 +9,8 @@ import { Feedback } from '@/components/ui/titanium/Feedback';
 import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
 import type { DocumentCategory, ParsedDocumentJson, ProjectDocument } from './types';
 import { useAiReadiness } from '@/hooks/useAiReadiness';
-import {requestDocumentAnalysis,observeDocumentJob,restoreDocumentJobs,cancelDocumentJob,fetchSavedDocument} from './documentAiApi';
+import {requestDocumentAnalysis,observeDocumentJob,restoreDocumentJobs,cancelDocumentJob,fetchSavedDocument,readDocumentSource} from './documentAiApi';
+import {assessDocumentSourceReadiness} from '@/utils/document-source-readiness';
 import type {JobDto} from '@/server/ai/contracts';
 
 interface DocumentsPageClientProps {
@@ -38,7 +39,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     };
 
     const isLocalProject = isLocalProjectId(projectId);
-    const aiStatus = useAiReadiness();
+    const aiStatus = useAiReadiness('document_analysis');
     const [documents, setDocuments] = useState<ProjectDocument[]>(
         (initialDocuments.length ? initialDocuments : buildDemoDocuments(projectId, category)).map(normalizeDocument)
     );
@@ -55,6 +56,17 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     const [sourceReadErrors, setSourceReadErrors] = useState<Record<string, string>>({});
     const [deleteDocument, setDeleteDocument] = useState<ProjectDocument | null>(null);
     const [deleting, setDeleting] = useState(false);
+    const [readingId,setReadingId]=useState<string|null>(null),sourceReading=useRef(false),sourceProject=useRef(projectId);
+    sourceProject.current=projectId;
+    const completeSourceReading=async(document:ProjectDocument)=>{
+        if(sourceReading.current)return;sourceReading.current=true;setReadingId(document.id);setActionError(null);
+        try{const saved=await readDocumentSource(projectId,document.id);if(sourceProject.current!==projectId)return;
+            setDocuments(previous=>previous.map(value=>value.id===saved.id?normalizeDocument(saved):value));
+            setSourceReadErrors(previous=>Object.fromEntries(Object.entries(previous).filter(([id])=>id!==saved.id)));
+            if(!assessDocumentSourceReadiness(saved).extractionComplete)setActionError('המקור נקרא, אך נותרו חלקים שדורשים בדיקה. המצב והטקסט המלא שנשמר מוצגים במקור.');
+        }catch{if(sourceProject.current===projectId)setActionError('קריאת המקור לא הושלמה. הנתונים נשמרו; אפשר לנסות שוב.');}
+        finally{sourceReading.current=false;if(sourceProject.current===projectId)setReadingId(null);}
+    };
 
     const [processingJob,setProcessingJob]=useState<JobDto|null>(null);
     const [analysisReady,setAnalysisReady]=useState(isLocalProject);
@@ -149,7 +161,15 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
                 }
 
                 const insertedDoc = uploadData.document as ProjectDocument;
-                setDocuments(prev => [insertedDoc, ...prev]);
+                setDocuments(prev => (
+                    prev.some((document) => document.id === insertedDoc.id)
+                        ? prev
+                        : [insertedDoc, ...prev]
+                ));
+
+                if (uploadData.duplicate === true) {
+                    continue;
+                }
 
                 if (insertedDoc?.id) {
                     setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
@@ -310,8 +330,8 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
         {processingJob&&processingId&&<Feedback aria-live="polite"><p>הניתוח נשמר כמשימה. ממתין לתוצאה; אפשר לסגור ולחזור.</p><Button onClick={()=>void cancelAnalysis()}>ביטול ניתוח</Button></Feedback>}
         <DocumentsCatalogView documents={documents} category={category} activeFilter={activeFilter} uploading={isUploading} processingId={processingId} selectedId={selectedId} loadError={loadError} loading={loading} sourceReadErrors={sourceReadErrors}
             analysisAvailable={isLocalProject || (analysisReady && aiStatus?.available === true)} analysisDisabledReason={aiStatus?.available === false ? 'שירות הניתוח אינו זמין כרגע. אפשר לפתוח את המקור השמור.' : 'בודק זמינות שירות הניתוח…'}
-            onSelect={setSelectedId} onFilter={setActiveFilter} onRetryRead={retryRead} onUpload={handleFiles} onAnalyze={runAIParsing} onPreview={setSelectedDocForVerification} onDelete={async doc => { setDeleteDocument(doc); }} />
-        {verificationDocument && <ScreenOfTruthModal document={verificationDocument} sourceReadError={sourceReadErrors[verificationDocument.id]} onRetryRead={retryRead} retryingRead={loading || Boolean(processingId)} projectId={projectId} onClose={() => setSelectedDocForVerification(null)} onValidate={handleValidate} />}
+            onSelect={setSelectedId} onFilter={setActiveFilter} onRetryRead={retryRead} onReadSource={completeSourceReading} readingId={readingId} onUpload={handleFiles} onAnalyze={runAIParsing} onPreview={setSelectedDocForVerification} onDelete={async doc => { setDeleteDocument(doc); }} />
+        {verificationDocument && <ScreenOfTruthModal document={verificationDocument} sourceReadError={sourceReadErrors[verificationDocument.id]} onRetryRead={retryRead} retryingRead={loading || Boolean(processingId)} onCompleteReading={()=>completeSourceReading(verificationDocument)} completingReading={Boolean(readingId)} projectId={projectId} onClose={() => setSelectedDocForVerification(null)} onValidate={handleValidate} />}
         <Dialog open={Boolean(deleteDocument)} labelledBy="document-delete-title" onClose={() => { if (!deleting) setDeleteDocument(null); }}>
             <h2 id="document-delete-title" className="ti-section-title">מחיקת מסמך</h2><p className="ti-copy">האם למחוק את המסמך ״{deleteDocument?.title}״?</p>
             <div className="ti-actions"><Button onClick={() => setDeleteDocument(null)} disabled={deleting}>ביטול</Button><Button variant="danger" pending={deleting} busyLabel="מוחק…" onClick={async () => { if (!deleteDocument) return;setDeleting(true);try { await handleDelete(deleteDocument.id, true);setDeleteDocument(null); } finally { setDeleting(false); } }}>מחיקת המסמך</Button></div>

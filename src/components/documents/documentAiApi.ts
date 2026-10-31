@@ -13,6 +13,13 @@ export async function requestDocumentAnalysis(projectId:string,documentId:string
 }
 export const restoreDocumentJobs=async(projectId:string)=>(await client.restore(projectId,'document_analysis')).map(job=>owned(job,projectId));
 export const cancelDocumentJob=(job:JobDto)=>client.cancel(job.id,job.revision);
+/** Complete reading with the existing local reader; no model job is created. */
+export async function readDocumentSource(projectId:string,documentId:string):Promise<ProjectDocument>{
+    const response=await fetch('/api/documents/extract-text',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId,documentId})});
+    const result:unknown=await response.json();
+    if(!response.ok||!record(result))throw new Error('קריאת המקור לא הושלמה. הנתונים השמורים נשארו זמינים.');
+    return fetchSavedDocument(projectId,documentId);
+}
 export async function fetchSavedDocument(projectId:string,documentId:string):Promise<ProjectDocument>{
     const response=await fetch('/api/documents?'+new URLSearchParams({projectId}),{cache:'no-store'}),body:unknown=await response.json();
     if(!response.ok||!record(body)||body.success!==true||!Array.isArray(body.documents))throw new Error('SAVED_DOCUMENT_READ_FAILED');

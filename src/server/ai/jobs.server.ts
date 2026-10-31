@@ -25,7 +25,7 @@ function dto(value:unknown):JobDto {
         result:(value.result??null) as JsonValue,error:record(value.error)&&typeof value.error.code==='string'&&typeof value.error.message==='string'?{code:value.error.code,message:value.error.message}:null};
 }
 function ids(...values:unknown[]){if(values.some(value=>!validUuid(value)))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);}
-const safeError='Помощник не завершил действие. Данные сохранены.';
+const safeError='העוזר לא השלים את הפעולה. הנתונים נשמרו.';
 export function createAiJobStore(transport:RpcTransport) {
     async function rpc(name:string,p:JsonObject):Promise<unknown>{
         let response;try{response=await transport.rpc('contractor_ai_'+name,{p});}catch{throw new BusinessAiError('AI_UNAVAILABLE');}

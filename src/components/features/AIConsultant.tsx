@@ -7,14 +7,14 @@ import {useAiReadiness, refreshAiReadiness} from '@/hooks/useAiReadiness';
 import {startAiAction,observeAiJob,restoreAiJobs,cancelAiJob} from '@/utils/ai-job-client';
 import {BusinessAiError,record,validUuid,type JobDto} from '@/server/ai/contracts';
 import {readWritingBuffer,writeWritingBuffer} from '@/utils/writing-work-buffer';
-import {savedConversation} from './consultant/savedConversation';
+import {savedConversation,latestSavedConversation} from './consultant/savedConversation';
 
-export interface Message {role: 'user' | 'assistant'; content: string; timestamp: Date;}
+export interface Message {role: 'user' | 'assistant'; content: string; timestamp: Date;details?:string;}
 export default function AIConsultant({projectId}: {projectId: string}) {
     const [jobs,setJobs]=useState<JobDto[]>([]),[input,setInput]=useState(''),[conversationId,setConversationId]=useState<string|null>(null);
     const [isLoading,setIsLoading]=useState(false),[restoring,setRestoring]=useState(true),[job,setJob]=useState<JobDto|null>(null);
     const [pendingQuestion,setPendingQuestion]=useState<string|null>(null);
-    const [error,setError]=useState<string|null>(null),[bufferUnavailable,setBufferUnavailable]=useState(false),readiness=useAiReadiness();
+    const [error,setError]=useState<string|null>(null),[bufferUnavailable,setBufferUnavailable]=useState(false),readiness=useAiReadiness('consultant');
     const observer=useRef<AbortController|null>(null),epoch=useRef(0),busy=useRef(false),pending=useRef<{question:string;requestKey:string;jobId:string|null}|null>(null);
     const latest=useRef({projectId,input,conversationId,readiness});latest.current={projectId,input,conversationId,readiness};
     const messagesEndRef = useRef<HTMLDivElement>(null), inputRef = useRef<HTMLTextAreaElement>(null);
@@ -31,7 +31,12 @@ export default function AIConsultant({projectId}: {projectId: string}) {
     },[persist,upsert]);
     const restore=useCallback(async()=>{
         const token=++epoch.current;observer.current?.abort();const controller=new AbortController();observer.current=controller;busy.current=true;setRestoring(true);setError(null);
-        const saved=readWritingBuffer(projectId,'consultant'),context=validUuid(saved?.conversationId)?saved.conversationId:crypto.randomUUID();
+        const saved=readWritingBuffer(projectId,'consultant');let context=validUuid(saved?.conversationId)?saved.conversationId:null;
+        if(!context){
+            try{context=latestSavedConversation(await restoreAiJobs(projectId,'consultant'),projectId)||crypto.randomUUID();}
+            catch{if(token===epoch.current){setError('קריאת השיחה השמורה לא הושלמה. אפשר לנסות שוב.');setRestoring(false);busy.current=false;}return;}
+            if(token!==epoch.current)return;
+        }
         latest.current={...latest.current,projectId,conversationId:context,input:typeof saved?.input==='string'?saved.input:''};
         setConversationId(context);setInput(latest.current.input);setJobs([]);setJob(null);setIsLoading(false);pending.current=null;
         if(record(saved?.pending)&&typeof saved.pending.question==='string'&&validUuid(saved.pending.requestKey)&&(saved.pending.jobId===null||validUuid(saved.pending.jobId)))pending.current=saved.pending as {question:string;requestKey:string;jobId:string|null};setPendingQuestion(pending.current?.question??null);persist();

@@ -53,8 +53,9 @@ test('a later signature and method approval do not erase a previously proved mis
   assert.equal(quality.findingIsSupersededByLaterEvidence({ finding: { work_quote: 'מסמך קידוח MTM ברחוב יהלום טרם נחתם.' },
     currentWorkDocument: original, relatedWorkDocuments: [duty, lateStatus, laterAgreement], contractDocuments: [duty] }), false);
 });
-test('actual available corpus: signature status, response demands and completion reference remain distinct', () => {
-  const filename = process.env.RADAR_MTM_SNAPSHOT || 'data/point1-audit/point13-step4-mtm-corpus-before-20261022.json';
+const historicalMtmSnapshot=process.env.RADAR_MTM_SNAPSHOT||'data/point1-audit/point13-step4-mtm-corpus-before-20261022.json';
+test('actual available corpus: signature status, response demands and completion reference remain distinct', {skip:!fs.existsSync(historicalMtmSnapshot)&&'Historical acceptance snapshot unavailable; current project acceptance is separate'}, () => {
+  const filename = historicalMtmSnapshot;
   const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
   const documents = saved.documents.map(source => replayExtractedDocxText({ ...source, parsed_json: { source_reading: source.source_reading } }));
   const result = review(documents);

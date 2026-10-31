@@ -17,6 +17,7 @@ interface PrintableLetterProps {
     subject: string;
     legalText: string;
     items: LedgerItem[];
+    correspondence?: boolean;
     vatRate?: number;
     snapshot?: LetterDraftSnapshot | null;
     mode?: 'snapshot' | 'legacy' | 'preview';
@@ -62,7 +63,12 @@ export const PrintableLetterContent: React.FC<PrintableLetterProps> = ({
     letterNumber,
     createdAt,
     legacyTotals,
+    correspondence = false,
 }) => {
+    if (correspondence) return <article dir="rtl" className="max-w-[210mm] mx-auto p-[20mm] bg-white text-slate-900 leading-relaxed">
+        {!legalText.trimStart().startsWith('לכבוד:') && <header className="mb-8"><p>לכבוד: {recipient}</p>{projectName&&<p>פרויקט: {projectName}</p>}<h1 className="text-xl font-bold">הנדון: {subject}</h1></header>}
+        <div className="whitespace-pre-wrap text-lg">{legalText}</div>
+    </article>;
     const formatCurrency = (val: number | null | undefined) => {
         return typeof val === 'number' && Number.isFinite(val)
             ? new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS' }).format(val || 0) : '—';
@@ -311,7 +317,7 @@ export const PrintableLetter: React.FC<PrintableLetterProps> = (props) => {
     return <Dialog open labelledBy={titleId} onClose={() => props.onClose?.()} className="ti-print-dialog">
         <header className="ti-print-toolbar">
             <div><h2 id={titleId} className="ti-section-title">תצוגת הדפסה</h2><p className="ti-meta">יש לבדוק את המכתב והצירוף לפני הדפסה.</p></div>
-            <div className="ti-actions"><Button variant="primary" onClick={() => window.print()}><Printer size={16} aria-hidden="true"/>הדפס מכתב דרישה</Button><Button onClick={props.onClose}><X size={16} aria-hidden="true"/>ביטול וחזרה</Button></div>
+            <div className="ti-actions"><Button variant="primary" onClick={() => window.print()}><Printer size={16} aria-hidden="true"/>{props.correspondence?'הדפסת מכתב':'הדפס מכתב דרישה'}</Button><Button onClick={props.onClose}><X size={16} aria-hidden="true"/>ביטול וחזרה</Button></div>
         </header>
         <div className="ti-print-scroll"><PrintableLetterContent {...props}/></div>
     </Dialog>;

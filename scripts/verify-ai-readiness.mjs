@@ -8,23 +8,23 @@ try {
     // The first run should fail clearly until the readiness helper exists.
 }
 
-test('missing Gemini key is reported as unavailable', () => {
+test('an unconfigured local comparison is unavailable', () => {
     assert.ok(readinessModule, 'AI readiness helper must exist');
     assert.deepEqual(readinessModule.getAiReadiness({}), {
         available: false,
-        provider: 'Gemini 3.5 Flash',
+        provider: 'Local AI',
         reason: 'AI_NOT_CONFIGURED',
     });
 });
 
-test('configured Gemini key is reported without exposing the key', () => {
+test('an unrelated external key never enables a hidden fallback or exposes its value', () => {
     assert.ok(readinessModule, 'AI readiness helper must exist');
     const state = readinessModule.getAiReadiness({ GEMINI_API_KEY: 'secret-value' });
 
     assert.deepEqual(state, {
-        available: true,
-        provider: 'Gemini 3.5 Flash',
-        reason: null,
+        available: false,
+        provider: 'Local AI',
+        reason: 'AI_NOT_CONFIGURED',
     });
     assert.equal(JSON.stringify(state).includes('secret-value'), false);
 });

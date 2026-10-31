@@ -1,5 +1,5 @@
-// Exercise the current document workflow. The former source-string checklist is
-// retained in verify-document-workflow.mjs; it describes the retired provider path.
+// Exercise the current document workflow. The retired provider's source-string
+// checklist is preserved in Git history and the local reconciliation archive.
 import {execFileSync} from 'node:child_process';
 
 const suites=[

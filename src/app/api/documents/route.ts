@@ -91,6 +91,27 @@ export async function POST(req: NextRequest) {
 
         const fileBuffer = Buffer.from(await file.arrayBuffer());
         const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
+        const category = normalizeCategory(formData.get("category"));
+
+        const { data: existingDocument, error: duplicateCheckError } = await supabase
+            .from("documents")
+            .select("*")
+            .eq("project_id", projectId)
+            .eq("category", category)
+            .eq("content_hash", contentHash)
+            .is("deleted_at", null)
+            .limit(1)
+            .maybeSingle();
+
+        if (duplicateCheckError) throw duplicateCheckError;
+        if (existingDocument) {
+            return NextResponse.json({
+                success: true,
+                duplicate: true,
+                document: existingDocument,
+            });
+        }
+
         const storagePath = `${projectId}/${randomUUID()}${getSafeExtension(file.name, file.type || "")}`;
 
         const { error: storageError } = await supabase.storage
@@ -107,7 +128,7 @@ export async function POST(req: NextRequest) {
             .insert({
                 project_id: projectId,
                 title: file.name,
-                category: normalizeCategory(formData.get("category")),
+                category,
                 file_url: null,
                 storage_bucket: DOCUMENTS_BUCKET,
                 storage_path: storagePath,

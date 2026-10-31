@@ -16,7 +16,6 @@ import {
     fetchRadarSupportSources,
     rescanRadarItem,
     scanRadarProject,
-    cancelRadarScan,
     type RadarScanProgress,
     type RadarProjectDocument,
     type RadarSupportSources,
@@ -50,7 +49,7 @@ export function useContradictionRadarState({
     projectName,
 }: UseContradictionRadarStateOptions) {
     const isLocalProject = isLocalProjectId(projectId);
-    const aiStatus = useAiReadiness();
+    const aiStatus = useAiReadiness('scan');
     const aiAvailable = isLocalProject || aiStatus?.available === true;
     const [contradictions, setContradictions] = useState<ContradictionItem[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -169,9 +168,7 @@ export function useContradictionRadarState({
         await fetchDocuments();
         await fetchContradictions();
 
-        if(scanStatus.status==='CANCELLED'){
-            setProgress(scanStatus.progress);setCurrentStep('הבדיקה בוטלה. הממצאים הקודמים נשמרו.');setCurrentStepStatus(null);
-        }else if (['ERROR','FAILED','INTERRUPTED'].includes(scanStatus.status) || (scanStatus.failed || 0) > 0) {
+        if (scanStatus.status === 'ERROR' || (scanStatus.failed || 0) > 0) {
             setProgress(scanStatus.progress);
             setCurrentStep(scanStatus.errorMessage || `הבדיקה הסתיימה עם ${scanStatus.failed || 0} מסמכים שדורשים ניסיון נוסף.`);
             setCurrentStepStatus('error');
@@ -398,8 +395,6 @@ export function useContradictionRadarState({
         }
     }, [aiAvailable, fetchContradictions, projectId]);
 
-    const cancelScan=useCallback(async()=>{try{await cancelRadarScan(projectId);await refreshScanProgress({showFinished:true});}catch{setCurrentStep('לא ניתן לאשר שהבדיקה בוטלה. הנתונים השמורים זמינים.');setCurrentStepStatus('error');}},[projectId,refreshScanProgress]);
-
     const updateStatus = useCallback(async (
         id: string,
         newStatus: string,
@@ -523,7 +518,6 @@ export function useContradictionRadarState({
         radarOpenDocument,
         rescanItem,
         scanProject,
-        cancelScan,
         handleFilterChange,
         handleStatusFilterChange,
         toggleExpanded,
@@ -538,7 +532,6 @@ export function useContradictionRadarState({
         radarOpenDocument,
         rescanItem,
         scanProject,
-        cancelScan,
         handleFilterChange,
         handleStatusFilterChange,
         toggleExpanded,

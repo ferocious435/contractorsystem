@@ -5,11 +5,10 @@ export interface AiReadiness {
 }
 
 /** A prepared connection does not enable branches which still use the previous implementation. */
-export function getCodexReadiness(state:{authenticated:boolean;configured:boolean;kinds:readonly string[];reason?:string|null}):AiReadiness {
-    const required=['letter','consultant','scan','scan_preview','pricing','work_change','support_enrichment','document_analysis'];
+export function getCodexReadiness(state:{authenticated:boolean;configured:boolean;kinds:readonly string[];reason?:string|null},action?:string):AiReadiness {
     if(!state.authenticated)return {available:false,provider:'Codex',reason:'AI_LOGIN_REQUIRED'};
     if(!state.configured)return {available:false,provider:'Codex',reason:state.reason==='AI_ACCOUNT_CHANGED'?'AI_ACCOUNT_CHANGED':state.reason==='AI_MODEL_UNAVAILABLE'?'AI_MODEL_UNAVAILABLE':'AI_PROFILE_REQUIRED'};
-    if(!required.every(kind=>state.kinds.includes(kind)))return {available:false,provider:'Codex',reason:'AI_ACTIONS_PREPARING'};
+    if(action?!state.kinds.includes(action):state.kinds.length===0)return {available:false,provider:'Codex',reason:'AI_ACTIONS_PREPARING'};
     return {available:true,provider:'Codex',reason:null};
 }
 
@@ -45,11 +44,9 @@ export function getAiReadiness(
         return { available: true, provider, reason: null };
     }
 
-    const configured = Boolean(environment.GEMINI_API_KEY?.trim());
-
     return {
-        available: configured,
-        provider: 'Gemini 3.5 Flash',
-        reason: configured ? null : 'AI_NOT_CONFIGURED',
+        available: false,
+        provider: 'Local AI',
+        reason: 'AI_NOT_CONFIGURED',
     };
 }

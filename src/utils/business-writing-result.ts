@@ -3,12 +3,13 @@ import {isLetterDraftSnapshot} from './letter-snapshot';
 import type {LetterDraftSnapshot,LetterSourceRef} from './letter-draft-types';
 export interface WritingFacts {kind:'letter'|'consultant';projectName:string;userText:string;sources:Array<LetterSourceRef&{sourceId:string}>;payload?:Record<string,unknown>;}
 export interface WritingResult {body:string;sourceIds:string[];unknowns?:string[];nextActions?:string[];}
-const invalid=(code='AI_WRITING_INVALID')=>new BusinessAiError(code,'Ответ содержит неподтверждённые данные. Предыдущий текст сохранён.',422);
+const invalid=(code='AI_WRITING_INVALID')=>new BusinessAiError(code,'התשובה כוללת פרט שלא אומת. הטקסט הקודם נשמר.',422);
 const numbers=(text:string)=>text.normalize('NFKC').match(/\p{N}+(?:[.,/:\-]\p{N}+)*/gu)??[];
 function checkedBody(value:unknown,facts:WritingFacts):string {
     if(typeof value!=='string'||!value.trim()||value.length>30000)throw invalid();
     const evidence=[facts.userText,facts.projectName,...facts.sources.map(source=>source.quote??'')].join('\n'),allowed=new Set(numbers(evidence));
-    if(numbers(value).some(number=>!allowed.has(number)))throw invalid('AI_FACT_UNVERIFIED');
+    const factualText=value.replace(/^\s*\d{1,3}[.)]\s+/gm,'');
+    if(numbers(factualText).some(number=>!allowed.has(number)))throw invalid('AI_FACT_UNVERIFIED');
     // Dates/codes from the input are allowed. Financial figures are rendered from the server snapshot.
     const withoutDates=value.replace(/\b(\d{1,2})[/.](\d{1,2})(?:[/.]\d{2,4})?\b/g,(match,day,month)=>Number(day)<=31&&Number(month)<=12&&evidence.includes(match)?' [date] ':match);
     if(/\p{N}[\p{N}\s.,]*\s*(?:₪|ש[״"']?ח|שקלים?|%|ILS|NIS|USD|EUR)|(?:₪|\$|€|£)\s*\p{N}|(?:סכום|מחיר|עלות|לתשלום|לשלם)[^\n.!?]{0,30}\p{N}/iu.test(withoutDates))throw invalid('AI_AMOUNT_UNVERIFIED');
