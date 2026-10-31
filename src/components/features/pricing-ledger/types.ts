@@ -183,14 +183,6 @@ export interface PricingLedgerProps {
     onNavigate?: (view: string, params?: Record<string, unknown>) => void;
 }
 
-export interface PricingLedgerTotals {
-    totalBaseExclVat: number;
-    totalVOExclVat: number;
-    grandTotalExclVat: number;
-    grandTotalVat: number;
-    grandTotalInclVat: number;
-}
-
 export interface PricingLedgerState {
     ledgerRows: PricingLedgerItem[];
     pendingQueue: PricingContradictionItem[];

@@ -8,28 +8,28 @@ import { Feedback } from '@/components/ui/titanium/Feedback';
 import { StatusChip } from '@/components/ui/titanium/StatusChip';
 import type { ProjectView } from '@/components/layout/ProjectNavigation';
 import type { ClientAiReadiness } from '@/hooks/useAiReadiness';
-import { VAT_RATE } from '@/utils/constants';
-import { getAmountInclVat, getAmountVat } from '@/utils/project-financials';
+import type { OverviewFinancials } from '@/utils/overview-financials';
 
-export interface OverviewStats {
-  originalBudget:number|null; approvedVO:number|null; pendingVO:number|null; criticalCount:number|null; totalDiscrepancies:number|null; documentCount:number|null; evidenceCoverage:number|null; clientName:string|null;
+export interface OverviewStats extends OverviewFinancials {
+  criticalCount:number|null; totalDiscrepancies:number|null; documentCount:number|null; evidenceCoverage:number|null; clientName:string|null;
 }
-export const emptyOverviewStats: OverviewStats = {originalBudget:null,approvedVO:null,pendingVO:null,criticalCount:null,totalDiscrepancies:null,documentCount:null,evidenceCoverage:null,clientName:null};
+export const emptyOverviewStats: OverviewStats = {originalBudget:null,approvedVO:null,pendingVO:null,projectedNet:null,projectedVat:null,projectedGross:null,financialIssueCount:0,criticalCount:null,totalDiscrepancies:null,documentCount:null,evidenceCoverage:null,clientName:null};
 const moneyFormatter = new Intl.NumberFormat('he-IL',{style:'currency',currency:'ILS',minimumFractionDigits:2,maximumFractionDigits:2});
 export function OverviewView({stats,loading,error,aiStatus,onNavigate}: {stats:OverviewStats;loading:boolean;error:string|null;aiStatus?:ClientAiReadiness|null;onNavigate(view:ProjectView):void}) {
   const data = loading || error ? emptyOverviewStats : stats;
-  const totalProjected = data.originalBudget !== null && data.approvedVO !== null && data.pendingVO !== null ? data.originalBudget + data.approvedVO + data.pendingVO : null;
+  const totalProjected = data.projectedNet;
   const money = (amount:number|null) => amount !== null && Number.isFinite(amount) ? moneyFormatter.format(amount) : '—';
   const count = (value:number|null,suffix='') => value !== null && Number.isFinite(value) ? value.toLocaleString('he-IL')+suffix : '—';
   const navigate = (view:ProjectView,label:string) => <Button onClick={()=>onNavigate(view)} data-overview-navigation={view}>{label}<ArrowUpLeft size={16} aria-hidden="true" /></Button>;
   return <div className="ti-page ti-overview" dir="rtl">
     <header className="ti-page-header"><div><h1 className="ti-title">סקירה כללית</h1><p className="ti-subtitle">{data.clientName || 'תמונת מצב של החוזה, המסמכים והנושאים לטיפול'}</p></div><StatusChip tone="neutral">נתוני הפרויקט</StatusChip></header>
     {loading && <Feedback>טוען את נתוני הפרויקט…</Feedback>}{error && <Feedback tone="danger" title="קריאת נתוני הפרויקט לא הושלמה">{error}</Feedback>}
+    {!loading && !error && data.financialIssueCount > 0 && <Feedback tone="warning">{data.financialIssueCount} רשומות כספיות דורשות בדיקה. סכום לא ידוע אינו אפס; הצפי הכולל יוצג לאחר השלמת הנתונים.</Feedback>}
     <div className="ti-overview-kpis">{[
       {label:'חוזה בסיס',value:data.originalBudget,note:'ללא מע״מ'},
       {label:'חריגים מאושרים / נשלחו',value:data.approvedVO,note:'ללא מע״מ · לפי מצב השורות'},
-      {label:`מע״מ על הצפי (${(VAT_RATE*100).toFixed(0)}%)`,value:totalProjected===null?null:getAmountVat(totalProjected,VAT_RATE),note:'מוצג בנפרד'},
-      {label:'צפי כולל מע״מ',value:totalProjected===null?null:getAmountInclVat(totalProjected,VAT_RATE),note:'כולל חריגים בהמתנה · אינו אישור לתשלום'},
+      {label:'מע״מ על הצפי',value:data.projectedVat,note:'סכום המע״מ בחוזה ובתמחורי החריגים'},
+      {label:'צפי כולל מע״מ',value:data.projectedGross,note:'כולל חריגים בהמתנה · אינו אישור לתשלום'},
     ].map(item=><Panel material="metal" key={item.label} className="ti-overview-kpi"><span className="ti-meta">{item.label}</span><strong><BidiText kind="money" value={money(item.value)} /></strong><span className="ti-meta">{item.note}</span></Panel>)}</div>
     <div className="ti-overview-grid">
       <Panel className="ti-overview-issues"><h2 className="ti-section-title">דורש תשומת לב</h2><p className="ti-copy">הממצאים נשארים לבדיקה לפי המקור וההקשר שלהם.</p><dl className="ti-overview-counts"><div><dt>ממצאים פתוחים</dt><dd><BidiText kind="code" value={count(data.totalDiscrepancies)} /></dd></div><div><dt>בסיכון גבוה</dt><dd className="ti-risk-value"><BidiText kind="code" value={count(data.criticalCount)} /></dd></div><div><dt>חריגים בהמתנה</dt><dd><BidiText kind="money" value={money(data.pendingVO)} /></dd></div></dl>{navigate('radar','פתיחת מכ״ם הסתירות')}</Panel>

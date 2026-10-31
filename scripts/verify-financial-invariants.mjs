@@ -8,5 +8,6 @@ const files=[
  'scripts/verify-pricing-scope.mjs','scripts/verify-pricing-scope-measurements.mjs',
  'scripts/verify-work-change-financial-readiness.mjs','scripts/verify-radar-financial-guards.mjs',
  'scripts/verify-letter-export.mjs','scripts/verify-local-pricing-api.mjs','scripts/verify-codex-writing.mjs',
+ 'scripts/verify-overview-financials.mjs','scripts/redesign/verify-overview.mjs',
 ];
 execFileSync(process.execPath,['--import','./scripts/codex-runtime/load-server.mjs','--test',...files],{stdio:'inherit'});

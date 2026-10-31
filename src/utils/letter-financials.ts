@@ -38,7 +38,7 @@ function signature(row: IndividualPricingInput): string {
 }
 
 /** Freeze only complete, unambiguous VO work; never apply adjustments or VAT twice. */
-export function prepareLetterFinancialSnapshot(rows: readonly IndividualPricingInput[]): LetterFinancialResult {
+export function prepareLetterFinancialSnapshot(rows: readonly IndividualPricingInput[], options: {includeSentInSummary?: boolean} = {}): LetterFinancialResult {
     const issues: Array<{ itemId: string; reason: string }> = [];
     const unique = new Map<string, IndividualPricingInput>();
     const conflicts = new Set<string>();
@@ -61,7 +61,7 @@ export function prepareLetterFinancialSnapshot(rows: readonly IndividualPricingI
         if (row.contradiction_id && findings.get(row.contradiction_id)! > 1) {
             issues.push({ itemId: id, reason: 'alternative-conflict' }); continue;
         }
-        if (row.type !== 'PENDING_VO' && row.type !== 'APPROVED_VO') {
+        if (row.type !== 'PENDING_VO' && row.type !== 'APPROVED_VO' && !(options.includeSentInSummary && row.type === 'SENT_VO')) {
             issues.push({ itemId: id, reason: 'status-ineligible' }); continue;
         }
         const pricing = getIndividualPricing(row);

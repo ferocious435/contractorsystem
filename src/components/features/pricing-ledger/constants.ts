@@ -68,38 +68,6 @@ export const PRICING_LEDGER_COLUMNS = [
     { id: 'actions', label: 'פעולות', widthClassName: 'w-36', align: 'center' },
 ] as const;
 
-export const PRICING_LEDGER_STAT_CARDS = [
-    {
-        id: 'base_contract',
-        label: 'חוזה בסיס',
-        valueKey: 'totalBaseExclVat',
-        color: 'gray',
-        sub: 'חוזה מקורי (לפני מע"מ)',
-    },
-    {
-        id: 'variation_orders',
-        label: 'שינויים וחריגים',
-        valueKey: 'totalVOExclVat',
-        color: 'blue',
-        sub: 'פקודות שינויים (V.O)',
-    },
-    {
-        id: 'vat',
-        label: `מע"מ (${(VAT_RATE * 100).toFixed(0)}%)`,
-        valueKey: 'grandTotalVat',
-        color: 'emerald',
-        sub: 'חישוב מע"מ סטטוטורי',
-    },
-    {
-        id: 'grand_total',
-        label: 'סה"כ כולל מע"מ',
-        valueKey: 'grandTotalInclVat',
-        color: 'primary',
-        sub: 'סה"כ לתשלום סופי',
-        highlight: true,
-    },
-] as const;
-
 export const TYPE_BADGE_STYLES = {
     BASE_CONTRACT: {
         label: 'חוזה בסיס',

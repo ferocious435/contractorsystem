@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { getLedgerRowAmount, getMoneySum, getPreferredProjectAmount, isVisibleLedgerRow, isTrustedBaseContractRow } from "@/utils/project-financials";
+import { getAmountInclVat, getAmountVat, getMoneySum, isVisibleLedgerRow } from "@/utils/project-financials";
+import { getOverviewFinancials } from '@/utils/overview-financials';
 import { isLocalProjectId } from "@/utils/local-projects";
 import { getLocalDemoProjectProfile } from "@/utils/local-demo-data";
 import { useAiReadiness } from '@/hooks/useAiReadiness';
@@ -25,10 +26,15 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
         try {
             if (isLocalProjectId(projectId)) {
                 const demoProfile = getLocalDemoProjectProfile(projectId);
+                const projectedNet = getMoneySum([demoProfile.budget,demoProfile.approvedVO,demoProfile.pendingVO]);
                 setStats({
                     originalBudget: demoProfile.budget,
                     approvedVO: demoProfile.approvedVO,
                     pendingVO: demoProfile.pendingVO,
+                    projectedNet,
+                    projectedVat: getAmountVat(projectedNet),
+                    projectedGross: getAmountInclVat(projectedNet),
+                    financialIssueCount: 0,
                     criticalCount: demoProfile.criticalCount,
                     totalDiscrepancies: demoProfile.totalDiscrepancies,
                     documentCount: demoProfile.documentCount,
@@ -52,7 +58,7 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
                     .single(),
                 supabase
                     .from('pricing_ledger')
-                    .select('type, source, total_price_excl_vat, quantity, unit_price_excl_vat, ai_rationale, governing_notes, evidence_data')
+                    .select('id, type, source, total_price_excl_vat, quantity, unit_price_excl_vat, vat_rate, contradiction_id, ai_rationale, governing_notes, evidence_data')
                     .eq('project_id', projectId),
                 supabase
                     .from('contradictions')
@@ -68,23 +74,13 @@ export default function ProjectOverview({ projectId, onNavigate }: ProjectOvervi
             if (ledger) {
                 const visibleLedgerRows = ledger.filter(isVisibleLedgerRow);
 
-                const approved = visibleLedgerRows
-                    .filter(r => r.type === 'APPROVED_VO' || r.type === 'SENT_VO')
-                    .reduce((acc, r) => getMoneySum([acc, getLedgerRowAmount(r)]), 0);
-
-                const pending = visibleLedgerRows
-                    .filter(r => r.type === 'PENDING_VO')
-                    .reduce((acc, r) => getMoneySum([acc, getLedgerRowAmount(r)]), 0);
-
                 const withEvidence = visibleLedgerRows.filter(r => r.ai_rationale || r.governing_notes).length;
                 const coverage = visibleLedgerRows.length > 0 ? Math.round((withEvidence / visibleLedgerRows.length) * 100) : 0;
 
                 const contradictionSummary = summarizeOpenContradictions(contradictions);
 
                 setStats({
-                    originalBudget: project?.budget !== null && project?.budget !== undefined || ledger.some(isTrustedBaseContractRow) ? getPreferredProjectAmount(project?.budget, ledger) : null,
-                    approvedVO: approved,
-                    pendingVO: pending,
+                    ...getOverviewFinancials(ledger,project.budget),
                     criticalCount: contradictionSummary.highRiskOpenCount,
                     totalDiscrepancies: contradictionSummary.openCount,
                     documentCount: docCount ?? null,

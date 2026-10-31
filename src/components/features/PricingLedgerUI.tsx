@@ -29,7 +29,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
             window.history.replaceState({}, '', window.location.pathname);
         }
     }, [searchEstimateId]);
-    const { state, totals, derived, setters, actions } = usePricingLedgerState(projectId, {
+    const { state, derived, setters, actions } = usePricingLedgerState(projectId, {
         routedEstimateId,
         onClearRoutedEstimate: clearSearchEstimate,
     });
@@ -48,7 +48,7 @@ function PricingLedgerInternal({ projectId, initialParams, onNavigate }: Pricing
     }, [approveEstimation]);
     return <div className="ti-pricing-root">
         {isFocusedPricingFlow && <Panel className="ti-ledger-focused"><h2 className="ti-section-title">תמחור מתוך ממצא</h2><p className="ti-copy">{String(focusedContradictionTitle)}</p><details><summary>הקשר ומקורות</summary><p className="ti-copy">{String(focusedContradictionSummary)}</p><p className="ti-meta">{String(focusedSourceDocTitle)} · {String(focusedTargetDocTitle)}</p></details><div className="ti-actions"><Button variant="primary" onClick={() => focusedQueueItem && setters.setSelectedContradiction(focusedQueueItem)} disabled={!focusedQueueItem} disabledReason={!focusedQueueItem ? 'הממצא טרם נטען לתמחור' : undefined}>פתח תמחור מונחה</Button><Button onClick={handleBackToSource}>חזרה לסתירות</Button><Button variant="text" onClick={() => setters.setIsFocusedPricingDismissed(true)}>למסך התמחור המלא</Button></div></Panel>}
-        <LedgerWorkspace state={state} totals={totals} derived={derived} setters={setters} actions={actions} focusedFlow={isFocusedPricingFlow}/>
+        <LedgerWorkspace state={state} derived={derived} setters={setters} actions={actions} focusedFlow={isFocusedPricingFlow}/>
         {!isFocusedPricingFlow && <PricingStatusBar projectId={projectId}/>}
             {state.selectedContradiction && (<AIEstimatorModal contradiction={state.selectedContradiction as unknown as ContradictionItem} onClose={() => setters.setSelectedContradiction(null)} onApprove={handleApproveEstimation}/>)}
 

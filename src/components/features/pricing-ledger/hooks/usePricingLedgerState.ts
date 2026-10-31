@@ -7,10 +7,6 @@ import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
 import { getLocalDemoProjectProfile } from '@/utils/local-demo-data';
 import { normalizePricingQueueIds } from '@/utils/pricing-queue-ids';
 import {
-    getAmountVat,
-    getMoneySum,
-    getPreferredProjectAmount,
-    getVariationOrderAmount,
     isVisibleLedgerRow,
 } from '@/utils/project-financials';
 import {
@@ -42,7 +38,6 @@ import type {
     PricingLedgerRowType,
     PricingLedgerState,
     PricingLedgerStatusUpdate,
-    PricingLedgerTotals,
     SyncedProjectContractBase,
 } from '../types';
 
@@ -297,24 +292,6 @@ export function usePricingLedgerState(
         )),
         [selectedLedgerIds, visibleLedgerRowById]
     );
-
-    const totals = useMemo<PricingLedgerTotals>(() => {
-        const financialRows = ledgerRows as FinancialLedgerRow[];
-        const visibleFinancialRows = visibleLedgerRows as FinancialLedgerRow[];
-        const totalBaseExclVat = getPreferredProjectAmount(projectBudget, financialRows);
-        const totalVOExclVat = getVariationOrderAmount(visibleFinancialRows);
-        const grandTotalExclVat = getMoneySum([totalBaseExclVat, totalVOExclVat]);
-        const grandTotalVat = getAmountVat(grandTotalExclVat, VAT_RATE);
-        const grandTotalInclVat = getMoneySum([grandTotalExclVat, grandTotalVat]);
-
-        return {
-            totalBaseExclVat,
-            totalVOExclVat,
-            grandTotalExclVat,
-            grandTotalVat,
-            grandTotalInclVat,
-        };
-    }, [ledgerRows, projectBudget, visibleLedgerRows]);
 
     const focusedQueueItem = useMemo(
         () => (
@@ -935,7 +912,6 @@ export function usePricingLedgerState(
 
     return {
         state,
-        totals,
         derived,
         setters,
         actions,
