@@ -42,6 +42,10 @@ test('a_verified_image_transcript_remains_visible_when_another_word_part_is_unre
  const html=render(DocumentSourceView,{document,fullText:'Previous saved document text'});
  assert.match(visibleText(html),/הטקסט שנקרא בתמונות/u);assert.ok(html.includes(document.extracted_text));assert.ok(html.includes('Previous saved document text'));
 });
+test('a_v2_word_explains_the_unresolved_native_part_even_when_all_images_are_verified',()=>{
+ const document=sourceDocument({title:'source.docx'});document.parsed_json.source_reading={...visualRegistry(),format:'DOCX',complete:false,issues:['word/comments.xml:CONTENT_NOT_POSITIONED_BY_PARSER']};
+ const html=render(DocumentSourceView,{document,fullText:document.extracted_text});assert.match(visibleText(html),/הערות המסמך.*מיקום הטקסט/u);
+});
 test('saved_reading_versions_can_be_selected_from_the_source_window',()=>{
  assert.equal(typeof DocumentReadingVersions,'function');const current='1'.repeat(64),previous='2'.repeat(64);
  const html=render(DocumentReadingVersions,{versions:[{textHash:current},{textHash:previous}],value:previous,onChange:()=>{}});

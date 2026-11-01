@@ -60,6 +60,10 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
     const [part, reason] = typeof issue === 'string' ? issue.split(':') : [];
     return { part: wordPartLabel(part), reason: reason === 'CONTENT_NOT_POSITIONED_BY_PARSER' ? 'מיקום הטקסט בחלק זה לא אומת' : 'קריאת החלק טרם אומתה במלואה' };
   }) : [];
+  const visualPartReviews=Array.isArray(visual?.issues)?visual.issues.flatMap(issue=>{
+    if(typeof issue!=='string'||!/^word\/.+\.xml:/u.test(issue))return [];
+    const [part,reason]=issue.split(':');return [{part:wordPartLabel(part),reason:reason==='CONTENT_NOT_POSITIONED_BY_PARSER'?'מיקום הטקסט בחלק זה לא אומת':'קריאת החלק טרם אומתה במלואה'}];
+  }):[];
   const pdf = /\.pdf(?:$|[?#])/i.test(String(document.title || document.storage_path || document.file_url || ''));
   const pages = visualMatches&&visual?.format==='PDF'?units.length:typeof reading?.totalPages === 'number' && Number.isInteger(reading.totalPages) && reading.totalPages > 0 ? reading.totalPages : null;
   const readPages = visualMatches&&visual?.format==='PDF'?units.flatMap(unit=>unit.status==='READ'&&Array.isArray(unit.locations)?unit.locations.flatMap(location=>location&&typeof location.page==='number'?[location.page]:[]):[]):Array.isArray(reading?.readPages) ? [...new Set(reading.readPages.filter((value): value is number => Number.isInteger(value) && Number(value) > 0 && (!pages || Number(value) <= pages)))] : [];
@@ -83,6 +87,7 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
         {imageReviews.length > 0 && <ul aria-label="תמונות שדורשות בדיקה">{imageReviews.map(image => <li key={image.index}>{image.part} · {`תמונה ${image.index}`} — {image.reason}</li>)}</ul>}
         {partReviews.length > 0 && <ul aria-label="חלקים נוספים שדורשים בדיקה">{partReviews.map((part, index) => <li key={index}>{part.part} — {part.reason}</li>)}</ul>}
       </>}
+      {visualPartReviews.length>0&&<ul aria-label="חלקים נוספים שדורשים בדיקה">{visualPartReviews.map((part,index)=><li key={index}>{part.part} — {part.reason}</li>)}</ul>}
     </div>}
     {!readiness.extractionComplete && <Feedback tone="warning">שלמות קריאת המקור טרם אומתה. אישור ידני אינו מעיד שכל העמודים נקראו.</Feedback>}
     {(pdf||isWord)&&!visual&&readiness.extractionComplete&&<Feedback tone="warning">הטקסט נקרא; תוכן התמונות והתרשימים טרם נבדק חזותית.</Feedback>}
