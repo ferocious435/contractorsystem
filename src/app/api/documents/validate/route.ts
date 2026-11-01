@@ -58,16 +58,19 @@ export async function PUT(req: Request) {
         const server=isRecord(ownership.document.parsed_json)?ownership.document.parsed_json:{};
         const protectedField=(key:string)=>key.startsWith('source_reading')||key.startsWith('analysis_')||['full_markdown','extraction_source','reading_requires_review','document_purpose'].includes(key);
         const confirmed={...server,...Object.fromEntries(Object.entries(validatedData).filter(([key])=>!protectedField(key)))};
-        const { error: updateError } = await supabase
+        let update = supabase
             .from('documents')
             .update({
                 ai_status: 'VALIDATED',
                 parsed_json: confirmed
-            })
+            },{count:'exact'})
             .eq('id', documentId)
             .eq('project_id', projectId);
+        update=ownership.document.parsed_json?update.eq('parsed_json',JSON.stringify(ownership.document.parsed_json)):update.is('parsed_json',null);
+        const {error:updateError,count}=await update;
 
         if (updateError) throw updateError;
+        if(count===0)return NextResponse.json({success:false,error:'Source changed while confirming. Read the current document and try again.'},{status:409});
 
         return NextResponse.json({
             success: true,

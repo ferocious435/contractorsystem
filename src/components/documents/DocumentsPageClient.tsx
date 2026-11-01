@@ -176,7 +176,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
             return;
         }
 
-        setSourceReadErrors(previous => ({ ...previous, [doc.id]: 'הטקסט העדכני ייקרא למסך בסיום הניתוח.' }));
+        setSourceReadErrors(previous => ({ ...previous, [doc.id]: operation==='read_source'?'הטקסט העדכני ייקרא למסך בסיום הקריאה.':'הטקסט העדכני ייקרא למסך בסיום הניתוח.' }));
         try {
             controller.signal.throwIfAborted();
             if(operation==='read_source'){await requestDocumentReading(projectId,doc.id,{signal:controller.signal,onAccepted:progress,onProgress:progress});return;}

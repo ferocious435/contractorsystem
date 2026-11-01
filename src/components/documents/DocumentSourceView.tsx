@@ -39,6 +39,8 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
   const visual=reading?.version===VISUAL_READING_VERSION?reading:undefined;
   const visualMatches=Boolean(visual&&visual.sourceHash===document.content_hash&&visual.currentTextHash===document.extracted_text_hash);
   const units=(Array.isArray(visual?.expectedUnits)?visual.expectedUnits:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object');
+  const transcripts=(visualMatches&&Array.isArray(visual?.units)?visual.units:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'
+    &&value.complete===true&&typeof value.text==='string'&&Boolean(value.text.trim())&&units.some(unit=>unit.id===value.unitId&&unit.status==='READ'&&unit.textHash===value.textHash));
   const descriptions=visualDescriptions||(Array.isArray(document.parsed_json?.source_reading_visual_descriptions)?document.parsed_json.source_reading_visual_descriptions as VisualDescription[]:[]);
   const docx = reading?.version === DOCX_READING_VERSION ? reading : undefined;
   const isWord = Boolean(docx) || [document.title, document.storage_path, document.file_url].some(value => /\.docx(?:$|[?#\s._()\d-])/i.test(value || ''));
@@ -93,6 +95,10 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
     {previewUrl && previewKind === 'image' && <img className="ti-source-image" src={previewUrl} alt={document.title || 'מסמך מקור'} />}
     {sourceReadError ? <Feedback tone="warning"><p>{sourceReadError}</p>{onRetryRead && <Button onClick={onRetryRead} pending={retryingRead}>ניסיון נוסף</Button>}</Feedback> : fullText ? <details className="ti-source-text" open={fullText.length <= 32000}><summary>הטקסט המלא שנשמר</summary><pre>{textChunks.map((text,index)=><span className="ti-source-text__chunk" dir="auto" key={index}>{text}</span>)}</pre></details> : <Feedback>אין עדיין טקסט שמור לתצוגה. אפשר לפתוח את קובץ המקור; פתיחה אינה מפעילה ניתוח.</Feedback>}
     {descriptions.length>0&&<section aria-label="תיאורי תרשימים ותוכן חזותי"><h4 className="ti-section-title">תיאורי תרשימים ותוכן חזותי</h4><p className="ti-meta">תיאור של מה שמופיע בתמונה; אינו ציטוט מילולי מהמסמך.</p>{descriptions.map((description,index)=><div key={index}><p className="ti-meta">{description.location?.page?`עמוד ${description.location.page}`:wordPartLabel(description.location?.part)}</p><p className="ti-copy ti-preserve-lines" dir="auto">{description.text}</p></div>)}</section>}
+    {transcripts.length>0&&<section aria-label="הטקסט שנקרא בתמונות"><h4 className="ti-section-title">הטקסט שנקרא בתמונות</h4>{transcripts.map(transcript=>{
+      const unit=units.find(unit=>unit.id===transcript.unitId),location=Array.isArray(unit?.locations)?unit.locations[0]:null;
+      return <details key={String(transcript.unitId)}><summary>{location?.page?`עמוד ${location.page}`:wordPartLabel(location?.part)}</summary><pre className="ti-copy ti-preserve-lines" dir="auto">{String(transcript.text)}</pre></details>;
+    })}</section>}
     {previewKind === 'unsupported' && <p className="ti-meta">לסוג הקובץ הזה אין תצוגה ישירה בדפדפן.</p>}
     <div className="ti-actions">{onPreview && <Button onClick={onPreview}>פתיחת המקור וסקירת הניתוח</Button>}{sourceUrl && <a className="ti-button ti-button--secondary" href={sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} aria-hidden="true" />פתיחת קובץ המקור</a>}</div>
     {validationError && <Feedback tone="danger">{validationError}</Feedback>}

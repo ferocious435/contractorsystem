@@ -219,7 +219,7 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
         void fetchDocumentReading(projectId,doc.id,query,controller.signal).then(detail=>{if(!controller.signal.aborted)setReadingDetail(detail);})
             .catch(()=>{if(!controller.signal.aborted&&hasSourceContext)setReadingError('לא נמצאה גרסת קריאה חד-משמעית לציטוט הזה. קובץ המקור זמין לפתיחה.');});
         return()=>controller.abort();
-    },[projectId,doc.id,doc.extracted_text_hash,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page,hasSourceContext]);
+    },[projectId,doc.id,doc.extracted_text_hash,doc.processed_at,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page,hasSourceContext]);
 
     const jsonData: ParsedDocumentJson = normalizeParsedJson(doc.parsed_json);
     const documentType = safeStructuredText(jsonData.document_type || jsonData.type, inferDocumentType(doc.title, doc.category));

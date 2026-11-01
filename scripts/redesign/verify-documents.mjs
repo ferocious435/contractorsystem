@@ -36,6 +36,11 @@ test('document job display distinguishes reading preparation, verified units and
  assert.match(documentJobStatusText({state:'RUNNING',operation:'read_source',progress:{phase:'reading',completedUnits:2,totalUnits:5}}),/2 \/ 5/u);
  assert.match(documentJobStatusText({state:'RUNNING',operation:'analyze',progress:{phase:'analysis',completedUnits:0,totalUnits:1}}),/מנתח/u);
 });
+test('a_verified_image_transcript_remains_visible_when_another_word_part_is_unresolved',()=>{
+ const document=sourceDocument();document.parsed_json.source_reading={...visualRegistry(),complete:false,issues:['Unresolved native part'],units:[{unitId:'pdf:1',complete:true,text:document.extracted_text,textHash:document.extracted_text_hash}]};
+ const html=render(DocumentSourceView,{document,fullText:'Previous saved document text'});
+ assert.match(visibleText(html),/הטקסט שנקרא בתמונות/u);assert.ok(html.includes(document.extracted_text));assert.ok(html.includes('Previous saved document text'));
+});
 
 test('an unread Word header image identifies the affected part and numeric review without hiding two read images',()=>{
   const document=embeddedImageDocument();

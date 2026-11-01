@@ -43,3 +43,12 @@ test('a_recomputed_file_checksum_cannot_detach_text_from_its_verified_response',
  payload.unit.text='Unrelated substituted source';payload.unit.textHash=digest(payload.unit.text);payload.payloadHash=digest(JSON.stringify(payload.unit));
  await fs.writeFile(absolute,JSON.stringify(payload));assert.equal(await instance.read(scope,unit),null);
 }));
+test('saved_independent_numeric_reads_can_be_rechecked_without_repeating_the_model',()=>{
+ assert.equal(typeof api.reverifySavedNumericUnit,'function');const unit=readingUnit({localText:''}),text='1. Work\n2. Quantity 12\n3. Terms',reading=unitResponse(unit,{text,visualDescription:'Underlined headings.'}),confirmation={...reading,visualDescription:'Items 1–3 are underlined.'};
+ const saved={...verified(unit),text,textHash:digest(text),complete:false,uncertainties:['Numeric or source verification failed: '+unit.views[0].id],createdBy:{jobId:scope.ownerId,rulesVersion:'visual-reading-rules-v2',profileRevision:1},
+  views:[{...verified(unit).views[0],method:'visual-double-pass',reading,confirmation,textHash:digest(text),confirmationHash:digest(text)}]};
+ const result=api.reverifySavedNumericUnit(saved,unit);assert.equal(result.complete,true);assert.equal(result.text,text);assert.equal(saved.complete,false);
+ assert.equal(api.reverifySavedNumericUnit({...saved,uncertainties:['Crop text not reconciled']},unit),null);
+ assert.equal(api.reverifySavedNumericUnit(saved,{...unit,contextText:'different context'}),null);
+ const mismatch=structuredClone(saved);mismatch.views[0].confirmation.text=text.replace('12','21');mismatch.views[0].confirmationHash=digest(mismatch.views[0].confirmation.text);assert.equal(api.reverifySavedNumericUnit(mismatch,unit),null);
+});

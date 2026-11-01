@@ -3,8 +3,10 @@ import {createHash} from 'node:crypto';
 import type {SupabaseClient} from '@supabase/supabase-js';
 import {BusinessAiError,record,type AiExecutionContext} from '../contracts';
 import {readVisualSource} from '../visual-source-reader.server';
+import {createVisualReadingCache,reverifySavedNumericUnit} from '../visual-reading-cache.server';
+import {getRuntimeDirectory} from '../codex-client.server';
 import {buildVisualSourceManifest} from '@/utils/visual-source-manifest';
-import {assembleDocumentReading,createReadingPatch,getCurrentDocumentReading} from '@/utils/document-reading-history';
+import {assembleDocumentReading,createReadingPatch,getCurrentDocumentReading,hasSavedVisualReading} from '@/utils/document-reading-history';
 import {preserveStableDocumentText} from '@/utils/stable-document-reading';
 import {makeTextInput} from '@/utils/document-text-extraction';
 import {assessVisualReading,VISUAL_READING_VERSION,VISUAL_READING_RULES,type OwnedSourceDocument,type ReadingAssembly} from '@/utils/visual-source-reading';
@@ -29,7 +31,13 @@ export async function stageDocumentReading({client,document,file,execution}:{cli
         if(stable.kind==='text'&&stable.extractedText!==manifest.nativeText){manifest.nativeText=stable.extractedText;manifest.assembly=[{kind:'native',text:stable.extractedText}];manifest.manifestHash=digest(JSON.stringify({previous:manifest.manifestHash,textHash:digest(stable.extractedText)}));}
     }
     await execution.reportProgress({phase:'reading',completedUnits:0,totalUnits:manifest.units.length});
-    const result=await readVisualSource(manifest,{ownerId:execution.ownerId,projectId:execution.projectId,documentId:document.id,sourceHash},execution);
+    const scope={ownerId:execution.ownerId,projectId:execution.projectId,documentId:document.id,sourceHash};
+    if(hasSavedVisualReading(document,sourceHash)&&Array.isArray(parsed.source_reading_units)){
+        for(const unit of manifest.units){const previous=parsed.source_reading_units.find(value=>record(value)&&value.unitId===unit.id),checked=reverifySavedNumericUnit(previous,unit);
+            if(checked){await execution.checkActive();await createVisualReadingCache(getRuntimeDirectory()).write(scope,unit,checked);}
+        }
+    }
+    const result=await readVisualSource(manifest,scope,execution);
     const reading=assembleDocumentReading(manifest,result.units);
     reading.verification.createdBy={jobId:execution.jobId,rulesVersion:VISUAL_READING_RULES,profileRevision:execution.profile.revision};
     reading.verification.issues=[...new Set([...reading.verification.issues,...result.issues])];

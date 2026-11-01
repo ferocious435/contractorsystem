@@ -75,6 +75,16 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
         ||JSON.stringify(value.tables)!==JSON.stringify(primary.reading.tables))return false;
     return Boolean(hasDocumentBodyText(value.text)||value.visualDescription.trim()||value.views.every(p=>record(p)&&p.method==='physical-empty'));
 }
+/** Recheck two retained blind reads after a verifier correction; never turn a
+ * model uncertainty or an unreconciled crop into a verified unit. */
+export function reverifySavedNumericUnit(value:unknown,unit:ReadingUnit):VerifiedUnit|null {
+    if(!record(value)||value.complete!==false||!Array.isArray(value.uncertainties)||!value.uncertainties.length
+        ||!value.uncertainties.every(reason=>typeof reason==='string'&&reason.startsWith('Numeric or source verification failed: '))
+        ||!record(value.createdBy)||!validUuid(value.createdBy.jobId)||value.createdBy.rulesVersion!==VISUAL_READING_RULES
+        ||!Number.isSafeInteger(value.createdBy.profileRevision)||(value.createdBy.profileRevision as number)<1)return null;
+    const checked={...value,complete:true,uncertainties:[]};
+    return verifiedReadingUnit(checked,unit)?checked as unknown as VerifiedUnit:null;
+}
 function checkedScope(scope:ReadingScope) {
     if(!validUuid(scope.ownerId)||!validUuid(scope.projectId)||!validUuid(scope.documentId)||!validReadingHash(scope.sourceHash))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
 }

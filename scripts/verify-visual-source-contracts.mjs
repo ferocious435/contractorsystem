@@ -28,6 +28,11 @@ test('numeric_labels_and_decimal_separators_are_not_discarded',()=>{
  assert.equal(compare(raw,{...raw,tables:[[['מחיר ב','1,234.50'],['מחיר א','1.234,50']]]}).matched,false);
  assert.equal(compare(raw,{...raw,tables:[[['מחיר א','1.234,50'],['מחיר ב','1,234.50']]]}).matched,false);
 });
+test('a_layout_description_of_already_transcribed_item_numbers_does_not_invalidate_equal_source_numbers',()=>{
+ const compare=api(response,'compareNumericReadings'),first=unitResponse(undefined,{text:'1. Work description\n2. Quantity 12\n3. Payment terms',visualDescription:'The headings are underlined.'});
+ assert.equal(compare(first,{...first,visualDescription:'Items 1–3 have underlined headings.'}).matched,true);
+ assert.equal(compare({...first,visualDescription:'There are 8 separate work areas.'},{...first,visualDescription:'There are 9 separate work areas.'}).matched,false);
+});
 test('counter_only_is_not_document_body',()=>{
  api(contracts,'assessVisualReading');
  for(const text of ['1','[PAGE 1]\n1','-- 1 of 3 --','report.pdf 01.11.2026','QA.19.01.05C 28.11.23'])assert.equal(hasDocumentBodyText(text),false);

@@ -15,7 +15,8 @@ export function validateUnitReading(raw:string,expected:ReadingUnit,viewId:strin
         ||!value.tables.every(table=>Array.isArray(table)&&table.every(row=>Array.isArray(row)&&row.every(cell=>typeof cell==='string'))))throw Error('Invalid image reading response');
     return value as UnitReading;
 }
-const hasNumber=(value:string)=>/\d/u.test(value);
+const hasNumber=(value:string)=>/\p{N}/u.test(value);
+const numberTokens=(value:string)=>value.match(/\p{N}+(?:[.,/]\p{N}+)*/gu)||[];
 const lineKey=(value:string)=>value.normalize('NFKC').replace(/[\u200e\u200f]/g,'').replace(/\s+/g,' ').trim();
 function numericPositions(reading:UnitReading) {
     const positions:string[]=[];
@@ -24,9 +25,15 @@ function numericPositions(reading:UnitReading) {
         // Include the row and column labels: equal sets of digits do not imply equal cells.
         positions.push(JSON.stringify({tableIndex,rowIndex,header:table[0].map(lineKey),cells:row.map(lineKey)}));
     }
+    const literalNumbers=new Set(numberTokens([reading.text,...reading.tables.flat().flat()].join('\n')));
     for(const [field,text] of [['text',reading.text],['description',reading.visualDescription]]){
         const lines=text.split(/\r?\n/).map(lineKey).filter(Boolean);
-        for(const [i,line] of lines.entries())if(hasNumber(line))positions.push(JSON.stringify({field,index:i,line}));
+        for(const [i,line] of lines.entries())if(hasNumber(line)){
+            // A description may refer to item numbers already checked in the literal
+            // transcript. Its wording is interpretation, never a second source quote.
+            if(field==='description'&&numberTokens(line).every(number=>literalNumbers.has(number)))continue;
+            positions.push(JSON.stringify({field,index:i,line}));
+        }
     }
     return positions;
 }

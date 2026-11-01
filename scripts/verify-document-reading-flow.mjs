@@ -44,7 +44,14 @@ test('project_switch_ignores_late_result',async()=>{
 
 const hook=registerHooks({resolve(s,c,n){if(s==='@/utils/supabase/server')return {url:'data:text/javascript,export const createClient=async()=>globalThis.__readingFlowDb;',shortCircuit:true};return n(s,c);}});
 const extract=await import('../src/app/api/documents/extract-text/route.ts'),validate=await import('../src/app/api/documents/validate/route.ts');hook.deregister();
-function database(row,bytes){const counts={updates:0,downloads:0};return {counts,auth:{getUser:async()=>({data:{user:{id:'owner'}}})},storage:{from(){return {download:async()=>{counts.downloads++;return {data:new Blob([bytes]),error:null};}};}},from(table){let patch;const q={select(){return q;},eq(){return q;},is(){return q;},async maybeSingle(){return {data:table==='projects'?{id:project}:structuredClone(row),error:null};},update(value){patch=value;return q;},then(ok,bad){counts.updates++;Object.assign(row,patch);return Promise.resolve({error:null}).then(ok,bad);}};return q;}};}
+function database(row,bytes){
+ const counts={updates:0,downloads:0},hooks={beforeUpdate:null};
+ return {counts,hooks,auth:{getUser:async()=>({data:{user:{id:'owner'}}})},storage:{from(){return {download:async()=>{counts.downloads++;return {data:new Blob([bytes]),error:null};}};}},from(table){
+  let patch;const filters=[],q={select(){return q;},eq(key,value){filters.push(current=>key==='parsed_json'&&typeof value==='string'?JSON.stringify(current[key])===value:current[key]===value);return q;},is(key,value){filters.push(current=>current[key]==value);return q;},
+   async maybeSingle(){return {data:table==='projects'?{id:project}:structuredClone(row),error:null};},update(value){patch=value;hooks.beforeUpdate?.();return q;},
+   then(ok,bad){const matched=filters.every(filter=>filter(row));if(matched){counts.updates++;Object.assign(row,patch);}return Promise.resolve({error:null,count:matched?1:0}).then(ok,bad);}};return q;
+ }};
+}
 const request=(body,method='POST')=>new Request('http://localhost/api/documents/action',{method,headers:{'content-type':'application/json'},body:JSON.stringify({projectId:project,documentId:id,...body})});
 test('old_local_read_does_not_downgrade_visual_proof',async()=>{
  const bytes=docx({body:paragraph('Old native source'),media:{},rels:[]}),row=sourceDocument({title:'source.docx',content_hash:digest(bytes),storage_bucket:'documents',storage_path:'p/source.docx'});
@@ -62,6 +69,12 @@ test('a_visual_reading_saved_during_old_extraction_is_not_overwritten',async()=>
  const bytes=docx({body:paragraph('Old local source'),media:{},rels:[]}),row=sourceDocument({title:'source.docx',content_hash:digest(bytes),storage_bucket:'documents',storage_path:'p/source.docx',ocr_status:'REQUIRES_REVIEW',parsed_json:{}});
  const db=database(row,bytes),download=db.storage.from;db.storage.from=()=>({download:async name=>{const result=await download().download(name);row.extracted_text=literal;row.extracted_text_hash=digest(literal);row.ocr_status='COMPLETED';row.parsed_json={source_reading:visualRegistry({sourceHash:digest(bytes),format:'DOCX'})};return result;}});globalThis.__readingFlowDb=db;
  assert.equal((await extract.POST(request({force:true}))).status,200);assert.equal(row.extracted_text,literal);assert.equal(row.parsed_json.source_reading.version,'visual-source-reading-v2');assert.equal(db.counts.updates,0);
+});
+test('manual_validation_cannot_race_a_new_server_reading',async()=>{
+ const row=sourceDocument({ai_status:'SCANNED'}),db=database(row,Buffer.from('unused'));globalThis.__readingFlowDb=db;
+ db.hooks.beforeUpdate=()=>{row.parsed_json={...row.parsed_json,source_reading:{...row.parsed_json.source_reading,manifestHash:'9'.repeat(64)}};};
+ const response=await validate.PUT(request({validatedData:{type:'Instruction',summary:'Owner summary'}},'PUT'));
+ assert.equal(response.status,409);assert.equal(row.parsed_json.source_reading.manifestHash,'9'.repeat(64));assert.equal(db.counts.updates,0);assert.equal(row.ai_status,'SCANNED');
 });
 test('analysis_uses_corrected_source_text_and_keeps_descriptions_outside_quotes',async()=>{
  const description='The diagram shows an access route.',proof=visualRegistry(),prepared=makeTextInput(Buffer.from('source'),'verified',literal,{readingVerification:proof,visualDescriptions:[{unitId:'pdf:1',location:{page:1},text:description}]});

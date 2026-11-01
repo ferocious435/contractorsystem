@@ -48,6 +48,7 @@ export interface ProjectDocument extends Record<string, unknown> {
     project_id?: string | null;
     file_url?: string | null;
     ocr_status?: string | null;
+    processed_at?:string|null;
     parsed_json?: ParsedDocumentJson | null;
     storage_bucket?: string | null;
     storage_path?: string | null;
