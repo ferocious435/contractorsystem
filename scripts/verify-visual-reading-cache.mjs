@@ -43,6 +43,19 @@ test('a_recomputed_file_checksum_cannot_detach_text_from_its_verified_response',
  payload.unit.text='Unrelated substituted source';payload.unit.textHash=digest(payload.unit.text);payload.payloadHash=digest(JSON.stringify(payload.unit));
  await fs.writeFile(absolute,JSON.stringify(payload));assert.equal(await instance.read(scope,unit),null);
 }));
+test('contradictory_physical_folios_for_the_same_page_are_not_verified_or_cached',async()=>fixture(async root=>{
+ const first=readingUnit().views[0],bytes=Buffer.from('second physical source view'),second={...first,id:'page:1:enlarged',bytes,sha256:digest(bytes),width:200,height:200};
+ const unit=readingUnit({localText:'3',views:[first,second]});
+ const proof=(view,text)=>({viewId:view.id,imageHash:view.sha256,textHash:digest(text),method:'physical-empty',confirmationHash:digest(text),reading:unitResponse(unit,{viewId:view.id,text}),confirmation:null,
+  emptyPageProof:{version:'rendered-empty-v1',kind:'PAGE_NUMBER_ONLY',page:1,imageSha256:view.sha256,width:view.width,height:view.height,numberText:text,numberConfidence:96,
+   numberBounds:[{x0:45,y0:view.height-8,x1:55,y1:view.height-2}]}});
+ const agreed={...verified(unit),text:'3',textHash:digest('3'),views:[proof(first,'3'),proof(second,'3')]};
+ assert.equal(api.verifiedReadingUnit(agreed,unit),true);await cache(root).write(scope,unit,agreed);
+ const contradictory={...agreed,text:'6',textHash:digest('6'),views:[proof(first,'3'),proof(second,'6')]};
+ assert.equal(api.verifiedReadingUnit(contradictory,unit),false);
+ await assert.rejects(()=>cache(root).write(scope,unit,contradictory));
+ assert.equal((await cache(root).read(scope,unit)).text,'3');
+}));
 test('saved_independent_numeric_reads_can_be_rechecked_without_repeating_the_model',()=>{
  assert.equal(typeof api.reverifySavedNumericUnit,'function');const unit=readingUnit({localText:''}),text='1. Work\n2. Quantity 12\n3. Terms',reading=unitResponse(unit,{text,visualDescription:'Underlined headings.'}),confirmation={...reading,visualDescription:'Items 1–3 are underlined.'};
  const saved={...verified(unit),text,textHash:digest(text),complete:false,uncertainties:['Numeric or source verification failed: '+unit.views[0].id],createdBy:{jobId:scope.ownerId,rulesVersion:'visual-reading-rules-v2',profileRevision:1},

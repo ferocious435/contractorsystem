@@ -122,3 +122,11 @@ test('local_folio_recognition_cannot_hide_a_single_unrecognized_pixel_outside_it
  const result=await read(manifest([value]),scope,execution(async()=>{calls++;return JSON.stringify(unitResponse(value,{text:'3'}));}));
  assert.equal(result.units[0].complete,false);assert.ok(calls>0);assert.ok(result.units[0].views.every(view=>view.method!=='physical-empty'));
 }));
+test('a_counter_visible_in_only_one_full_page_view_stays_partial_and_is_not_cached',async()=>fixture(async root=>{
+ const value=await folioUnit(),bytes=await sharp({create:{width:80,height:50,channels:3,background:'white'}}).png().toBuffer();
+ value.views.unshift({id:'pdf:1:low-resolution',sha256:digest(bytes),bytes,width:80,height:50,rect:{x:0,y:0,width:1,height:1}});let calls=0;
+ const result=await read(manifest([value]),scope,execution(async()=>{calls++;throw Error('Both views have physical evidence');}));
+ assert.equal(calls,0);assert.equal(result.units[0].complete,false);
+ assert.ok(result.units[0].views.every(view=>view.method==='physical-empty'));
+ assert.equal(await cacheApi.createVisualReadingCache(root).read(scope,value),null);
+}));

@@ -136,7 +136,7 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
             &&strings(raw.uncertainties)&&raw.uncertainties.length===0&&Array.isArray(raw.views)&&raw.views.length>0
             &&Array.isArray(raw.verifiedViews)&&raw.verifiedViews.length===raw.views.length;
         const views=Array.isArray(raw.views)?raw.views:[],proofs=Array.isArray(raw.verifiedViews)?raw.verifiedViews:[];
-        const viewIds=new Set<string>();let physicalEmpty=views.length>0;
+        const viewIds=new Set<string>(),regions=new Map<string,{hashes:Set<string>;physical:boolean}>();let physicalEmpty=views.length>0;
         for(const view of views){
             if(!object(view)||!identifier(view.id)||viewIds.has(view.id)||!validReadingHash(view.sha256)||!validReadingRect(view.rect)
                 ||!Number.isSafeInteger(view.width)||!Number.isSafeInteger(view.height)||(view.width as number)<1||(view.height as number)<1
@@ -145,8 +145,11 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
             const matches=proofs.filter(p=>object(p)&&p.viewId===view.id),proof=matches[0];
             if(matches.length!==1||!object(proof)||proof.imageHash!==view.sha256||!validReadingHash(proof.textHash)
                 ||!validReadingHash(proof.confirmationHash)||!['native-match','local-ocr-match','visual-double-pass','no-numbers','physical-empty'].includes(String(proof.method))){valid=false;physicalEmpty=false;continue;}
+            const key=JSON.stringify(view.rect),region=regions.get(key)??{hashes:new Set<string>(),physical:false};
+            region.hashes.add(proof.textHash);region.physical||=proof.method==='physical-empty';regions.set(key,region);
             if(proof.method!=='physical-empty'||!emptyProofValid(proof.emptyPageProof,view,Array.isArray(raw.locations)?raw.locations[0]:null))physicalEmpty=false;
         }
+        if([...regions.values()].some(region=>region.physical&&region.hashes.size!==1))valid=false;
         if(kind==='PDF_PAGE'&&!coversReadingPage(views.filter(object).map(v=>v.rect as Rect)))valid=false;
         if(raw.literalHasBody!==true&&raw.visualHasContent!==true&&!physicalEmpty)valid=false;
         if(!valid){missingUnitIds.push(raw.id);issues.push('Unverified reading unit: '+raw.id);}

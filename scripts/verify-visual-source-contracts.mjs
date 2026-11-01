@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {readingUnit,unitResponse,visualRegistry,sourceDocument,literal} from './codex-runtime/visual-reading-fixtures.mjs';
+import {readingUnit,unitResponse,visualRegistry,sourceDocument,literal,digest} from './codex-runtime/visual-reading-fixtures.mjs';
 import {assessDocumentSourceReadiness,hasDocumentBodyText} from '../src/utils/document-source-readiness.ts';
 const load=async file=>import(file).catch(error=>{if(error.code==='ERR_MODULE_NOT_FOUND'&&error.url?.endsWith(file.slice(2)))return {};throw error;});
 const contracts=await load('../src/utils/visual-source-reading.ts');
@@ -89,4 +89,14 @@ test('a_blank_model_answer_needs_a_physical_empty_page_proof',()=>{
  const assess=api(contracts,'assessVisualReading'),registry=visualRegistry();
  registry.expectedUnits[0].literalHasBody=false;registry.expectedUnits[0].visualHasContent=false;
  assert.equal(assess(registry,sourceDocument()).complete,false);
+});
+test('compact_source_evidence_rejects_conflicting_physical_folios_on_the_same_page',()=>{
+ const registry=visualRegistry(),unit=registry.expectedUnits[0],first=unit.views[0],second={...first,id:'page:1:enlarged',sha256:'6'.repeat(64),width:200,height:200};
+ const proof=(view,text)=>({viewId:view.id,imageHash:view.sha256,textHash:digest(text),method:'physical-empty',confirmationHash:digest(text),
+  emptyPageProof:{version:'rendered-empty-v1',kind:'PAGE_NUMBER_ONLY',page:1,imageSha256:view.sha256,width:view.width,height:view.height,numberText:text,numberConfidence:96,
+   numberBounds:[{x0:45,y0:view.height-8,x1:55,y1:view.height-2}]}});
+ Object.assign(unit,{literalHasBody:false,visualHasContent:false,textHash:digest('3'),views:[first,second],verifiedViews:[proof(first,'3'),proof(second,'3')]});
+ assert.equal(contracts.assessVisualReading(registry,sourceDocument()).complete,true);
+ unit.verifiedViews[1]=proof(second,'6');unit.textHash=digest('6');
+ assert.equal(contracts.assessVisualReading(registry,sourceDocument()).complete,false);
 });

@@ -45,6 +45,7 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
     if(!record(value)||value.unitId!==unit.id||value.inputHash!==readingUnitInputHash(unit)||typeof value.text!=='string'||value.textHash!==digest(value.text)
         ||value.complete!==true||!Array.isArray(value.uncertainties)||value.uncertainties.length||!Array.isArray(value.views)||value.views.length!==unit.views.length
         ||typeof value.visualDescription!=='string'||!Array.isArray(value.tables))return false;
+    const regions=new Map<string,{hashes:Set<string>;physical:boolean}>();
     for(const view of unit.views){
         const proofs=value.views.filter(p=>record(p)&&p.viewId===view.id),proof=proofs[0];
         if(proofs.length!==1||!record(proof)||proof.imageHash!==view.sha256||!record(proof.reading))return false;
@@ -53,6 +54,8 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
         if(!readView)return false;
         let reading:UnitReading;try{reading=validateUnitReading(JSON.stringify(proof.reading),unit,readView.id);}catch{return false;}
         if(reading.uncertainties.length||proof.textHash!==digest(unitReadingLiteral(reading)))return false;
+        const key=JSON.stringify(view.rect),region=regions.get(key)??{hashes:new Set<string>(),physical:false};
+        region.hashes.add(digest(unitReadingLiteral(reading)));region.physical||=proof.method==='physical-empty';regions.set(key,region);
         if(proof.method==='physical-empty'){
             const page=unit.locations[0]?.page;
             if(!page||!record(proof.emptyPageProof)||proof.emptyPageProof.imageSha256!==view.sha256
@@ -69,6 +72,8 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
             if(proof.method!=='visual-double-pass'&&confirmation.text!==unit.localText)return false;
         }
     }
+    // A locally recognized folio must agree across every rendering of its source region.
+    if([...regions.values()].some(region=>region.physical&&region.hashes.size!==1))return false;
     const full=unit.views.filter(v=>v.rect.x===0&&v.rect.y===0&&v.rect.width===1&&v.rect.height===1).sort((a,b)=>b.width*b.height-a.width*a.height);
     const primaryId=full[0]?.id??unit.views[0]?.id,primary=value.views.find(p=>record(p)&&p.viewId===primaryId);
     if(!record(primary)||!record(primary.reading)||value.text!==unitReadingLiteral(primary.reading as unknown as UnitReading)

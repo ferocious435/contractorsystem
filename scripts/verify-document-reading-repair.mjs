@@ -13,7 +13,7 @@ const oldJob='dddddddd-dddd-4ddd-8ddd-dddddddddddd',newJob='eeeeeeee-eeee-4eee-8
 async function run({corrupt='',extraPixel=false}={}){
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-reading-repair-')),previous=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=directory;
  try{
-  const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica),first=pdf.addPage([400,600]);first.drawText('3',{x:196,y:20,size:24,font});
+  const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica),first=pdf.addPage([400,600]);first.drawText('2',{x:196,y:20,size:24,font});
   if(extraPixel)first.drawRectangle({x:30,y:300,width:1,height:1,color:rgb(254/255,254/255,254/255)});
   pdf.addPage([400,600]).drawText('A saved instruction 12.',{x:40,y:500,size:18,font});
   const file=Buffer.from(await pdf.save()),manifest=await buildVisualSourceManifest(file,'repair.pdf');
