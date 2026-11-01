@@ -6,6 +6,7 @@ import { DOCX_READING_VERSION, hasDocumentBodyText, type DocxReadingVerification
 
 type ZipFile = { path: string; content: Buffer };
 type ImageRecord = DocxReadingVerification['images'][number];
+export type DocxImageRecord = ImageRecord;
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const VML_NS = 'urn:schemas-microsoft-com:vml';
@@ -61,7 +62,7 @@ function block(record: ImageRecord, text: string) {
 /** Extract DOCX text with a source inventory independent of the AST's image nodes. */
 export async function extractDocxWithImages(
     buffer: Buffer,
-    options: { recognizeImage?: typeof extractImageTextLocally } = {},
+    options: { recognizeImage?: typeof extractImageTextLocally; onImage?:(value:{record:DocxImageRecord;bytes:Buffer|null})=>void } = {},
 ): Promise<{ text: string; requiresReview: boolean; readingVerification: DocxReadingVerification }> {
     const tools = await packageTools();
     const files = await tools.extractFiles(buffer, () => true, { maxUncompressedBytes: 512 * 1024 * 1024, maxZipEntries: 10000 });
@@ -136,6 +137,7 @@ export async function extractDocxWithImages(
                                 else record.status = 'READ';
                             } catch { record.reason = 'OCR_FAILED'; }
                         }
+                        options.onImage?.({record:{...record},bytes:record.reason==='EXTERNAL_OR_UNSAFE_IMAGE'||!bytes?null:Buffer.from(bytes)});
                         verification.images.push(record);
                         const token = `CS_DOCX_IMAGE_${sourceHash.slice(0, 16)}_${verification.images.length}_END`;
                         replacements.set(token, { record, text });

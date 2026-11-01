@@ -1,5 +1,5 @@
 const MAX_AI_TEXT_CHARS = 120_000;
-import { createRequire } from "node:module";
+import { loadPdfParse } from '@/utils/pdf-parser-runtime';
 import { extractPdfPagesWithLocalMcp } from '@/utils/local-ocr-mcp';
 import { extractDocxWithImages } from '@/utils/docx-image-extraction';
 
@@ -114,15 +114,6 @@ type OfficeParserModule = {
     OfficeParser: {
         parseOffice(input: Buffer | Uint8Array, config?: Record<string, unknown>): Promise<OfficeParserAst>;
     };
-};
-
-type PdfParseConstructor = new (options: { data: Buffer | Uint8Array }) => {
-    getText(): Promise<{ text?: string; total?: number; pages?: Array<{ num: number; text: string }> }>;
-    destroy(): Promise<void>;
-};
-
-type PdfParseModule = {
-    PDFParse: PdfParseConstructor;
 };
 
 export type PreparedDocumentAnalysisInput =
@@ -340,12 +331,6 @@ function requireUsefulText(text: string, code = "DOCUMENT_TEXT_EXTRACTION_EMPTY"
         throw new Error(`${code}: extracted text is empty`);
     }
     return normalized;
-}
-
-async function loadPdfParse() {
-    const requireFromHere = createRequire(import.meta.url);
-    const pdfParse = requireFromHere("pdf-parse") as PdfParseModule;
-    return pdfParse.PDFParse;
 }
 
 export async function extractPdfText(buffer: Buffer) {
