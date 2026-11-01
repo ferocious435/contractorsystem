@@ -21,13 +21,14 @@ List every unreadable or uncertain region in uncertainties. Do not infer missing
 
 export async function readVisualSource(manifest:SourceManifest,scope:ReadingScope,execution:AiExecutionContext):Promise<{units:VerifiedUnit[];issues:string[]}> {
     if(!validUuid(execution.jobId)||execution.ownerId!==scope.ownerId||execution.projectId!==scope.projectId||manifest.sourceHash!==scope.sourceHash)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+    if(manifest.units.length===0)return {units:[],issues:[...manifest.issues]};
     const root=path.resolve(getRuntimeDirectory()),job=path.join(root,'jobs',execution.jobId),directory=path.join(job,'visual-read-'+randomUUID());
     await checkedReadingDirectory(root,directory,true);
     const cache=createVisualReadingCache(root),units:VerifiedUnit[]=[],issues=[...manifest.issues];
     try{
         for(const unit of manifest.units){
             await execution.checkActive();
-            const cached=await cache.read(scope,unit);if(cached){units.push(cached);continue;}
+            const cached=await cache.read(scope,unit);if(cached){units.push(cached);await execution.reportProgress({phase:'reading',completedUnits:units.filter(u=>u.complete).length,totalUnits:manifest.units.length});continue;}
             const readings=new Map<string,UnitReading>(),imagesSeen=new WeakMap<UnitReading,NonNullable<VerifiedView['readingImage']>>(),proofs:VerifiedView[]=[],uncertainties:string[]=[];
             async function ask(view:RenderedView,blind:boolean,bytes:Uint8Array=view.bytes):Promise<UnitReading>{
                 await execution.checkActive();
@@ -98,11 +99,12 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
             if(result.complete&&!verifiedReadingUnit(result,unit)){result.complete=false;result.uncertainties.push('Source content is not verified');}
             units.push(result);
             if(result.complete){await execution.checkActive();await cache.write(scope,unit,result);}else issues.push(...result.uncertainties);
+            await execution.reportProgress({phase:'reading',completedUnits:units.filter(u=>u.complete).length,totalUnits:manifest.units.length});
         }
         return {units,issues};
     }finally{
-        const actual=await realpath(directory);
-        if(actual!==directory||!actual.startsWith(job+path.sep)||(await lstat(directory)).isSymbolicLink())throw new BusinessAiError('AI_POLICY_UNSAFE');
+        const actual=await realpath(directory),actualJob=await realpath(job);
+        if(actual!==path.join(actualJob,path.basename(directory))||!actual.startsWith(actualJob+path.sep)||(await lstat(directory)).isSymbolicLink())throw new BusinessAiError('AI_POLICY_UNSAFE');
         await rm(actual,{recursive:true,force:false});
     }
 }

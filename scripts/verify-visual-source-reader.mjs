@@ -12,7 +12,7 @@ const scope={ownerId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',projectId:'bbbbbbbb-
 const jobId='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const manifest=units=>({sourceHash,manifestHash:'2'.repeat(64),format:'PDF',nativeText:'',nativeVerification:null,units,issues:[],assembly:units.map(u=>({kind:'unit',unitId:u.id}))});
 async function unit(id='pdf:1',overrides={}){const bytes=await sharp({create:{width:80,height:50,channels:3,background:'black'}}).png().toBuffer();return readingUnit({id,views:[{id:id+':full',sha256:digest(bytes),bytes,width:80,height:50,rect:{x:0,y:0,width:1,height:1}}],...overrides});}
-function execution(generate,extra={}){return {jobId,ownerId:scope.ownerId,projectId:scope.projectId,profile:{ownerId:scope.ownerId,accountFingerprint:'synthetic',model:'fixture',effort:null,revision:1},signal:new AbortController().signal,checkActive:async()=>{},generate,...extra};}
+function execution(generate,extra={}){return {jobId,ownerId:scope.ownerId,projectId:scope.projectId,profile:{ownerId:scope.ownerId,accountFingerprint:'synthetic',model:'fixture',effort:null,revision:1},signal:new AbortController().signal,checkActive:async()=>{},reportProgress:async()=>{},generate,...extra};}
 async function fixture(action){const root=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-visual-reader-')),previous=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=root;try{await action(path.join(root,'ContractorSystem','ai-runtime'));}finally{if(previous===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=previous;assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));await fs.rm(root,{recursive:true,force:true});}}
 function read(...args){assert.equal(typeof api.readVisualSource,'function','Missing existing-runtime visual source reader');return api.readVisualSource(...args);}
 
@@ -58,4 +58,13 @@ test('a_physically_blank_page_is_proved_without_asking_the_model_to_invent_text'
  const value=await unit('pdf:1',{localText:'',views:[{id:'pdf:1:full',sha256:digest(bytes),bytes,width:80,height:50,rect:{x:0,y:0,width:1,height:1}}]});let count=0;
  const result=await read(manifest([value]),scope,execution(async()=>{count++;throw Error('Blank page must not use GPT');}));
  assert.equal(count,0);assert.equal(result.units[0].complete,true);assert.equal(result.units[0].views[0].method,'physical-empty');
+}));
+test('completed_units_are_reported_during_the_reading_pass',async()=>fixture(async()=>{
+ const values=[await unit(),await unit('pdf:2')],progress=[];
+ await read(manifest(values),scope,execution(async input=>{const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);return JSON.stringify(unitResponse(values.find(u=>u.id===region.unitId)));},{reportProgress:async value=>progress.push(value)}));
+ assert.deepEqual(progress.map(p=>p.completedUnits),[1,2]);assert.ok(progress.every(p=>p.phase==='reading'&&p.totalUnits===2));
+}));
+test('native_only_reading_needs_no_model_or_temporary_job_directory',async()=>fixture(async root=>{
+ const result=await read({...manifest([]),format:'DOCX',nativeText:literal},scope,execution(async()=>{throw Error('No image input');}));
+ assert.deepEqual(result.units,[]);await assert.rejects(fs.access(root));
 }));

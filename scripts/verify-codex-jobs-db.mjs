@@ -168,3 +168,36 @@ test('a new financial letter link invalidates a stale reconciliation answer',asy
  const store=api(),ledger='94000000-0000-4000-8000-000000000001',letter='95000000-0000-4000-8000-000000000001';runSql(`insert into public.pricing_ledger(id,project_id,quantity,unit_price_excl_vat,vat_rate) values('${ledger}','${project}',3,.03,.18);insert into public.vo_letters(id,project_id,status) values('${letter}','${project}','DRAFT');`);
  await enqueue(store);const job=await store.claim('worker',Date.now());runSql(`insert into public.vo_letter_items(id,letter_id,ledger_item_id) values('96000000-0000-4000-8000-000000000001','${letter}','${ledger}');`);await assert.rejects(store.complete(job.id,job.leaseToken,prepared),error=>error.code==='AI_CONTEXT_CHANGED');
 });
+
+test('parallel_read_requests_share_one_active_job_with_their_operation',async()=>{
+ const store=api(),payload={documentId:doc,operation:'read_source'};
+ const [a,b]=await Promise.all(['read-a','read-b'].map(key=>store.enqueue(ownerId,project,'document_analysis',payload,key,profile,{clientContextId:doc})));
+ assert.equal(a.id,b.id);assert.equal(a.operation,'read_source');assert.equal(a.state,'QUEUED');
+ const running=await store.claim('reader',Date.now());assert.equal(running.operation,'read_source');
+ assert.equal((await store.listOwned(ownerId,project,'document_analysis',doc))[0].operation,'read_source');
+ await assert.rejects(store.enqueue(ownerId,project,'document_analysis',payload,'changed-profile',{...profile,revision:2},{clientContextId:doc}),e=>e.code==='AI_PROFILE_INVALID');
+ runSql(`update public.documents set extracted_text='Later source' where id='${doc}';`);
+ await assert.rejects(store.enqueue(ownerId,project,'document_analysis',payload,'changed-source',profile,{clientContextId:doc}),e=>e.code==='AI_CONTEXT_CHANGED');
+});
+test('reading_progress_is_lease_bound_and_does_not_change_the_source_revision',async()=>{
+ const store=api();assert.equal(typeof store.reportProgress,'function','Missing lease-bound progress RPC');
+ await store.enqueue(ownerId,project,'document_analysis',{documentId:doc,operation:'read_source'},'read-progress',profile,{clientContextId:doc});
+ const job=await store.claim('reader',Date.now()),before=jsonSql(`select to_jsonb(d) from public.documents d where id='${doc}';`);
+ await store.reportProgress(job.id,job.leaseToken,{phase:'reading',completedUnits:1,totalUnits:3});
+ const now=await store.readOwned(ownerId,project,job.id);assert.deepEqual(now.progress,{phase:'reading',completedUnits:1,totalUnits:3});assert.equal(now.revision,job.revision);
+ assert.deepEqual(jsonSql(`select to_jsonb(d) from public.documents d where id='${doc}';`),before);
+ for(const role of ['anon','authenticated'])assert.throws(()=>runSql("select public.contractor_ai_progress('{}');",{role,userId:ownerId}),/permission denied/);
+ await assert.rejects(store.reportProgress(job.id,job.leaseToken,{phase:'reading',completedUnits:4,totalUnits:3}),e=>e.code==='AI_INPUT_INVALID');
+ assert.throws(()=>runSql(`select public.contractor_ai_progress('${JSON.stringify({id:job.id,leaseToken:job.leaseToken,phase:'reading',completedUnits:4,totalUnits:3})}'::jsonb);`,{role:'service_role'}),/AI_INPUT_INVALID/);
+ await store.cancel(ownerId,job.id,job.revision);
+ await assert.rejects(store.reportProgress(job.id,job.leaseToken,{phase:'reading',completedUnits:2,totalUnits:3}),e=>e.code==='AI_LEASE_LOST');
+});
+test('read_source_final_commit_cannot_write_money_findings_or_manual_analysis',async()=>{
+ const store=api(),item='97000000-0000-4000-8000-000000000001';runSql(`insert into public.pricing_ledger(id,project_id,quantity,unit_price_excl_vat,vat_rate) values('${item}','${project}',3,.03,.18);`);
+ await store.enqueue(ownerId,project,'document_analysis',{documentId:doc,operation:'read_source'},'read-boundary',profile,{clientContextId:doc});const job=await store.claim('reader',Date.now());
+ for(const effect of [{type:'PRICING_EVIDENCE',targetId:item,data:{ai_rationale:'forged'}},{type:'SCAN_FINDING',targetId:doc,data:{description:'forged'}},{type:'DOCUMENT_ANALYSIS',targetId:doc,data:{parsed_json:{financial_data:{total_amount:999}}}}]){
+  const revision=await store.sourceRevision(project,effect.type,effect.targetId);
+  await assert.rejects(store.complete(job.id,job.leaseToken,{result:null,effects:[{...effect,expectedRevision:revision}]}),e=>e.code==='AI_EFFECT_INVALID');
+ }
+ assert.deepEqual(jsonSql(`select parsed_json from public.documents where id='${doc}';`),{});
+});

@@ -8,6 +8,7 @@ import path from 'node:path';
 import {registerHooks} from 'node:module';
 import {prepareDocumentAnalysisInput} from '../src/utils/document-text-extraction.ts';
 import {createAiWorker} from '../src/server/ai/worker.server.ts';
+import {docx,paragraph} from './fixtures/docx-image-fixtures.mjs';
 import {queueFixture,projectId,savedProfile} from './codex-runtime/queue-fixtures.mjs';
 import {pricingReadClient,pricingRows,pricingIds} from './codex-runtime/pricing-fixtures.mjs';
 import {ownerId} from './codex-runtime/fixtures.mjs';
@@ -68,15 +69,16 @@ test('a long saved source stays in the document while job history keeps a small 
 test('a successful new analysis clears an old transport error while keeping owner notes',async()=>{const rows=pricingRows();rows.documents[0].parsed_json={system_error:'LEGACY_KEY_MISSING',system_errors:[{code:'LEGACY_KEY_MISSING'}],ai_degraded:true,owner_note:'תוספת ידנית'};const database=pricingReadClient(rows),fx=queueFixture({onGenerate:async()=>JSON.stringify(reply())}),handler=document.createDocumentHandler({database:()=>database,download:async()=>Buffer.from(body),prepare:async()=>textInput()});let prepared;fx.handler={...handler,async execute(payload,execution){return prepared=await handler.execute(payload,execution);}};await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work},'fresh-doc',savedProfile,{clientContextId:pricingIds.work});await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();const parsed=prepared.effects[0].data.parsed_json;assert.equal(parsed.system_error,undefined);assert.equal(parsed.ai_degraded,undefined);assert.equal(parsed.owner_note,'תוספת ידנית');});
 
 test('a new DOCX analysis preserves exact saved quotes when only table padding changed',async()=>{
- const rows=pricingRows(),file=Buffer.from('same original DOCX bytes'),hash=createHash('sha256').update(file).digest('hex');
+ const cell=text=>'<w:tc>'+paragraph(text)+'</w:tc>';
+ const rows=pricingRows(),file=docx({body:'<w:tbl><w:tr>'+cell('נושא')+cell('מצב')+'</w:tr><w:tr>'+cell('טרפו 705')+cell('ללא אישור')+'</w:tr></w:tbl>',media:{},rels:[]}),hash=createHash('sha256').update(file).digest('hex');
  const saved='| נושא       | מצב       |\n| טרפו 705   | ללא אישור |',rendered='| נושא | מצב |\n| טרפו 705 | ללא אישור |';
  const reading={version:'docx-image-coverage-v1',complete:true,sourceHash:hash,expectedImageReferences:0,images:[],issues:[]};
  Object.assign(rows.documents[0],{title:'handover.docx',extracted_text:saved,content_hash:hash,ocr_status:'COMPLETED',parsed_json:{source_reading:reading}});
  let generatedInput;const fx=queueFixture({onGenerate:async input=>{generatedInput=input.text;return JSON.stringify(reply());}}),handler=document.createDocumentHandler({database:()=>pricingReadClient(rows),download:async()=>file,prepare:async()=>textInput(rendered,{fileBuffer:file,readingVerification:reading,extractionSource:'officeparser_docx'})});
- let result;fx.handler={...handler,async execute(payload,execution){return result=await handler.execute(payload,execution);}};
+ let result,executionError;fx.handler={...handler,async execute(payload,execution){try{return result=await handler.execute(payload,execution);}catch(error){executionError={code:error.code,message:error.message};throw error;}}};
  await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work},'stable-docx',savedProfile,{clientContextId:pricingIds.work});
  await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();
- assert.equal([...fx.rows.values()][0].state,'SUCCEEDED');applyPricingEffects(rows,result);assert.equal(rows.documents[0].extracted_text,saved);assert.equal(rows.documents[0].parsed_json.full_markdown,saved);assert.ok(generatedInput.includes(saved));
+ assert.equal([...fx.rows.values()][0].state,'SUCCEEDED',JSON.stringify(executionError));applyPricingEffects(rows,result);assert.equal(rows.documents[0].extracted_text,saved);assert.equal(rows.documents[0].parsed_json.full_markdown,saved);assert.ok(generatedInput.includes(saved));
 });
 
 test('stable DOCX text never hides a changed file, content or incomplete reading',()=>{

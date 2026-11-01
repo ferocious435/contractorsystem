@@ -1,4 +1,4 @@
-import {assessVisualReading, VISUAL_READING_VERSION} from './visual-source-reading';
+import {assessVisualReading, VISUAL_READING_VERSION,type VisualReadingVerification} from './visual-source-reading';
 
 export type DocumentSourceInput = {
     title?: string | null;
@@ -49,7 +49,7 @@ export type RenderedEmptyPageProof = {
     numberConfidence?: number;
     numberBounds?: Array<{ x0: number; y0: number; x1: number; y1: number }>;
 };
-export type DocumentReadingVerification = PdfReadingVerification | DocxReadingVerification;
+export type DocumentReadingVerification = PdfReadingVerification | DocxReadingVerification | VisualReadingVerification;
 
 export type ExtractedPdfPage = { num: number; text: string };
 export type RecognizedPdfPage = { page: number; text: string; confidence: number; requiresVisualReview?: boolean; emptyPageProof?: RenderedEmptyPageProof };

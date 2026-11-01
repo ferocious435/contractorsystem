@@ -47,7 +47,7 @@ export type OwnedSourceDocument = DocumentSourceInput & Record<string,unknown> &
 export type ReadingTextVersion = {sourceHash:string;textHash:string;text:string;reading:unknown;visualDescriptions?:VisualDescription[]};
 export type VisualDescription = {unitId:string;location:ReadingLocation;text:string};
 export type ReadingAssembly = {text:string;textHash:string;verification:VisualReadingVerification;units:VerifiedUnit[];visualDescriptions:VisualDescription[]};
-export type DocumentReadingPatch = Pick<OwnedSourceDocument,'extracted_text'|'extracted_text_hash'|'ocr_status'|'parsed_json'|'processed_at'>;
+export type DocumentReadingPatch = {extracted_text:string;extracted_text_hash:string;ocr_status:'COMPLETED'|'REQUIRES_REVIEW';parsed_json:Record<string,unknown>;processed_at:string};
 export type EffectiveDocumentReading = {text:string;textHash:string;sourceHash:string;visualDescriptions:VisualDescription[];ready:boolean};
 export type ReadingDetail = EffectiveDocumentReading & {current:boolean;reading:unknown;versions:Array<Omit<ReadingTextVersion,'text'|'reading'>>};
 export type DocumentJobOptions = {signal?:AbortSignal;onAccepted?:(job:JobDto)=>void};

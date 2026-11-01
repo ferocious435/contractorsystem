@@ -1,7 +1,7 @@
 import 'server-only';
 import {createHash} from 'node:crypto';
 import {createAdminClient} from '@/utils/supabase/admin';
-import {BusinessAiError,record,validUuid,type AiJobKind,type AiJobState,type JobDto,type JsonObject,type JsonValue,type PreparedAiResult,type RuntimeProfile} from './contracts';
+import {BusinessAiError,record,validUuid,type AiJobKind,type AiJobState,type JobDto,type JsonObject,type JsonValue,type PreparedAiResult,type RuntimeProfile,type DocumentJobProgress} from './contracts';
 
 const kinds=new Set(['letter','consultant','scan','scan_preview','pricing','work_change','support_enrichment','document_analysis']);
 const states=new Set(['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED']);
@@ -20,9 +20,19 @@ function canonical(value:unknown):string {
 }
 function dto(value:unknown):JobDto {
     if(!record(value)||!validUuid(value.id)||!validUuid(value.project_id)||!kinds.has(String(value.kind))||!states.has(String(value.state))||!Number.isSafeInteger(value.revision))throw new BusinessAiError('AI_JOB_INVALID');
+    const operation=record(value.payload)?value.payload.operation??'analyze':'analyze';
+    if(value.kind==='document_analysis'&&!['analyze','read_source'].includes(String(operation)))throw new BusinessAiError('AI_JOB_INVALID');
+    const progress=value.kind==='document_analysis'&&record(value.progress)&&Object.keys(value.progress).length?checkedProgress(value.progress):undefined;
     return {id:value.id,projectId:value.project_id,kind:value.kind as AiJobKind,state:value.state as AiJobState,revision:Number(value.revision),
         conversationId:typeof value.conversation_id==='string'?value.conversation_id:null,clientContextId:typeof value.client_context_id==='string'?value.client_context_id:null,
-        result:(value.result??null) as JsonValue,error:record(value.error)&&typeof value.error.code==='string'&&typeof value.error.message==='string'?{code:value.error.code,message:value.error.message}:null};
+        result:(value.result??null) as JsonValue,error:record(value.error)&&typeof value.error.code==='string'&&typeof value.error.message==='string'?{code:value.error.code,message:value.error.message}:null,
+        ...(value.kind==='document_analysis'?{operation:operation as 'analyze'|'read_source',...(progress?{progress}:{})}:{})};
+}
+function checkedProgress(value:unknown):DocumentJobProgress {
+    if(!record(value)||Object.keys(value).some(key=>!['phase','completedUnits','totalUnits'].includes(key))||!['reading','analysis'].includes(String(value.phase))
+        ||!Number.isSafeInteger(value.completedUnits)||!Number.isSafeInteger(value.totalUnits)||(value.completedUnits as number)<0
+        ||(value.totalUnits as number)<0||(value.totalUnits as number)>10000||(value.completedUnits as number)>(value.totalUnits as number))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
+    return value as unknown as DocumentJobProgress;
 }
 function ids(...values:unknown[]){if(values.some(value=>!validUuid(value)))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);}
 const safeError='העוזר לא השלים את הפעולה. הנתונים נשמרו.';
@@ -48,6 +58,7 @@ export function createAiJobStore(transport:RpcTransport) {
         return {...dto(row),ownerId:row.owner_id,payload:row.payload as JsonObject,profile:row.profile_snapshot as unknown as RuntimeProfile,requestKey:String(row.request_key),inputHash:String(row.input_hash),contextSnapshot:row.context_snapshot as JsonObject,leaseToken:row.lease_token,leaseExpiresAt:String(row.lease_expires_at),attempt:Number(row.attempt)};
     }
     async function heartbeat(id:string,leaseToken:string):Promise<void>{ids(id,leaseToken);if(await rpc('heartbeat',{id,leaseToken})!==true)throw new BusinessAiError('AI_LEASE_LOST',undefined,409);}
+    async function reportProgress(id:string,leaseToken:string,progress:DocumentJobProgress):Promise<void>{ids(id,leaseToken);const checked=checkedProgress(progress);if(await rpc('progress',{id,leaseToken,...checked})!==true)throw new BusinessAiError('AI_LEASE_LOST',undefined,409);}
     async function complete(id:string,leaseToken:string,prepared:PreparedAiResult):Promise<boolean>{ids(id,leaseToken);canonical(prepared);return await rpc('complete',{id,leaseToken,result:prepared.result,effects:prepared.effects as unknown as JsonValue})===true;}
     async function fail(id:string,leaseToken:string,error:{code:string;message:string}):Promise<boolean>{ids(id,leaseToken);return await rpc('fail',{id,leaseToken,error:{code:/^AI_[A-Z_]{1,60}$/.test(error.code)?error.code:'AI_FAILED',message:safeError}})===true;}
     async function cancel(ownerId:string,id:string,expectedRevision:number):Promise<JobDto>{ids(ownerId,id);if(!Number.isSafeInteger(expectedRevision)||expectedRevision<1)throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);return dto(await rpc('cancel',{ownerId,id,expectedRevision}));}
@@ -55,7 +66,7 @@ export function createAiJobStore(transport:RpcTransport) {
     async function readOwned(ownerId:string,projectId:string,id:string):Promise<JobDto|null>{ids(ownerId,projectId,id);const row=await rpc('read',{ownerId,projectId,id});return row===null?null:dto(row);}
     async function listOwned(ownerId:string,projectId:string,kind:AiJobKind,clientContextId?:string):Promise<JobDto[]>{ids(ownerId,projectId);if(!kinds.has(kind))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);if(clientContextId!==undefined)ids(clientContextId);const rows=await rpc('list',{ownerId,projectId,kind,clientContextId:clientContextId??null});if(!Array.isArray(rows))throw new BusinessAiError('AI_JOB_INVALID');return rows.map(dto);}
     async function sourceRevision(projectId:string,type:string,targetId:string):Promise<string>{ids(projectId,targetId);if(!['SCAN_FINDING','SCAN_STATE','PRICING_EVIDENCE','DOCUMENT_ANALYSIS'].includes(type))throw new BusinessAiError('AI_EFFECT_INVALID',undefined,400);const value=await rpc('source_revision',{projectId,type,targetId});if(typeof value!=='string')throw new BusinessAiError('AI_JOB_INVALID');return value;}
-    return {enqueue,claim,heartbeat,complete,fail,cancel,interruptStale,readOwned,listOwned,sourceRevision};
+    return {enqueue,claim,heartbeat,reportProgress,complete,fail,cancel,interruptStale,readOwned,listOwned,sourceRevision};
 }
 export type AiJobStore=ReturnType<typeof createAiJobStore>;
 let shared:AiJobStore|undefined;

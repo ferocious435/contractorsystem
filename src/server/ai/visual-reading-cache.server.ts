@@ -13,7 +13,7 @@ const samePath=(a:string,b:string)=>process.platform==='win32'?a.toLowerCase()==
 export async function checkedReadingDirectory(root:string,directory:string,create=false):Promise<boolean> {
     const absolute=path.resolve(directory),base=path.resolve(root);
     if(absolute!==base&&!absolute.startsWith(base+path.sep))throw new BusinessAiError('AI_POLICY_UNSAFE');
-    let cursor=path.parse(absolute).root;
+    let cursor=path.parse(absolute).root,canonicalBase:string|undefined;
     for(const segment of absolute.slice(cursor.length).split(path.sep).filter(Boolean)){
         cursor=path.join(cursor,segment);
         let info;try{info=await lstat(cursor);}catch(error){
@@ -22,7 +22,12 @@ export async function checkedReadingDirectory(root:string,directory:string,creat
             try{await mkdir(cursor,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
             info=await lstat(cursor);
         }
-        if(!info.isDirectory()||info.isSymbolicLink()||!samePath(await realpath(cursor),cursor))throw new BusinessAiError('AI_POLICY_UNSAFE');
+        if(!info.isDirectory()||info.isSymbolicLink())throw new BusinessAiError('AI_POLICY_UNSAFE');
+        const actual=await realpath(cursor);
+        // Windows packaged apps redirect LocalAppData without a filesystem symlink.
+        // Bind the real root once, then require every owned descendant to stay beneath it.
+        if(samePath(cursor,base))canonicalBase=actual;
+        else if(canonicalBase&&!samePath(actual,path.join(canonicalBase,path.relative(base,cursor))))throw new BusinessAiError('AI_POLICY_UNSAFE');
     }
     return true;
 }
@@ -81,7 +86,7 @@ export function createVisualReadingCache(root:string) {
         async read(scope:ReadingScope,unit:ReadingUnit):Promise<VerifiedUnit|null>{
             const file=filename(scope,unit);if(!await checkedReadingDirectory(absolute,path.dirname(file)))return null;
             try{
-                const info=await lstat(file);if(info.isSymbolicLink()||!info.isFile()||info.size>maxBytes||!samePath(await realpath(file),file))return null;
+                const info=await lstat(file);if(info.isSymbolicLink()||!info.isFile()||info.size>maxBytes||!samePath(await realpath(file),path.join(await realpath(path.dirname(file)),path.basename(file))))return null;
                 const payload:unknown=JSON.parse(await readFile(file,'utf8'));
                 if(!record(payload)||!record(payload.scope))return null;
                 const savedScope=payload.scope;

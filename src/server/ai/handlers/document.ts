@@ -6,7 +6,9 @@ import path from 'node:path';
 import type {SupabaseClient} from '@supabase/supabase-js';
 import {createAdminClient} from '@/utils/supabase/admin';
 import {downloadDocumentBuffer} from '@/utils/document-storage';
-import {prepareDocumentAnalysisInput,type PreparedDocumentAnalysisInput} from '@/utils/document-text-extraction';
+import {prepareDocumentAnalysisInput,makeTextInput,type PreparedDocumentAnalysisInput} from '@/utils/document-text-extraction';
+import {stageDocumentReading} from './document-reading';
+import {VISUAL_READING_VERSION,type OwnedSourceDocument} from '@/utils/visual-source-reading';
 import {assessDocumentSourceReadiness} from '@/utils/document-source-readiness';
 import {preserveStableDocumentText} from '@/utils/stable-document-reading';
 import {prepareDocumentAiInput,type DocumentAiProfile} from '@/utils/document-ai-input';
@@ -34,7 +36,8 @@ export function validateDocumentAnalysis(raw:string,savedReading:SavedReading):J
     const text=savedReading.kind==='text'?savedReading.extractedText:value.full_markdown;
     if(!text.trim())throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
     const reading=savedReading.kind==='text'?savedReading.readingVerification:undefined;
-    const readiness=assessDocumentSourceReadiness({title:savedReading.title,extracted_text:text,ocr_status:'COMPLETED',parsed_json:reading?{source_reading:reading}:{}});
+    const readiness=assessDocumentSourceReadiness({title:savedReading.title,extracted_text:text,extracted_text_hash:digest(text),
+        content_hash:reading?.version===VISUAL_READING_VERSION?reading.sourceHash:undefined,ocr_status:'COMPLETED',parsed_json:reading?{source_reading:reading}:{}});
     const uncertain=savedReading.kind==='direct'||savedReading.kind==='text'&&savedReading.requiresReview===true||!readiness.extractionComplete;
     const sourceReading=reading&&reading.version==='page-coverage-v1'&&!readiness.extractionComplete?{...reading,complete:false}:reading;
     const partial=uncertain||savedReading.wasTruncated;
@@ -48,11 +51,20 @@ export function validateDocumentAnalysis(raw:string,savedReading:SavedReading):J
 }
 type Options={database?:()=>SupabaseClient;download?:typeof downloadDocumentBuffer;prepare?:typeof prepareDocumentAnalysisInput;runtimeDir?:string;models?:()=>Promise<unknown>};
 export function createDocumentHandler({database=createAdminClient,download=downloadDocumentBuffer,prepare=prepareDocumentAnalysisInput,runtimeDir=getRuntimeDirectory(),models=()=>getCodexClient().request('model/list',{includeHidden:false,limit:100})}:Options={}):AiJobHandler{return {
-    validate(raw){if(!record(raw)||Object.keys(raw).some(key=>key!=='documentId')||!validUuid(raw.documentId))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);return {documentId:raw.documentId};},
+    validate(raw){if(!record(raw)||Object.keys(raw).some(key=>!['documentId','operation'].includes(key))||!validUuid(raw.documentId)||raw.operation!==undefined&&!['analyze','read_source'].includes(String(raw.operation)))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);return {documentId:raw.documentId,...(raw.operation!==undefined?{operation:raw.operation as string}:{})};},
     async execute(payload,execution):Promise<PreparedAiResult>{const transaction=await createProjectEffectClient(database(),execution),client=transaction.client;
-        const found=await client.from('documents').select('*').eq('id',payload.documentId).eq('project_id',execution.projectId).maybeSingle();if(found.error||!found.data)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');const document=found.data;
-        if(document.ai_status==='VALIDATED')return {result:{success:false,partial:true,alreadyValidated:true,documentId:document.id,ai_status:'VALIDATED',message:'הנתונים אושרו ידנית ונשמרו. לא בוצע ניתוח חוזר.'},effects:[]};
-        const file=await download(client,document),prepared=preserveStableDocumentText(await prepare(file,String(document.title||'')),document,digest(file));await execution.checkActive();
+        const found=await client.from('documents').select('*').eq('id',payload.documentId).eq('project_id',execution.projectId).maybeSingle();if(found.error||!found.data)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');let document=found.data as OwnedSourceDocument;
+        const operation=payload.operation??'analyze';
+        if(document.ai_status==='VALIDATED'&&operation!=='read_source')return {result:{success:false,partial:true,alreadyValidated:true,documentId:document.id,ai_status:'VALIDATED',message:'הנתונים אושרו ידנית ונשמרו. לא בוצע ניתוח חוזר.'},effects:[]};
+        const file=await download(client,document);
+        if(document.content_hash&&document.content_hash!==digest(file))throw new BusinessAiError('AI_SOURCE_CHANGED',undefined,409);
+        const visual=operation==='read_source'||[document.title,document.storage_path].some(value=>/\.(?:pdf|docx)(?:$|[?#])/i.test(String(value||'')))||file.subarray(0,1024).toString('latin1').includes('%PDF-');
+        const staged=visual?await stageDocumentReading({client,document,file,execution}):null;
+        if(staged)document=staged.document;
+        const effects=async()=>{const values=await transaction.effects();if(values.some(e=>e.type!=='DOCUMENT_ANALYSIS'||e.targetId!==document.id))throw new BusinessAiError('AI_EFFECT_INVALID');return values;};
+        if(operation==='read_source')return {result:{success:staged!.reading.verification.complete,partial:!staged!.reading.verification.complete,readingSaved:true,cached:staged!.cached,documentId:document.id,ai_status:document.ai_status??'PENDING',textHash:staged!.reading.textHash,readUnits:staged!.reading.verification.expectedUnits.filter(u=>u.status==='READ').length,totalUnits:staged!.reading.verification.expectedUnits.length},effects:await effects()};
+        const prepared=staged?makeTextInput(file,'codex_visual_source_reading',String(document.extracted_text||''),{readingVerification:staged.reading.verification,requiresReview:!staged.reading.verification.complete})
+            :preserveStableDocumentText(await prepare(file,String(document.title||'')),document,digest(file));await execution.checkActive();
         if(prepared.kind==='direct'&&!prepared.mimeType.startsWith('image/'))throw new BusinessAiError('AI_INPUT_UNSUPPORTED',undefined,422);
         const previous=record(document.parsed_json)?document.parsed_json:{};
         const inputHash=digest(JSON.stringify({version:DOCUMENT_ANALYSIS_VERSION,prompt:DOCUMENT_ANALYSIS_PROMPT,schema:DOCUMENT_ANALYSIS_SCHEMA,projectId:execution.projectId,documentId:document.id,title:document.title,category:document.category,file:digest(file),text:digest(prepared.extractedText),aiText:digest(prepared.aiText),truncated:prepared.wasTruncated,reading:prepared.kind==='text'?prepared.readingVerification??null:null}));
@@ -65,12 +77,23 @@ export function createDocumentHandler({database=createAdminClient,download=downl
         if(prepared.kind==='direct'){const catalog=await models(),rows=record(catalog)&&Array.isArray(catalog.data)?catalog.data:[];const selected=rows.find(row=>record(row)&&row.model===execution.profile.model);profile.images=record(selected)&&Array.isArray(selected.inputModalities)&&selected.inputModalities.includes('image');}
         const root=path.resolve(runtimeDir),directory=path.join(root,'jobs',execution.jobId);let created=false;
         try{if(prepared.kind==='direct'){if(!validUuid(execution.jobId))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);await mkdir(path.dirname(directory),{recursive:true});await mkdir(directory,{mode:0o700});created=true;}
-            const input=await prepareDocumentAiInput(prepared,profile,directory),analysis=validateDocumentAnalysis(await execution.generate(input),{...prepared,title:String(document.title||'')});await execution.checkActive();
+            if(staged)await execution.reportProgress({phase:'analysis',completedUnits:0,totalUnits:1});
+            const input=await prepareDocumentAiInput(prepared,profile,directory);
+            let analysis:JsonObject;
+            try{analysis=validateDocumentAnalysis(await execution.generate(input),{...prepared,title:String(document.title||'')});}
+            catch(error){
+                if(staged&&!staged.cached&&error instanceof BusinessAiError&&['AI_RESPONSE_INVALID','AI_RESPONSE_INCOMPLETE','AI_SOURCE_UNVERIFIED','AI_FACT_UNVERIFIED','AI_AMOUNT_UNVERIFIED','AI_QUOTE_UNVERIFIED'].includes(error.code)){
+                    await execution.checkActive();return {result:{success:false,partial:true,readingSaved:true,documentId:document.id,ai_status:document.ai_status??'PENDING',analysisStatus:'PARTIAL'},effects:await effects()};
+                }
+                throw error;
+            }
+            await execution.checkActive();
             analysis.analysis_input_hash=inputHash;
             const fullText=String(analysis.full_markdown),complete=analysis.analysis_status==='COMPLETE';
             const retained=Object.fromEntries(Object.entries(previous).filter(([key])=>!['source_reading','system_error','system_errors','ai_degraded'].includes(key))),parsed={...retained,...analysis};
             const saved=await client.from('documents').update({parsed_json:parsed,ai_status:complete?'SCANNED':'PENDING',extracted_text:fullText,content_hash:digest(file),extracted_text_hash:digest(fullText),ocr_status:analysis.reading_requires_review?'REQUIRES_REVIEW':'COMPLETED',processed_at:new Date().toISOString()}).eq('id',document.id).eq('project_id',execution.projectId);if(saved.error)throw saved.error;
-            return {result:{success:complete,partial:!complete,documentId:document.id,ai_status:complete?'SCANNED':'PENDING',autoValidated:false,inputHash,analysisStatus:analysis.analysis_status},effects:await transaction.effects()};
+            if(staged)await execution.reportProgress({phase:'analysis',completedUnits:1,totalUnits:1});
+            return {result:{success:complete,partial:!complete,documentId:document.id,ai_status:complete?'SCANNED':'PENDING',autoValidated:false,inputHash,analysisStatus:analysis.analysis_status},effects:await effects()};
         }finally{if(created){const actualRoot=await realpath(root),actualDirectory=await realpath(directory);if(actualDirectory!==path.join(actualRoot,'jobs',execution.jobId)||!actualDirectory.startsWith(actualRoot+path.sep))throw new BusinessAiError('AI_POLICY_UNSAFE');await rm(actualDirectory,{recursive:true,force:false});}}
     }
 };}

@@ -58,7 +58,7 @@ function readingVersions(saved:OwnedSourceDocument):ReadingTextVersion[] {
 }
 
 export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAssembly):DocumentReadingPatch {
-    if(!validReadingHash(saved.content_hash)||reading.verification.sourceHash!==saved.content_hash||reading.textHash!==hash(reading.text))throw Error('Reading does not match the saved source');
+    if(!validReadingHash(reading.verification.sourceHash)||saved.content_hash&&reading.verification.sourceHash!==saved.content_hash||reading.textHash!==hash(reading.text))throw Error('Reading does not match the saved source');
     const parsed=json(saved),before=currentVersion(saved),retainPrevious=!reading.verification.complete&&before.text.length>0;
     const text=retainPrevious?before.text:reading.text,textHash=hash(text);
     const history=Array.isArray(parsed.source_reading_history)?[...parsed.source_reading_history]:[];

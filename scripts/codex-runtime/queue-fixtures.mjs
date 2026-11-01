@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {ownerId,selectedModel} from './fixtures.mjs';
 export const projectId='30000000-0000-4000-8000-000000000003';
 export const savedProfile={ownerId,model:selectedModel,effort:null,revision:1,accountFingerprint:'a'.repeat(64)};
-const publicJob=j=>Object.fromEntries(['id','projectId','kind','state','revision','conversationId','clientContextId','result','error'].map(key=>[key,structuredClone(j[key])]));
+const publicJob=j=>({...Object.fromEntries(['id','projectId','kind','state','revision','conversationId','clientContextId','result','error'].map(key=>[key,structuredClone(j[key])])),...(j.kind==='document_analysis'?{operation:j.payload.operation??'analyze',...(j.progress?{progress:structuredClone(j.progress)}:{})}:{})});
 const failure=code=>Object.assign(Error('synthetic'),{code});
 export function queueFixture({now=()=>1000,onGenerate}={}){
   const rows=new Map();let active=null;const fx={rows,modelTurns:0,parallel:0,maxParallel:0};
@@ -11,6 +11,7 @@ export function queueFixture({now=()=>1000,onGenerate}={}){
       const j={id:randomUUID(),ownerId:owner,projectId:project,kind,payload,requestKey:key,inputHash:'hash',profile:structuredClone(profile),contextSnapshot:{},state:'QUEUED',revision:1,attempt:0,leaseToken:null,leaseExpiresAt:null,createdAt:now(),conversationId:context.conversationId??null,clientContextId:context.clientContextId??null,result:null,error:null};rows.set(j.id,j);return publicJob(j);},
     async claim(){if(active)return null;const j=[...rows.values()].find(j=>j.state==='QUEUED');if(!j)return null;j.state='RUNNING';j.revision++;j.attempt++;j.leaseToken=randomUUID();j.leaseExpiresAt=new Date(now()+30000).toISOString();active=j.id;return structuredClone(j);},
     async heartbeat(id,lease){const j=rows.get(id);if(active!==id||j.state!=='RUNNING'||j.leaseToken!==lease)throw failure('AI_LEASE_LOST');j.leaseExpiresAt=new Date(now()+30000).toISOString();},
+    async reportProgress(id,lease,progress){const j=rows.get(id);if(active!==id||j.state!=='RUNNING'||j.leaseToken!==lease)throw failure('AI_LEASE_LOST');j.progress=structuredClone(progress);},
     async complete(id,lease,prepared){const j=rows.get(id);if(active!==id||j.state!=='RUNNING'||j.leaseToken!==lease)return false;j.result=structuredClone(prepared.result);j.state='SUCCEEDED';j.revision++;active=null;return true;},
     async fail(id,lease,error){const j=rows.get(id);if(active!==id||j.state!=='RUNNING'||j.leaseToken!==lease)return false;j.state='FAILED';j.error=structuredClone(error);j.revision++;active=null;return true;},
     async cancel(owner,id,revision){const j=rows.get(id);if(!j||j.ownerId!==owner)throw failure('AI_ACCESS_DENIED');if(j.revision!==revision)throw failure('AI_JOB_CONFLICT');j.state='CANCELLED';j.revision++;j.leaseToken=null;if(active===id)active=null;return publicJob(j);},

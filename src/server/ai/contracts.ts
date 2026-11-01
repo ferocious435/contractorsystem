@@ -10,7 +10,9 @@ export interface JobDto {
     id:string; projectId:string; kind:AiJobKind; state:AiJobState; revision:number;
     conversationId:string|null; clientContextId:string|null; result:JsonValue|null;
     error:{code:string;message:string}|null;
+    operation?:'analyze'|'read_source';progress?:DocumentJobProgress;
 }
+export interface DocumentJobProgress {phase:'reading'|'analysis';completedUnits:number;totalUnits:number;}
 export interface AiTurnInput {text:string; images?:readonly string[]; outputSchema:Record<string,unknown>;}
 export interface VerifiedAiEffect {
     type:'SCAN_FINDING'|'SCAN_STATE'|'PRICING_EVIDENCE'|'DOCUMENT_ANALYSIS';
@@ -20,6 +22,7 @@ export interface PreparedAiResult {result:JsonValue; effects:readonly VerifiedAi
 export interface AiExecutionContext {
     jobId:string; ownerId:string; projectId:string; profile:RuntimeProfile; signal:AbortSignal;
     generate(input:AiTurnInput):Promise<string>; checkActive():Promise<void>;
+    reportProgress(progress:DocumentJobProgress):Promise<void>;
 }
 export interface AiJobHandler {
     validate(payload:unknown):JsonObject;
