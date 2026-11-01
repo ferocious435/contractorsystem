@@ -21,11 +21,16 @@ export const jsonSql=(sql,options)=>{const raw=runSql(sql,options);return raw?JS
 const rpcNames=new Set(['contractor_ai_enqueue','contractor_ai_claim','contractor_ai_heartbeat','contractor_ai_progress','contractor_ai_complete','contractor_ai_fail','contractor_ai_cancel','contractor_ai_interrupt_stale','contractor_ai_read','contractor_ai_list','contractor_ai_source_revision']);
 export function databaseTransport(){return {async rpc(name,{p}){if(!rpcNames.has(name))throw Error('Unexpected test RPC');try{const raw=await runSqlAsync(`select public.${name}(:'body'::jsonb);`,{role:'service_role',params:{body:JSON.stringify(p)}});return {data:raw?JSON.parse(raw):null,error:null};}catch(error){return {data:null,error:{code:error.code,message:error.message}};}}};}
 export function migrationPath(){const paths=readdirSync('supabase/migrations').filter(p=>/^\d+_codex_runtime_jobs\.sql$/.test(p));if(paths.length>1)throw Error('Ambiguous runtime migration');return paths[0]?'supabase/migrations/'+paths[0]:null;}
+export async function waitForTestDatabase(targetId,invoke=docker,sleep=delay){
+  // The image's temporary initialization server accepts only Unix sockets.
+  // Wait for TCP inside this isolated container so its final restart is complete.
+  for(let i=0;i<50;i++){try{invoke(['exec',targetId,'pg_isready','-h','127.0.0.1','-U','postgres','-d','runtime']);return;}catch(error){if(i===49)throw error;await sleep(200);}}
+}
 export async function prepare(){
   docker(['image','inspect','postgres:17.6']); // An absent image is an error, never a request to download one.
   let present=false;try{docker(['inspect',containerName]);present=true;}catch{}
   if(!present)docker(['run','-d','--rm','--pull=never','--name',containerName,'--label','contractorsystem.test-task='+label,'--label','contractorsystem.synthetic-only=true','--network','none','-e','POSTGRES_HOST_AUTH_METHOD=trust','-e','POSTGRES_DB=runtime','postgres:17.6']);
-  const target=verifyTarget();for(let i=0;i<50;i++){try{docker(['exec',containerName,'pg_isready','-U','postgres','-d','runtime']);break;}catch(error){if(i===49)throw error;await delay(200);}}
+  const target=verifyTarget();await waitForTestDatabase(target.Id);
   if(runSql("select to_regclass('public.projects') is not null;")!=='t')runSql(readFileSync('scripts/fixtures/codex-runtime-db.sql','utf8'));
   runSql(readFileSync('scripts/fixtures/codex-runtime-source-tables.sql','utf8'));
   const migration=migrationPath();if(migration&&readFileSync(migration,'utf8').trim())runSql(readFileSync(migration,'utf8'));

@@ -3,6 +3,7 @@
 import {execFileSync} from 'node:child_process';
 
 const suites=[
+    'scripts/verify-test-db-startup.mjs',
     'scripts/verify-codex-documents.mjs',
     'scripts/verify-visual-source-contracts.mjs',
     'scripts/verify-visual-source-manifest.mjs',
