@@ -2,14 +2,14 @@ import 'server-only';
 import {createHash} from 'node:crypto';
 import type {SupabaseClient} from '@supabase/supabase-js';
 import {BusinessAiError,record,type AiExecutionContext} from '../contracts';
-import {readVisualSource} from '../visual-source-reader.server';
-import {createVisualReadingCache,reverifySavedNumericUnit} from '../visual-reading-cache.server';
+import {readVisualSource,reverifySavedPhysicalUnit} from '../visual-source-reader.server';
+import {createVisualReadingCache,reverifySavedNumericUnit,retainedReadingUnit} from '../visual-reading-cache.server';
 import {getRuntimeDirectory} from '../codex-client.server';
 import {buildVisualSourceManifest} from '@/utils/visual-source-manifest';
 import {assembleDocumentReading,createReadingPatch,getCurrentDocumentReading,hasSavedVisualReading} from '@/utils/document-reading-history';
 import {preserveStableDocumentText} from '@/utils/stable-document-reading';
 import {makeTextInput} from '@/utils/document-text-extraction';
-import {assessVisualReading,VISUAL_READING_VERSION,VISUAL_READING_RULES,type OwnedSourceDocument,type ReadingAssembly} from '@/utils/visual-source-reading';
+import {assessVisualReading,VISUAL_READING_VERSION,VISUAL_READING_RULES,type OwnedSourceDocument,type ReadingAssembly,type VerifiedUnit} from '@/utils/visual-source-reading';
 import type {DocxReadingVerification} from '@/utils/document-source-readiness';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -32,12 +32,19 @@ export async function stageDocumentReading({client,document,file,execution}:{cli
     }
     await execution.reportProgress({phase:'reading',completedUnits:0,totalUnits:manifest.units.length});
     const scope={ownerId:execution.ownerId,projectId:execution.projectId,documentId:document.id,sourceHash};
+    let repaired:VerifiedUnit[]|null=null;
     if(hasSavedVisualReading(document,sourceHash)&&Array.isArray(parsed.source_reading_units)){
-        for(const unit of manifest.units){const previous=parsed.source_reading_units.find(value=>record(value)&&value.unitId===unit.id),checked=reverifySavedNumericUnit(previous,unit);
-            if(checked){await execution.checkActive();await createVisualReadingCache(getRuntimeDirectory()).write(scope,unit,checked);}
+        const retained:VerifiedUnit[]=[];let canRetain=record(parsed.source_reading)&&parsed.source_reading.manifestHash===manifest.manifestHash,hasRepair=false;
+        for(const unit of manifest.units){
+            const previous=parsed.source_reading_units.find(value=>record(value)&&value.unitId===unit.id),saved=retainedReadingUnit(previous,unit);
+            if(!saved){canRetain=false;continue;}
+            const checked=reverifySavedNumericUnit(saved,unit)??await reverifySavedPhysicalUnit(saved,unit,execution),next=checked??saved;
+            retained.push(next);if(checked)hasRepair=true;
+            if(next.complete){await execution.checkActive();await createVisualReadingCache(getRuntimeDirectory()).write(scope,unit,next);}
         }
+        if(canRetain&&hasRepair&&retained.length===manifest.units.length)repaired=retained;
     }
-    const result=await readVisualSource(manifest,scope,execution);
+    const result=repaired?{units:repaired,issues:[...manifest.issues,...repaired.flatMap(unit=>unit.complete?[]:unit.uncertainties)]}:await readVisualSource(manifest,scope,execution);
     const reading=assembleDocumentReading(manifest,result.units);
     reading.verification.createdBy={jobId:execution.jobId,rulesVersion:VISUAL_READING_RULES,profileRevision:execution.profile.revision};
     reading.verification.issues=[...new Set([...reading.verification.issues,...result.issues])];

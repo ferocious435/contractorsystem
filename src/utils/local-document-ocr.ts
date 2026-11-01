@@ -123,14 +123,15 @@ export async function ensureLocalOcrLanguageData() {
 }
 
 /** Read an embedded image with the same offline engine and language files as PDF OCR. */
-export async function extractImageTextLocally(imageBuffer: Buffer): Promise<{ text: string; confidence: number }> {
+export async function extractImageTextLocally(imageBuffer: Buffer): Promise<{ text: string; confidence: number; words: OcrWord[] }> {
     const languageDataPath = await ensureLocalOcrLanguageData();
     const worker = await createWorker(LOCAL_OCR_LANGUAGES, 1, {
         langPath: languageDataPath, cachePath: languageDataPath, logger: () => undefined,
     });
     try {
-        const result = await worker.recognize(imageBuffer);
-        return { text: String(result.data.text || '').trim(), confidence: result.data.confidence };
+        const result = await worker.recognize(imageBuffer, {}, { blocks: true });
+        const words = result.data.blocks?.flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines.flatMap(line => line.words))) || [];
+        return { text: String(result.data.text || '').trim(), confidence: result.data.confidence, words };
     } finally {
         await worker.terminate();
     }

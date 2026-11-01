@@ -11,7 +11,7 @@ const api=await load('../src/server/ai/visual-source-reader.server.ts'),cacheApi
 const scope={ownerId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',projectId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',documentId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',sourceHash};
 const jobId='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const manifest=units=>({sourceHash,manifestHash:'2'.repeat(64),format:'PDF',nativeText:'',nativeVerification:null,units,issues:[],assembly:units.map(u=>({kind:'unit',unitId:u.id}))});
-async function unit(id='pdf:1',overrides={}){const bytes=await sharp({create:{width:80,height:50,channels:3,background:'black'}}).png().toBuffer();return readingUnit({id,views:[{id:id+':full',sha256:digest(bytes),bytes,width:80,height:50,rect:{x:0,y:0,width:1,height:1}}],...overrides});}
+async function unit(id='pdf:1',overrides={}){const bytes=await sharp({create:{width:80,height:50,channels:3,background:'black'}}).withMetadata({density:150}).png().toBuffer();return readingUnit({id,views:[{id:id+':full',sha256:digest(bytes),bytes,width:80,height:50,rect:{x:0,y:0,width:1,height:1}}],...overrides});}
 function execution(generate,extra={}){return {jobId,ownerId:scope.ownerId,projectId:scope.projectId,profile:{ownerId:scope.ownerId,accountFingerprint:'synthetic',model:'fixture',effort:null,revision:1},signal:new AbortController().signal,checkActive:async()=>{},reportProgress:async()=>{},generate,...extra};}
 async function fixture(action){const root=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-visual-reader-')),previous=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=root;try{await action(path.join(root,'ContractorSystem','ai-runtime'));}finally{if(previous===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=previous;assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));await fs.rm(root,{recursive:true,force:true});}}
 function read(...args){assert.equal(typeof api.readVisualSource,'function','Missing existing-runtime visual source reader');return api.readVisualSource(...args);}
@@ -54,7 +54,7 @@ test('a_clear_enlarged_reading_resolves_a_non_numeric_uncertainty',async()=>fixt
  assert.equal(count,2);assert.equal(result.units[0].complete,true);assert.equal(result.units[0].text,literal);
 }));
 async function twoFullViews(){
- const value=await unit('pdf:1',{localText:''}),first=value.views[0],bytes=await sharp(first.bytes).resize(160,100).png().toBuffer();
+ const value=await unit('pdf:1',{localText:''}),first=value.views[0],bytes=await sharp(first.bytes).resize(160,100).withMetadata({density:150}).png().toBuffer();
  value.views.push({...first,id:'pdf:1:enlarged',sha256:digest(bytes),bytes,width:160,height:100});return value;
 }
 test('an_uncertain_numeric_page_needs_two_clear_blind_enlarged_readings_before_it_is_reused',async()=>fixture(async root=>{
@@ -104,4 +104,21 @@ test('completed_units_are_reported_during_the_reading_pass',async()=>fixture(asy
 test('native_only_reading_needs_no_model_or_temporary_job_directory',async()=>fixture(async root=>{
  const result=await read({...manifest([]),format:'DOCX',nativeText:literal},scope,execution(async()=>{throw Error('No image input');}));
  assert.deepEqual(result.units,[]);await assert.rejects(fs.access(root));
+}));
+
+async function folioUnit(extra=''){
+ const bytes=await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="600"><rect width="400" height="600" fill="white"/><text x="196" y="580" font-family="Arial" font-size="24" fill="black">3</text>${extra}</svg>`)).png().toBuffer();
+ return unit('pdf:1',{localText:'3',views:[{id:'pdf:1:full',sha256:digest(bytes),bytes,width:400,height:600,rect:{x:0,y:0,width:1,height:1}}]});
+}
+test('a_rendered_folio_is_certified_with_real_local_word_bounds_without_a_model_call',async()=>fixture(async()=>{
+ const value=await folioUnit();let calls=0;
+ const result=await read(manifest([value]),scope,execution(async()=>{calls++;return JSON.stringify(unitResponse(value,{text:'3'}));}));
+ assert.equal(result.units[0].complete,true);assert.equal(calls,0);
+ const proof=result.units[0].views[0];assert.equal(proof.method,'physical-empty');assert.equal(proof.emptyPageProof.kind,'PAGE_NUMBER_ONLY');
+ assert.equal(proof.emptyPageProof.page,1);assert.equal(proof.emptyPageProof.numberText,'3');assert.equal(proof.emptyPageProof.imageSha256,value.views[0].sha256);
+}));
+test('local_folio_recognition_cannot_hide_a_single_unrecognized_pixel_outside_its_bounds',async()=>fixture(async()=>{
+ const value=await folioUnit('<rect x="30" y="300" width="1" height="1" fill="#fefefe"/>');let calls=0;
+ const result=await read(manifest([value]),scope,execution(async()=>{calls++;return JSON.stringify(unitResponse(value,{text:'3'}));}));
+ assert.equal(result.units[0].complete,false);assert.ok(calls>0);assert.ok(result.units[0].views.every(view=>view.method!=='physical-empty'));
 }));

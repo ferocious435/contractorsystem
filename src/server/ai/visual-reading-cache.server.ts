@@ -75,6 +75,35 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
         ||JSON.stringify(value.tables)!==JSON.stringify(primary.reading.tables))return false;
     return Boolean(hasDocumentBodyText(value.text)||value.visualDescription.trim()||value.views.every(p=>record(p)&&p.method==='physical-empty'));
 }
+/** Retain a source-bound partial attempt during a verifier repair, without certifying it or caching it as complete. */
+export function retainedReadingUnit(value:unknown,unit:ReadingUnit):VerifiedUnit|null {
+    if(!record(value)||!record(value.createdBy)||!validUuid(value.createdBy.jobId)||value.createdBy.rulesVersion!==VISUAL_READING_RULES
+        ||!Number.isSafeInteger(value.createdBy.profileRevision)||(value.createdBy.profileRevision as number)<1)return null;
+    if(value.complete===true)return verifiedReadingUnit(value,unit)?structuredClone(value) as unknown as VerifiedUnit:null;
+    if(value.complete!==false||value.unitId!==unit.id||value.inputHash!==readingUnitInputHash(unit)||typeof value.text!=='string'||value.textHash!==digest(value.text)
+        ||typeof value.visualDescription!=='string'||!Array.isArray(value.tables)||!Array.isArray(value.uncertainties)||!value.uncertainties.length
+        ||value.uncertainties.some(reason=>typeof reason!=='string')||!Array.isArray(value.views)||value.views.length!==unit.views.length)return null;
+    try{
+        for(const view of unit.views){
+            const proofs=value.views.filter(proof=>record(proof)&&proof.viewId===view.id),proof=proofs[0];
+            if(proofs.length!==1||!record(proof)||proof.imageHash!==view.sha256||!record(proof.reading)||typeof proof.reading.viewId!=='string'
+                ||!['native-match','local-ocr-match','visual-double-pass','physical-empty','no-numbers'].includes(String(proof.method)))return null;
+            const reading=validateUnitReading(JSON.stringify(proof.reading),unit,proof.reading.viewId),original=unit.views.find(source=>source.id===reading.viewId);
+            if(!original||JSON.stringify(original.rect)!==JSON.stringify(view.rect)||proof.textHash!==digest(unitReadingLiteral(reading)))return null;
+            for(const witness of [proof.confirmation,proof.initialReading])if(witness!==null&&witness!==undefined){
+                if(!record(witness)||typeof witness.viewId!=='string')return null;
+                const parsed=validateUnitReading(JSON.stringify(witness),unit,witness.viewId),source=unit.views.find(source=>source.id===parsed.viewId);
+                if(!source||JSON.stringify(source.rect)!==JSON.stringify(view.rect))return null;
+            }
+            if(proof.confirmationHash!==digest(unitReadingLiteral((proof.confirmation??reading) as unknown as UnitReading)))return null;
+        }
+        const primaryId=unit.views.filter(view=>view.rect.x===0&&view.rect.y===0&&view.rect.width===1&&view.rect.height===1).sort((a,b)=>b.width*b.height-a.width*a.height)[0]?.id??unit.views[0]?.id;
+        const primary=value.views.find(proof=>record(proof)&&proof.viewId===primaryId);
+        if(!record(primary)||!record(primary.reading)||value.text!==unitReadingLiteral(primary.reading as unknown as UnitReading)
+            ||JSON.stringify(value.tables)!==JSON.stringify(primary.reading.tables))return null;
+        return structuredClone(value) as unknown as VerifiedUnit;
+    }catch{return null;}
+}
 /** Recheck retained blind reads after a verifier correction. A model uncertainty
  * needs a retained clear pair for that exact region; unrelated issues stay open. */
 export function reverifySavedNumericUnit(value:unknown,unit:ReadingUnit):VerifiedUnit|null {

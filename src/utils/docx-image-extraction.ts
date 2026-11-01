@@ -62,7 +62,7 @@ function block(record: ImageRecord, text: string) {
 /** Extract DOCX text with a source inventory independent of the AST's image nodes. */
 export async function extractDocxWithImages(
     buffer: Buffer,
-    options: { recognizeImage?: typeof extractImageTextLocally; onImage?:(value:{record:DocxImageRecord;bytes:Buffer|null})=>void } = {},
+    options: { recognizeImage?:(imageBuffer:Buffer)=>Promise<{text:string;confidence:number}>; onImage?:(value:{record:DocxImageRecord;bytes:Buffer|null})=>void } = {},
 ): Promise<{ text: string; requiresReview: boolean; readingVerification: DocxReadingVerification }> {
     const tools = await packageTools();
     const files = await tools.extractFiles(buffer, () => true, { maxUncompressedBytes: 512 * 1024 * 1024, maxZipEntries: 10000 });
