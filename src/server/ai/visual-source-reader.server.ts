@@ -30,6 +30,7 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
             await execution.checkActive();
             const cached=await cache.read(scope,unit);if(cached){units.push(cached);await execution.reportProgress({phase:'reading',completedUnits:units.filter(u=>u.complete).length,totalUnits:manifest.units.length});continue;}
             const readings=new Map<string,UnitReading>(),imagesSeen=new WeakMap<UnitReading,NonNullable<VerifiedView['readingImage']>>(),proofs:VerifiedView[]=[],uncertainties:string[]=[];
+            const resolvedRegions=new Map<string,{reading:UnitReading;confirmation:UnitReading}>(),retriedRegions=new Set<string>();
             async function ask(view:RenderedView,blind:boolean,bytes:Uint8Array=view.bytes):Promise<UnitReading>{
                 await execution.checkActive();
                 const imageHash=digest(bytes),file=path.join(directory,imageHash+'.png');
@@ -48,6 +49,14 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
             }
             for(const view of unit.views){
                 await execution.checkActive();
+                const regionKey=JSON.stringify(view.rect),resolved=resolvedRegions.get(regionKey);
+                if(resolved){
+                    readings.set(view.id,resolved.reading);
+                    proofs.push({viewId:view.id,imageHash:view.sha256,textHash:digest(unitReadingLiteral(resolved.reading)),method:'visual-double-pass',
+                        confirmationHash:digest(unitReadingLiteral(resolved.confirmation)),reading:resolved.reading,confirmation:resolved.confirmation,
+                        readingImage:imagesSeen.get(resolved.reading),confirmationImage:imagesSeen.get(resolved.confirmation)});
+                    continue;
+                }
                 const physical=unit.kind==='PDF_PAGE'&&whole(view)&&!hasDocumentBodyText(unit.localText)
                     ?await getRenderedEmptyPageProof(Buffer.from(view.bytes),unit.locations[0].page!,{text:unit.localText,words:[]}):undefined;
                 if(physical){
@@ -59,14 +68,14 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                     if(error instanceof BusinessAiError)throw error;
                     uncertainties.push('Invalid image response: '+view.id);continue;
                 }
-                let confirmation:UnitReading|null=null,method:VerifiedView['method']='no-numbers';
+                let confirmation:UnitReading|null=null,confirmationView:RenderedView|undefined,method:VerifiedView['method']='no-numbers';
                 if(unitHasNumbers(primary)||primary.uncertainties.length){
                     const local:UnitReading={unitId:unit.id,viewId:view.id,text:unit.localText,tables:[],visualDescription:'',uncertainties:[]};
                     if(!primary.uncertainties.length&&hasDocumentBodyText(unit.localText)&&compareNumericReadings(primary,local).matched){confirmation=local;method=unit.localMethod==='local-ocr'?'local-ocr-match':'native-match';}
                     else{
                         try{
                             const larger=unit.views.filter(v=>v.id!==view.id&&sameRect(v,view)).sort((a,b)=>b.width*b.height-a.width*a.height)[0];
-                            if(larger){confirmation=readings.get(larger.id)??await ask(larger,true);readings.set(larger.id,confirmation);}
+                            if(larger){confirmationView=larger;confirmation=readings.get(larger.id)??await ask(larger,true);readings.set(larger.id,confirmation);}
                             else{
                                 const ratio=Math.min(2,Math.sqrt(16_000_000/(view.width*view.height)));
                                 const enlarged=ratio>1?await sharp(view.bytes,{limitInputPixels:16_000_000}).resize(Math.max(1,Math.floor(view.width*ratio)),Math.max(1,Math.floor(view.height*ratio))).png().toBuffer():view.bytes;
@@ -79,6 +88,19 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                 let initialReading:UnitReading|undefined;
                 if(primary.uncertainties.length&&confirmation&&!confirmation.uncertainties.length&&!unitHasNumbers(primary)&&!unitHasNumbers(confirmation)){
                     initialReading=primary;primary=confirmation;readings.set(view.id,primary);confirmation=null;method='no-numbers';
+                }
+                else if(primary.uncertainties.length&&confirmation&&!confirmation.uncertainties.length&&confirmationView&&!retriedRegions.has(regionKey)){
+                    // The uncertain overview is retained, but is not a numeric witness.
+                    // One extra blind enlargement must independently confirm the clear read.
+                    retriedRegions.add(regionKey);
+                    const clear=confirmation,retryView=[view,confirmationView].sort((a,b)=>b.width*b.height-a.width*a.height)[0];
+                    try{
+                        confirmation=await ask(retryView,true);
+                        if(!confirmation.uncertainties.length&&compareNumericReadings(clear,confirmation).matched){
+                            initialReading=primary;primary=clear;readings.set(view.id,primary);
+                            resolvedRegions.set(regionKey,{reading:primary,confirmation});
+                        }
+                    }catch(error){if(error instanceof BusinessAiError)throw error;uncertainties.push('Invalid enlarged confirmation: '+view.id);}
                 }
                 if(primary.uncertainties.length)uncertainties.push(...primary.uncertainties);
                 if(confirmation?.uncertainties.length)uncertainties.push(...confirmation.uncertainties);

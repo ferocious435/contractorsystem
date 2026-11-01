@@ -53,6 +53,32 @@ test('a_clear_enlarged_reading_resolves_a_non_numeric_uncertainty',async()=>fixt
  const result=await read(manifest([value]),scope,execution(async()=>JSON.stringify(unitResponse(value,{text:literal,uncertainties:++count===1?['Blurred word']:[]}))));
  assert.equal(count,2);assert.equal(result.units[0].complete,true);assert.equal(result.units[0].text,literal);
 }));
+async function twoFullViews(){
+ const value=await unit('pdf:1',{localText:''}),first=value.views[0],bytes=await sharp(first.bytes).resize(160,100).png().toBuffer();
+ value.views.push({...first,id:'pdf:1:enlarged',sha256:digest(bytes),bytes,width:160,height:100});return value;
+}
+test('an_uncertain_numeric_page_needs_two_clear_blind_enlarged_readings_before_it_is_reused',async()=>fixture(async root=>{
+ const value=await twoFullViews(),calls=[];
+ const result=await read(manifest([value]),scope,execution(async input=>{
+  const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);calls.push(input);
+  return JSON.stringify(unitResponse(value,{viewId:region.viewId,text:'Quantity: 12',uncertainties:calls.length===1?['Unclear logo punctuation']:[]}));
+ }));
+ assert.equal(result.units[0].complete,true);assert.equal(calls.length,3);
+ assert.ok(calls.slice(1).every(input=>input.text.includes('independent reading')&&!input.text.includes('Quantity: 12')));
+ assert.equal(result.units[0].views[0].initialReading.uncertainties[0],'Unclear logo punctuation');
+ assert.ok(result.units[0].views.every(view=>view.reading.uncertainties.length===0&&view.confirmation.uncertainties.length===0));
+ assert.equal(result.units[0].text,'Quantity: 12');assert.ok(await cacheApi.createVisualReadingCache(root).read(scope,value));
+}));
+for(const failure of ['different-number','uncertain'])test('an_enlarged_numeric_retry_stays_partial_when_'+failure,async()=>fixture(async root=>{
+ const value=await twoFullViews();let count=0;
+ const result=await read(manifest([value]),scope,execution(async input=>{
+  const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);count++;
+  return JSON.stringify(unitResponse(value,{viewId:region.viewId,text:count===3&&failure==='different-number'?'Quantity: 21':'Quantity: 12',uncertainties:count===1||count===3&&failure==='uncertain'?['Unclear text']:[]}));
+ }));
+ assert.equal(count,3);assert.equal(result.units[0].complete,false);assert.ok(result.units[0].uncertainties.length>0);
+ assert.equal(await cacheApi.createVisualReadingCache(root).read(scope,value),null);
+ assert.ok(result.units[0].views.some(view=>view.confirmation?.text===(failure==='different-number'?'Quantity: 21':'Quantity: 12')));
+}));
 test('a_physically_blank_page_is_proved_without_asking_the_model_to_invent_text',async()=>fixture(async()=>{
  const bytes=await sharp({create:{width:80,height:50,channels:3,background:'white'}}).png().toBuffer();
  const value=await unit('pdf:1',{localText:'',views:[{id:'pdf:1:full',sha256:digest(bytes),bytes,width:80,height:50,rect:{x:0,y:0,width:1,height:1}}]});let count=0;

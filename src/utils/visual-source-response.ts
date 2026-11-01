@@ -17,7 +17,7 @@ export function validateUnitReading(raw:string,expected:ReadingUnit,viewId:strin
 }
 const hasNumber=(value:string)=>/\p{N}/u.test(value);
 const numberTokens=(value:string)=>value.match(/\p{N}+(?:[.,/]\p{N}+)*/gu)||[];
-const lineKey=(value:string)=>value.normalize('NFKC').replace(/[\u200e\u200f]/g,'').replace(/\s+/g,' ').trim();
+const lineKey=(value:string)=>value.normalize('NFKC').replace(/[\u200e\u200f]/g,'').replace(/\s+/g,' ').replace(/\s*:\s*/g,':').trim();
 function numericPositions(reading:UnitReading) {
     const positions:string[]=[];
     for(const [tableIndex,table] of reading.tables.entries())for(const [rowIndex,row] of table.entries()){

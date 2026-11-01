@@ -33,6 +33,12 @@ test('a_layout_description_of_already_transcribed_item_numbers_does_not_invalida
  assert.equal(compare(first,{...first,visualDescription:'Items 1–3 have underlined headings.'}).matched,true);
  assert.equal(compare({...first,visualDescription:'There are 8 separate work areas.'},{...first,visualDescription:'There are 9 separate work areas.'}).matched,false);
 });
+test('spacing_around_a_label_colon_is_not_a_different_number_or_label',()=>{
+ const compare=api(response,'compareNumericReadings'),first=unitResponse(undefined,{text:'תאריך: 20/07/2025\nמחיר: 1,234.50 ₪'});
+ assert.equal(compare(first,{...first,text:'תאריך : 20/07/2025\nמחיר : 1,234.50 ₪'}).matched,true);
+ assert.equal(compare(first,{...first,text:'תאריך : 20/07/2025\nכמות : 1,234.50 ₪'}).matched,false);
+ assert.equal(compare(first,{...first,text:'תאריך : 20/07/2025\nמחיר : 1.234,50 ₪'}).matched,false);
+});
 test('counter_only_is_not_document_body',()=>{
  api(contracts,'assessVisualReading');
  for(const text of ['1','[PAGE 1]\n1','-- 1 of 3 --','report.pdf 01.11.2026','QA.19.01.05C 28.11.23'])assert.equal(hasDocumentBodyText(text),false);
