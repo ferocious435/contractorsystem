@@ -6,12 +6,14 @@ import { downloadDocumentBuffer } from '@/utils/document-storage';
 import { prepareDocumentAnalysisInput } from '@/utils/document-text-extraction';
 import { assessDocumentSourceReadiness } from './document-source-readiness.ts';
 import type { WorkChangeDocument } from './work-change-sources.ts';
+import {hasSavedVisualReading} from './document-reading-history';
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
 const hash = (input: Buffer | string) => createHash('sha256').update(input).digest('hex');
 
 function needsReading(document: WorkChangeDocument) {
+    if(hasSavedVisualReading(document))return false;
     const metadata = object(document.parsed_json), proof = object(metadata.source_reading);
     const recordedHash = typeof metadata.source_reading_content_hash === 'string' ? metadata.source_reading_content_hash : proof.sourceHash;
     const sameBytes = typeof recordedHash === 'string' && recordedHash === document.content_hash;
@@ -38,11 +40,12 @@ export async function refreshWorkChangeReading(supabase: SupabaseClient, project
             const buffer = await downloadDocumentBuffer(supabase, source);
             const prepared = await prepareDocumentAnalysisInput(buffer, source.title || 'document');
             if (prepared.kind !== 'text' || !prepared.readingVerification) { failedIds.push(source.id); continue; }
-            const current = await supabase.from('documents').select('content_hash,parsed_json,processed_at,deleted_at')
+            const current = await supabase.from('documents').select('content_hash,extracted_text,extracted_text_hash,parsed_json,processed_at,deleted_at')
                 .eq('project_id', projectId).eq('id', source.id).maybeSingle();
             if (current.error || !current.data || current.data.deleted_at
                 || current.data.content_hash !== (source.content_hash || null)) { failedIds.push(source.id); continue; }
             const contentHash = hash(buffer);
+            if(hasSavedVisualReading({...source,...current.data},contentHash))continue;
             const parsedJson = { ...object(current.data.parsed_json), source_reading: prepared.readingVerification,
                 source_reading_content_hash: contentHash };
             const reading = assessDocumentSourceReadiness({ ...source, extracted_text: prepared.extractedText,
@@ -54,6 +57,7 @@ export async function refreshWorkChangeReading(supabase: SupabaseClient, project
             let update = supabase.from('documents').update(patch).eq('project_id', projectId).eq('id', source.id);
             update = source.content_hash ? update.eq('content_hash', source.content_hash) : update.is('content_hash', null);
             update = current.data.processed_at ? update.eq('processed_at', current.data.processed_at) : update.is('processed_at', null);
+            update = current.data.parsed_json ? update.eq('parsed_json',JSON.stringify(current.data.parsed_json)) : update.is('parsed_json',null);
             const result = await update.select('id').maybeSingle();
             if (result.error || !result.data) failedIds.push(source.id); else updatedIds.push(source.id);
         } catch { failedIds.push(source.id); }

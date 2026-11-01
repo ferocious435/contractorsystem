@@ -5,6 +5,8 @@ import {getPreferredProjectAmount,isTrustedBaseContractRow,type LedgerLikeRow} f
 import {summarizeIndividualPricing,type IndividualPricingSummary} from './individual-pricing';
 import type {LetterSourceRef} from './letter-draft-types';
 import {writingRetrievalQuery} from './writing-context-query';
+import {getCurrentDocumentReading} from './document-reading-history';
+import type {ReadingLocation} from './visual-source-reading';
 export class ProjectWritingError extends Error {constructor(readonly code:string,readonly status:number,message:string){super(message);}}
 export async function ownedWritingProject(client: SupabaseClient, projectId: string, userId: string) {
     const {data, error} = await client.from('projects').select('*').eq('id', projectId).eq('contractor_id', userId).maybeSingle();
@@ -18,6 +20,7 @@ export interface ProjectWritingContext {
     unverified: Array<{documentId: string; reason: string}>;
     money: {scope: 'PROJECT'; baseNet: number | null; variations: IndividualPricingSummary};
     omittedCount: number;
+    visualContext?:Array<{documentId:string;title:string|null;textHash:string;description:string;location:ReadingLocation}>;
 }
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 type WritingDocument = DocumentSourceInput & {id:string;project_id:string;created_at?:string|null;deleted_at?:string|null};
@@ -25,7 +28,7 @@ async function savedProjectDocuments(client: SupabaseClient, projectId: string):
     const result: WritingDocument[] = []; let expected: number | null = null;
     for (let start = 0; ; start += 1000) {
         const {data, error, count} = await client.from('documents')
-            .select('id,project_id,title,extracted_text,parsed_json,ocr_status,storage_path,file_url,content_hash,created_at,deleted_at', {count: 'exact'})
+            .select('id,project_id,title,extracted_text,extracted_text_hash,parsed_json,ocr_status,storage_path,file_url,content_hash,created_at,deleted_at', {count: 'exact'})
             .eq('project_id', projectId).is('deleted_at', null).order('id').range(start, start + 999);
         if (error) throw error;
         if (!Array.isArray(data) || !Number.isSafeInteger(count) || count! < 0 || (expected !== null && expected !== count)
@@ -62,12 +65,13 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         savedLedgerRows(client, projectId),
     ]);
     const unverified: ProjectWritingContext['unverified'] = [];
+    const current=new Map(documents.map(document=>[document.id,getCurrentDocumentReading(document)]));
     const readable = documents.filter(document => assessDocumentSourceReadiness(document).canCompare);
     // The latest question chooses its own excerpts. Earlier topics are fallback
     // context for follow-ups; combining them could clip away the current subject.
     const queries = [question, ...(previousQuestion.trim() ? [previousQuestion] : [])].map(value => {
         const query = writingRetrievalQuery(value);
-        const weights = contractRetrievalWeights(readable.map(document => document.extracted_text || ''), meaningfulRetrievalTerms(query));
+        const weights = contractRetrievalWeights(readable.map(document => current.get(document.id)!.text), meaningfulRetrievalTerms(query));
         const acronyms = writingRetrievalQuery((value.match(/[א-ת]{1,5}[״"׳'][א-ת]{1,3}|\b[A-Z]{2,6}\b/gu)||[]).join(' '));
         for(const term of meaningfulRetrievalTerms(acronyms)) weights.set(term,Math.max(1,weights.get(term)||0)*12);
         return {query, weights};
@@ -81,7 +85,7 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         }
         let limited = false;
         const excerpts = queries.flatMap(({query, weights}, priority) => {
-            const selection = selectContractContext({id: document.id, extracted_text: document.extracted_text || ''}, query, 2400, weights);
+            const selection = selectContractContext({id: document.id, extracted_text: current.get(document.id)!.text}, query, 2400, weights);
             if (selection.limitations.some(reason => reason !== 'no_subject_match')) limited = true;
             return selection.source_anchors.map((anchor, part) => ({document, anchor, part, priority, score: selection.relevance_score || 0}));
         });
@@ -93,10 +97,18 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         const key = JSON.stringify([document.id, anchor.start, anchor.end]);
         if (seen.has(key)) continue;
         if (sources.length >= 32 || characters + anchor.quote.length > 32000) continue;
-        if (!anchor.quote.trim() || document.extracted_text?.slice(anchor.start, anchor.end) !== anchor.quote) continue;
+        if (!anchor.quote.trim() || current.get(document.id)!.text.slice(anchor.start, anchor.end) !== anchor.quote) continue;
         sources.push({sourceId: 'S' + (sources.length + 1), documentId: document.id, title: document.title || null,
             pageLabel: anchor.page === null ? null : String(anchor.page), quote: anchor.quote,
-            basis: 'DOCUMENT', status: 'VERIFIED', manualNote: null}); characters += anchor.quote.length; seen.add(key);
+            basis: 'DOCUMENT', status: 'VERIFIED', manualNote: null,textHash:current.get(document.id)!.textHash}); characters += anchor.quote.length; seen.add(key);
+    }
+    const visualContext:NonNullable<ProjectWritingContext['visualContext']>=[];let visualCharacters=0;
+    for(const document of readable)for(const description of current.get(document.id)!.visualDescriptions){
+        const relevant=sources.some(source=>source.documentId===document.id)||queries.some(({query,weights})=>
+            selectContractContext({id:document.id,extracted_text:description.text},query,2400,weights).source_anchors.length>0);
+        if(!relevant)continue;
+        if(visualContext.length>=32||visualCharacters+description.text.length>8000){unverified.push({documentId:document.id,reason:'לא כל תיאורי התרשימים נכללו בהקשר שנבחר'});continue;}
+        visualContext.push({documentId:document.id,title:document.title||null,textHash:current.get(document.id)!.textHash,description:description.text,location:description.location});visualCharacters+=description.text.length;
     }
     const traced = rows.filter(row => isTrustedBaseContractRow(row as LedgerLikeRow));
     const tracedComplete = traced.length > 0 && traced.every(row => finite(row.quantity) && row.quantity >= 0 && finite(row.unit_price_excl_vat));
@@ -108,6 +120,6 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         throw new ProjectWritingError('LOCAL_CONTEXT_INCOMPLETE', 503, 'סכום הפרויקט גדול מטווח הדיוק הכספי שניתן לאמת. יש לבדוק את הנתונים השמורים.');
     }
     return {project: {id: projectId, name: typeof project.name === 'string' ? project.name : ''}, sources, unverified,
-        money: {scope: 'PROJECT', baseNet, variations},
-        omittedCount: Math.max(0, documents.length - new Set([...sources.map(source => source.documentId), ...unverified.map(source => source.documentId)]).size)};
+        money: {scope: 'PROJECT', baseNet, variations},visualContext,
+        omittedCount: Math.max(0, documents.length - new Set([...sources.map(source => source.documentId), ...visualContext.map(source=>source.documentId),...unverified.map(source => source.documentId)]).size)};
 }

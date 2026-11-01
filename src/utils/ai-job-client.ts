@@ -18,8 +18,8 @@ export function createAiJobClient({fetchImpl=fetch,sleep=wait}:{fetchImpl?:typeo
     function projectFor(id:string,provided?:string){const project=provided??projects.get(id);if(!validUuid(id)||!validUuid(project))throw new BusinessAiError('AI_CONTEXT_MISMATCH');return project;}
     async function start(url:string,payload:Record<string,unknown>,requestKey:string):Promise<JobDto>{if(!validUuid(payload.projectId))throw new BusinessAiError('AI_INPUT_INVALID');const response=await request(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,requestKey})});return checked(response.job,payload.projectId);}
     async function read(id:string,project:string,signal?:AbortSignal):Promise<JobDto>{const response=await request(`/api/ai/jobs/${encodeURIComponent(id)}?projectId=${encodeURIComponent(project)}`,{signal});return checked(response.job,project,id);}
-    async function observe(id:string,{signal,onProgress,projectId}:Observer={}):Promise<JsonValue>{const project=projectFor(id,projectId);let previous=-1,unchanged=0;
-        while(true){signal?.throwIfAborted();const job=await read(id,project,signal);signal?.throwIfAborted();if(job.revision>=previous){if(job.revision!==previous){onProgress?.(job);unchanged=0;}else unchanged++;previous=job.revision;
+    async function observe(id:string,{signal,onProgress,projectId}:Observer={}):Promise<JsonValue>{const project=projectFor(id,projectId);let previous=-1,unchanged=0,lastProgress='';
+        while(true){signal?.throwIfAborted();const job=await read(id,project,signal);signal?.throwIfAborted();if(job.revision>=previous){const progress=JSON.stringify([job.state,job.operation,job.progress]);if(job.revision!==previous||progress!==lastProgress){onProgress?.(job);unchanged=0;lastProgress=progress;}else unchanged++;previous=job.revision;
             if(job.state==='SUCCEEDED')return job.result;if(terminal.has(job.state))throw new BusinessAiError(job.error?.code??('AI_'+job.state),job.error?.message??'הפעולה הופסקה. אפשר לנסות שוב באמצעות הכפתור.',409);}
             signal?.throwIfAborted();await sleep(Math.min(5000,1000*2**Math.min(unchanged,3)),signal);
         }

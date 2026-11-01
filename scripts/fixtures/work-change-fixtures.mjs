@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { existsSync } from 'node:fs';
+import {isDeepStrictEqual} from 'node:util';
 
 // These are synthetic program checks, not model-quality scores or real project cases.
 export const finding = () => ({ id: 'change', project_id: 'project', title: 'שינוי שיטת ביצוע ברחוב הרימון',
@@ -74,7 +75,7 @@ export function workChangeDatabase({ documents = sourceDocuments(), contradictio
     const filters=[]; let columns='*', mutation=null, one=false, bounds=[0,Infinity];
     const q={
       select(value='*'){columns=value;reads.push({table,columns});return q;},
-      eq(key,value){filters.push(row=>row[key]===value);return q;}, neq(key,value){filters.push(row=>row[key]!==value);return q;},
+      eq(key,value){filters.push(row=>key==='parsed_json'&&typeof value==='string'?isDeepStrictEqual(row[key],JSON.parse(value)):row[key]===value);return q;}, neq(key,value){filters.push(row=>row[key]!==value);return q;},
       is(key,value){filters.push(row=>row[key]==value);return q;}, in(key,values){filters.push(row=>values.includes(row[key]));return q;},
       order(){return q;}, range(start,end){bounds=[start,end];return q;}, limit(count){bounds[1]=count-1;return q;},
       single(){one=true;return q;}, maybeSingle(){one=true;return q;},

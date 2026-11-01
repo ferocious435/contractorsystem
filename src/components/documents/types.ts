@@ -1,4 +1,5 @@
 export type DocumentCategory = 'CONTRACT' | 'EXECUTION' | 'PRICELIST';
+export type SourceContext = {page?:number|null;quote?:string|null;textHash?:string|null};
 
 export interface ParsedFinancialItem extends Record<string, unknown> {
     code?: string | null;

@@ -29,6 +29,7 @@ import {
 import { removePreferredPdfDuplicates, type DuplicateCleanupResult } from "@/utils/document-duplicate-cleanup";
 import { findExactContentHashDuplicates, findPreferredPdfDuplicates } from "@/utils/document-duplicates";
 import { prepareDocumentAnalysisInput } from "@/utils/document-text-extraction";
+import {hasSavedVisualReading} from '@/utils/document-reading-history';
 import { parseScanFindings } from "@/utils/scan-ai-response";
 import { buildScanRetryQueue } from "@/utils/scan-retry-queue";
 import {
@@ -595,6 +596,7 @@ function getDocumentRole(doc: ScanDocument): ScanRole {
 }
 
 async function extractTextForScan<T extends ScanDocument>(supabase: SupabaseClient, doc: T): Promise<T> {
+    if(hasSavedVisualReading(doc))return doc;
     const pdfBuffer = await downloadDocumentBuffer(supabase, doc);
     const contentHash = sha256Buffer(pdfBuffer);
 
@@ -602,16 +604,20 @@ async function extractTextForScan<T extends ScanDocument>(supabase: SupabaseClie
     if (prepared.kind !== "text") {
         throw new Error(`Document "${doc.title}" still has no readable text after local extraction`);
     }
+    const current=await supabase.from('documents').select('extracted_text,extracted_text_hash,content_hash,parsed_json,ocr_status,processed_at')
+        .eq('id',doc.id).eq('project_id',String(doc.project_id)).maybeSingle();
+    if(current.error||!current.data||current.data.content_hash&&current.data.content_hash!==contentHash)throw new Error('Document source changed while reading');
+    if(hasSavedVisualReading({...doc,...current.data},contentHash))return {...doc,...current.data} as T;
 
     const extractedText = prepared.extractedText;
     const extractedTextHash = hashScanValue(extractedText);
-    const parsedJson = { ...doc.parsed_json, ...(prepared.readingVerification
+    const parsedJson = { ...current.data.parsed_json, ...(prepared.readingVerification
         ? { source_reading: prepared.readingVerification } : {}) };
     const hasReadableText = assessDocumentSourceReadiness({ ...doc, extracted_text: extractedText,
         parsed_json: parsedJson, ocr_status: "COMPLETED" }).extractionComplete;
     const requiresReview = Boolean(prepared.requiresReview) || !hasReadableText;
 
-    const { error } = await supabase
+    let update = supabase
         .from("documents")
         .update({
             extracted_text: extractedText,
@@ -620,12 +626,17 @@ async function extractTextForScan<T extends ScanDocument>(supabase: SupabaseClie
             content_hash: contentHash,
             extracted_text_hash: extractedTextHash,
             processed_at: new Date().toISOString()
-        })
-        .eq("id", doc.id);
+        },{count:'exact'})
+        .eq("id", doc.id).eq('project_id',String(doc.project_id));
+    update=current.data.parsed_json?update.eq('parsed_json',JSON.stringify(current.data.parsed_json)):update.is('parsed_json',null);
+    update=current.data.content_hash?update.eq('content_hash',current.data.content_hash):update.is('content_hash',null);
+    update=current.data.extracted_text_hash?update.eq('extracted_text_hash',current.data.extracted_text_hash):update.is('extracted_text_hash',null);
+    const {error,count}=await update;
 
     if (error) {
         throw new Error(`Failed to save extracted text for "${doc.title}": ${error.message}`);
     }
+    if(count===0)throw new Error('Document source changed while reading');
 
     return {
         ...doc,

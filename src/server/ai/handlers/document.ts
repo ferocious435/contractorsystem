@@ -8,6 +8,7 @@ import {createAdminClient} from '@/utils/supabase/admin';
 import {downloadDocumentBuffer} from '@/utils/document-storage';
 import {prepareDocumentAnalysisInput,makeTextInput,type PreparedDocumentAnalysisInput} from '@/utils/document-text-extraction';
 import {stageDocumentReading} from './document-reading';
+import {readingAnalysisFingerprint} from '@/utils/document-reading-history';
 import {VISUAL_READING_VERSION,type OwnedSourceDocument} from '@/utils/visual-source-reading';
 import {assessDocumentSourceReadiness} from '@/utils/document-source-readiness';
 import {preserveStableDocumentText} from '@/utils/stable-document-reading';
@@ -34,10 +35,11 @@ export function validateDocumentAnalysis(raw:string,savedReading:SavedReading):J
     let value:unknown;try{value=JSON.parse(raw);}catch{throw new BusinessAiError('AI_RESPONSE_INCOMPLETE');}
     if(!record(value)||!matchesDocumentSchema(value,DOCUMENT_ANALYSIS_SCHEMA)||typeof value.type!=='string'||!value.type.trim()||typeof value.summary!=='string'||!value.summary.trim()||typeof value.full_markdown!=='string'||!record(value.financial_data))throw new BusinessAiError('AI_RESPONSE_INCOMPLETE');
     const text=savedReading.kind==='text'?savedReading.extractedText:value.full_markdown;
-    if(!text.trim())throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
     const reading=savedReading.kind==='text'?savedReading.readingVerification:undefined;
     const readiness=assessDocumentSourceReadiness({title:savedReading.title,extracted_text:text,extracted_text_hash:digest(text),
-        content_hash:reading?.version===VISUAL_READING_VERSION?reading.sourceHash:undefined,ocr_status:'COMPLETED',parsed_json:reading?{source_reading:reading}:{}});
+        content_hash:reading?.version===VISUAL_READING_VERSION?reading.sourceHash:undefined,ocr_status:'COMPLETED',parsed_json:reading?{source_reading:reading,
+            ...(savedReading.kind==='text'?{source_reading_visual_descriptions:savedReading.visualDescriptions||[]}:{})}:{}});
+    if(!text.trim()&&!readiness.extractionComplete)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
     const uncertain=savedReading.kind==='direct'||savedReading.kind==='text'&&savedReading.requiresReview===true||!readiness.extractionComplete;
     const sourceReading=reading&&reading.version==='page-coverage-v1'&&!readiness.extractionComplete?{...reading,complete:false}:reading;
     const partial=uncertain||savedReading.wasTruncated;
@@ -63,11 +65,14 @@ export function createDocumentHandler({database=createAdminClient,download=downl
         if(staged)document=staged.document;
         const effects=async()=>{const values=await transaction.effects();if(values.some(e=>e.type!=='DOCUMENT_ANALYSIS'||e.targetId!==document.id))throw new BusinessAiError('AI_EFFECT_INVALID');return values;};
         if(operation==='read_source')return {result:{success:staged!.reading.verification.complete,partial:!staged!.reading.verification.complete,readingSaved:true,cached:staged!.cached,documentId:document.id,ai_status:document.ai_status??'PENDING',textHash:staged!.reading.textHash,readUnits:staged!.reading.verification.expectedUnits.filter(u=>u.status==='READ').length,totalUnits:staged!.reading.verification.expectedUnits.length},effects:await effects()};
-        const prepared=staged?makeTextInput(file,'codex_visual_source_reading',String(document.extracted_text||''),{readingVerification:staged.reading.verification,requiresReview:!staged.reading.verification.complete})
+        const prepared=staged?makeTextInput(file,'codex_visual_source_reading',String(document.extracted_text||''),{readingVerification:staged.reading.verification,visualDescriptions:staged.reading.visualDescriptions,requiresReview:!staged.reading.verification.complete})
             :preserveStableDocumentText(await prepare(file,String(document.title||'')),document,digest(file));await execution.checkActive();
         if(prepared.kind==='direct'&&!prepared.mimeType.startsWith('image/'))throw new BusinessAiError('AI_INPUT_UNSUPPORTED',undefined,422);
         const previous=record(document.parsed_json)?document.parsed_json:{};
-        const inputHash=digest(JSON.stringify({version:DOCUMENT_ANALYSIS_VERSION,prompt:DOCUMENT_ANALYSIS_PROMPT,schema:DOCUMENT_ANALYSIS_SCHEMA,projectId:execution.projectId,documentId:document.id,title:document.title,category:document.category,file:digest(file),text:digest(prepared.extractedText),aiText:digest(prepared.aiText),truncated:prepared.wasTruncated,reading:prepared.kind==='text'?prepared.readingVerification??null:null}));
+        const readingEvidence=prepared.kind==='text'?prepared.readingVerification??null:null;
+        const inputHash=digest(JSON.stringify({version:DOCUMENT_ANALYSIS_VERSION,prompt:DOCUMENT_ANALYSIS_PROMPT,schema:DOCUMENT_ANALYSIS_SCHEMA,projectId:execution.projectId,documentId:document.id,title:document.title,category:document.category,file:digest(file),text:digest(prepared.extractedText),aiText:digest(prepared.aiText),truncated:prepared.wasTruncated,
+            reading:readingEvidence?.version===VISUAL_READING_VERSION?readingAnalysisFingerprint(readingEvidence):readingEvidence,
+            ...(prepared.kind==='text'&&prepared.aiVisualContext?{visual:prepared.aiVisualContext}:{})}));
         if(prepared.kind==='text'&&previous.analysis_input_hash===inputHash&&previous.analysis_version===DOCUMENT_ANALYSIS_VERSION&&previous.analysis_status==='COMPLETE'&&previous.autoValidated===false&&previous.full_markdown===prepared.extractedText){
             try{const cached=validateDocumentAnalysis(JSON.stringify(Object.fromEntries(Object.keys(DOCUMENT_ANALYSIS_SCHEMA.properties).map(key=>[key,previous[key]]))),{...prepared,title:String(document.title||'')});
                 if(cached.analysis_status==='COMPLETE'&&isDeepStrictEqual(cached.financial_data,previous.financial_data))return {result:{success:true,partial:false,cached:true,documentId:document.id,ai_status:document.ai_status,autoValidated:false,inputHash} as JsonObject,effects:[]};
@@ -90,6 +95,7 @@ export function createDocumentHandler({database=createAdminClient,download=downl
             await execution.checkActive();
             analysis.analysis_input_hash=inputHash;
             const fullText=String(analysis.full_markdown),complete=analysis.analysis_status==='COMPLETE';
+            analysis.analysis_stale=false;analysis.analysis_reading_text_hash=digest(fullText);
             const retained=Object.fromEntries(Object.entries(previous).filter(([key])=>!['source_reading','system_error','system_errors','ai_degraded'].includes(key))),parsed={...retained,...analysis};
             const saved=await client.from('documents').update({parsed_json:parsed,ai_status:complete?'SCANNED':'PENDING',extracted_text:fullText,content_hash:digest(file),extracted_text_hash:digest(fullText),ocr_status:analysis.reading_requires_review?'REQUIRES_REVIEW':'COMPLETED',processed_at:new Date().toISOString()}).eq('id',document.id).eq('project_id',execution.projectId);if(saved.error)throw saved.error;
             if(staged)await execution.reportProgress({phase:'analysis',completedUnits:1,totalUnits:1});

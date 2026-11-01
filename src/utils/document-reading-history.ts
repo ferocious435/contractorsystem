@@ -1,6 +1,6 @@
 import 'server-only';
 import {createHash} from 'node:crypto';
-import {assessDocumentSourceReadiness,hasDocumentBodyText} from './document-source-readiness';
+import {assessDocumentSourceReadiness,hasDocumentBodyText,type DocumentSourceInput} from './document-source-readiness';
 import {VISUAL_READING_VERSION,VISUAL_READING_RULES,validReadingHash,type SourceManifest,type VerifiedUnit,type ReadingAssembly,
     type VisualDescription,type VisualReadingVerification,type OwnedSourceDocument,type DocumentReadingPatch,type ReadingTextVersion,type EffectiveDocumentReading} from './visual-source-reading';
 
@@ -8,6 +8,20 @@ const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const json=(document:OwnedSourceDocument)=>object(document.parsed_json)?document.parsed_json:{};
 const viewWithoutBytes=(v:SourceManifest['units'][number]['views'][number])=>({id:v.id,sha256:v.sha256,width:v.width,height:v.height,rect:v.rect});
+
+/** A local OCR pass must not replace a server reading, including its unresolved units. */
+export function hasSavedVisualReading(saved:DocumentSourceInput,sourceHash=saved.content_hash):boolean {
+    const parsed=object(saved.parsed_json)?saved.parsed_json:{},reading=parsed.source_reading;
+    return object(reading)&&reading.version===VISUAL_READING_VERSION&&validReadingHash(sourceHash)&&reading.sourceHash===sourceHash
+        &&reading.currentTextHash===hash(String(saved.extracted_text||''))&&reading.currentTextHash===saved.extracted_text_hash
+        &&object(reading.createdBy)&&typeof reading.createdBy.jobId==='string'&&reading.createdBy.rulesVersion===VISUAL_READING_RULES
+        &&Number.isSafeInteger(reading.createdBy.profileRevision)&&(reading.createdBy.profileRevision as number)>0;
+}
+export function readingAnalysisFingerprint(reading:unknown):string {
+    const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):object(value)?Object.fromEntries(Object.keys(value).sort()
+        .filter(key=>key!=='createdBy').map(key=>[key,canonical(value[key])])):value;
+    return hash(JSON.stringify(canonical(reading)));
+}
 
 export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUnit[]):ReadingAssembly {
     const expected=new Set(manifest.units.map(u=>u.id)),byId=new Map<string,VerifiedUnit>();

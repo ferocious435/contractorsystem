@@ -27,7 +27,7 @@ function database(bytes,patch={}){
  const calls={downloads:0,updates:0};
  const db={auth:{getUser:async()=>({data:{user:{id:'owner'}},error:null})},storage:{from(bucket){assert.equal(bucket,'documents');return {download:async name=>{assert.equal(name,'p/fixture.docx');calls.downloads++;return {data:new Blob([bytes]),error:null};}};}},from(table){
   assert.ok(['projects','documents'].includes(table));let update;
-  const q={select(){return q;},eq(){return q;},async maybeSingle(){return {data:table==='projects'?{id:'p'}:structuredClone(row),error:null};},
+  const q={select(){return q;},eq(){return q;},is(){return q;},async maybeSingle(){return {data:table==='projects'?{id:'p'}:structuredClone(row),error:null};},
    update(value){assert.equal(table,'documents');update=value;return q;},then(resolve,reject){assert.ok(update);calls.updates++;Object.assign(row,update);return Promise.resolve({error:null}).then(resolve,reject);}};return q;
  }};
  return {db,row,calls};

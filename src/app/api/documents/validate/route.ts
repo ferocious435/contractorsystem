@@ -27,7 +27,7 @@ export async function PUT(req: Request) {
             return projectOwnership.response;
         }
 
-        const ownership = await requireOwnedDocument<{ id: string; project_id: string; ai_status?: string | null }>(supabase, documentId, 'id, project_id, ai_status');
+        const ownership = await requireOwnedDocument<{ id: string; project_id: string; ai_status?: string | null;parsed_json?:Record<string,unknown>|null }>(supabase, documentId, 'id, project_id, ai_status, parsed_json');
 
         if (!ownership.ok) {
             return ownership.response;
@@ -55,12 +55,14 @@ export async function PUT(req: Request) {
             return NextResponse.json({ error: "Document has no clear analysis to validate" }, { status: 400 });
         }
 
-        // Update status to VALIDATED and save the confirmed JSON
+        const server=isRecord(ownership.document.parsed_json)?ownership.document.parsed_json:{};
+        const protectedField=(key:string)=>key.startsWith('source_reading')||key.startsWith('analysis_')||['full_markdown','extraction_source','reading_requires_review','document_purpose'].includes(key);
+        const confirmed={...server,...Object.fromEntries(Object.entries(validatedData).filter(([key])=>!protectedField(key)))};
         const { error: updateError } = await supabase
             .from('documents')
             .update({
                 ai_status: 'VALIDATED',
-                parsed_json: validatedData
+                parsed_json: confirmed
             })
             .eq('id', documentId)
             .eq('project_id', projectId);

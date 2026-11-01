@@ -1,6 +1,7 @@
 import './codex-runtime/load-server.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {digest,sourceDocument,visualRegistry} from './codex-runtime/visual-reading-fixtures.mjs';
 const {loadProjectWritingContext}=await import('../src/utils/project-writing-context-server.ts');
 const {createConsultantHandler}=await import('../src/server/ai/handlers/consultant.ts');
 const owner='10000000-0000-4000-8000-000000000001',project='30000000-0000-4000-8000-000000000003';
@@ -56,4 +57,19 @@ test('a consultant follow-up retains the saved source for the previous subject',
  const source='משאבות: החלופה ממתינה למסמך אחריות חתום.';
  const context=await loadProjectWritingContext(clientFor([doc('pump',source)]),project,owner,'אפשר להמשיך?','מה מצב המשאבות?');
  assert.equal(context.sources.length,1);assert.equal(context.sources[0].documentId,'pump');assert.equal(context.sources[0].quote,source);
+});
+
+test('analysis_and_writing_use_corrected_source_text_and_its_version',async()=>{
+ const text='משאבות: יש להמתין למסמך אחריות חתום.',saved=sourceDocument({project_id:project,title:'הוראות.pdf',deleted_at:null,extracted_text:text,extracted_text_hash:digest(text)});
+ saved.parsed_json={source_reading:visualRegistry({currentTextHash:digest(text)}),full_markdown:'Old uncorrected source'};
+ const context=await loadProjectWritingContext(clientFor([saved]),project,owner,'מה נדרש למשאבות?');
+ assert.equal(context.sources[0].quote,text);assert.equal(context.sources[0].textHash,digest(text));
+});
+test('a_drawing_is_supplied_as_visual_context_without_becoming_a_literal_quote',async()=>{
+ const description='משאבות מחוברות בתרשים למסלול מעבר.',proof=visualRegistry({currentTextHash:digest('')});proof.expectedUnits[0]={...proof.expectedUnits[0],literalHasBody:false,visualHasContent:true};
+ const saved=sourceDocument({project_id:project,deleted_at:null,extracted_text:'',extracted_text_hash:digest(''),parsed_json:{source_reading:proof,source_reading_visual_descriptions:[{unitId:'pdf:1',location:{page:1},text:description}]}});
+ const context=await loadProjectWritingContext(clientFor([saved]),project,owner,'מה מופיע בתרשים המשאבות?');
+ assert.equal(context.sources.length,0);assert.equal(context.visualContext[0].description,description);assert.equal(context.omittedCount,0);
+ let prompt;await createConsultantHandler({history:async()=>[],load:async()=>context}).execute({question:'מה בתרשים?'},{projectId:project,ownerId:owner,generate:async input=>{prompt=input.text;return JSON.stringify({body:'התרשים מציג מסלול מעבר.',sourceIds:[],unknowns:[],nextActions:[]});}});
+ assert.ok(prompt.includes(description));assert.match(prompt,/never a literal quotation/);
 });

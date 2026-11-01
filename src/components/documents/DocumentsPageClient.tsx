@@ -9,9 +9,9 @@ import { Feedback } from '@/components/ui/titanium/Feedback';
 import { isDemoProjectId, isLocalProjectId } from '@/utils/local-projects';
 import type { DocumentCategory, ParsedDocumentJson, ProjectDocument } from './types';
 import { useAiReadiness } from '@/hooks/useAiReadiness';
-import {requestDocumentAnalysis,observeDocumentJob,restoreDocumentJobs,cancelDocumentJob,fetchSavedDocument,readDocumentSource} from './documentAiApi';
-import {assessDocumentSourceReadiness} from '@/utils/document-source-readiness';
+import {requestDocumentAnalysis,requestDocumentReading,uploadDocumentAndAnalyze,observeDocumentJob,restoreDocumentJobs,cancelDocumentJob,fetchSavedDocument} from './documentAiApi';
 import type {JobDto} from '@/server/ai/contracts';
+import {documentJobStatusText} from './documentDisplayStatus';
 
 interface DocumentsPageClientProps {
     projectId: string;
@@ -56,40 +56,35 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     const [sourceReadErrors, setSourceReadErrors] = useState<Record<string, string>>({});
     const [deleteDocument, setDeleteDocument] = useState<ProjectDocument | null>(null);
     const [deleting, setDeleting] = useState(false);
-    const [readingId,setReadingId]=useState<string|null>(null),sourceReading=useRef(false),sourceProject=useRef(projectId);
+    const [readingId,setReadingId]=useState<string|null>(null),sourceProject=useRef(projectId),actionRunning=useRef(false);
     sourceProject.current=projectId;
     const completeSourceReading=async(document:ProjectDocument)=>{
-        if(sourceReading.current)return;sourceReading.current=true;setReadingId(document.id);setActionError(null);
-        try{const saved=await readDocumentSource(projectId,document.id);if(sourceProject.current!==projectId)return;
-            setDocuments(previous=>previous.map(value=>value.id===saved.id?normalizeDocument(saved):value));
-            setSourceReadErrors(previous=>Object.fromEntries(Object.entries(previous).filter(([id])=>id!==saved.id)));
-            if(!assessDocumentSourceReadiness(saved).extractionComplete)setActionError('המקור נקרא, אך נותרו חלקים שדורשים בדיקה. המצב והטקסט המלא שנשמר מוצגים במקור.');
-        }catch{if(sourceProject.current===projectId)setActionError('קריאת המקור לא הושלמה. הנתונים נשמרו; אפשר לנסות שוב.');}
-        finally{sourceReading.current=false;if(sourceProject.current===projectId)setReadingId(null);}
+        await runAIParsing(document,'read_source');
     };
 
     const [processingJob,setProcessingJob]=useState<JobDto|null>(null);
     const [analysisReady,setAnalysisReady]=useState(isLocalProject);
     const analysisObserver=useRef<AbortController|null>(null);
     React.useEffect(()=>{
-        if(isLocalProject)return;let active=true;const controller=new AbortController();analysisObserver.current=controller;setAnalysisReady(false);
+        if(isLocalProject)return;let active=true;const controller=new AbortController();analysisObserver.current=controller;setAnalysisReady(false);setProcessingId(null);setProcessingJob(null);setReadingId(null);setIsUploading(false);actionRunning.current=false;
         void restoreDocumentJobs(projectId).then(async jobs=>{
             if(!active||controller.signal.aborted||analysisObserver.current!==controller)return;
             setAnalysisReady(true);const job=jobs.find(value=>value.state==='QUEUED'||value.state==='RUNNING');
             if(!job){if(jobs[0]&&['FAILED','CANCELLED','INTERRUPTED'].includes(jobs[0].state))setActionError('הניתוח האחרון לא הושלם. הנתונים השמורים נשמרו.');return;}
-            setProcessingJob(job);setProcessingId(job.clientContextId);
-            const result=await observeDocumentJob(job,controller.signal),saved=await fetchSavedDocument(projectId,String(job.clientContextId));
+            actionRunning.current=true;setProcessingJob(job);setProcessingId(job.clientContextId);if(job.operation==='read_source')setReadingId(job.clientContextId);
+            const result=await observeDocumentJob(job,controller.signal,value=>{if(active&&!controller.signal.aborted)setProcessingJob(value);}),saved=await fetchSavedDocument(projectId,String(job.clientContextId),controller.signal);
             if(!active||controller.signal.aborted)return;setDocuments(previous=>previous.map(value=>value.id===saved.id?saved:value));
             if(result.partial===true)setActionError('הניתוח חלקי. קריאת המקור והפרטים החסרים מסומנים לבדיקה.');
-        }).catch(()=>{if(active&&!controller.signal.aborted)setActionError('לא ניתן להשלים או לשחזר את הניתוח. הנתונים נשמרו.');}).finally(()=>{if(active){setAnalysisReady(true);if(analysisObserver.current===controller){setProcessingId(null);setProcessingJob(null);}}});
+        }).catch(()=>{if(active&&!controller.signal.aborted)setActionError('לא ניתן להשלים או לשחזר את הפעולה. הנתונים נשמרו.');}).finally(()=>{if(active){setAnalysisReady(true);if(analysisObserver.current===controller){actionRunning.current=false;setProcessingId(null);setProcessingJob(null);setReadingId(null);}}});
         return()=>{active=false;controller.abort();analysisObserver.current?.abort();};
     },[projectId,isLocalProject]);
     const cancelAnalysis=async()=>{
         if(!processingJob)return;
-        try{const stopped=await cancelDocumentJob(processingJob);analysisObserver.current?.abort();
-            const saved=await fetchSavedDocument(projectId,String(processingJob.clientContextId));setDocuments(previous=>previous.map(value=>value.id===saved.id?saved:value));
-            setActionError(stopped.state==='SUCCEEDED'?'הניתוח כבר הסתיים. התוצאה השמורה זמינה.':'הניתוח בוטל. הנתונים השמורים נשמרו.');setProcessingId(null);setProcessingJob(null);
-        }catch{setActionError('לא ניתן לאשר שהניתוח בוטל. אפשר לנסות שוב.');}
+        const controller=analysisObserver.current;
+        try{const stopped=await cancelDocumentJob(processingJob);if(sourceProject.current!==projectId||analysisObserver.current!==controller)return;controller?.abort();
+            const saved=await fetchSavedDocument(projectId,String(processingJob.clientContextId));if(sourceProject.current!==projectId||analysisObserver.current!==controller)return;setDocuments(previous=>previous.map(value=>value.id===saved.id?saved:value));
+            setActionError(stopped.state==='SUCCEEDED'?'הפעולה כבר הסתיימה. התוצאה השמורה זמינה.':'הפעולה בוטלה. הנתונים השמורים נשמרו.');actionRunning.current=false;setIsUploading(false);setReadingId(null);setProcessingId(null);setProcessingJob(null);
+        }catch{if(sourceProject.current===projectId)setActionError('לא ניתן לאשר שהפעולה בוטלה. אפשר לנסות שוב.');}
     };
 
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -126,6 +121,7 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
     }, [projectId, category, initialDocuments.length, isLocalProject, readAttempt]);
 
     const handleFiles = async (files: File[]) => {
+        if(actionRunning.current)return;
         if (isLocalProject) {
             const insertedDocs = files.map((file) => normalizeDocument({
                 id: 'demo-doc-' + Date.now() + '-' + file.name,
@@ -142,124 +138,66 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
         setActionError(null);
         setIsUploading(true);
+        actionRunning.current=true;analysisObserver.current?.abort();const controller=new AbortController();analysisObserver.current=controller;
+        const current=()=>sourceProject.current===projectId&&!controller.signal.aborted&&analysisObserver.current===controller;
 
         for (const file of files) {
+            if(!current())break;
             try {
-                const formData = new FormData();
-                formData.set('projectId', projectId);
-                formData.set('category', category || 'EXECUTION');
-                formData.set('file', file);
-
-                const uploadRes = await fetch('/api/documents', {
-                    method: 'POST',
-                    body: formData,
-                });
-                const uploadData = await uploadRes.json();
-
-                if (!uploadRes.ok || !uploadData.success) {
-                    throw new Error(uploadData.error || 'Failed upload');
-                }
-
-                const insertedDoc = uploadData.document as ProjectDocument;
-                setDocuments(prev => (
-                    prev.some((document) => document.id === insertedDoc.id)
-                        ? prev
-                        : [insertedDoc, ...prev]
-                ));
-
-                if (uploadData.duplicate === true) {
-                    continue;
-                }
-
-                if (insertedDoc?.id) {
-                    setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
-
-                    try {
-                        const extractRes = await fetch('/api/documents/extract-text', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ projectId, documentId: insertedDoc.id }),
-                        });
-                        const extractData = await extractRes.json();
-
-                        if (extractData.success) {
-                            const params = new URLSearchParams({ projectId });
-                            if (category) params.set('category', category);
-                            const savedResponse = await fetch('/api/documents?' + params.toString());
-                            const savedBody = await savedResponse.json();
-                            if (!savedResponse.ok || !savedBody.success || !Array.isArray(savedBody.documents)) throw new Error('SAVED_DOCUMENT_READ_FAILED');
-                            const savedDocument = savedBody.documents.find((document: ProjectDocument) => document.id === insertedDoc.id);
-                            if (!savedDocument) throw new Error('SAVED_DOCUMENT_NOT_FOUND');
-                            setDocuments(prev => prev.map(document => document.id === insertedDoc.id ? normalizeDocument(savedDocument) : document));
-                        } else {
-                            setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? { ...d, ai_status: 'PENDING' } : d));
-                        }
-                    } catch {
-                        setDocuments(prev => prev.map(d => d.id === insertedDoc.id ? { ...d, ai_status: 'PENDING' } : d));
-                        setActionError('הקובץ נשמר, אך הטקסט המלא לא נקרא למסך. יש לקרוא שוב את המסמך לפני אימות המקור.');
-                    }
-                }
+                const saved=await uploadDocumentAndAnalyze(projectId,file,category||'EXECUTION',{signal:controller.signal,
+                    onUploaded:document=>{if(current()){setProcessingId(document.id);setDocuments(previous=>previous.some(value=>value.id===document.id)?previous: [document,...previous]);}},
+                    onAccepted:job=>{if(current())setProcessingJob(job);},onProgress:job=>{if(current())setProcessingJob(job);}});
+                if(current())setDocuments(previous=>previous.map(document=>document.id===saved.id?normalizeDocument(saved):document));
             } catch (err) {
-                console.error('Upload error for file:', file.name, err);
-                setActionError('חלק מהקבצים לא הועלו. בדוק את הרשימה ונסה שוב את הקבצים החסרים.');
+                if(!current())break;
+                console.error('Upload or document job failed:', file.name, err);
+                setActionError('הפעולה לא הושלמה. הקבצים והתוצאות שכבר נשמרו זמינים ברשימה; אפשר לנסות שוב.');setReadAttempt(value=>value+1);
             }
         }
 
-        setIsUploading(false);
+        if(current()){actionRunning.current=false;setIsUploading(false);setProcessingId(null);setProcessingJob(null);}
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
-    const runAIParsing = async (doc: ProjectDocument) => {
-        if (processingId) return;
-        if (!isLocalProject && aiStatus?.available !== true) return;
+    const runAIParsing = async (doc: ProjectDocument,operation:'analyze'|'read_source'='analyze') => {
+        if (actionRunning.current) return;
+        if (!isLocalProject && aiStatus?.available !== true){setActionError('העוזר אינו זמין כרגע. קובץ המקור והטקסט השמור זמינים לפתיחה.');return;}
+        actionRunning.current=true;
         setProcessingId(doc.id);
         analysisObserver.current?.abort();const controller=new AbortController();analysisObserver.current=controller;setActionError(null);
+        if(operation==='read_source')setReadingId(doc.id);
+        const current=()=>sourceProject.current===projectId&&!controller.signal.aborted&&analysisObserver.current===controller;
+        const progress=(job:JobDto)=>{if(current())setProcessingJob(job);};
 
         if (isLocalProject) {
             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'SCANNED', parsed_json: { document_type: 'Demo document', confidence: 0.8 } } : d));
             setProcessingId(null);
+            setReadingId(null);actionRunning.current=false;
             return;
         }
 
         setSourceReadErrors(previous => ({ ...previous, [doc.id]: 'הטקסט העדכני ייקרא למסך בסיום הניתוח.' }));
         try {
-            setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'EXTRACTING' } : d));
-
-            try {
-                await fetch('/api/documents/extract-text', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ projectId, documentId: doc.id }),
-                });
-            } catch (err) {
-                console.warn('Failed to extract text:', err);
-            }
-
-            setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'PROCESSING' } : d));
-
             controller.signal.throwIfAborted();
-            const result=await requestDocumentAnalysis(projectId,doc.id,{signal:controller.signal,onAccepted:job=>{if(!controller.signal.aborted)setProcessingJob(job);}});
-            if(controller.signal.aborted)return;
+            if(operation==='read_source'){await requestDocumentReading(projectId,doc.id,{signal:controller.signal,onAccepted:progress,onProgress:progress});return;}
+            const result=await requestDocumentAnalysis(projectId,doc.id,{signal:controller.signal,onAccepted:progress,onProgress:progress});
+            if(!current())return;
             if(result.partial===true)setActionError(typeof result.message==='string'?result.message:'הניתוח חלקי. הפרטים והמקורות החסרים נשמרו לבדיקה.');
         } catch (e) {
-            if(controller.signal.aborted)return;
+            if(!current())return;
             setActionError('הניתוח לא הושלם. הנתונים השמורים נשמרו.');
             console.error(e);
-            setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ai_status: 'ERROR' } : d));
         } finally {
+            if(current()){
             try {
-                // Read the saved source independently of the analysis result and its category.
-                const savedResponse = await fetch('/api/documents?' + new URLSearchParams({ projectId }).toString(), { cache: 'no-store' });
-                const savedBody = await savedResponse.json();
-                if (!savedResponse.ok || !savedBody.success || !Array.isArray(savedBody.documents)) throw new Error('SAVED_DOCUMENT_READ_FAILED');
-                const savedDocument = savedBody.documents.find((document: ProjectDocument) => document.id === doc.id);
-                if (!savedDocument) throw new Error('SAVED_DOCUMENT_NOT_FOUND');
+                const savedDocument=await fetchSavedDocument(projectId,doc.id,controller.signal);if(!current())return;
                 setDocuments(previous => previous.map(document => document.id === doc.id ? normalizeDocument(savedDocument) : document));
                 setSourceReadErrors(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => id !== doc.id)));
             } catch {
-                setSourceReadErrors(previous => ({ ...previous, [doc.id]: 'הטקסט העדכני לא נקרא למסך. יש לנסות לקרוא אותו שוב; קובץ המקור השמור עדיין זמין לפתיחה.' }));
+                if(current())setSourceReadErrors(previous => ({ ...previous, [doc.id]: 'הטקסט העדכני לא נקרא למסך. יש לנסות לקרוא אותו שוב; קובץ המקור השמור עדיין זמין לפתיחה.' }));
             }
-            if(analysisObserver.current===controller){setProcessingId(null);setProcessingJob(null);}
+            if(current()){actionRunning.current=false;setProcessingId(null);setProcessingJob(null);setReadingId(null);}
+            }
         }
     };
 
@@ -327,11 +265,11 @@ export default function DocumentsPageClient({ projectId, initialDocuments = [], 
 
     return <>
         {actionError && <Feedback tone="danger">{actionError}</Feedback>}
-        {processingJob&&processingId&&<Feedback aria-live="polite"><p>הניתוח נשמר כמשימה. ממתין לתוצאה; אפשר לסגור ולחזור.</p><Button onClick={()=>void cancelAnalysis()}>ביטול ניתוח</Button></Feedback>}
+        {processingJob&&processingId&&<Feedback aria-live="polite"><p>{documentJobStatusText(processingJob)} · אפשר לסגור ולחזור.</p><Button onClick={()=>void cancelAnalysis()}>ביטול הפעולה</Button></Feedback>}
         <DocumentsCatalogView documents={documents} category={category} activeFilter={activeFilter} uploading={isUploading} processingId={processingId} selectedId={selectedId} loadError={loadError} loading={loading} sourceReadErrors={sourceReadErrors}
             analysisAvailable={isLocalProject || (analysisReady && aiStatus?.available === true)} analysisDisabledReason={aiStatus?.available === false ? 'שירות הניתוח אינו זמין כרגע. אפשר לפתוח את המקור השמור.' : 'בודק זמינות שירות הניתוח…'}
             onSelect={setSelectedId} onFilter={setActiveFilter} onRetryRead={retryRead} onReadSource={completeSourceReading} readingId={readingId} onUpload={handleFiles} onAnalyze={runAIParsing} onPreview={setSelectedDocForVerification} onDelete={async doc => { setDeleteDocument(doc); }} />
-        {verificationDocument && <ScreenOfTruthModal document={verificationDocument} sourceReadError={sourceReadErrors[verificationDocument.id]} onRetryRead={retryRead} retryingRead={loading || Boolean(processingId)} onCompleteReading={()=>completeSourceReading(verificationDocument)} completingReading={Boolean(readingId)} projectId={projectId} onClose={() => setSelectedDocForVerification(null)} onValidate={handleValidate} />}
+        {verificationDocument && <ScreenOfTruthModal document={verificationDocument} sourceReadError={sourceReadErrors[verificationDocument.id]} onRetryRead={retryRead} retryingRead={loading || Boolean(processingId)} onCompleteReading={()=>completeSourceReading(verificationDocument)} completingReading={Boolean(readingId||processingId)} projectId={projectId} onClose={() => setSelectedDocForVerification(null)} onValidate={handleValidate} />}
         <Dialog open={Boolean(deleteDocument)} labelledBy="document-delete-title" onClose={() => { if (!deleting) setDeleteDocument(null); }}>
             <h2 id="document-delete-title" className="ti-section-title">מחיקת מסמך</h2><p className="ti-copy">האם למחוק את המסמך ״{deleteDocument?.title}״?</p>
             <div className="ti-actions"><Button onClick={() => setDeleteDocument(null)} disabled={deleting}>ביטול</Button><Button variant="danger" pending={deleting} busyLabel="מוחק…" onClick={async () => { if (!deleteDocument) return;setDeleting(true);try { await handleDelete(deleteDocument.id, true);setDeleteDocument(null); } finally { setDeleting(false); } }}>מחיקת המסמך</Button></div>

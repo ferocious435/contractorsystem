@@ -50,7 +50,7 @@ export type ReadingAssembly = {text:string;textHash:string;verification:VisualRe
 export type DocumentReadingPatch = {extracted_text:string;extracted_text_hash:string;ocr_status:'COMPLETED'|'REQUIRES_REVIEW';parsed_json:Record<string,unknown>;processed_at:string};
 export type EffectiveDocumentReading = {text:string;textHash:string;sourceHash:string;visualDescriptions:VisualDescription[];ready:boolean};
 export type ReadingDetail = EffectiveDocumentReading & {current:boolean;reading:unknown;versions:Array<Omit<ReadingTextVersion,'text'|'reading'>>};
-export type DocumentJobOptions = {signal?:AbortSignal;onAccepted?:(job:JobDto)=>void};
+export type DocumentJobOptions = {signal?:AbortSignal;onAccepted?:(job:JobDto)=>void;onProgress?:(job:JobDto)=>void};
 
 const object = (value:unknown):value is Record<string,unknown> => Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 export const validReadingHash = (value:unknown):value is string => typeof value==='string'&&/^[a-f\d]{64}$/i.test(value);

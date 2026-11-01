@@ -8,6 +8,7 @@ import { Feedback } from '@/components/ui/titanium/Feedback';
 import { StatusChip } from '@/components/ui/titanium/StatusChip';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import type { ProjectDocument } from './types';
+import {VISUAL_READING_VERSION,type VisualDescription} from '@/utils/visual-source-reading';
 
 function wordPartLabel(part: unknown) {
   if (typeof part !== 'string') return 'חלק במסמך';
@@ -25,8 +26,9 @@ function imageReviewReason(reason: unknown) {
   return 'קריאת התמונה לא אומתה';
 }
 
-export function DocumentSourceView({ document, fullText, previewUrl, previewKind, previewError, sourceUrl, sourceReadError, onRetryRead, retryingRead, onCompleteReading, completingReading, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate }: {
+export function DocumentSourceView({ document, fullText, visualDescriptions, readingCurrent=true, previewUrl, previewKind, previewError, sourceUrl, sourceReadError, onRetryRead, retryingRead, onCompleteReading, completingReading, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate }: {
   document: ProjectDocument; fullText?: string | null; previewUrl?: string | null; previewKind?: 'pdf' | 'image' | 'text' | 'office' | 'unsupported'; previewError?: string | null; sourceUrl?: string | null;
+  visualDescriptions?:VisualDescription[];readingCurrent?:boolean;
   sourceReadError?: string | null; onRetryRead?(): Promise<void>; retryingRead?: boolean;
   onCompleteReading?():Promise<void>;completingReading?:boolean;
   onPreview?(): void; canValidate?: boolean; validating?: boolean; validationDisabledReason?: string; validationError?: string | null; onValidate?(): Promise<void>;
@@ -34,6 +36,10 @@ export function DocumentSourceView({ document, fullText, previewUrl, previewKind
   const readiness = assessDocumentSourceReadiness(document);
   const rawReading = document.parsed_json?.source_reading;
   const reading = rawReading && typeof rawReading === 'object' && !Array.isArray(rawReading) ? rawReading as Record<string, unknown> : undefined;
+  const visual=reading?.version===VISUAL_READING_VERSION?reading:undefined;
+  const visualMatches=Boolean(visual&&visual.sourceHash===document.content_hash&&visual.currentTextHash===document.extracted_text_hash);
+  const units=(Array.isArray(visual?.expectedUnits)?visual.expectedUnits:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object');
+  const descriptions=visualDescriptions||(Array.isArray(document.parsed_json?.source_reading_visual_descriptions)?document.parsed_json.source_reading_visual_descriptions as VisualDescription[]:[]);
   const docx = reading?.version === DOCX_READING_VERSION ? reading : undefined;
   const isWord = Boolean(docx) || [document.title, document.storage_path, document.file_url].some(value => /\.docx(?:$|[?#\s._()\d-])/i.test(value || ''));
   const imageHashMatches = Boolean(docx && typeof docx.sourceHash === 'string' && /^[a-f\d]{64}$/i.test(docx.sourceHash)
@@ -53,8 +59,8 @@ export function DocumentSourceView({ document, fullText, previewUrl, previewKind
     return { part: wordPartLabel(part), reason: reason === 'CONTENT_NOT_POSITIONED_BY_PARSER' ? 'מיקום הטקסט בחלק זה לא אומת' : 'קריאת החלק טרם אומתה במלואה' };
   }) : [];
   const pdf = /\.pdf(?:$|[?#])/i.test(String(document.title || document.storage_path || document.file_url || ''));
-  const pages = typeof reading?.totalPages === 'number' && Number.isInteger(reading.totalPages) && reading.totalPages > 0 ? reading.totalPages : null;
-  const readPages = Array.isArray(reading?.readPages) ? [...new Set(reading.readPages.filter((value): value is number => Number.isInteger(value) && Number(value) > 0 && (!pages || Number(value) <= pages)))] : [];
+  const pages = visualMatches&&visual?.format==='PDF'?units.length:typeof reading?.totalPages === 'number' && Number.isInteger(reading.totalPages) && reading.totalPages > 0 ? reading.totalPages : null;
+  const readPages = visualMatches&&visual?.format==='PDF'?units.flatMap(unit=>unit.status==='READ'&&Array.isArray(unit.locations)?unit.locations.flatMap(location=>location&&typeof location.page==='number'?[location.page]:[]):[]):Array.isArray(reading?.readPages) ? [...new Set(reading.readPages.filter((value): value is number => Number.isInteger(value) && Number(value) > 0 && (!pages || Number(value) <= pages)))] : [];
   const unread = Array.isArray(reading?.unreadablePages) ? reading.unreadablePages.filter((value): value is number => Number.isInteger(value) && Number(value) > 0) : [];
   const missing = pages ? Array.from({length: pages}, (_, i) => i + 1).filter(page => !readPages.includes(page) || unread.includes(page)) : unread;
   const marker = readiness.documentStatus === 'DRAFT' || readiness.documentStatus === 'FRAGMENT' ? readiness.documentStatus : undefined;
@@ -64,10 +70,12 @@ export function DocumentSourceView({ document, fullText, previewUrl, previewKind
   return <section className="ti-source-view" data-source-status={readiness.status} data-document-marker={marker} aria-label="מקור המסמך">
     <div className="ti-source-view__header"><FileText size={20} aria-hidden="true" /><h3 className="ti-section-title">מקור המסמך</h3></div>
     <p className="ti-source-name"><BidiText kind="file" value={document.title || 'מסמך ללא שם'} /></p>
+    {!readingCurrent&&<Feedback tone="info">מוצגת גרסת הקריאה שאליה מפנה הציטוט. הקריאה העדכנית של המסמך נשמרה בנפרד.</Feedback>}
     <div className="ti-source-states"><StatusChip tone="neutral">הקובץ נשמר</StatusChip>{document.ai_status === 'VALIDATED' && <StatusChip tone="success">אושר ידנית</StatusChip>}<StatusChip tone={readiness.extractionComplete ? 'info' : 'warning'}>{readiness.extractionComplete ? 'הטקסט נקרא' : 'הקריאה לא הושלמה'}</StatusChip><StatusChip tone={aiIncomplete ? 'warning' : 'neutral'}>{aiIncomplete ? 'ניתוח AI לא הושלם' : analysisComplete ? 'ניתוח הושלם' : 'השלמת ניתוח נבדקת בנפרד'}</StatusChip></div>
     {pdf && <p className="ti-meta">{pages ? <>נקראו <BidiText kind="code" value={`${readPages.length} / ${pages}`} /> עמודים{missing.length > 0 && <> · עמודים שלא נקראו: <BidiText kind="code" value={missing.join(', ')} /></>}</> : 'מספר העמודים לא אומת'}</p>}
     {isWord && <div role="group" aria-label="קריאת חלקי המסמך">
-      {!docx ? <p className="ti-meta">מספר התמונות לא אומת</p> : !imageHashMatches ? <Feedback tone="warning">אימות התמונות אינו תואם לקובץ השמור</Feedback> : <>
+      {visualMatches&&visual?.format==='DOCX'?<><p className="ti-meta">תמונות ייחודיות שקריאתן אומתה: <BidiText kind="code" value={`${units.filter(unit=>unit.status==='READ').length} / ${units.length}`}/></p>
+        {units.some(unit=>unit.status!=='READ')&&<ul aria-label="תמונות שדורשות בדיקה">{units.filter(unit=>unit.status!=='READ').map(unit=><li key={String(unit.id)}>{Array.isArray(unit.locations)?[...new Set(unit.locations.map(location=>wordPartLabel(location?.part)))].join(', '):'חלק במסמך'} — קריאת התמונה טרם אומתה</li>)}</ul>}</>:!docx ? <p className="ti-meta">מספר התמונות לא אומת</p> : !imageHashMatches ? <Feedback tone="warning">אימות התמונות אינו תואם לקובץ השמור</Feedback> : <>
         <p className="ti-meta">{expectedImages === null || images.length > expectedImages ? 'מספר התמונות לא אומת' : expectedImages === 0 && images.length === 0 ? 'לא נמצאו תמונות מוטמעות במסמך' : <>תמונות שקריאתן אומתה: <BidiText kind="code" value={`${readImages} / ${expectedImages}`} /></>}</p>
         {imageRecordsMismatch && <Feedback tone="warning">חסרות תוצאות קריאה או שיש חוסר התאמה ברישום התמונות. הקריאה אינה מלאה.</Feedback>}
         {imageReviews.length > 0 && <ul aria-label="תמונות שדורשות בדיקה">{imageReviews.map(image => <li key={image.index}>{image.part} · {`תמונה ${image.index}`} — {image.reason}</li>)}</ul>}
@@ -75,7 +83,8 @@ export function DocumentSourceView({ document, fullText, previewUrl, previewKind
       </>}
     </div>}
     {!readiness.extractionComplete && <Feedback tone="warning">שלמות קריאת המקור טרם אומתה. אישור ידני אינו מעיד שכל העמודים נקראו.</Feedback>}
-    {!readiness.extractionComplete && onCompleteReading && <Button onClick={onCompleteReading} pending={completingReading} busyLabel="קורא את המקור…">השלמת קריאת המקור</Button>}
+    {(pdf||isWord)&&!visual&&readiness.extractionComplete&&<Feedback tone="warning">הטקסט נקרא; תוכן התמונות והתרשימים טרם נבדק חזותית.</Feedback>}
+    {readingCurrent&&(!readiness.extractionComplete||(pdf||isWord)&&!visual)&&onCompleteReading&&<Button onClick={onCompleteReading} pending={completingReading} busyLabel="קורא את המקור…">השלמת קריאת המקור</Button>}
     {marker && <Feedback tone="warning" title={marker === 'DRAFT' ? 'טיוטה' : 'קטע מתוך מסמך'}>המקור מסומן כך במפורש ואינו הוראה מחייבת מאומתת. יש לבדוק את הגרסה המלאה ואת הקשר המסמך.</Feedback>}
     {previewError && <Feedback tone="warning">{previewError}</Feedback>}
     {previewUrl && (previewKind === 'pdf' || previewKind === 'text') && <iframe className="ti-source-frame" title="תצוגת מסמך מקור" src={previewUrl} />}
@@ -83,6 +92,7 @@ export function DocumentSourceView({ document, fullText, previewUrl, previewKind
     {/* eslint-disable-next-line @next/next/no-img-element */}
     {previewUrl && previewKind === 'image' && <img className="ti-source-image" src={previewUrl} alt={document.title || 'מסמך מקור'} />}
     {sourceReadError ? <Feedback tone="warning"><p>{sourceReadError}</p>{onRetryRead && <Button onClick={onRetryRead} pending={retryingRead}>ניסיון נוסף</Button>}</Feedback> : fullText ? <details className="ti-source-text" open={fullText.length <= 32000}><summary>הטקסט המלא שנשמר</summary><pre>{textChunks.map((text,index)=><span className="ti-source-text__chunk" dir="auto" key={index}>{text}</span>)}</pre></details> : <Feedback>אין עדיין טקסט שמור לתצוגה. אפשר לפתוח את קובץ המקור; פתיחה אינה מפעילה ניתוח.</Feedback>}
+    {descriptions.length>0&&<section aria-label="תיאורי תרשימים ותוכן חזותי"><h4 className="ti-section-title">תיאורי תרשימים ותוכן חזותי</h4><p className="ti-meta">תיאור של מה שמופיע בתמונה; אינו ציטוט מילולי מהמסמך.</p>{descriptions.map((description,index)=><div key={index}><p className="ti-meta">{description.location?.page?`עמוד ${description.location.page}`:wordPartLabel(description.location?.part)}</p><p className="ti-copy ti-preserve-lines" dir="auto">{description.text}</p></div>)}</section>}
     {previewKind === 'unsupported' && <p className="ti-meta">לסוג הקובץ הזה אין תצוגה ישירה בדפדפן.</p>}
     <div className="ti-actions">{onPreview && <Button onClick={onPreview}>פתיחת המקור וסקירת הניתוח</Button>}{sourceUrl && <a className="ti-button ti-button--secondary" href={sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} aria-hidden="true" />פתיחת קובץ המקור</a>}</div>
     {validationError && <Feedback tone="danger">{validationError}</Feedback>}

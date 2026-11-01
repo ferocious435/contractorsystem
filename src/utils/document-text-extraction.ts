@@ -1,4 +1,6 @@
 const MAX_AI_TEXT_CHARS = 120_000;
+import {createHash} from 'node:crypto';
+import {assessVisualReading,VISUAL_READING_VERSION,type VisualDescription} from './visual-source-reading';
 import { loadPdfParse } from '@/utils/pdf-parser-runtime';
 import { extractPdfPagesWithLocalMcp } from '@/utils/local-ocr-mcp';
 import { extractDocxWithImages } from '@/utils/docx-image-extraction';
@@ -136,6 +138,8 @@ export type PreparedDocumentAnalysisInput =
         requiresReview?: boolean;
         ocrConfidence?: number;
         readingVerification?: DocumentReadingVerification;
+        visualDescriptions?: VisualDescription[];
+        aiVisualContext?: string;
     };
 
 export function getFileExtension(title: string) {
@@ -395,10 +399,15 @@ export function makeTextInput(
     fileBuffer: Buffer,
     extractionSource: string,
     text: string,
-    quality: { requiresReview?: boolean; ocrConfidence?: number; readingVerification?: DocumentReadingVerification } = {},
+    quality: { requiresReview?: boolean; ocrConfidence?: number; readingVerification?: DocumentReadingVerification; visualDescriptions?: VisualDescription[] } = {},
 ): PreparedDocumentAnalysisInput {
-    const extracted = requireUsefulText(text);
+    const reading=quality.readingVerification,visual=reading?.version===VISUAL_READING_VERSION;
+    const extracted = visual ? text : requireUsefulText(text);
+    if(visual&&!text.trim()&&!(quality.visualDescriptions?.some(value=>value.text.trim())&&assessVisualReading(reading,
+        {content_hash:reading.sourceHash,extracted_text_hash:createHash('sha256').update(text).digest('hex')}).complete))throw new Error('DOCUMENT_TEXT_EXTRACTION_EMPTY');
     const ai = truncateText(extracted, MAX_AI_TEXT_CHARS);
+    const visualContext=JSON.stringify(quality.visualDescriptions||[]),remaining=Math.max(0,MAX_AI_TEXT_CHARS-ai.text.length);
+    const aiVisual=visualContext==='[]'?{text:'',wasTruncated:false}:truncateText(visualContext,remaining);
 
     return {
         kind: "text",
@@ -406,8 +415,9 @@ export function makeTextInput(
         extractionSource,
         extractedText: extracted,
         aiText: ai.text,
-        wasTruncated: ai.wasTruncated,
+        wasTruncated: ai.wasTruncated||aiVisual.wasTruncated,
         ...quality,
+        ...(aiVisual.text?{aiVisualContext:aiVisual.text}:{}),
     };
 }
 

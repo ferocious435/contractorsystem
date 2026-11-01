@@ -51,6 +51,13 @@ jobs:
       - name: Check document part coverage display
         run: node --test scripts/redesign/verify-documents.mjs
 
+      - name: Check document reading jobs in isolated PostgreSQL
+        run: |
+          docker pull postgres:17.6
+          trap 'node scripts/codex-runtime/db.mjs stop' EXIT
+          node scripts/codex-runtime/db.mjs prepare
+          node --import ./scripts/codex-runtime/load-server.mjs --test scripts/verify-codex-jobs-db.mjs scripts/verify-document-reading-job.mjs
+
       - name: Check local release document reader assets
         run: node --test scripts/verify-local-system-reader-assets.mjs
 

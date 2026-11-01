@@ -4,6 +4,15 @@ import {execFileSync} from 'node:child_process';
 
 const suites=[
     'scripts/verify-codex-documents.mjs',
+    'scripts/verify-visual-source-contracts.mjs',
+    'scripts/verify-visual-source-manifest.mjs',
+    'scripts/verify-document-reading-history.mjs',
+    'scripts/verify-visual-reading-cache.mjs',
+    'scripts/verify-visual-source-reader.mjs',
+    'scripts/verify-document-reading-job.mjs',
+    'scripts/verify-document-reading-flow.mjs',
+    'scripts/verify-document-source-actions.mjs',
+    'scripts/verify-project-writing-context.mjs',
     'scripts/verify-document-display-status.mjs',
     'scripts/verify-document-source-readiness.mjs',
     'scripts/verify-pdf-empty-page-reading.mjs',

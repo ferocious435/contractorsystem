@@ -166,11 +166,14 @@ export function assessDocumentSourceReadiness(document: DocumentSourceInput) {
         || (isPdf && (document.ocr_status !== 'COMPLETED' || !(completeVisualCoverage || completePageCoverage)))
         || (isDocx && (document.ocr_status !== 'COMPLETED' || !(completeVisualCoverage || completeDocxCoverage)))
         || /\[Document text was truncated for AI analysis\./u.test(text);
-    const status = !hasReadableText ? 'UNREADABLE' as const
+    const hasVisualContent=Boolean(completeVisualCoverage&&Array.isArray(parsed.source_reading_visual_descriptions)
+        &&parsed.source_reading_visual_descriptions.some(value=>value&&typeof value==='object'&&typeof value.text==='string'&&value.text.trim()));
+    const hasReadableContent=hasReadableText||hasVisualContent;
+    const status = !hasReadableContent ? 'UNREADABLE' as const
         : incomplete ? 'EXTRACTION_INCOMPLETE' as const
             : marker?.status || 'READABLE' as const;
     return {
-        status, hasReadableText, extractionComplete: hasReadableText && !incomplete,
+        status, hasReadableText, extractionComplete: hasReadableContent && !incomplete,
         canCompare: status === 'READABLE', markerQuote: marker?.quote || null,
         documentStatus: marker?.status || 'UNDETERMINED',
         // READABLE confirms extraction only. It does not prove contractual authority or that

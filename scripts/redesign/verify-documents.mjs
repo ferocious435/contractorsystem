@@ -4,16 +4,38 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {documentFixture,documentStates,completePdfReading} from './fixtures.mjs';
+import {sourceDocument,visualRegistry,digest} from '../codex-runtime/visual-reading-fixtures.mjs';
 const {DocumentListRow}=await import('../../src/components/documents/DocumentListRow.tsx');
 const {DocumentsCatalogView,selectCatalogDocuments}=await import('../../src/components/documents/DocumentsCatalogView.tsx');
 const {DocumentSourceView}=await import('../../src/components/documents/DocumentSourceView.tsx');
 const {getDocumentDisplayState}=await import('../../src/components/documents/documentDisplayStatus.ts');
+const {documentJobStatusText}=await import('../../src/components/documents/documentDisplayStatus.ts');
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 const rowProps={selected:false,processing:false,analysisAvailable:true,onSelect:()=>{},onAnalyze:async()=>{},onPreview:()=>{},onDelete:async()=>{}};
 
 const imageReading=(part,index,overrides={})=>({part,anchor:`${part}#rId${index}:${index}`,mediaName:`word/media/image${index}.png`,sha256:'b'.repeat(64),status:'READ',confidence:92,numericReviewRequired:false,reason:null,...overrides});
 const embeddedImageDocument=(overrides={})=>documentFixture('embedded-images',{title:'הוראות.docx',content_hash:'a'.repeat(64),ocr_status:'COMPLETED',extracted_text:'הוראה שלמה עם תמונות בכותרת המסמך.',parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:false,sourceHash:'a'.repeat(64),expectedImageReferences:3,images:[imageReading('word/header1.xml',1),imageReading('word/header1.xml',2),imageReading('word/header1.xml',3,{status:'REQUIRES_REVIEW',confidence:68,numericReviewRequired:true,reason:'OCR_NUMBERS_REQUIRE_REVIEW'})],issues:[]}},...overrides});
 const visibleText=html=>html.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+
+test('legacy physical PDF coverage still offers visual source reading',()=>{
+ const document=documentFixture('physical-only',{title:'physical.pdf',ocr_status:'COMPLETED',extracted_text:'Complete native paragraph.',parsed_json:{source_reading:completePdfReading}});
+ const html=render(DocumentSourceView,{document,fullText:document.extracted_text,onCompleteReading:async()=>{}});
+ assert.match(visibleText(html),/תוכן התמונות והתרשימים טרם נבדק חזותית/u);assert.match(visibleText(html),/השלמת קריאת המקור/u);
+});
+test('verified visual reading displays its source units and separate diagram description',()=>{
+ const document=sourceDocument(),description='מסלול מעבר שמופיע בתרשים.';document.parsed_json.source_reading_visual_descriptions=[{unitId:'pdf:1',location:{page:1},text:description}];
+ const html=render(DocumentSourceView,{document,fullText:document.extracted_text,onCompleteReading:async()=>{}}),text=visibleText(html);
+ assert.ok(text.includes('1 / 1'));assert.ok(text.includes(description));assert.match(text,/אינו ציטוט מילולי/u);assert.ok(!html.includes('השלמת קריאת המקור'));
+});
+test('historical reading is labelled and does not offer rereading over the old quote',()=>{
+ const document=sourceDocument({extracted_text:'Previous literal source',extracted_text_hash:digest('Previous literal source')});document.parsed_json.source_reading=visualRegistry({currentTextHash:document.extracted_text_hash});
+ const html=render(DocumentSourceView,{document,fullText:document.extracted_text,readingCurrent:false,onCompleteReading:async()=>{}});
+ assert.match(visibleText(html),/גרסת הקריאה שאליה מפנה הציטוט/u);assert.ok(html.includes('Previous literal source'));assert.ok(!html.includes('השלמת קריאת המקור'));
+});
+test('document job display distinguishes reading preparation, verified units and analysis',()=>{
+ assert.match(documentJobStatusText({state:'RUNNING',operation:'read_source',progress:{phase:'reading',completedUnits:2,totalUnits:5}}),/2 \/ 5/u);
+ assert.match(documentJobStatusText({state:'RUNNING',operation:'analyze',progress:{phase:'analysis',completedUnits:0,totalUnits:1}}),/מנתח/u);
+});
 
 test('an unread Word header image identifies the affected part and numeric review without hiding two read images',()=>{
   const document=embeddedImageDocument();

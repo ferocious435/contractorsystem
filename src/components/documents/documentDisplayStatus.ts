@@ -1,5 +1,13 @@
 import type { ProjectDocument } from './types';
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
+import type {JobDto} from '@/server/ai/contracts';
+
+export function documentJobStatusText(job:JobDto):string {
+    const reading=job.progress?.phase==='reading'||job.operation==='read_source';
+    if(job.state==='QUEUED')return reading?'ממתין לקריאת המקור…':'ממתין לקריאה וניתוח…';
+    if(reading)return job.progress?.totalUnits?`קורא את המקור: ${job.progress.completedUnits} / ${job.progress.totalUnits} חלקים אומתו`:'מכין את המקור לקריאה…';
+    return 'מנתח את תוכן המקור שנשמר…';
+}
 
 export type DocumentDisplayStateKey =
     | 'VALIDATED'
@@ -42,6 +50,7 @@ export function hasIncompleteAiAnalysis(doc: ProjectDocument) {
 
     return Boolean(
         parsed.system_error
+        || parsed.analysis_stale === true
         || (Array.isArray(parsed.system_errors) && parsed.system_errors.length > 0)
         || parsed.ai_degraded === true
         || analysisStatus === 'AI_ERROR'

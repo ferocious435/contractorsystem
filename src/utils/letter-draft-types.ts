@@ -5,6 +5,7 @@ export interface LetterSourceRef {
     title: string | null;
     pageLabel: string | null;
     quote: string | null;
+    textHash?: string;
     basis: 'DOCUMENT' | 'MANUAL';
     status: 'VERIFIED' | 'REQUIRES_VERIFICATION';
     manualNote: string | null;

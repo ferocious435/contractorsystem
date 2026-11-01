@@ -7,7 +7,9 @@ import { BidiText } from '@/components/ui/titanium/BidiText';
 import { Feedback } from '@/components/ui/titanium/Feedback';
 import { DocumentSourceView } from './DocumentSourceView';
 import { X } from 'lucide-react';
-import type { ParsedDocumentJson, ParsedFinancialItem, ParsedSystemError, ProjectDocument } from './types';
+import type { ParsedDocumentJson, ParsedFinancialItem, ParsedSystemError, ProjectDocument,SourceContext } from './types';
+import {fetchDocumentReading} from './documentAiApi';
+import type {ReadingDetail} from '@/utils/visual-source-reading';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import { normalizeDocumentPage } from '@/components/features/contradiction-radar/utils/documentPage';
 
@@ -22,7 +24,7 @@ export interface ScreenOfTruthModalProps {
     retryingRead?: boolean;
     onCompleteReading?:()=>Promise<void>;
     completingReading?:boolean;
-    sourceContext?: { page?: number | null; quote?: string | null } | null;
+    sourceContext?: SourceContext | null;
 }
 
 export function withSourcePage(url: string | null, page: unknown, pdf: boolean): string | null {
@@ -209,11 +211,21 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [previewMeta, setPreviewMeta] = useState<PreviewMetadata | null>(null);
     const [previewError, setPreviewError] = useState<string | null>(null);
+    const [readingDetail,setReadingDetail]=useState<ReadingDetail|null>(null),[readingError,setReadingError]=useState<string|null>(null);
+    const hasSourceContext=Boolean(sourceContext);
+    useEffect(()=>{
+        const controller=new AbortController();setReadingDetail(null);setReadingError(null);
+        const page=normalizeDocumentPage(sourceContext?.page),query={...(sourceContext?.textHash?{textHash:sourceContext.textHash}:{}),...(sourceContext?.quote?{quote:sourceContext.quote}:{}),...(page?{page}:{})};
+        void fetchDocumentReading(projectId,doc.id,query,controller.signal).then(detail=>{if(!controller.signal.aborted)setReadingDetail(detail);})
+            .catch(()=>{if(!controller.signal.aborted&&hasSourceContext)setReadingError('לא נמצאה גרסת קריאה חד-משמעית לציטוט הזה. קובץ המקור זמין לפתיחה.');});
+        return()=>controller.abort();
+    },[projectId,doc.id,doc.extracted_text_hash,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page,hasSourceContext]);
 
     const jsonData: ParsedDocumentJson = normalizeParsedJson(doc.parsed_json);
     const documentType = safeStructuredText(jsonData.document_type || jsonData.type, inferDocumentType(doc.title, doc.category));
     const summary = getUsefulSummary(jsonData, doc);
-    const readablePreviewText = doc.extracted_text || getReadableDocumentText(jsonData, doc);
+    const readablePreviewText = readingDetail?.text ?? (sourceContext?null:doc.extracted_text || getReadableDocumentText(jsonData, doc));
+    const sourceDocument=readingDetail?{...doc,extracted_text:readingDetail.text,extracted_text_hash:readingDetail.textHash,parsed_json:{...doc.parsed_json,source_reading:readingDetail.reading,source_reading_visual_descriptions:readingDetail.visualDescriptions}}:doc;
     const warningSystemErrors = Array.isArray(jsonData.warnings)
         ? jsonData.warnings
             .map((warning) => getRecord(warning))
@@ -310,8 +322,9 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
         <header className="ti-dialog__header"><div><h2 id="source-dialog-title" className="ti-section-title"><BidiText kind="file" value={doc.title || 'מסמך ללא שם'} /></h2><p className="ti-meta">סקירת המקור והנתונים שנשמרו</p></div><Button aria-label="סגירה" onClick={onClose}><X size={18} aria-hidden="true" /></Button></header>
         {sourceContext && <section className="ti-source-reference" aria-label="ההפניה למקור"><p className="ti-meta">{contextPage ? <>עמוד בהפניה: <BidiText kind="code" value={String(contextPage)}/></> : 'לא צוין עמוד בהפניה.'}</p>{sourceContext.quote && <details><summary>ציטוט שהועבר מההערכה</summary><blockquote>{sourceContext.quote}</blockquote></details>}</section>}
         <div className="ti-source-dialog__columns">
-            <DocumentSourceView document={doc} fullText={readablePreviewText} sourceReadError={sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} onCompleteReading={onCompleteReading} completingReading={completingReading} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
+            <DocumentSourceView document={sourceDocument} fullText={readablePreviewText} visualDescriptions={readingDetail?.visualDescriptions} readingCurrent={readingDetail?.current??true} sourceReadError={readingError||sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} onCompleteReading={onCompleteReading} completingReading={completingReading} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
             <section className="ti-source-analysis" aria-label="תוצאת הניתוח"><h3 className="ti-section-title">מה המערכת הבינה מהמסמך</h3>
+                {jsonData.analysis_stale===true&&<Feedback tone="warning">קריאת המקור השתנתה מאז הניתוח הזה. הנתונים הידניים נשמרו; יש לבדוק אותם מול הטקסט העדכני.</Feedback>}
                 {hasSystemError && <Feedback tone="warning" title={isAlreadyValidated ? 'האישור הידני נשמר; ניתוח AI לא הושלם' : 'ניתוח AI לא הושלם'}>{getSystemErrorText(systemErrors, jsonData.system_error)}</Feedback>}
                 {isStructured && !hasSystemError && <>
                     <dl className="ti-source-metadata"><div><dt>סוג שזוהה</dt><dd>{safeStructuredText(jsonData.document_type || jsonData.type, 'לא זוהה')}</dd></div>{shouldShowDate && <div><dt>תאריך שזוהה</dt><dd><BidiText kind="date" value={String(jsonData.date)} /></dd></div>}{confidencePercent !== null && <div><dt>רמת ודאות בניתוח</dt><dd><BidiText kind="percent" value={confidencePercent + '%'} /></dd></div>}{shouldShowFinancial && <div><dt>סכום שזוהה</dt><dd><BidiText kind="money" value={totalAmount !== null && totalAmount !== undefined ? '₪' + moneyFormatter.format(Number(totalAmount)) : 'לא צוין סכום כולל'} /></dd></div>}</dl>

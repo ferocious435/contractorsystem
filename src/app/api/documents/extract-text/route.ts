@@ -6,6 +6,7 @@ import { prepareDocumentAnalysisInput } from "@/utils/document-text-extraction";
 import { createClient } from "@/utils/supabase/server";
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
 import { preserveStableDocumentText } from '@/utils/stable-document-reading';
+import {hasSavedVisualReading} from '@/utils/document-reading-history';
 
 type OwnedDocumentForExtraction = {
     id: string;
@@ -54,14 +55,14 @@ export async function POST(req: NextRequest) {
             return ownership.response;
         }
 
-        const doc = ownership.document;
+        let doc = ownership.document;
 
         if (doc.project_id !== projectId) {
             return NextResponse.json({ error: "Document does not belong to the requested project" }, { status: 403 });
         }
 
         // Если текст уже извлечён — вернуть длину
-        if (!force && assessDocumentSourceReadiness(doc).extractionComplete) {
+        if (hasSavedVisualReading(doc) || !force && assessDocumentSourceReadiness(doc).extractionComplete) {
             return NextResponse.json({
                 success: true,
                 textLength: String(doc.extracted_text || '').length,
@@ -76,21 +77,31 @@ export async function POST(req: NextRequest) {
         const prepared = preserveStableDocumentText(
             await prepareDocumentAnalysisInput(fileBuffer, doc.title || "document"), doc, contentHash
         );
+        const current=await supabase.from('documents').select('id,project_id,extracted_text,extracted_text_hash,content_hash,parsed_json,ocr_status').eq('id',documentId).eq('project_id',projectId).maybeSingle();
+        if(current.error||!current.data)return NextResponse.json({success:false,error:'Source changed while reading'},{status:409});
+        doc={...doc,...current.data};
+        if(hasSavedVisualReading(doc,contentHash))return NextResponse.json({success:true,alreadyExtracted:true,textLength:String(doc.extracted_text||'').length});
+        if(doc.content_hash&&doc.content_hash!==contentHash)return NextResponse.json({success:false,error:'Source changed while reading'},{status:409});
+        const sameReading=(query:ReturnType<ReturnType<typeof supabase.from>['update']>)=>{
+            let checked=query.eq('id',documentId).eq('project_id',projectId);
+            checked=doc.parsed_json?checked.eq('parsed_json',JSON.stringify(doc.parsed_json)):checked.is('parsed_json',null);
+            checked=doc.content_hash?checked.eq('content_hash',doc.content_hash):checked.is('content_hash',null);
+            return doc.extracted_text_hash?checked.eq('extracted_text_hash',doc.extracted_text_hash):checked.is('extracted_text_hash',null);
+        };
 
         if (prepared.kind === "direct") {
-            const { error: updateError } = await supabase
+            const { error: updateError,count } = await sameReading(supabase
                 .from("documents")
                 .update({
                     ocr_status: "REQUIRES_REVIEW",
                     content_hash: contentHash,
                     processed_at: new Date().toISOString(),
-                })
-                .eq("id", documentId)
-                .eq("project_id", projectId);
+                },{count:'exact'}));
 
             if (updateError) {
                 throw new Error(`Failed to save extraction status: ${updateError.message}`);
             }
+            if(count===0)return NextResponse.json({success:false,error:'Source changed while reading'},{status:409});
 
             return NextResponse.json({
                 success: false,
@@ -113,7 +124,7 @@ export async function POST(req: NextRequest) {
         console.log(`[extract-text] Extracted ${extractedText.length} chars from "${doc.title}"`);
 
         // 4. Сохранить извлечённый текст в БД
-        const { error: updateError } = await supabase
+        const { error: updateError,count } = await sameReading(supabase
             .from("documents")
             .update({
                 extracted_text: extractedText,
@@ -122,9 +133,7 @@ export async function POST(req: NextRequest) {
                 extracted_text_hash: extractedTextHash,
                 parsed_json: parsedJson,
                 processed_at: new Date().toISOString()
-            })
-            .eq("id", documentId)
-                .eq("project_id", projectId);
+            },{count:'exact'}));
 
         if (updateError) {
             console.error("[extract-text] DB update error:", updateError);
@@ -133,6 +142,7 @@ export async function POST(req: NextRequest) {
                 { status: 500 }
             );
         }
+        if(count===0)return NextResponse.json({success:false,error:'Source changed while reading'},{status:409});
 
         return NextResponse.json({
             success: true,

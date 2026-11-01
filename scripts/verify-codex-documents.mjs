@@ -16,6 +16,7 @@ import {applyPricingEffects} from './codex-runtime/pricing-fixtures.mjs';
 import {createProjectEffectClient} from '../src/server/ai/project-effects.server.ts';
 import {downloadDocumentBuffer} from '../src/utils/document-storage.ts';
 import {createAiJobService} from '../src/server/ai/service.server.ts';
+import {DOCUMENT_ANALYSIS_VERSION,DOCUMENT_ANALYSIS_PROMPT,DOCUMENT_ANALYSIS_SCHEMA} from '../src/utils/document-analysis-prompt.ts';
 registerHooks({resolve(specifier,context,next){if(/\/api\/documents\/process\/route\.ts$/.test(context.parentURL??'')){
  if(specifier==='@/server/ai/service.server')return {url:'data:text/javascript,export const createOwnedAiJobFromRequest=(r,k)=>globalThis.__documentHttp.service.createRequest(r,k);',shortCircuit:true};
  if(specifier==='@/utils/supabase/server')return {url:'data:text/javascript,export const createClient=async()=>globalThis.__documentHttp.database;',shortCircuit:true};
@@ -102,6 +103,21 @@ test('a complete analysis returned through PostgreSQL JSONB is reused without an
   fx.handler={...handler,async execute(payload,execution){return prepared=await handler.execute(payload,execution);}};
   await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work},'jsonb-cache',savedProfile,{clientContextId:pricingIds.work});
   await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>fx.handler,clock:fx.clock,startedAt:0}).run();return {prepared,fx,job:[...fx.rows.values()][0]};}
- const first=await run();assert.equal(first.job.state,'SUCCEEDED');applyPricingEffects(rows,first.prepared);rows.documents[0].parsed_json=jsonb(rows.documents[0].parsed_json);
+ const first=await run();assert.equal(first.job.state,'SUCCEEDED');
+ const hash=value=>createHash('sha256').update(value).digest('hex'),before=rows.documents[0];
+ const legacyHash=hash(JSON.stringify({version:DOCUMENT_ANALYSIS_VERSION,prompt:DOCUMENT_ANALYSIS_PROMPT,schema:DOCUMENT_ANALYSIS_SCHEMA,projectId,documentId:before.id,title:before.title,category:before.category,file:hash(Buffer.from(body)),text:hash(body),aiText:hash(body),truncated:false,reading:null}));
+ assert.equal(first.job.result.inputHash,legacyHash,'Unchanged native analysis must keep its existing cache identity');
+ applyPricingEffects(rows,first.prepared);rows.documents[0].parsed_json=jsonb(rows.documents[0].parsed_json);
  const again=await run();assert.equal(again.job.state,'SUCCEEDED');assert.equal(again.fx.modelTurns,0);assert.equal(again.job.result.cached,true);
+});
+
+test('a completed visual DOCX reading and analysis survive a JSONB roundtrip without another model turn',async()=>{
+ const file=docx({body:paragraph(body),media:{},rels:[]}),rows=pricingRows();Object.assign(rows.documents[0],{title:'source.docx',content_hash:createHash('sha256').update(file).digest('hex')});
+ const jsonb=value=>Array.isArray(value)?value.map(jsonb):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,jsonb(value[key])])):value;
+ async function run(){let prepared;const fx=queueFixture({onGenerate:async()=>JSON.stringify(reply())}),handler=document.createDocumentHandler({database:()=>pricingReadClient(rows),download:async()=>file});
+  await fx.store.enqueue(ownerId,projectId,'document_analysis',{documentId:pricingIds.work,operation:'analyze'},'visual-jsonb-cache',savedProfile,{clientContextId:pricingIds.work});
+  await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>({...handler,async execute(payload,execution){return prepared=await handler.execute(payload,execution);}}),clock:fx.clock,startedAt:0}).run();return {prepared,fx,job:[...fx.rows.values()][0]};}
+ const first=await run();assert.equal(first.job.state,'SUCCEEDED');assert.equal(first.fx.modelTurns,1);applyPricingEffects(rows,first.prepared);
+ assert.equal(rows.documents[0].parsed_json.source_reading.version,'visual-source-reading-v2');assert.equal(rows.documents[0].parsed_json.analysis_stale,false);
+ rows.documents[0].parsed_json=jsonb(rows.documents[0].parsed_json);const again=await run();assert.equal(again.job.state,'SUCCEEDED');assert.equal(again.fx.modelTurns,0);assert.equal(again.job.result.cached,true);assert.equal(again.prepared.effects.length,0);
 });
