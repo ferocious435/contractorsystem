@@ -10,6 +10,7 @@ import {
 import {
     DOCUMENT_READING_VERSION,
     hasCompleteOcrPageCoverage,
+    hasRenderedEmptyPageProof,
     hasDocumentBodyText,
     pdfPagesNeedingOcr,
     type DocumentReadingVerification,
@@ -480,14 +481,17 @@ export async function prepareDocumentAnalysisInput(fileBuffer: Buffer, title: st
             const mergedText = Array.from({ length: totalPages }, (_, index) => index + 1)
                 .map((page) => `${mergeExtractedAndOcrText(nativeByPage.get(page) || '', ocrByPage.get(page)?.text || '')}\n\n-- ${page} of ${totalPages} --`)
                 .join('\n\n');
+            const nonEmptyOcrPages = ocr.pageResults.filter(page => !hasRenderedEmptyPageProof(page));
+            const emptyPageProofs = ocr.pageResults.flatMap(page => hasRenderedEmptyPageProof(page) ? [page.emptyPageProof!] : []);
+            const contentConfidence = nonEmptyOcrPages.length ? nonEmptyOcrPages.reduce((sum, page) => sum + page.confidence, 0) / nonEmptyOcrPages.length : undefined;
             return makeTextInput(
                 fileBuffer,
                 extractedPdfText ? "pdf_text_plus_local_ocr" : "pdf_local_ocr",
                 mergedText,
                 {
-                    requiresReview: !complete || ocr.confidence < 65,
-                    ocrConfidence: ocr.confidence,
-                    readingVerification: { version: DOCUMENT_READING_VERSION, complete, totalPages, readPages, unreadablePages },
+                    requiresReview: !complete || contentConfidence !== undefined && contentConfidence < 65,
+                    ocrConfidence: contentConfidence,
+                    readingVerification: { version: DOCUMENT_READING_VERSION, complete, totalPages, readPages, unreadablePages, ...(emptyPageProofs.length ? { emptyPageProofs } : {}) },
                 },
             );
         } catch (error) {

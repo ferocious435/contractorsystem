@@ -33,11 +33,23 @@ export type PdfReadingVerification = {
     totalPages: number;
     readPages: number[];
     unreadablePages: number[];
+    emptyPageProofs?: RenderedEmptyPageProof[];
+};
+export type RenderedEmptyPageProof = {
+    version: 'rendered-empty-v1';
+    page: number;
+    kind: 'BLANK' | 'PAGE_NUMBER_ONLY';
+    imageSha256: string;
+    width: number;
+    height: number;
+    numberText?: string;
+    numberConfidence?: number;
+    numberBounds?: Array<{ x0: number; y0: number; x1: number; y1: number }>;
 };
 export type DocumentReadingVerification = PdfReadingVerification | DocxReadingVerification;
 
 export type ExtractedPdfPage = { num: number; text: string };
-export type RecognizedPdfPage = { page: number; text: string; confidence: number; requiresVisualReview?: boolean };
+export type RecognizedPdfPage = { page: number; text: string; confidence: number; requiresVisualReview?: boolean; emptyPageProof?: RenderedEmptyPageProof };
 
 export function removeExtractionNoise(value: string) {
     return value
@@ -80,6 +92,27 @@ function validHash(hash: unknown) {
     return typeof hash === 'string' && /^[a-f\d]{64}$/i.test(hash);
 }
 
+export function isPageNumberOnly(value: string) {
+    return /^(?:(?:page|עמוד|עמ')\s*)?\d+(?:\s*(?:of|מתוך|\/)\s*\d+)?$/iu.test(value.replace(/\s+/g, ' ').trim());
+}
+
+export function hasRenderedEmptyPageProof(page: RecognizedPdfPage) {
+    const proof = page.emptyPageProof;
+    if (!proof || proof.version !== 'rendered-empty-v1' || proof.page !== page.page || !validHash(proof.imageSha256)
+        || !Number.isInteger(proof.page) || proof.page < 1 || !Number.isInteger(proof.width) || proof.width < 1
+        || !Number.isInteger(proof.height) || proof.height < 1 || proof.width * proof.height > 16_000_000) return false;
+    if (proof.kind === 'BLANK') return page.text.trim() === '';
+    return proof.kind === 'PAGE_NUMBER_ONLY' && typeof proof.numberText === 'string' && isPageNumberOnly(proof.numberText)
+        && page.text.replace(/\s+/g, ' ').trim() === proof.numberText.replace(/\s+/g, ' ').trim()
+        && typeof proof.numberConfidence === 'number' && Number.isFinite(proof.numberConfidence)
+        && proof.numberConfidence >= 65 && proof.numberConfidence <= 100
+        && Array.isArray(proof.numberBounds) && proof.numberBounds.length > 0
+        && proof.numberBounds.every(box => box && [box.x0, box.y0, box.x1, box.y1].every(Number.isInteger)
+            && box.x0 >= 0 && box.y0 >= 0 && box.x1 > box.x0 && box.y1 > box.y0
+            && box.x1 <= proof.width && box.y1 <= proof.height
+            && (box.y1 <= proof.height * 0.1 || box.y0 >= proof.height * 0.9));
+}
+
 export function isDocxImageReadingComplete(image: unknown): image is DocxReadingVerification['images'][number] {
     if (!image || typeof image !== 'object') return false;
     const record = image as Record<string, unknown>;
@@ -108,7 +141,11 @@ export function assessDocumentSourceReadiness(document: DocumentSourceInput) {
         && Number.isInteger(verification.totalPages) && verification.totalPages > 0
         && Array.isArray(verification.unreadablePages) && verification.unreadablePages.length === 0
         && verifiedPages.size === verification.totalPages
-        && [...verifiedPages].every((page) => Number.isInteger(page) && page >= 1 && page <= verification.totalPages);
+        && [...verifiedPages].every((page) => Number.isInteger(page) && page >= 1 && page <= verification.totalPages)
+        && (pdf?.emptyPageProofs === undefined || Array.isArray(pdf.emptyPageProofs)
+            && new Set(pdf.emptyPageProofs.map(proof => proof?.page)).size === pdf.emptyPageProofs.length
+            && pdf.emptyPageProofs.every(proof => proof && verifiedPages.has(proof.page)
+                && hasRenderedEmptyPageProof({page: proof.page, text: proof.numberText || '', confidence: 0, emptyPageProof: proof})));
     const docx = verification?.version === DOCX_READING_VERSION ? verification : undefined;
     const completeDocxCoverage = Boolean(docx?.complete === true && validHash(docx.sourceHash)
         && (!document.content_hash || document.content_hash === docx.sourceHash)
@@ -147,7 +184,7 @@ export function hasCompleteOcrPageCoverage(pages: RecognizedPdfPage[], expectedP
     const byNumber = new Map(pages.map((page) => [page.page, page]));
     return expectedPages.every((number) => {
         const page = byNumber.get(number);
-        return Boolean(page && !page.requiresVisualReview && hasDocumentBodyText(page.text)
-            && Number.isFinite(page.confidence) && page.confidence >= 65);
+        return Boolean(page && !page.requiresVisualReview && (hasRenderedEmptyPageProof(page)
+            || hasDocumentBodyText(page.text) && Number.isFinite(page.confidence) && page.confidence >= 65));
     });
 }

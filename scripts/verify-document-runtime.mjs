@@ -6,6 +6,7 @@ const suites=[
     'scripts/verify-codex-documents.mjs',
     'scripts/verify-document-display-status.mjs',
     'scripts/verify-document-source-readiness.mjs',
+    'scripts/verify-pdf-empty-page-reading.mjs',
     'scripts/verify-document-duplicates.mjs',
     'scripts/verify-document-reference-authority.mjs',
     'scripts/verify-document-reference-loader.mjs',

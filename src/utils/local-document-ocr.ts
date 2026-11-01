@@ -13,7 +13,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from 'node:zlib';
-import type { RecognizedPdfPage } from '@/utils/document-source-readiness';
+import { createHash } from 'node:crypto';
+import sharp from 'sharp';
+import { hasRenderedEmptyPageProof, isPageNumberOnly, type RecognizedPdfPage, type RenderedEmptyPageProof } from '@/utils/document-source-readiness';
 
 import { createWorker } from "tesseract.js";
 
@@ -39,6 +41,35 @@ export type LocalOcrResult = {
     confidence: number;
     pageResults: RecognizedPdfPage[];
 };
+
+type OcrWord = { text: string; confidence: number; bbox: { x0: number; y0: number; x1: number; y1: number } };
+
+/** Certify rendered whitespace, never infer an empty page from missing OCR text. */
+export async function getRenderedEmptyPageProof(image: Buffer, page: number, ocr: { text: string; words: OcrWord[] }): Promise<RenderedEmptyPageProof | undefined> {
+    if (!Number.isInteger(page) || page < 1) return undefined;
+    try {
+        const { data, info } = await sharp(image, { limitInputPixels: 16_000_000 }).flatten({ background: '#ffffff' })
+            .toColourspace('srgb').removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        if (info.channels !== 3) return undefined;
+        const base = { version: 'rendered-empty-v1' as const, page, imageSha256: createHash('sha256').update(image).digest('hex'), width: info.width, height: info.height };
+        if (data.every(value => value === 255)) return { ...base, kind: 'BLANK' };
+        if (!isPageNumberOnly(ocr.text) || !ocr.words.length || ocr.words.some(word => !Number.isFinite(word.confidence) || word.confidence < 65 || word.confidence > 100)
+            || ocr.words.map(word => word.text).join(' ').replace(/\s+/g, ' ').trim() !== ocr.text.replace(/\s+/g, ' ').trim()) return undefined;
+        const numberBounds = ocr.words.map(word => ({
+            x0: Math.max(0, Math.floor(word.bbox.x0) - 2), y0: Math.max(0, Math.floor(word.bbox.y0) - 2),
+            x1: Math.min(info.width, Math.ceil(word.bbox.x1) + 2), y1: Math.min(info.height, Math.ceil(word.bbox.y1) + 2),
+        }));
+        const proof: RenderedEmptyPageProof = { ...base, kind: 'PAGE_NUMBER_ONLY', numberText: ocr.text.trim(), numberConfidence: Math.min(...ocr.words.map(word => word.confidence)), numberBounds };
+        if (!hasRenderedEmptyPageProof({page, text: ocr.text, confidence: 0, emptyPageProof: proof})) return undefined;
+        for (let pixel = 0; pixel < info.width * info.height; pixel += 1) {
+            const offset = pixel * 3;
+            if (data[offset] === 255 && data[offset + 1] === 255 && data[offset + 2] === 255) continue;
+            const x = pixel % info.width, y = Math.floor(pixel / info.width);
+            if (!numberBounds.some(box => x >= box.x0 && x < box.x1 && y >= box.y0 && y < box.y1)) return undefined;
+        }
+        return proof;
+    } catch { return undefined; }
+}
 
 function normalizeComparableText(value: string) {
     return value.replace(/\s+/g, " ").trim();
@@ -219,7 +250,7 @@ export async function extractScannedPdfTextLocally(
                     let lastError: unknown = null;
                     for (let attempt = 1; attempt <= 2; attempt += 1) {
                         try {
-                            result = await worker.recognize(pagePath);
+                            result = await worker.recognize(pagePath, {}, { blocks: true });
                             break;
                         } catch (error) {
                             lastError = error;
@@ -229,11 +260,14 @@ export async function extractScannedPdfTextLocally(
                         throw new Error(`LOCAL_OCR_RECOGNITION_FAILED: ${pageFile}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
                     }
 
-                    const pageText = String(result.data.text || "").trim();
-                    pageResults.push({ page: getPageNumber(pageFile), text: pageText, confidence: result.data.confidence });
+                    const number = getPageNumber(pageFile);
+                    const words = result.data.blocks?.flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines.flatMap(line => line.words))) || [];
+                    const emptyPageProof = await getRenderedEmptyPageProof(await readFile(pagePath), number, { text: result.data.text || '', words });
+                    const pageText = emptyPageProof?.kind === 'BLANK' ? '' : String(result.data.text || "").trim();
+                    pageResults.push({ page: number, text: pageText, confidence: result.data.confidence, ...(emptyPageProof ? { emptyPageProof } : {}) });
                     if (pageText) {
                         recognizedPages.push(pageText);
-                        if (Number.isFinite(result.data.confidence)) {
+                        if (!emptyPageProof && Number.isFinite(result.data.confidence)) {
                             pageConfidences.push(result.data.confidence);
                         }
                     }
@@ -242,7 +276,7 @@ export async function extractScannedPdfTextLocally(
             }
 
             const text = recognizedPages.join("\n\n").trim();
-            if (!text) {
+            if (!text && !pageResults.some(hasRenderedEmptyPageProof)) {
                 throw new Error("LOCAL_OCR_EMPTY: no readable text was recognized");
             }
 
