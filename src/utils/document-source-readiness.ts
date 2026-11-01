@@ -1,3 +1,5 @@
+import {assessVisualReading, VISUAL_READING_VERSION} from './visual-source-reading';
+
 export type DocumentSourceInput = {
     title?: string | null;
     extracted_text?: string | null;
@@ -6,6 +8,7 @@ export type DocumentSourceInput = {
     file_url?: string | null;
     parsed_json?: unknown;
     content_hash?: string | null;
+    extracted_text_hash?: string | null;
 };
 
 export const DOCUMENT_READING_VERSION = 'page-coverage-v1';
@@ -133,6 +136,9 @@ export function assessDocumentSourceReadiness(document: DocumentSourceInput) {
     const parsed = document.parsed_json && typeof document.parsed_json === 'object'
         ? document.parsed_json as Record<string, unknown> : {};
     const verification = parsed.source_reading as DocumentReadingVerification | undefined;
+    const visualRegistry = parsed.source_reading && typeof parsed.source_reading === 'object'
+        && (parsed.source_reading as {version?:unknown}).version === VISUAL_READING_VERSION;
+    const completeVisualCoverage = visualRegistry && assessVisualReading(parsed.source_reading, document).complete;
     const isDocx = verification?.version === DOCX_READING_VERSION || [document.title, document.storage_path, document.file_url]
         .some((value) => /\.docx(?:$|[?#\s._()\d-])/iu.test(value || ''));
     const pdf = verification?.version === DOCUMENT_READING_VERSION ? verification : undefined;
@@ -155,8 +161,9 @@ export function assessDocumentSourceReadiness(document: DocumentSourceInput) {
         && new Set(docx.images.map((image) => image?.anchor)).size === docx.expectedImageReferences
         && docx.images.every(isDocxImageReadingComplete));
     const incomplete = ['REQUIRES_REVIEW', 'ERROR', 'PENDING', 'PROCESSING'].includes(String(document.ocr_status || ''))
-        || (isPdf && (document.ocr_status !== 'COMPLETED' || !completePageCoverage))
-        || (isDocx && (document.ocr_status !== 'COMPLETED' || !completeDocxCoverage))
+        || (visualRegistry && !completeVisualCoverage)
+        || (isPdf && (document.ocr_status !== 'COMPLETED' || !(completeVisualCoverage || completePageCoverage)))
+        || (isDocx && (document.ocr_status !== 'COMPLETED' || !(completeVisualCoverage || completeDocxCoverage)))
         || /\[Document text was truncated for AI analysis\./u.test(text);
     const status = !hasReadableText ? 'UNREADABLE' as const
         : incomplete ? 'EXTRACTION_INCOMPLETE' as const
