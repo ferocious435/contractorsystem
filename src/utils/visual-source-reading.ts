@@ -22,15 +22,18 @@ export type ReadingMethod = 'native-match'|'local-ocr-match'|'visual-double-pass
 export type VerifiedView = {
     viewId:string;imageHash:string;textHash:string;method:ReadingMethod;confirmationHash:string;
     reading:UnitReading;confirmation:UnitReading|null;emptyPageProof?:RenderedEmptyPageProof;
+    initialReading?:UnitReading;
+    readingImage?:Omit<RenderedView,'id'|'bytes'>;confirmationImage?:Omit<RenderedView,'id'|'bytes'>;
 };
 export type VerifiedUnit = {
     unitId:string;inputHash:string;textHash:string;text:string;tables:string[][][];visualDescription:string;
     uncertainties:string[];views:VerifiedView[];complete:boolean;
+    createdBy?:{jobId:string;rulesVersion:string;profileRevision:number};
 };
 export type RegistryUnit = {
     id:string;kind:ReadingUnit['kind'];locations:ReadingLocation[];views:Array<Omit<RenderedView,'bytes'>>;
     status:'READ'|'REQUIRES_REVIEW';inputHash:string;textHash:string;literalHasBody:boolean;visualHasContent:boolean;
-    verifiedViews:Array<Omit<VerifiedView,'reading'|'confirmation'>>;uncertainties:string[];
+    verifiedViews:Array<Omit<VerifiedView,'reading'|'confirmation'|'initialReading'>>;uncertainties:string[];
 };
 export type VisualReadingVerification = {
     version:typeof VISUAL_READING_VERSION;sourceHash:string;currentTextHash:string;manifestHash:string;

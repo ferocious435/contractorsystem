@@ -57,6 +57,7 @@ export type RecognizedPdfPage = { page: number; text: string; confidence: number
 export function removeExtractionNoise(value: string) {
     return value
         .replace(/\[(?:DOCX_(?:IMAGE|PART|ISSUE)\b[^\]\r\n]*|END_DOCX_(?:IMAGE|PART))\]/g, '')
+        .replace(/^[ \t]*\[PAGE\s+\d+\][ \t]*$/gm, '')
         .replace(/^[ \t]*--\s*\d+\s+of\s+\d+\s*--[ \t]*$/gim, '')
         .replace(/^[ \t]*(?:page\s+)?\d+\s+(?:of|מתוך)\s+\d+[ \t]*$/gim, '')
         .replace(/^[ \t]*(?:עמוד|עמ')\s*\d+(?:\s*מתוך\s*\d+)?[ \t]*$/gm, '')

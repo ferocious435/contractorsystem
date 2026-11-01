@@ -30,7 +30,7 @@ test('numeric_labels_and_decimal_separators_are_not_discarded',()=>{
 });
 test('counter_only_is_not_document_body',()=>{
  api(contracts,'assessVisualReading');
- for(const text of ['1','-- 1 of 3 --','report.pdf 01.11.2026','QA.19.01.05C 28.11.23'])assert.equal(hasDocumentBodyText(text),false);
+ for(const text of ['1','[PAGE 1]\n1','-- 1 of 3 --','report.pdf 01.11.2026','QA.19.01.05C 28.11.23'])assert.equal(hasDocumentBodyText(text),false);
  const registry=visualRegistry();registry.expectedUnits[0].literalHasBody=false;
  assert.equal(contracts.assessVisualReading(registry,sourceDocument({extracted_text:'1'})).complete,false);
 });
