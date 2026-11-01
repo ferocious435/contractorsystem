@@ -5,6 +5,7 @@ import { requireOwnedProject } from "@/app/api/_utils/auth";
 import { DOCUMENTS_BUCKET } from "@/utils/document-storage";
 import { getFileExtension } from "@/utils/document-text-extraction";
 import { createClient } from "@/utils/supabase/server";
+import {projectDocumentForCatalog} from '@/utils/document-reading-history';
 
 const ALLOWED_CATEGORIES = new Set(["CONTRACT", "EXECUTION", "PRICELIST"]);
 
@@ -61,7 +62,7 @@ export async function GET(req: NextRequest) {
         const { data, error } = await query;
         if (error) throw error;
 
-        return NextResponse.json({ success: true, documents: data || [] });
+        return NextResponse.json({ success: true, documents: (data || []).map(projectDocumentForCatalog) });
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "Failed to fetch documents";
         return NextResponse.json({ success: false, error: message }, { status: 500 });

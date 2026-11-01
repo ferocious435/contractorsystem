@@ -43,6 +43,8 @@ export interface ProjectDocument extends Record<string, unknown> {
     created_at?: string | null;
     extracted_text?: string | null;
     extracted_text_hash?: string | null;
+    content_hash?: string | null;
+    project_id?: string | null;
     file_url?: string | null;
     ocr_status?: string | null;
     parsed_json?: ParsedDocumentJson | null;

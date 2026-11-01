@@ -41,7 +41,7 @@ export type OwnedSourceDocument = DocumentSourceInput & Record<string,unknown> &
     id:string;project_id:string;extracted_text_hash?:string|null;storage_bucket?:string|null;
     ai_status?:string|null;processed_at?:string|null;
 };
-export type ReadingTextVersion = {sourceHash:string;textHash:string;text:string;reading:unknown};
+export type ReadingTextVersion = {sourceHash:string;textHash:string;text:string;reading:unknown;visualDescriptions?:VisualDescription[]};
 export type VisualDescription = {unitId:string;location:ReadingLocation;text:string};
 export type ReadingAssembly = {text:string;textHash:string;verification:VisualReadingVerification;units:VerifiedUnit[];visualDescriptions:VisualDescription[]};
 export type DocumentReadingPatch = Pick<OwnedSourceDocument,'extracted_text'|'extracted_text_hash'|'ocr_status'|'parsed_json'|'processed_at'>;

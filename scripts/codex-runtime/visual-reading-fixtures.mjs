@@ -21,3 +21,6 @@ export function sourceDocument(overrides={}){
  return {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',project_id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',title:'synthetic.pdf',content_hash:sourceHash,
   extracted_text:literal,extracted_text_hash:digest(literal),ocr_status:'COMPLETED',parsed_json:{source_reading:visualRegistry()},...overrides};
 }
+export function readingAssembly(text=literal,overrides={}){
+ return {text,textHash:digest(text),verification:visualRegistry({currentTextHash:digest(text)}),units:[],visualDescriptions:[],...overrides};
+}
