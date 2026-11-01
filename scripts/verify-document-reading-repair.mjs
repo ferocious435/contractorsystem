@@ -4,6 +4,7 @@ import {buildVisualSourceManifest} from '../src/utils/visual-source-manifest.ts'
 import {assembleDocumentReading,createReadingPatch} from '../src/utils/document-reading-history.ts';
 import {readingUnitInputHash,verifiedReadingUnit,createVisualReadingCache} from '../src/server/ai/visual-reading-cache.server.ts';
 import {stageDocumentReading} from '../src/server/ai/handlers/document-reading.ts';
+import {extractImageTextLocally,getRenderedEmptyPageProof} from '../src/utils/local-document-ocr.ts';
 import {pricingRows,pricingIds} from './codex-runtime/pricing-fixtures.mjs';
 import {pricingDatabase} from './fixtures/pricing-scope-database.mjs';
 import {ownerId} from './codex-runtime/fixtures.mjs';import {projectId,savedProfile} from './codex-runtime/queue-fixtures.mjs';
@@ -40,6 +41,7 @@ async function run({corrupt='',extraPixel=false}={}){
 }
 test('a_physical_folio_repair_preserves_other_partial_units_without_repeating_the_model',async()=>{
  const value=await run(),[folio,other]=value.result.reading.units;
+ if(value.calls){const views=[];for(const view of value.manifest.units[0].views){const local=await extractImageTextLocally(Buffer.from(view.bytes)),proof=await getRenderedEmptyPageProof(Buffer.from(view.bytes),1,local);views.push({id:view.id,hash:view.sha256,width:view.width,height:view.height,text:local.text,confidence:local.confidence,words:local.words,physicalProof:proof??null});}assert.equal(value.calls,0,JSON.stringify({initialManifestHash:value.manifest.manifestHash,finalManifestHash:value.result.reading.verification.manifestHash,initialInputs:value.manifest.units.map(readingUnitInputHash),finalInputs:value.result.reading.units.map(unit=>unit.inputHash),finalFolio:folio,views}));}
  assert.equal(value.calls,0);assert.equal(folio.complete,true);assert.ok(folio.views.every(view=>view.method==='physical-empty'));
  assert.ok(verifiedReadingUnit(folio,value.manifest.units[0]));assert.deepEqual(other,value.savedOther);assert.equal(other.complete,false);
  assert.equal(value.result.document.extracted_text,'Previous full source text.');assert.equal(value.result.document.ai_status,'VALIDATED');
