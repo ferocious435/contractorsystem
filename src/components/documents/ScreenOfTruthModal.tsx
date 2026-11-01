@@ -27,6 +27,13 @@ export interface ScreenOfTruthModalProps {
     sourceContext?: SourceContext | null;
 }
 
+export function DocumentReadingVersions({versions,value,onChange}:{versions:Array<{textHash:string}>;value:string;onChange:(hash:string)=>void}){
+    if(versions.length<2)return null;
+    return <label className="ti-field"><span>גרסת הקריאה</span><select aria-label="גרסת הקריאה" value={value} onChange={event=>onChange(event.currentTarget.value)}>
+        {versions.map((version,index)=><option key={version.textHash} value={version.textHash}>{index===0?'קריאה עדכנית':`קריאה קודמת ${index}`}</option>)}
+    </select></label>;
+}
+
 export function withSourcePage(url: string | null, page: unknown, pdf: boolean): string | null {
     const value = normalizeDocumentPage(typeof page === 'string' || typeof page === 'number' ? page : null);
     return url && pdf && value ? url.split('#')[0] + '#page=' + value : url;
@@ -212,20 +219,23 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
     const [previewMeta, setPreviewMeta] = useState<PreviewMetadata | null>(null);
     const [previewError, setPreviewError] = useState<string | null>(null);
     const [readingDetail,setReadingDetail]=useState<ReadingDetail|null>(null),[readingError,setReadingError]=useState<string|null>(null);
+    const [selectedReading,setSelectedReading]=useState<string|null>(null);
+    useEffect(()=>setSelectedReading(null),[doc.id,projectId]);
+    const shownReading=selectedReading&&readingDetail?.textHash!==selectedReading?null:readingDetail;
     const hasSourceContext=Boolean(sourceContext);
     useEffect(()=>{
         const controller=new AbortController();setReadingDetail(null);setReadingError(null);
-        const page=normalizeDocumentPage(sourceContext?.page),query={...(sourceContext?.textHash?{textHash:sourceContext.textHash}:{}),...(sourceContext?.quote?{quote:sourceContext.quote}:{}),...(page?{page}:{})};
+        const page=normalizeDocumentPage(sourceContext?.page),query=selectedReading?{textHash:selectedReading}:{...(sourceContext?.textHash?{textHash:sourceContext.textHash}:{}),...(sourceContext?.quote?{quote:sourceContext.quote}:{}),...(page?{page}:{})};
         void fetchDocumentReading(projectId,doc.id,query,controller.signal).then(detail=>{if(!controller.signal.aborted)setReadingDetail(detail);})
-            .catch(()=>{if(!controller.signal.aborted&&hasSourceContext)setReadingError('לא נמצאה גרסת קריאה חד-משמעית לציטוט הזה. קובץ המקור זמין לפתיחה.');});
+            .catch(()=>{if(!controller.signal.aborted&&(hasSourceContext||selectedReading))setReadingError('לא נמצאה גרסת קריאה חד-משמעית לציטוט הזה. קובץ המקור זמין לפתיחה.');});
         return()=>controller.abort();
-    },[projectId,doc.id,doc.extracted_text_hash,doc.processed_at,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page,hasSourceContext]);
+    },[projectId,doc.id,doc.extracted_text_hash,doc.processed_at,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page,hasSourceContext,selectedReading]);
 
     const jsonData: ParsedDocumentJson = normalizeParsedJson(doc.parsed_json);
     const documentType = safeStructuredText(jsonData.document_type || jsonData.type, inferDocumentType(doc.title, doc.category));
     const summary = getUsefulSummary(jsonData, doc);
-    const readablePreviewText = readingDetail?.text ?? (sourceContext?null:doc.extracted_text || getReadableDocumentText(jsonData, doc));
-    const sourceDocument=readingDetail?{...doc,extracted_text:readingDetail.text,extracted_text_hash:readingDetail.textHash,parsed_json:{...doc.parsed_json,source_reading:readingDetail.reading,source_reading_visual_descriptions:readingDetail.visualDescriptions}}:doc;
+    const readablePreviewText = shownReading?.text ?? (sourceContext||selectedReading?null:doc.extracted_text || getReadableDocumentText(jsonData, doc));
+    const sourceDocument=shownReading?{...doc,extracted_text:shownReading.text,extracted_text_hash:shownReading.textHash,parsed_json:{...doc.parsed_json,source_reading:shownReading.reading,source_reading_visual_descriptions:shownReading.visualDescriptions}}:doc;
     const warningSystemErrors = Array.isArray(jsonData.warnings)
         ? jsonData.warnings
             .map((warning) => getRecord(warning))
@@ -321,8 +331,10 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
     return <Dialog open labelledBy="source-dialog-title" onClose={onClose} className="ti-source-dialog">
         <header className="ti-dialog__header"><div><h2 id="source-dialog-title" className="ti-section-title"><BidiText kind="file" value={doc.title || 'מסמך ללא שם'} /></h2><p className="ti-meta">סקירת המקור והנתונים שנשמרו</p></div><Button aria-label="סגירה" onClick={onClose}><X size={18} aria-hidden="true" /></Button></header>
         {sourceContext && <section className="ti-source-reference" aria-label="ההפניה למקור"><p className="ti-meta">{contextPage ? <>עמוד בהפניה: <BidiText kind="code" value={String(contextPage)}/></> : 'לא צוין עמוד בהפניה.'}</p>{sourceContext.quote && <details><summary>ציטוט שהועבר מההערכה</summary><blockquote>{sourceContext.quote}</blockquote></details>}</section>}
+        {readingDetail&&<DocumentReadingVersions versions={readingDetail.versions} value={selectedReading||readingDetail.textHash} onChange={setSelectedReading}/>}
+        {sourceContext?.quote&&shownReading&&!shownReading.text.includes(sourceContext.quote)&&<Feedback tone="warning">הציטוט שבהפניה אינו מופיע בגרסת הקריאה שנבחרה.</Feedback>}
         <div className="ti-source-dialog__columns">
-            <DocumentSourceView document={sourceDocument} fullText={readablePreviewText} visualDescriptions={readingDetail?.visualDescriptions} readingCurrent={readingDetail?.current??true} sourceReadError={readingError||sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} onCompleteReading={onCompleteReading} completingReading={completingReading} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
+            <DocumentSourceView document={sourceDocument} fullText={readablePreviewText} visualDescriptions={shownReading?.visualDescriptions} readingCurrent={shownReading?.current??!selectedReading} sourceReadError={readingError||sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} onCompleteReading={onCompleteReading} completingReading={completingReading} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
             <section className="ti-source-analysis" aria-label="תוצאת הניתוח"><h3 className="ti-section-title">מה המערכת הבינה מהמסמך</h3>
                 {jsonData.analysis_stale===true&&<Feedback tone="warning">קריאת המקור השתנתה מאז הניתוח הזה. הנתונים הידניים נשמרו; יש לבדוק אותם מול הטקסט העדכני.</Feedback>}
                 {hasSystemError && <Feedback tone="warning" title={isAlreadyValidated ? 'האישור הידני נשמר; ניתוח AI לא הושלם' : 'ניתוח AI לא הושלם'}>{getSystemErrorText(systemErrors, jsonData.system_error)}</Feedback>}

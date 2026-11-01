@@ -8,6 +8,7 @@ import {sourceDocument,visualRegistry,digest} from '../codex-runtime/visual-read
 const {DocumentListRow}=await import('../../src/components/documents/DocumentListRow.tsx');
 const {DocumentsCatalogView,selectCatalogDocuments}=await import('../../src/components/documents/DocumentsCatalogView.tsx');
 const {DocumentSourceView}=await import('../../src/components/documents/DocumentSourceView.tsx');
+const {DocumentReadingVersions}=await import('../../src/components/documents/ScreenOfTruthModal.tsx');
 const {getDocumentDisplayState}=await import('../../src/components/documents/documentDisplayStatus.ts');
 const {documentJobStatusText}=await import('../../src/components/documents/documentDisplayStatus.ts');
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
@@ -40,6 +41,11 @@ test('a_verified_image_transcript_remains_visible_when_another_word_part_is_unre
  const document=sourceDocument();document.parsed_json.source_reading={...visualRegistry(),complete:false,issues:['Unresolved native part'],units:[{unitId:'pdf:1',complete:true,text:document.extracted_text,textHash:document.extracted_text_hash}]};
  const html=render(DocumentSourceView,{document,fullText:'Previous saved document text'});
  assert.match(visibleText(html),/הטקסט שנקרא בתמונות/u);assert.ok(html.includes(document.extracted_text));assert.ok(html.includes('Previous saved document text'));
+});
+test('saved_reading_versions_can_be_selected_from_the_source_window',()=>{
+ assert.equal(typeof DocumentReadingVersions,'function');const current='1'.repeat(64),previous='2'.repeat(64);
+ const html=render(DocumentReadingVersions,{versions:[{textHash:current},{textHash:previous}],value:previous,onChange:()=>{}});
+ assert.match(html,/גרסת הקריאה/u);assert.match(html,/קריאה עדכנית/u);assert.match(html,/קריאה קודמת/u);assert.match(html,new RegExp('<option[^>]*value="'+previous+'"[^>]*selected'));
 });
 
 test('an unread Word header image identifies the affected part and numeric review without hiding two read images',()=>{
