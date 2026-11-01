@@ -5,10 +5,19 @@ if(!/^[a-z0-9-]{1,90}$/.test(id||'')||!/^\.next[-a-z0-9]*$/.test(dist||''))throw
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex'),root=path.join(home,'releases',id);
 if(fs.existsSync(root))throw Error('Release already exists; it will not be overwritten');
 if(!legacy){const checks=JSON.parse(fs.readFileSync(arg('--checks')));if(checks.source!==source||!checks.sourceUnchanged||checks.checks.length!==2||checks.checks.some(c=>c.status!==0))throw Error('A verified build is required');for(const file of checks.builtFiles)if(hash(fs.readFileSync(path.join(source,file.path)))!==file.sha256)throw Error('Built source changed: '+file.path);}
+let readerAssets;
+if(!legacy){
+ const readerSource=fs.readFileSync(path.join(source,'src/utils/local-ocr-mcp.ts'),'utf8');
+ const readerVersion=readerSource.match(/export const LOCAL_OCR_MCP_VERSION\s*=\s*['"]([\d.]+)['"]/)?.[1];
+ if(!/^\d+\.\d+\.\d+$/.test(readerVersion||''))throw Error('Unrecognized local OCR reader version in verified source');
+ readerAssets=path.join('data','tools','kreuzberg',readerVersion,'bin');
+ for(const file of ['kreuzberg.exe','onnxruntime.dll'])if(!fs.existsSync(path.join(process.cwd(),readerAssets,file))||!fs.lstatSync(path.join(process.cwd(),readerAssets,file)).isFile())throw Error('Required local OCR reader asset is unavailable: '+file);
+}
 const lock=fs.readFileSync(path.join(source,'package-lock.json')),dependencyId=legacy?'working-a-20261029':hash(lock).slice(0,24),dependencyRoot=path.join(home,'dependencies',dependencyId);
 if(!fs.existsSync(path.join(dependencyRoot,'node_modules'))){const staging=dependencyRoot+'.building-'+Date.now();fs.mkdirSync(staging,{recursive:true});fs.cpSync(dependencies,path.join(staging,'node_modules'),{recursive:true});fs.writeFileSync(path.join(staging,'package-lock.json'),lock);fs.renameSync(staging,dependencyRoot);}
 fs.mkdirSync(root,{recursive:true});
 for(const folder of ['public',...(legacy?[]:['src']),dist]){const from=path.join(source,folder);if(fs.existsSync(from))fs.cpSync(from,path.join(root,folder),{recursive:true,filter:file=>folder!==dist||!path.relative(from,file).split(path.sep).some(part=>part==='cache'||part==='trace')});}
+if(readerAssets)fs.cpSync(path.join(process.cwd(),readerAssets),path.join(root,readerAssets),{recursive:true});
 for(const file of ['package.json','package-lock.json','next.config.ts','tsconfig.json','next-env.d.ts','postcss.config.mjs'])if(fs.existsSync(path.join(source,file)))fs.writeFileSync(path.join(root,file),fs.readFileSync(path.join(source,file)));
 for(const folder of ['scripts','ops']){fs.mkdirSync(path.join(root,folder));for(const file of folder==='scripts'?['local-system-backup.mjs','local-system-restore.mjs','local-system-launch.mjs']:['backup-schema.json'])fs.writeFileSync(path.join(root,folder,file),fs.readFileSync(path.join(process.cwd(),folder,file)));}
 // Use a real private copy: Windows reparse-point traversal can be unavailable

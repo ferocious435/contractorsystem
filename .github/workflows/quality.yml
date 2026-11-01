@@ -51,6 +51,9 @@ jobs:
       - name: Check document part coverage display
         run: node --test scripts/redesign/verify-documents.mjs
 
+      - name: Check local release document reader assets
+        run: node --test scripts/verify-local-system-reader-assets.mjs
+
       - name: Check interface and evidence display
         run: npm run verify:audit-ui
 
