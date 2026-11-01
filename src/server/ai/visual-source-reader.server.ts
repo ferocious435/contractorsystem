@@ -102,11 +102,22 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                         }
                     }catch(error){if(error instanceof BusinessAiError)throw error;uncertainties.push('Invalid enlarged confirmation: '+view.id);}
                 }
-                if(primary.uncertainties.length)uncertainties.push(...primary.uncertainties);
-                if(confirmation?.uncertainties.length)uncertainties.push(...confirmation.uncertainties);
-                if(method==='visual-double-pass'&&(!confirmation||!compareNumericReadings(primary,confirmation).matched))uncertainties.push('Numeric or source verification failed: '+view.id);
                 proofs.push({viewId:view.id,imageHash:view.sha256,textHash:digest(unitReadingLiteral(primary)),method,confirmationHash:digest(unitReadingLiteral(confirmation??primary)),reading:primary,confirmation,
                     ...(initialReading?{initialReading}:{}),...(imagesSeen.get(primary)?{readingImage:imagesSeen.get(primary)}:{}),...(confirmation&&imagesSeen.get(confirmation)?{confirmationImage:imagesSeen.get(confirmation)}:{})});
+            }
+            // A clear pair may be found when the larger view is visited later.
+            // Reconcile all equal-region proofs before collecting unresolved issues.
+            for(const proof of proofs){
+                const view=unit.views.find(value=>value.id===proof.viewId)!,resolved=resolvedRegions.get(JSON.stringify(view.rect));
+                if(resolved){
+                    const initial=proof.initialReading??(proof.reading.uncertainties.length?proof.reading:proof.confirmation?.uncertainties.length?proof.confirmation:undefined);
+                    Object.assign(proof,{reading:resolved.reading,confirmation:resolved.confirmation,method:'visual-double-pass',
+                        textHash:digest(unitReadingLiteral(resolved.reading)),confirmationHash:digest(unitReadingLiteral(resolved.confirmation)),
+                        readingImage:imagesSeen.get(resolved.reading),confirmationImage:imagesSeen.get(resolved.confirmation),...(initial?{initialReading:initial}:{})});
+                    readings.set(view.id,resolved.reading);
+                }
+                uncertainties.push(...proof.reading.uncertainties,...(proof.confirmation?.uncertainties??[]));
+                if(proof.method==='visual-double-pass'&&(!proof.confirmation||!compareNumericReadings(proof.reading,proof.confirmation).matched))uncertainties.push('Numeric or source verification failed: '+view.id);
             }
             const fullViews=unit.views.filter(whole).sort((a,b)=>b.width*b.height-a.width*a.height);
             const selected=readings.get(fullViews[0]?.id)||readings.get(unit.views[0]?.id);

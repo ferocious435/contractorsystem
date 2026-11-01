@@ -69,6 +69,17 @@ test('an_uncertain_numeric_page_needs_two_clear_blind_enlarged_readings_before_i
  assert.ok(result.units[0].views.every(view=>view.reading.uncertainties.length===0&&view.confirmation.uncertainties.length===0));
  assert.equal(result.units[0].text,'Quantity: 12');assert.ok(await cacheApi.createVisualReadingCache(root).read(scope,value));
 }));
+test('a_later_clear_numeric_pair_resolves_the_earlier_uncertain_confirmation_of_the_same_region',async()=>fixture(async root=>{
+ const value=await twoFullViews();let count=0;
+ const result=await read(manifest([value]),scope,execution(async input=>{
+  const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);count++;
+  return JSON.stringify(unitResponse(value,{viewId:region.viewId,text:'Quantity: 12',uncertainties:count===2?['Unclear spelling']:[]}));
+ }));
+ assert.equal(result.units[0].complete,true);assert.equal(count,3);assert.deepEqual(result.units[0].uncertainties,[]);
+ assert.ok(result.units[0].views.every(view=>view.reading.uncertainties.length===0&&view.confirmation.uncertainties.length===0));
+ assert.ok(result.units[0].views.some(view=>view.initialReading?.uncertainties.includes('Unclear spelling')));
+ assert.ok(await cacheApi.createVisualReadingCache(root).read(scope,value));
+}));
 for(const failure of ['different-number','uncertain'])test('an_enlarged_numeric_retry_stays_partial_when_'+failure,async()=>fixture(async root=>{
  const value=await twoFullViews();let count=0;
  const result=await read(manifest([value]),scope,execution(async input=>{

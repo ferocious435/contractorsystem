@@ -75,15 +75,44 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
         ||JSON.stringify(value.tables)!==JSON.stringify(primary.reading.tables))return false;
     return Boolean(hasDocumentBodyText(value.text)||value.visualDescription.trim()||value.views.every(p=>record(p)&&p.method==='physical-empty'));
 }
-/** Recheck two retained blind reads after a verifier correction; never turn a
- * model uncertainty or an unreconciled crop into a verified unit. */
+/** Recheck retained blind reads after a verifier correction. A model uncertainty
+ * needs a retained clear pair for that exact region; unrelated issues stay open. */
 export function reverifySavedNumericUnit(value:unknown,unit:ReadingUnit):VerifiedUnit|null {
     if(!record(value)||value.complete!==false||!Array.isArray(value.uncertainties)||!value.uncertainties.length
-        ||!value.uncertainties.every(reason=>typeof reason==='string'&&reason.startsWith('Numeric or source verification failed: '))
+        ||!value.uncertainties.every(reason=>typeof reason==='string')||!Array.isArray(value.views)
         ||!record(value.createdBy)||!validUuid(value.createdBy.jobId)||value.createdBy.rulesVersion!==VISUAL_READING_RULES
         ||!Number.isSafeInteger(value.createdBy.profileRevision)||(value.createdBy.profileRevision as number)<1)return null;
-    const checked={...value,complete:true,uncertainties:[]};
-    return verifiedReadingUnit(checked,unit)?checked as unknown as VerifiedUnit:null;
+    const checked={...structuredClone(value),complete:true,uncertainties:[]} as unknown as VerifiedUnit;
+    if(!value.uncertainties.every(reason=>reason.startsWith('Numeric or source verification failed: '))){
+        try{
+            const pairs=new Map<string,VerifiedUnit['views'][number]>(),known=new Set<string>();
+            const sourceView=(reading:UnitReading)=>unit.views.find(view=>view.id===reading.viewId);
+            const sameRegion=(a:RenderedSourceView,b:RenderedSourceView)=>JSON.stringify(a.rect)===JSON.stringify(b.rect);
+            type RenderedSourceView=ReadingUnit['views'][number];
+            for(const proof of checked.views){
+                if(!record(proof)||!record(proof.reading))return null;
+                const reading=validateUnitReading(JSON.stringify(proof.reading),unit,proof.reading.viewId),target=unit.views.find(view=>view.id===proof.viewId),original=sourceView(reading);
+                if(!target||!original||!sameRegion(target,original))return null;
+                for(const reason of reading.uncertainties)known.add(reason);
+                const confirmation=proof.confirmation?validateUnitReading(JSON.stringify(proof.confirmation),unit,proof.confirmation.viewId):null;
+                for(const reason of confirmation?.uncertainties??[])known.add(reason);
+                if(proof.method!=='visual-double-pass'||reading.uncertainties.length||!confirmation||confirmation.uncertainties.length||!unitHasNumbers(reading)||!proof.initialReading)continue;
+                const initial=validateUnitReading(JSON.stringify(proof.initialReading),unit,proof.initialReading.viewId),witness=sourceView(confirmation),initialView=sourceView(initial);
+                const exactImage=(image:VerifiedUnit['views'][number]['readingImage'],view:RenderedSourceView)=>image?.sha256===view.sha256&&image.width===view.width&&image.height===view.height&&JSON.stringify(image.rect)===JSON.stringify(view.rect);
+                if(!initial.uncertainties.length||!witness||!initialView||!sameRegion(target,witness)||!sameRegion(target,initialView)
+                    ||!exactImage(proof.readingImage,original)||!exactImage(proof.confirmationImage,witness)||!compareNumericReadings(reading,confirmation).matched)continue;
+                const key=JSON.stringify(target.rect),previous=pairs.get(key);if(previous&&!compareNumericReadings(previous.reading,reading).matched)return null;pairs.set(key,proof);
+            }
+            if(!pairs.size||value.uncertainties.some(reason=>!reason.startsWith('Numeric or source verification failed: ')&&!known.has(reason)))return null;
+            for(const proof of checked.views){
+                const target=unit.views.find(view=>view.id===proof.viewId)!,pair=pairs.get(JSON.stringify(target.rect));if(!pair)continue;
+                const initial=proof.initialReading??(proof.reading.uncertainties.length?proof.reading:proof.confirmation?.uncertainties.length?proof.confirmation:undefined);
+                Object.assign(proof,{reading:pair.reading,confirmation:pair.confirmation,textHash:pair.textHash,confirmationHash:pair.confirmationHash,method:'visual-double-pass',
+                    readingImage:pair.readingImage,confirmationImage:pair.confirmationImage,...(initial?{initialReading:initial}:{})});
+            }
+        }catch{return null;}
+    }
+    return verifiedReadingUnit(checked,unit)?checked:null;
 }
 function checkedScope(scope:ReadingScope) {
     if(!validUuid(scope.ownerId)||!validUuid(scope.projectId)||!validUuid(scope.documentId)||!validReadingHash(scope.sourceHash))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);

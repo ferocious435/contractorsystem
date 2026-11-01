@@ -52,3 +52,19 @@ test('saved_independent_numeric_reads_can_be_rechecked_without_repeating_the_mod
  assert.equal(api.reverifySavedNumericUnit(saved,{...unit,contextText:'different context'}),null);
  const mismatch=structuredClone(saved);mismatch.views[0].confirmation.text=text.replace('12','21');mismatch.views[0].confirmationHash=digest(mismatch.views[0].confirmation.text);assert.equal(api.reverifySavedNumericUnit(mismatch,unit),null);
 });
+test('a_saved_clear_pair_can_resolve_an_earlier_uncertain_view_of_only_the_same_source_region',()=>{
+ const first=readingUnit({localText:''}).views[0],bytes=Buffer.from('larger-source-image'),second={...first,id:'page:1:enlarged',bytes,sha256:digest(bytes),width:200,height:200};
+ const unit=readingUnit({localText:'',views:[first,second]}),text='Quantity: 12',a=unitResponse(unit,{text}),b={...a,viewId:second.id},unclear={...b,uncertainties:['Unclear spelling']};
+ const image=view=>({sha256:view.sha256,width:view.width,height:view.height,rect:view.rect});
+ const saved={...verified(unit),text,textHash:digest(text),complete:false,uncertainties:['Unclear spelling'],createdBy:{jobId:scope.ownerId,rulesVersion:'visual-reading-rules-v2',profileRevision:1},views:[
+  {viewId:first.id,imageHash:first.sha256,textHash:digest(text),method:'visual-double-pass',confirmationHash:digest(text),reading:a,confirmation:unclear,readingImage:image(first),confirmationImage:image(second)},
+  {viewId:second.id,imageHash:second.sha256,textHash:digest(text),method:'visual-double-pass',confirmationHash:digest(text),reading:a,confirmation:b,initialReading:unclear,readingImage:image(first),confirmationImage:image(second)}]};
+ const result=api.reverifySavedNumericUnit(saved,unit);assert.equal(result?.complete,true);assert.equal(result.text,text);assert.equal(saved.complete,false);
+ assert.ok(result.views.some(view=>view.initialReading?.uncertainties.includes('Unclear spelling')));
+ const missingWitness=structuredClone(saved);delete missingWitness.views[1].initialReading;assert.equal(api.reverifySavedNumericUnit(missingWitness,unit),null);
+ assert.equal(api.reverifySavedNumericUnit({...saved,uncertainties:['A different unresolved area']},unit),null);
+ const mismatch=structuredClone(saved);mismatch.views[1].confirmation.text='Quantity: 21';mismatch.views[1].confirmationHash=digest('Quantity: 21');assert.equal(api.reverifySavedNumericUnit(mismatch,unit),null);
+ const differentRegion={...unit,views:[first,{...second,rect:{x:0,y:0,width:0.5,height:1}}]};
+ assert.equal(api.reverifySavedNumericUnit({...saved,inputHash:api.readingUnitInputHash(differentRegion)},differentRegion),null);
+ assert.equal(api.reverifySavedNumericUnit(saved,{...unit,contextText:'changed'}),null);
+});
