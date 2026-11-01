@@ -46,6 +46,30 @@ test('a_v2_word_explains_the_unresolved_native_part_even_when_all_images_are_ver
  const document=sourceDocument({title:'source.docx'});document.parsed_json.source_reading={...visualRegistry(),format:'DOCX',complete:false,issues:['word/comments.xml:CONTENT_NOT_POSITIONED_BY_PARSER']};
  const html=render(DocumentSourceView,{document,fullText:document.extracted_text});assert.match(visibleText(html),/הערות המסמך.*מיקום הטקסט/u);
 });
+test('a_saved_conflicting_folio_is_not_counted_or_displayed_as_a_verified_transcript',()=>{
+ const document=sourceDocument(),registry=visualRegistry(),bad=registry.expectedUnits[0],first=bad.views[0],second={...first,id:'page:1:enlarged',sha256:'6'.repeat(64),width:200,height:200};
+ const proof=(view,text,page=1)=>({viewId:view.id,imageHash:view.sha256,textHash:digest(text),method:'physical-empty',confirmationHash:digest(text),
+  emptyPageProof:{version:'rendered-empty-v1',kind:'PAGE_NUMBER_ONLY',page,imageSha256:view.sha256,width:view.width,height:view.height,numberText:text,numberConfidence:96,
+   numberBounds:[{x0:45,y0:view.height-8,x1:55,y1:view.height-2}]}});
+ Object.assign(bad,{literalHasBody:false,visualHasContent:false,textHash:digest('6'),views:[first,second],verifiedViews:[proof(first,'3'),proof(second,'6')]});
+ registry.units=[{unitId:'pdf:1',complete:true,text:'6',textHash:digest('6')}];document.parsed_json.source_reading=registry;
+ let html=render(DocumentSourceView,{document,fullText:document.extracted_text});
+ assert.ok(visibleText(html).includes('0 / 1'));assert.ok(!html.includes('aria-label="הטקסט שנקרא בתמונות"'));
+ assert.ok(html.includes(document.extracted_text));
+ const good={...structuredClone(bad),id:'pdf:2',locations:[{page:2}],textHash:digest('3'),verifiedViews:[proof(first,'3',2),proof(second,'3',2)]};
+ registry.expectedUnits.push(good);registry.units.push({unitId:'pdf:2',complete:true,text:'3',textHash:digest('3')});
+ html=render(DocumentSourceView,{document,fullText:document.extracted_text});const text=visibleText(html);
+ assert.ok(text.includes('1 / 2'));assert.ok(text.includes('עמוד 2'));assert.ok(!text.includes('עמוד 1'));
+});
+test('an_unbound_v2_word_image_is_reported_as_unverified_without_hiding_a_valid_image_for_another_native_gap',()=>{
+ const document=sourceDocument({title:'source.docx'}),registry=visualRegistry({format:'DOCX',nativeComplete:false,complete:false,issues:['word/comments.xml:CONTENT_NOT_POSITIONED_BY_PARSER']}),unit=registry.expectedUnits[0];
+ unit.kind='DOCX_IMAGE';unit.locations=[{part:'word/document.xml',anchor:'word/document.xml#rId1:1',mediaName:'word/media/image.png'}];
+ registry.units=[{unitId:unit.id,complete:true,text:document.extracted_text,textHash:unit.textHash}];document.parsed_json.source_reading=registry;
+ let html=render(DocumentSourceView,{document,fullText:document.extracted_text});assert.ok(visibleText(html).includes('1 / 1'));assert.ok(html.includes('aria-label="הטקסט שנקרא בתמונות"'));
+ unit.verifiedViews[0].imageHash='9'.repeat(64);
+ html=render(DocumentSourceView,{document,fullText:document.extracted_text});assert.ok(visibleText(html).includes('0 / 1'));
+ assert.ok(html.includes('aria-label="תמונות שדורשות בדיקה"'));assert.ok(!html.includes('aria-label="הטקסט שנקרא בתמונות"'));
+});
 test('saved_reading_versions_can_be_selected_from_the_source_window',()=>{
  assert.equal(typeof DocumentReadingVersions,'function');const current='1'.repeat(64),previous='2'.repeat(64);
  const html=render(DocumentReadingVersions,{versions:[{textHash:current},{textHash:previous}],value:previous,onChange:()=>{}});

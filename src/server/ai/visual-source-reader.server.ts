@@ -105,8 +105,10 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                             if(larger){confirmationView=larger;confirmation=readings.get(larger.id)??await ask(larger,true);readings.set(larger.id,confirmation);}
                             else{
                                 const ratio=Math.min(2,Math.sqrt(16_000_000/(view.width*view.height)));
-                                const enlarged=ratio>1?await sharp(view.bytes,{limitInputPixels:16_000_000}).resize(Math.max(1,Math.floor(view.width*ratio)),Math.max(1,Math.floor(view.height*ratio))).png().toBuffer():view.bytes;
-                                confirmation=await ask(view,true,enlarged);
+                                const width=Math.max(1,Math.floor(view.width*ratio)),height=Math.max(1,Math.floor(view.height*ratio));
+                                const enlarged=ratio>1?await sharp(view.bytes,{limitInputPixels:16_000_000}).resize(width,height).png().toBuffer():view.bytes;
+                                confirmationView={...view,bytes:enlarged,sha256:digest(enlarged),width,height};
+                                confirmation=await ask(confirmationView,true);
                             }
                             method='visual-double-pass';
                         }catch(error){if(error instanceof BusinessAiError)throw error;uncertainties.push('Invalid confirmation: '+view.id);}

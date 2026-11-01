@@ -69,6 +69,26 @@ test('an_uncertain_numeric_page_needs_two_clear_blind_enlarged_readings_before_i
  assert.ok(result.units[0].views.every(view=>view.reading.uncertainties.length===0&&view.confirmation.uncertainties.length===0));
  assert.equal(result.units[0].text,'Quantity: 12');assert.ok(await cacheApi.createVisualReadingCache(root).read(scope,value));
 }));
+test('a_single_word_image_with_one_clear_enlargement_gets_one_more_blind_read_before_verification',async()=>fixture(async root=>{
+ const value=await unit('docx:logo',{kind:'DOCX_IMAGE',locations:[{part:'word/header1.xml',anchor:'word/header1.xml#rId1:1',mediaName:'word/media/image.png'}],localText:''}),calls=[];
+ const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async input=>{
+  const bytes=await fs.readFile(input.images[0]),meta=await sharp(bytes).metadata();calls.push({text:input.text,hash:digest(bytes),width:meta.width,height:meta.height});
+  return JSON.stringify(unitResponse(value,{text:'ISO 9001: 2015',uncertainties:calls.length===1?['Unclear small punctuation']:[]}));
+ }));
+ assert.equal(calls.length,3);assert.equal(result.units[0].complete,true);
+ assert.equal(calls[1].width,160);assert.equal(calls[1].height,100);assert.equal(calls[2].hash,calls[1].hash);
+ assert.ok(calls.slice(1).every(input=>input.text.includes('independent reading')&&!input.text.includes('ISO 9001: 2015')));
+ assert.equal(result.units[0].views[0].initialReading.uncertainties[0],'Unclear small punctuation');
+ assert.equal(result.units[0].views[0].readingImage.sha256,calls[1].hash);assert.equal(result.units[0].views[0].confirmationImage.sha256,calls[2].hash);
+ assert.ok(await cacheApi.createVisualReadingCache(root).read(scope,value));
+}));
+for(const failure of ['different-number','uncertain'])test('a_single_image_third_read_cannot_verify_'+failure,async()=>fixture(async root=>{
+ const value=await unit('docx:logo',{kind:'DOCX_IMAGE',locations:[{part:'word/header1.xml',anchor:'word/header1.xml#rId1:1',mediaName:'word/media/image.png'}],localText:''});let calls=0;
+ const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async()=>{
+  calls++;return JSON.stringify(unitResponse(value,{text:calls===3&&failure==='different-number'?'ISO 9001: 2025':'ISO 9001: 2015',uncertainties:calls===1||calls===3&&failure==='uncertain'?['Unclear small punctuation']:[]}));
+ }));
+ assert.equal(calls,3);assert.equal(result.units[0].complete,false);assert.equal(await cacheApi.createVisualReadingCache(root).read(scope,value),null);
+}));
 test('a_later_clear_numeric_pair_resolves_the_earlier_uncertain_confirmation_of_the_same_region',async()=>fixture(async root=>{
  const value=await twoFullViews();let count=0;
  const result=await read(manifest([value]),scope,execution(async input=>{

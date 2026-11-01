@@ -8,7 +8,7 @@ import { Feedback } from '@/components/ui/titanium/Feedback';
 import { StatusChip } from '@/components/ui/titanium/StatusChip';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import type { ProjectDocument } from './types';
-import {VISUAL_READING_VERSION,type VisualDescription} from '@/utils/visual-source-reading';
+import {assessVisualReading,VISUAL_READING_VERSION,type VisualDescription} from '@/utils/visual-source-reading';
 
 function wordPartLabel(part: unknown) {
   if (typeof part !== 'string') return 'חלק במסמך';
@@ -39,8 +39,10 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
   const visual=reading?.version===VISUAL_READING_VERSION?reading:undefined;
   const visualMatches=Boolean(visual&&visual.sourceHash===document.content_hash&&visual.currentTextHash===document.extracted_text_hash);
   const units=(Array.isArray(visual?.expectedUnits)?visual.expectedUnits:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object');
+  const verifiedUnitIds=new Set(visualMatches?assessVisualReading(visual,document).verifiedUnitIds:[]);
+  const confirmedUnits=units.filter(unit=>verifiedUnitIds.has(String(unit.id)));
   const transcripts=(visualMatches&&Array.isArray(visual?.units)?visual.units:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'
-    &&value.complete===true&&typeof value.text==='string'&&Boolean(value.text.trim())&&units.some(unit=>unit.id===value.unitId&&unit.status==='READ'&&unit.textHash===value.textHash));
+    &&value.complete===true&&typeof value.text==='string'&&Boolean(value.text.trim())&&confirmedUnits.some(unit=>unit.id===value.unitId&&unit.textHash===value.textHash));
   const descriptions=visualDescriptions||(Array.isArray(document.parsed_json?.source_reading_visual_descriptions)?document.parsed_json.source_reading_visual_descriptions as VisualDescription[]:[]);
   const docx = reading?.version === DOCX_READING_VERSION ? reading : undefined;
   const isWord = Boolean(docx) || [document.title, document.storage_path, document.file_url].some(value => /\.docx(?:$|[?#\s._()\d-])/i.test(value || ''));
@@ -66,7 +68,7 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
   }):[];
   const pdf = /\.pdf(?:$|[?#])/i.test(String(document.title || document.storage_path || document.file_url || ''));
   const pages = visualMatches&&visual?.format==='PDF'?units.length:typeof reading?.totalPages === 'number' && Number.isInteger(reading.totalPages) && reading.totalPages > 0 ? reading.totalPages : null;
-  const readPages = visualMatches&&visual?.format==='PDF'?units.flatMap(unit=>unit.status==='READ'&&Array.isArray(unit.locations)?unit.locations.flatMap(location=>location&&typeof location.page==='number'?[location.page]:[]):[]):Array.isArray(reading?.readPages) ? [...new Set(reading.readPages.filter((value): value is number => Number.isInteger(value) && Number(value) > 0 && (!pages || Number(value) <= pages)))] : [];
+  const readPages = visualMatches&&visual?.format==='PDF'?confirmedUnits.flatMap(unit=>Array.isArray(unit.locations)?unit.locations.flatMap(location=>location&&typeof location.page==='number'?[location.page]:[]):[]):Array.isArray(reading?.readPages) ? [...new Set(reading.readPages.filter((value): value is number => Number.isInteger(value) && Number(value) > 0 && (!pages || Number(value) <= pages)))] : [];
   const unread = Array.isArray(reading?.unreadablePages) ? reading.unreadablePages.filter((value): value is number => Number.isInteger(value) && Number(value) > 0) : [];
   const missing = pages ? Array.from({length: pages}, (_, i) => i + 1).filter(page => !readPages.includes(page) || unread.includes(page)) : unread;
   const marker = readiness.documentStatus === 'DRAFT' || readiness.documentStatus === 'FRAGMENT' ? readiness.documentStatus : undefined;
@@ -80,8 +82,8 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
     <div className="ti-source-states"><StatusChip tone="neutral">הקובץ נשמר</StatusChip>{document.ai_status === 'VALIDATED' && <StatusChip tone="success">אושר ידנית</StatusChip>}<StatusChip tone={readiness.extractionComplete ? 'info' : 'warning'}>{readiness.extractionComplete ? 'הטקסט נקרא' : 'הקריאה לא הושלמה'}</StatusChip><StatusChip tone={aiIncomplete ? 'warning' : 'neutral'}>{aiIncomplete ? 'ניתוח AI לא הושלם' : analysisComplete ? 'ניתוח הושלם' : 'השלמת ניתוח נבדקת בנפרד'}</StatusChip></div>
     {pdf && <p className="ti-meta">{pages ? <>נקראו <BidiText kind="code" value={`${readPages.length} / ${pages}`} /> עמודים{missing.length > 0 && <> · עמודים שלא נקראו: <BidiText kind="code" value={missing.join(', ')} /></>}</> : 'מספר העמודים לא אומת'}</p>}
     {isWord && <div role="group" aria-label="קריאת חלקי המסמך">
-      {visualMatches&&visual?.format==='DOCX'?<><p className="ti-meta">תמונות ייחודיות שקריאתן אומתה: <BidiText kind="code" value={`${units.filter(unit=>unit.status==='READ').length} / ${units.length}`}/></p>
-        {units.some(unit=>unit.status!=='READ')&&<ul aria-label="תמונות שדורשות בדיקה">{units.filter(unit=>unit.status!=='READ').map(unit=><li key={String(unit.id)}>{Array.isArray(unit.locations)?[...new Set(unit.locations.map(location=>wordPartLabel(location?.part)))].join(', '):'חלק במסמך'} — קריאת התמונה טרם אומתה</li>)}</ul>}</>:!docx ? <p className="ti-meta">מספר התמונות לא אומת</p> : !imageHashMatches ? <Feedback tone="warning">אימות התמונות אינו תואם לקובץ השמור</Feedback> : <>
+      {visualMatches&&visual?.format==='DOCX'?<><p className="ti-meta">תמונות ייחודיות שקריאתן אומתה: <BidiText kind="code" value={`${confirmedUnits.length} / ${units.length}`}/></p>
+        {confirmedUnits.length!==units.length&&<ul aria-label="תמונות שדורשות בדיקה">{units.filter(unit=>!verifiedUnitIds.has(String(unit.id))).map(unit=><li key={String(unit.id)}>{Array.isArray(unit.locations)?[...new Set(unit.locations.map(location=>wordPartLabel(location?.part)))].join(', '):'חלק במסמך'} — קריאת התמונה טרם אומתה</li>)}</ul>}</>:!docx ? <p className="ti-meta">מספר התמונות לא אומת</p> : !imageHashMatches ? <Feedback tone="warning">אימות התמונות אינו תואם לקובץ השמור</Feedback> : <>
         <p className="ti-meta">{expectedImages === null || images.length > expectedImages ? 'מספר התמונות לא אומת' : expectedImages === 0 && images.length === 0 ? 'לא נמצאו תמונות מוטמעות במסמך' : <>תמונות שקריאתן אומתה: <BidiText kind="code" value={`${readImages} / ${expectedImages}`} /></>}</p>
         {imageRecordsMismatch && <Feedback tone="warning">חסרות תוצאות קריאה או שיש חוסר התאמה ברישום התמונות. הקריאה אינה מלאה.</Feedback>}
         {imageReviews.length > 0 && <ul aria-label="תמונות שדורשות בדיקה">{imageReviews.map(image => <li key={image.index}>{image.part} · {`תמונה ${image.index}`} — {image.reason}</li>)}</ul>}

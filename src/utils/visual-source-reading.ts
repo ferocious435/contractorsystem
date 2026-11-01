@@ -4,7 +4,7 @@ import type {JobDto} from '../server/ai/contracts';
 export const VISUAL_READING_VERSION = 'visual-source-reading-v2';
 export const VISUAL_READING_RULES = 'visual-reading-rules-v2';
 export type Rect = {x:number;y:number;width:number;height:number};
-export type Coverage = {complete:boolean;missingUnitIds:string[];issues:string[]};
+export type Coverage = {complete:boolean;missingUnitIds:string[];verifiedUnitIds:string[];issues:string[]};
 export type NumericCheck = {matched:boolean;unresolved:string[]};
 export type ReadingScope = {ownerId:string;projectId:string;documentId:string;sourceHash:string};
 export type ReadingLocation = {page?:number;part?:string;anchor?:string;mediaName?:string};
@@ -115,8 +115,8 @@ function emptyProofValid(proof:unknown,view:Record<string,unknown>,location:unkn
 }
 
 export function assessVisualReading(registry:unknown,source:DocumentSourceInput):Coverage {
-    const issues:string[]=[],missingUnitIds:string[]=[];
-    const invalid=(reason:string):Coverage=>({complete:false,missingUnitIds,issues:[...issues,reason]});
+    const issues:string[]=[],missingUnitIds:string[]=[],verifiedUnitIds:string[]=[];
+    const invalid=(reason:string):Coverage=>({complete:false,missingUnitIds,verifiedUnitIds:[],issues:[...issues,reason]});
     if(!object(registry)||registry.version!==VISUAL_READING_VERSION)return invalid('Visual reading evidence is absent');
     if(!validReadingHash(registry.sourceHash)||registry.sourceHash!==source.content_hash
         ||!validReadingHash(registry.currentTextHash)||registry.currentTextHash!==source.extracted_text_hash
@@ -152,9 +152,9 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
         if([...regions.values()].some(region=>region.physical&&region.hashes.size!==1))valid=false;
         if(kind==='PDF_PAGE'&&!coversReadingPage(views.filter(object).map(v=>v.rect as Rect)))valid=false;
         if(raw.literalHasBody!==true&&raw.visualHasContent!==true&&!physicalEmpty)valid=false;
-        if(!valid){missingUnitIds.push(raw.id);issues.push('Unverified reading unit: '+raw.id);}
+        if(!valid){missingUnitIds.push(raw.id);issues.push('Unverified reading unit: '+raw.id);}else verifiedUnitIds.push(raw.id);
     }
     issues.push(...registry.issues);
     if(registry.nativeComplete!==true)issues.push('Native source reading is incomplete');
-    return {complete:registry.complete===true&&issues.length===0,missingUnitIds,issues};
+    return {complete:registry.complete===true&&issues.length===0,missingUnitIds,verifiedUnitIds,issues};
 }
