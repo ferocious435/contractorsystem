@@ -19,16 +19,33 @@ export function createAiWorker(options:WorkerOptions) {
     function initialize():Promise<void>{if(initialization)return initialization;const attempt=(async()=>{await options.store.interruptStale(clock.now(),startedAt);})();initialization=attempt;void attempt.catch(()=>{if(initialization===attempt)initialization=null;});return attempt;}
     function abort(id:string):void{if(current?.id===id)current.controller.abort();}
     async function execute(job:AiJobRecord):Promise<void>{
-        const controller=new AbortController();current={id:job.id,controller};let heartbeat:unknown,closed=false,heartbeatWork=Promise.resolve();
-        function schedule(){heartbeat=clock.setTimeout(()=>{heartbeatWork=(async()=>{try{await options.store.heartbeat(job.id,job.leaseToken);}catch{controller.abort();}finally{if(!closed&&!controller.signal.aborted)schedule();}})();},10000);}
+        const controller=new AbortController();current={id:job.id,controller};let heartbeat:unknown,closed=false,heartbeatWork=Promise.resolve(),leaseUntil=Date.parse(job.leaseExpiresAt);
+        function recoveryDelay(ms:number):Promise<void>{return new Promise((resolve,reject)=>{
+            const cancel=()=>{clock.clearTimeout(timer);controller.signal.removeEventListener('abort',cancel);reject(new BusinessAiError('AI_CANCELLED',undefined,409));};
+            const timer=clock.setTimeout(()=>{controller.signal.removeEventListener('abort',cancel);resolve();},ms);
+            controller.signal.addEventListener('abort',cancel,{once:true});if(controller.signal.aborted)cancel();
+        });}
+        // Only repeat idempotent lease/read/progress calls, within the last confirmed lease.
+        // A generated answer and its final commit are never automatically replayed.
+        async function available<T>(operation:()=>Promise<T>):Promise<T>{for(let attempt=0;;attempt++){
+            if(controller.signal.aborted)throw new BusinessAiError('AI_CANCELLED',undefined,409);
+            try{return await operation();}catch(error){
+                const delay=1000*(attempt+1);
+                if(!record(error)||error.code!=='AI_UNAVAILABLE'||attempt>=2||!Number.isFinite(leaseUntil)||clock.now()+delay>=leaseUntil)throw error;
+                await recoveryDelay(delay);
+                if(clock.now()>=leaseUntil)throw error;
+            }
+        }}
+        async function renewLease(){await available(async()=>{const started=clock.now();await options.store.heartbeat(job.id,job.leaseToken);leaseUntil=Math.max(Number.isFinite(leaseUntil)?leaseUntil:0,started+30000);});}
+        function schedule(){heartbeat=clock.setTimeout(()=>{heartbeatWork=(async()=>{try{await renewLease();}catch{controller.abort();}finally{if(!closed&&!controller.signal.aborted)schedule();}})();},10000);}
         async function checkActive(){if(controller.signal.aborted)throw new BusinessAiError('AI_CANCELLED',undefined,409);
             if(options.inspectProfile){const profile=await options.inspectProfile(job.ownerId);if(!profile||['ownerId','model','effort','revision','accountFingerprint'].some(key=>profile[key as keyof RuntimeProfile]!==job.profile[key as keyof RuntimeProfile]))throw new BusinessAiError('AI_PROFILE_INVALID',undefined,409);}
-            const current=await options.store.readOwned(job.ownerId,job.projectId,job.id);if(!current||current.state!=='RUNNING'||current.revision!==job.revision){controller.abort();throw new BusinessAiError('AI_CANCELLED',undefined,409);}
-            await options.store.heartbeat(job.id,job.leaseToken);
+            const current=await available(()=>options.store.readOwned(job.ownerId,job.projectId,job.id));if(!current||current.state!=='RUNNING'||current.revision!==job.revision){controller.abort();throw new BusinessAiError('AI_CANCELLED',undefined,409);}
+            await renewLease();
         }
         let generation:Promise<unknown>=Promise.resolve();
         const execution:AiExecutionContext=Object.freeze({jobId:job.id,ownerId:job.ownerId,projectId:job.projectId,profile:Object.freeze({...job.profile}),signal:controller.signal,checkActive,
-            async reportProgress(progress:DocumentJobProgress){await checkActive();await options.store.reportProgress(job.id,job.leaseToken,progress);await checkActive();},
+            async reportProgress(progress:DocumentJobProgress){await checkActive();await available(()=>options.store.reportProgress(job.id,job.leaseToken,progress));await checkActive();},
             generate(input:AiTurnInput):Promise<string>{const next=generation.then(async()=>{await checkActive();const text=await options.client.runTurn(input,execution.profile,controller.signal);await checkActive();return text;});generation=next.catch(()=>{});return next;}});
         trusted.add(execution);
         try{
