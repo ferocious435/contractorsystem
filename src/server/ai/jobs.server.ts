@@ -5,7 +5,9 @@ import {BusinessAiError,record,validUuid,type AiJobKind,type AiJobState,type Job
 
 const kinds=new Set(['letter','consultant','scan','scan_preview','pricing','work_change','support_enrichment','document_analysis']);
 const states=new Set(['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED']);
-interface RpcTransport {rpc(name:string,params:{p:JsonObject}):PromiseLike<{data:unknown;error:{code?:string;message?:string}|null}>;}
+type RpcResponse={data:unknown;error:{code?:string;message?:string}|null;status?:number};
+interface RpcRequest extends PromiseLike<RpcResponse> {abortSignal?(signal:AbortSignal):RpcRequest;}
+interface RpcTransport {rpc(name:string,params:{p:JsonObject}):RpcRequest;}
 export interface AiJobRecord extends JobDto {
     ownerId:string;payload:JsonObject;profile:RuntimeProfile;requestKey:string;inputHash:string;
     contextSnapshot:JsonObject;leaseToken:string;leaseExpiresAt:string;attempt:number;
@@ -38,8 +40,17 @@ function ids(...values:unknown[]){if(values.some(value=>!validUuid(value)))throw
 const safeError='העוזר לא השלים את הפעולה. הנתונים נשמרו.';
 export function createAiJobStore(transport:RpcTransport) {
     async function rpc(name:string,p:JsonObject):Promise<unknown>{
-        let response;try{response=await transport.rpc('contractor_ai_'+name,{p});}catch{throw new BusinessAiError('AI_UNAVAILABLE');}
+        const control=['read','heartbeat','progress'].includes(name),started=Date.now();let signal:AbortSignal|undefined;
+        function unavailable(error:unknown,status?:number){if(!control)return;let value=error,transportCode:string|null=null;
+            for(let i=0;i<3&&record(value);i++,value=value.cause){if(typeof value.code==='string'&&/^[A-Z0-9_]{1,60}$/.test(value.code)){transportCode=value.code;break;}}
+            console.warn('[ai-job-control]',JSON.stringify({operation:name,elapsedMs:Math.max(0,Date.now()-started),timedOut:signal?.aborted===true,status:status??null,transportCode}));
+        }
+        let response;try{let request=transport.rpc('contractor_ai_'+name,{p});
+            if(control&&request.abortSignal){signal=AbortSignal.timeout(8000);request=request.abortSignal(signal);}
+            response=await request;
+        }catch(error){unavailable(error);throw new BusinessAiError('AI_UNAVAILABLE');}
         if(response.error){const code=response.error.message?.match(/\bAI_[A-Z_]+\b/)?.[0]??'AI_UNAVAILABLE';
+            if(code==='AI_UNAVAILABLE')unavailable(response.error,response.status);
             const status=code==='AI_ACCESS_DENIED'?403:/(?:CONFLICT|CHANGED|LEASE_LOST)$/.test(code)?409:code.endsWith('_INVALID')?400:503;
             throw new BusinessAiError(code,safeError,status);}
         return response.data;

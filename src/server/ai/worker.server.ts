@@ -19,7 +19,11 @@ export function createAiWorker(options:WorkerOptions) {
     function initialize():Promise<void>{if(initialization)return initialization;const attempt=(async()=>{await options.store.interruptStale(clock.now(),startedAt);})();initialization=attempt;void attempt.catch(()=>{if(initialization===attempt)initialization=null;});return attempt;}
     function abort(id:string):void{if(current?.id===id)current.controller.abort();}
     async function execute(job:AiJobRecord):Promise<void>{
-        const controller=new AbortController();current={id:job.id,controller};let heartbeat:unknown,closed=false,heartbeatWork=Promise.resolve(),leaseUntil=Date.parse(job.leaseExpiresAt);
+        const controller=new AbortController();current={id:job.id,controller};let heartbeat:unknown,leaseTimer:unknown,closed=false,heartbeatWork=Promise.resolve(),leaseUntil=Math.min(Date.parse(job.leaseExpiresAt),clock.now()+30000);
+        function watchLease(){if(leaseTimer!==undefined)clock.clearTimeout(leaseTimer);if(closed||controller.signal.aborted)return;
+            if(!Number.isFinite(leaseUntil)){controller.abort();return;}
+            leaseTimer=clock.setTimeout(()=>{if(!closed&&!controller.signal.aborted){if(clock.now()>=leaseUntil)controller.abort();else watchLease();}},Math.max(0,leaseUntil-clock.now()));
+        }
         function recoveryDelay(ms:number):Promise<void>{return new Promise((resolve,reject)=>{
             const cancel=()=>{clock.clearTimeout(timer);controller.signal.removeEventListener('abort',cancel);reject(new BusinessAiError('AI_CANCELLED',undefined,409));};
             const timer=clock.setTimeout(()=>{controller.signal.removeEventListener('abort',cancel);resolve();},ms);
@@ -36,7 +40,7 @@ export function createAiWorker(options:WorkerOptions) {
                 if(clock.now()>=leaseUntil)throw error;
             }
         }}
-        async function renewLease(){await available(async()=>{const started=clock.now();await options.store.heartbeat(job.id,job.leaseToken);leaseUntil=Math.max(Number.isFinite(leaseUntil)?leaseUntil:0,started+30000);});}
+        async function renewLease(){await available(async()=>{const started=clock.now();await options.store.heartbeat(job.id,job.leaseToken);leaseUntil=Math.max(Number.isFinite(leaseUntil)?leaseUntil:0,started+30000);watchLease();});}
         function schedule(){heartbeat=clock.setTimeout(()=>{heartbeatWork=(async()=>{try{await renewLease();}catch{controller.abort();}finally{if(!closed&&!controller.signal.aborted)schedule();}})();},10000);}
         async function checkActive(){if(controller.signal.aborted)throw new BusinessAiError('AI_CANCELLED',undefined,409);
             if(options.inspectProfile){const profile=await options.inspectProfile(job.ownerId);if(!profile||['ownerId','model','effort','revision','accountFingerprint'].some(key=>profile[key as keyof RuntimeProfile]!==job.profile[key as keyof RuntimeProfile]))throw new BusinessAiError('AI_PROFILE_INVALID',undefined,409);}
@@ -51,14 +55,14 @@ export function createAiWorker(options:WorkerOptions) {
         try{
             if(job.profile.ownerId!==job.ownerId)throw new BusinessAiError('AI_PROFILE_INVALID');
             const handler=options.handlerFor(job.kind);if(!handler)throw new BusinessAiError('AI_HANDLER_INVALID');
-            schedule();await checkActive();const prepared=await handler.execute(job.payload,execution);await checkActive();
+            watchLease();schedule();await checkActive();const prepared=await handler.execute(job.payload,execution);await checkActive();
             await options.store.complete(job.id,job.leaseToken,prepared);
         }catch(error){
             controller.abort();const code=record(error)&&typeof error.code==='string'&&safeCodes.has(error.code)?error.code:'AI_FAILED';
             const message=code.endsWith('_UNVERIFIED')||code==='AI_WRITING_INVALID'?'התשובה כללה פרט שלא ניתן לאמת במקור. הטקסט הקודם נשמר; אפשר לבקש ניסוח מתוקן.':'העוזר לא השלים את הפעולה. הנתונים והטקסט הקודם נשמרו.';
             await options.store.fail(job.id,job.leaseToken,{code,message}).catch(()=>false);
         }finally{
-            closed=true;if(heartbeat!==undefined)clock.clearTimeout(heartbeat);await heartbeatWork;trusted.delete(execution);controller.abort();current=null;
+            closed=true;if(heartbeat!==undefined)clock.clearTimeout(heartbeat);if(leaseTimer!==undefined)clock.clearTimeout(leaseTimer);await heartbeatWork;trusted.delete(execution);controller.abort();current=null;
             await options.store.interruptStale(clock.now()).catch(()=>0);
         }
     }

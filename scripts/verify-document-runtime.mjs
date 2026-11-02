@@ -4,6 +4,8 @@ import {execFileSync} from 'node:child_process';
 
 const suites=[
     'scripts/verify-test-db-startup.mjs',
+    'scripts/verify-codex-worker.mjs',
+    'scripts/verify-codex-job-transport.mjs',
     'scripts/verify-codex-documents.mjs',
     'scripts/verify-visual-source-contracts.mjs',
     'scripts/verify-visual-source-manifest.mjs',
@@ -24,6 +26,7 @@ const suites=[
     'scripts/verify-document-page-number.mjs',
     'scripts/verify-reference-page-preview.mjs',
     'scripts/verify-docx-image-reading.mjs',
+    'scripts/verify-spreadsheet-native-reading.mjs',
     'scripts/verify-docx-extraction-route.mjs',
     'scripts/verify-scan-chunk-coverage.mjs',
     'scripts/redesign/verify-documents.mjs',

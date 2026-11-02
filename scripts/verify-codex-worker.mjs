@@ -118,3 +118,20 @@ test('a model transport failure is never automatically replayed',async()=>{
   const time=controlledClock(),fx=queueFixture({now:time.clock.now,onGenerate:async()=>{throw unavailable();}}),job=await fx.enqueue();await worker(fx,{clock:time.clock}).run();
   assert.equal(fx.rows.get(job.id).state,'FAILED');assert.equal(fx.modelTurns,1);assert.equal(time.pending(),0);
 });
+
+test('a hung heartbeat aborts generation at the last confirmed lease deadline',async()=>{
+  let entered,finish,releaseHeartbeat,signal;const started=new Promise(resolve=>entered=resolve),answer=new Promise(resolve=>finish=resolve),hung=new Promise(resolve=>releaseHeartbeat=resolve),time=controlledClock();
+  const fx=queueFixture({now:time.clock.now,onGenerate:async(_input,_profile,currentSignal)=>{signal=currentSignal;entered();return answer;}}),claim=fx.store.claim;
+  fx.store.claim=async(...args)=>{const job=await claim(...args);if(job)job.leaseExpiresAt=new Date(time.clock.now()+60000).toISOString();return job;};
+  const job=await fx.enqueue(),running=worker(fx,{clock:time.clock}).run();await started;fx.store.heartbeat=async()=>hung;
+  await time.advance(10000);await time.advance(20000);const aborted=signal.aborted;
+  releaseHeartbeat();finish('{"answer":"late"}');await running;
+  assert.equal(aborted,true,'A lost heartbeat cannot keep a model turn alive after its confirmed lease');assert.notEqual(fx.rows.get(job.id).state,'SUCCEEDED');assert.equal(fx.rows.get(job.id).result,null);assert.equal(fx.modelTurns,1);assert.equal(time.pending(),0);
+});
+
+test('successful heartbeats renew the generation deadline during a long turn',async()=>{
+  let entered,finish,signal;const started=new Promise(resolve=>entered=resolve),answer=new Promise(resolve=>finish=resolve),time=controlledClock();
+  const fx=queueFixture({now:time.clock.now,onGenerate:async(_input,_profile,currentSignal)=>{signal=currentSignal;entered();return answer;}}),job=await fx.enqueue(),running=worker(fx,{clock:time.clock}).run();await started;
+  await time.advance(60000);assert.equal(signal.aborted,false);finish('{"answer":"completed"}');await running;
+  assert.equal(fx.rows.get(job.id).state,'SUCCEEDED');assert.equal(fx.modelTurns,1);assert.equal(time.pending(),0);
+});

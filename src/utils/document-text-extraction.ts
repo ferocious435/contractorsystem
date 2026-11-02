@@ -1,5 +1,6 @@
 const MAX_AI_TEXT_CHARS = 120_000;
 import {createHash} from 'node:crypto';
+import path from 'node:path';
 import {assessVisualReading,VISUAL_READING_VERSION,type VisualDescription} from './visual-source-reading';
 import { loadPdfParse } from '@/utils/pdf-parser-runtime';
 import { extractPdfPagesWithLocalMcp } from '@/utils/local-ocr-mcp';
@@ -107,8 +108,11 @@ const KNOWN_FILE_EXTENSIONS = new Set([
     ".doc",
 ]);
 
+type OfficeParserNode = { type: string; children?: OfficeParserNode[]; metadata?: { col?: number; row?: number; colSpan?: number; rowSpan?: number; sheetName?: string }; comments?: unknown[] };
 type OfficeParserAst = {
-    to(format: "text", config?: Record<string, unknown>): Promise<{ value?: unknown }>;
+    content?: OfficeParserNode[];
+    warnings?: unknown[];
+    to(format: "text" | "csv", config?: Record<string, unknown>): Promise<{ value?: unknown; messages?: unknown[] }>;
     toText?: () => string;
 };
 
@@ -361,9 +365,46 @@ async function extractWithOfficeParser(buffer: Buffer, fileType: string) {
         extractAttachments: false,
         newlineDelimiter: "\n",
     });
-    const result = await ast.to("text", { textConfig: { preserveLayout: true } });
-    const text = typeof result.value === "string" ? result.value : ast.toText?.() || "";
-    return requireUsefulText(text);
+    let spreadsheetReview = false, spreadsheetName: string | null = null;
+    if (fileType === 'xlsx') {
+        // A plain text walk drops empty cells. The installed tabular exporter keeps their columns.
+        // Check the grid before asking it to fill gaps, including malformed far-column references.
+        const sheets = ast.content?.filter(node => node.type === 'sheet') || [];
+        if (sheets.length === 1) spreadsheetName = sheets[0].metadata?.sheetName || 'Sheet1';
+        let columns = 0, rows = 0;
+        spreadsheetReview = sheets.length === 0;
+        for (const sheet of sheets) for (const row of sheet.children || []) {
+            if (row.type !== 'row') { spreadsheetReview = true; continue; }
+            rows++; let previous = -1;
+            for (const cell of row.children || []) {
+                const meta = cell.metadata;
+                if (cell.type !== 'cell' || !meta || !Number.isSafeInteger(meta.col) || !Number.isSafeInteger(meta.row)
+                    || meta.col! < 0 || meta.col! > 16383 || meta.row! < 0 || meta.row! > 1048575
+                    || meta.col! <= previous || (meta.colSpan || 1) > 1 || (meta.rowSpan || 1) > 1) spreadsheetReview = true;
+                previous = meta?.col ?? previous;
+                columns = Math.max(columns, previous + 1);
+                if (cell.comments?.length) spreadsheetReview = true;
+            }
+        }
+        if (columns * rows > 1_000_000 + buffer.length * 16) spreadsheetReview = true;
+        // Inspect ZIP entry names without inflating attachments that this export cannot represent.
+        const nodeModule = await import(/* webpackIgnore: true */ 'node:module');
+        const entry = path.join(process.cwd(), 'node_modules/officeparser/dist/index.js');
+        const load = nodeModule.createRequire(path.join(process.cwd(), 'package.json'));
+        const { extractFiles } = load(path.join(path.dirname(entry), 'utils/zipUtils.js')) as {
+            extractFiles(input: Buffer, filter: (name: string) => boolean, limits: Record<string, number>): Promise<unknown>;
+        };
+        await extractFiles(buffer, name => {
+            if (/^xl\/(?:media\/|drawings\/|charts\/|embeddings\/|externalLinks\/|threadedComments\/|comments\d*\.xml$)/.test(name)) spreadsheetReview = true;
+            return false;
+        }, { maxUncompressedBytes: 128 * 1024 * 1024, maxZipEntries: 10000 });
+    }
+    const result = fileType === 'xlsx' && !spreadsheetReview
+        ? await ast.to('csv', { renderMetadata: false, csvConfig: { columnDelimiter: '\t', mergeSheets: true } })
+        : await ast.to("text", { textConfig: { preserveLayout: true } });
+    let text = typeof result.value === "string" ? result.value : ast.toText?.() || "";
+    if (spreadsheetName && !spreadsheetReview) text = '# Sheet: ' + JSON.stringify(spreadsheetName) + '\n' + text;
+    return { text: requireUsefulText(text), requiresReview: fileType === 'xlsx' && (spreadsheetReview || Boolean(ast.warnings?.length || result.messages?.length)) };
 }
 
 async function extractWithWordExtractor(buffer: Buffer) {
@@ -533,7 +574,8 @@ export async function prepareDocumentAnalysisInput(fileBuffer: Buffer, title: st
         });
     }
     if (officeParserFileType) {
-        return makeTextInput(fileBuffer, `officeparser_${officeParserFileType}`, await extractWithOfficeParser(fileBuffer, officeParserFileType));
+        const result = await extractWithOfficeParser(fileBuffer, officeParserFileType);
+        return makeTextInput(fileBuffer, `officeparser_${officeParserFileType}`, result.text, result.requiresReview ? { requiresReview: true } : {});
     }
 
     if (DIRECT_TEXT_EXTENSIONS.has(extension)) {
