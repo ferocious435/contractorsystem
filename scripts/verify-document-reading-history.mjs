@@ -17,6 +17,19 @@ test('old_literal_quote_resolves_after_glyph_correction',()=>{
  assert.equal(after.parsed_json.analysis_stale,true);assert.equal(Object.hasOwn(patch,'ai_status'),false);
  assert.equal(Object.hasOwn(after.parsed_json.source_reading_history[0],'source_reading_history'),false);
 });
+test('first_hash_of_an_existing_stored_file_keeps_its_previous_literal_reading_available',()=>{
+ const before={...saved(),content_hash:null},patch=call('createReadingPatch',before,readingAssembly(literal));
+ const after={...before,...patch,content_hash:sourceHash};
+ const previous=call('resolveReadingVersion',after,{textHash:digest(oldText),quote:oldText});
+ assert.equal(previous?.text,oldText,'Adding the verified file hash must not hide its previous transcript');
+ assert.equal(previous.sourceHash,sourceHash);assert.equal(after.parsed_json.owner_note,'keep');
+ assert.deepEqual(after.parsed_json.financial_data,{total_amount:123});
+});
+test('a_missing_row_hash_cannot_rebind_a_previous_reading_from_different_verified_bytes',()=>{
+ const before={...saved(),content_hash:null};
+ before.parsed_json.source_reading={version:'docx-image-coverage-v1',sourceHash:'9'.repeat(64),complete:false};
+ assert.throws(()=>call('createReadingPatch',before,readingAssembly(literal)),/source/i);
+});
 test('model_description_is_not_literal_quote',()=>{
  const doc=sourceDocument({extracted_text:'',extracted_text_hash:digest(''),parsed_json:{source_reading:readingAssembly('').verification,source_reading_visual_descriptions:[{unitId:'pdf:1',location:{page:1},text:'The drawing shows an access route.'}]}});
  assert.equal(call('resolveReadingVersion',doc,{quote:'The drawing shows an access route.'}),null);

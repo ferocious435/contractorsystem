@@ -63,7 +63,7 @@ function block(record: ImageRecord, text: string) {
 export async function extractDocxWithImages(
     buffer: Buffer,
     options: { recognizeImage?:(imageBuffer:Buffer)=>Promise<{text:string;confidence:number}>; onImage?:(value:{record:DocxImageRecord;bytes:Buffer|null})=>void } = {},
-): Promise<{ text: string; requiresReview: boolean; readingVerification: DocxReadingVerification }> {
+): Promise<{ text: string; imageContextText: string; requiresReview: boolean; readingVerification: DocxReadingVerification }> {
     const tools = await packageTools();
     const files = await tools.extractFiles(buffer, () => true, { maxUncompressedBytes: 512 * 1024 * 1024, maxZipEntries: 10000 });
     const byPath = new Map(files.map((file) => [file.path, file.content]));
@@ -161,41 +161,55 @@ export async function extractDocxWithImages(
         fileType: 'docx', ocr: false, extractAttachments: false, newlineDelimiter: '\n',
     }) as OfficeParserAST;
     for (const warning of ast.warnings || []) issue(`PARSER:${warning.code}`);
-    const consumed = new Set<string>();
-    const replace = (value: string) => {
-        let result = value;
-        for (const [token, data] of replacements) {
-            if (result.includes(token)) { consumed.add(token); result = result.replaceAll(token, block(data.record, data.text)); }
+    async function renderText(preserveNotes: boolean) {
+        const consumed = new Set<string>(), issues = [...verification.issues];
+        const replace = (value: string) => {
+            let result = value;
+            for (const [token, data] of replacements) {
+                if (result.includes(token)) { consumed.add(token); result = result.replaceAll(token, block(data.record, data.text)); }
+            }
+            return result;
+        };
+        const onNode = (node: OfficeContentNode) => node.type === 'text' ? replace(node.text || '') : undefined;
+        const render = async (nodes: OfficeContentNode[]) => {
+            const original = ast.content;
+            ast.content = nodes;
+            try {
+                // An onNode string bypasses the parser's collection of attached notes.
+                // Replace image tokens after normal rendering when references are present.
+                const value = String((await ast.to('text', { textConfig: { preserveLayout: true }, ...(!preserveNotes ? { onNode } : {}) })).value || '');
+                return preserveNotes ? replace(value) : value;
+            } finally { ast.content = original; }
+        };
+        let text = await render(ast.content);
+        for (const [name, nodes] of Object.entries(ast.auxiliary || {})) {
+            if (Array.isArray(nodes) && nodes.length) text += `\n[DOCX_PART ${name}]\n${await render(nodes)}\n[END_DOCX_PART]\n`;
         }
-        return result;
-    };
-    const onNode = (node: OfficeContentNode) => node.type === 'text' ? replace(node.text || '') : undefined;
-    const render = async (nodes: OfficeContentNode[]) => {
-        const original = ast.content;
-        ast.content = nodes;
-        try { return String((await ast.to('text', { textConfig: { preserveLayout: true }, onNode })).value || ''); }
-        finally { ast.content = original; }
-    };
-    let text = await render(ast.content);
-    for (const [name, nodes] of Object.entries(ast.auxiliary || {})) {
-        if (Array.isArray(nodes) && nodes.length) text += `\n[DOCX_PART ${name}]\n${await render(nodes)}\n[END_DOCX_PART]\n`;
-    }
-    // Unreferenced notes or structures unsupported by the AST remain available, explicitly incomplete.
-    for (const [part, doc] of normalizedParts) {
-        const missing = [...replacements].filter(([token, data]) => data.record.part === part && !consumed.has(token));
-        const native = descendants(doc, (el) => el.namespaceURI === WORD_NS && el.localName === 't').map((el) => el.textContent || '');
-        const unrendered = native.map((value) => {
-            let remaining = value;
-            for (const token of consumed) remaining = remaining.replaceAll(token, '');
-            return remaining;
-        }).filter((value) => value.trim() && !text.replace(/\s+/g, ' ').includes(value.replace(/\s+/g, ' ').trim()));
-        if (missing.length || unrendered.length) {
-            issue(`${part}:CONTENT_NOT_POSITIONED_BY_PARSER`);
-            text += `\n[DOCX_PART ${part} reason=CONTENT_NOT_POSITIONED_BY_PARSER]\n${replace(unrendered.join('\n'))}\n[END_DOCX_PART]\n`;
+        // Unreferenced notes or structures unsupported by the AST remain explicit gaps.
+        for (const [part, doc] of normalizedParts) {
+            const missing = [...replacements].filter(([token, data]) => data.record.part === part && !consumed.has(token));
+            const native = descendants(doc, (el) => el.namespaceURI === WORD_NS && el.localName === 't').map((el) => el.textContent || '');
+            const unrendered = native.map((value) => {
+                let remaining = value;
+                for (const token of consumed) remaining = remaining.replaceAll(token, '');
+                return remaining;
+            }).filter((value) => value.trim() && !text.replace(/\s+/g, ' ').includes(value.replace(/\s+/g, ' ').trim()));
+            if (missing.length || unrendered.length) {
+                const reason = `${part}:CONTENT_NOT_POSITIONED_BY_PARSER`;
+                if (!issues.includes(reason)) issues.push(reason);
+                text += `\n[DOCX_PART ${part} reason=CONTENT_NOT_POSITIONED_BY_PARSER]\n${replace(unrendered.join('\n'))}\n[END_DOCX_PART]\n`;
+            }
         }
+        if (issues.length) text += `\n${issues.map((reason) => `[DOCX_ISSUE ${reason}]`).join('\n')}`;
+        return { text: text.trim(), issues };
     }
+    // Native annotations may improve without changing the image prompt or its verified cache key.
+    const legacy = await renderText(false);
+    const hasNotes = [...normalizedParts.values()].some(doc => descendants(doc, el => el.namespaceURI === WORD_NS
+        && ['footnoteReference', 'endnoteReference'].includes(el.localName)).length > 0);
+    const rendered = hasNotes ? await renderText(true) : legacy;
+    verification.issues = rendered.issues;
     verification.complete = verification.images.every((image) => image.status === 'READ' && !image.numericReviewRequired)
         && verification.issues.length === 0;
-    if (verification.issues.length) text += `\n${verification.issues.map((reason) => `[DOCX_ISSUE ${reason}]`).join('\n')}`;
-    return { text: text.trim(), requiresReview: !verification.complete, readingVerification: verification };
+    return { text: rendered.text, imageContextText: legacy.text, requiresReview: !verification.complete, readingVerification: verification };
 }

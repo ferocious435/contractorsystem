@@ -73,7 +73,11 @@ function readingVersions(saved:OwnedSourceDocument):ReadingTextVersion[] {
 
 export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAssembly):DocumentReadingPatch {
     if(!validReadingHash(reading.verification.sourceHash)||saved.content_hash&&reading.verification.sourceHash!==saved.content_hash||reading.textHash!==hash(reading.text))throw Error('Reading does not match the saved source');
-    const parsed=json(saved),before=currentVersion(saved),retainPrevious=!reading.verification.complete&&before.text.length>0;
+    const parsed=json(saved),previousReading=parsed.source_reading;
+    if(!saved.content_hash&&object(previousReading)&&validReadingHash(previousReading.sourceHash)
+        &&previousReading.sourceHash!==reading.verification.sourceHash)throw Error('Previous reading belongs to a different source');
+    // A first verified hash of this stored file must not strand its earlier transcript.
+    const before=currentVersion({...saved,content_hash:saved.content_hash||reading.verification.sourceHash}),retainPrevious=!reading.verification.complete&&before.text.length>0;
     const text=retainPrevious?before.text:reading.text,textHash=hash(text);
     const history=Array.isArray(parsed.source_reading_history)?[...parsed.source_reading_history]:[];
     if(before.text&&before.textHash!==textHash&&!history.some(v=>object(v)&&v.sourceHash===before.sourceHash&&v.textHash===before.textHash))history.push(before);

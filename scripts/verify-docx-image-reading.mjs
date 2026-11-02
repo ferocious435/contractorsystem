@@ -11,6 +11,25 @@ hook.deregister();
 const recognizeImage=async()=>({text:'Keep the gate open.',confidence:95});
 const read=(buffer,recognize=recognizeImage)=>extract(buffer,{recognizeImage:recognize});
 
+test('a linked footnote stays linked when image text is substituted',async()=>{
+ const body='<w:p><w:r><w:t>Keep access open.</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p>'+image();
+ const r=await read(docx({body,parts:{'word/footnotes.xml':'<w:footnote w:id="1">'+paragraph('Use the eastern entrance.')+'</w:footnote>'}}));
+ assert.match(r.text,/Keep access open\./);assert.match(r.text,/Use the eastern entrance\./);assert.match(r.text,/Keep the gate open\./);
+ assert.equal(r.readingVerification.complete,true,'A linked, readable footnote must not become an unpositioned source part');
+ assert.deepEqual(r.readingVerification.issues,[]);
+});
+test('an unreferenced footnote is retained with its unresolved placement',async()=>{
+ const r=await read(docx({body:paragraph('Keep access open.')+image(),parts:{'word/footnotes.xml':'<w:footnote w:id="7">'+paragraph('An orphaned note is not an instruction at a known place.')+'</w:footnote>'}}));
+ assert.match(r.text,/An orphaned note is not an instruction at a known place\./);
+ assert.equal(r.requiresReview,true);assert.ok(r.readingVerification.issues.some(issue=>issue.includes('CONTENT_NOT_POSITIONED_BY_PARSER')));
+});
+test('reading a linked footnote does not verify a different orphan note',async()=>{
+ const body='<w:p><w:r><w:t>Keep access open.</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p>'+image();
+ const r=await read(docx({body,parts:{'word/footnotes.xml':'<w:footnote w:id="1">'+paragraph('Use the eastern entrance.')+'</w:footnote><w:footnote w:id="7">'+paragraph('An unreferenced instruction remains unresolved.')+'</w:footnote>'}}));
+ assert.match(r.text,/Use the eastern entrance\./);assert.match(r.text,/An unreferenced instruction remains unresolved\./);
+ assert.equal(r.requiresReview,true);assert.ok(r.readingVerification.issues.some(issue=>issue.includes('CONTENT_NOT_POSITIONED_BY_PARSER')));
+});
+
 test('a standard Word horizontal rule is layout rather than an unread image',async()=>{
  const rule='<w:p><w:r><w:pict><v:rect id="rule" style="width:0;height:1.5pt" o:hralign="right" o:hrstd="t" o:hr="t" fillcolor="#a0a0a0" stroked="f"/></w:pict></w:r></w:p>';
  const result=await read(docx({body:paragraph('Before separator')+rule+paragraph('After separator'),media:{},rels:[]}));

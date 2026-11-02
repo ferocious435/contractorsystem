@@ -34,13 +34,16 @@ async function word(file:Buffer):Promise<SourceManifest> {
         unit.locations.push({part:record.part,anchor:record.anchor,mediaName:record.mediaName});byAnchor.set(record.anchor,unit);
     }
     const assembly:SourceManifest['assembly']=[],expression=/\[DOCX_IMAGE ([^\]\r\n ]+)[^\]\r\n]*\]\r?\n[\s\S]*?\[END_DOCX_IMAGE\]/g;
+    const imageContexts=new Map<string,string>();
+    for(const match of result.imageContextText.matchAll(expression))imageContexts.set(match[1],
+        `\n${match[1]}\n${result.imageContextText.slice(Math.max(0,match.index!-400),match.index)}\n${result.imageContextText.slice(match.index!+match[0].length,match.index!+match[0].length+400)}\n`);
     let start=0;
     for(const match of result.text.matchAll(expression)){
         if(match.index!>start)assembly.push({kind:'native',text:result.text.slice(start,match.index)});
         const unit=byAnchor.get(match[1]);
         if(unit){
             assembly.push({kind:'unit',unitId:unit.id});
-            unit.contextText+=`\n${match[1]}\n${result.text.slice(Math.max(0,match.index!-400),match.index)}\n${result.text.slice(match.index!+match[0].length,match.index!+match[0].length+400)}\n`;
+            unit.contextText+=imageContexts.get(match[1])??'';
         }else assembly.push({kind:'native',text:match[0]});
         start=match.index!+match[0].length;
     }

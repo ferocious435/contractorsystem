@@ -3,9 +3,11 @@ import test from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {docx,image,paragraph} from './fixtures/docx-image-fixtures.mjs';
 import {readingUnit,unitResponse,digest,sourceHash,literal} from './codex-runtime/visual-reading-fixtures.mjs';
 const load=async file=>import(file).catch(error=>{if(error.code==='ERR_MODULE_NOT_FOUND'&&error.url?.endsWith(file.slice(2)))return {};throw error;});
 const api=await load('../src/server/ai/visual-reading-cache.server.ts');
+const manifestApi=await load('../src/utils/visual-source-manifest.ts');
 const scope={ownerId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',projectId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',documentId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',sourceHash};
 function cache(root){assert.equal(typeof api.createVisualReadingCache,'function','Missing checked source reading cache');return api.createVisualReadingCache(root);}
 function verified(unit=readingUnit()){
@@ -14,6 +16,20 @@ function verified(unit=readingUnit()){
   views:[{viewId:unit.views[0].id,imageHash:unit.views[0].sha256,textHash:digest(literal),method:'native-match',confirmationHash:digest(literal),reading:response,confirmation:response}]};
 }
 async function fixture(action){const root=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-visual-cache-'));try{await action(root);}finally{assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));await fs.rm(root,{recursive:true,force:true});}}
+
+test('repairing native footnotes reuses the previously confirmed image input',async()=>fixture(async root=>{
+ const body='<w:p><w:r><w:t>Keep access open.</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p>'+image();
+ const file=docx({body,parts:{'word/footnotes.xml':'<w:footnote w:id="1">'+paragraph('Use the eastern entrance.')+'</w:footnote>'}});
+ const manifest=await manifestApi.buildVisualSourceManifest(file,'notes.docx'),unit=manifest.units[0];
+ assert.deepEqual(manifest.issues,[]);assert.match(manifest.nativeText,/Use the eastern entrance\./);
+ // Context emitted by the installed v23 parser for this fixture, before native notes were repaired.
+ const previousContext='\nword/document.xml#rId1:1\nKeep access open.\n\n\n\n[DOCX_PART word/footnotes.xml reason=CONTENT_NOT_POSITIONED_BY_PARSER]\nUse the eastern entrance.\n[END_DOCX_PART]\n\n[DOCX_ISSUE word/footnotes.xml:CONTENT_NOT_POSITIONED_BY_PARSER]\n';
+ const previous={...unit,contextText:previousContext},saved=verified(previous);
+ saved.views[0].method='no-numbers';saved.views[0].confirmation=null;
+ const documentScope={...scope,sourceHash:manifest.sourceHash},instance=cache(root);
+ await instance.write(documentScope,previous,saved);
+ assert.deepEqual(await instance.read(documentScope,unit),saved,'Native note repair must not request another model reading of a confirmed image');
+}));
 
 test('cache_rejects_wrong_scope_hash_or_symlink',async()=>fixture(async root=>{
  const instance=cache(root),unit=readingUnit();await instance.write(scope,unit,verified(unit));assert.equal((await instance.read(scope,unit)).text,literal);
