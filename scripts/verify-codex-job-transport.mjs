@@ -2,6 +2,16 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {createAiJobStore} from '../src/server/ai/jobs.server.ts';
 import {ownerId} from './codex-runtime/fixtures.mjs';
 const project='30000000-0000-4000-8000-000000000003',job='50000000-0000-4000-8000-000000000005',lease='60000000-0000-4000-8000-000000000006';
+
+// Break: final-save failures are invisible, or diagnostics leak content or repeat a non-repeatable commit.
+test('a failed final commit is safely correlated with its job without being repeated',async()=>{
+ const events=[],previous=console.warn;let calls=0;
+ const store=createAiJobStore({rpc(name){assert.equal(name,'contractor_ai_complete');calls++;return {abortSignal(){throw Error('A final commit must retain its original request policy');},then(resolve,reject){return Promise.resolve({data:null,error:{code:'ECONNRESET',message:'PRIVATE_PROVIDER_CREDENTIAL'},status:503}).then(resolve,reject);}};}});
+ console.warn=(tag,text)=>events.push({tag,...JSON.parse(text)});
+ try{await assert.rejects(store.complete(job,lease,{result:{private:'PRIVATE_TASK_DATA'},effects:[]}),e=>e.code==='AI_UNAVAILABLE');}finally{console.warn=previous;}
+ assert.equal(calls,1);assert.equal(events.length,1,'The failed final save needs a diagnostic event');const event=events[0];
+ assert.equal(event.tag,'[ai-job-rpc]');assert.equal(event.operation,'complete');assert.equal(event.jobId,job);assert.equal(event.status,503);assert.equal(event.timedOut,false);assert.ok(Number.isFinite(Date.parse(event.at)));assert.equal(JSON.stringify(events).includes('PRIVATE_'),false);
+});
 test('a hung read, heartbeat or progress HTTP call settles before the execution lease expires',async()=>{
  await Promise.all([
   store=>store.readOwned(ownerId,project,job),

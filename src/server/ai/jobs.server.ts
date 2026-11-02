@@ -41,9 +41,9 @@ const safeError='העוזר לא השלים את הפעולה. הנתונים נ
 export function createAiJobStore(transport:RpcTransport) {
     async function rpc(name:string,p:JsonObject):Promise<unknown>{
         const control=['read','heartbeat','progress'].includes(name),started=Date.now();let signal:AbortSignal|undefined;
-        function unavailable(error:unknown,status?:number){if(!control)return;let value=error,transportCode:string|null=null;
+        function unavailable(error:unknown,status?:number){let value=error,transportCode:string|null=null;
             for(let i=0;i<3&&record(value);i++,value=value.cause){if(typeof value.code==='string'&&/^[A-Z0-9_]{1,60}$/.test(value.code)){transportCode=value.code;break;}}
-            console.warn('[ai-job-control]',JSON.stringify({operation:name,elapsedMs:Math.max(0,Date.now()-started),timedOut:signal?.aborted===true,status:status??null,transportCode}));
+            try{console.warn(control?'[ai-job-control]':'[ai-job-rpc]',JSON.stringify({at:new Date().toISOString(),operation:name,jobId:validUuid(p.id)?p.id:null,elapsedMs:Math.max(0,Date.now()-started),timedOut:signal?.aborted===true,status:status??null,transportCode}));}catch{}
         }
         let response;try{let request=transport.rpc('contractor_ai_'+name,{p});
             if(control&&request.abortSignal){signal=AbortSignal.timeout(8000);request=request.abortSignal(signal);}

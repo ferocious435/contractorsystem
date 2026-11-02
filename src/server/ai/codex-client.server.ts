@@ -20,7 +20,7 @@ export interface CodexClient {
     close():Promise<void>;
     startLogin():Promise<{loginId:string;authUrl:string}>;
 }
-interface Pending {resolve(value:unknown):void;reject(error:BusinessAiError):void;timer:unknown;}
+interface Pending {method:string;resolve(value:unknown):void;reject(error:BusinessAiError):void;timer:unknown;}
 interface ActiveTurn {
     threadId:string;turnId:string|null;early:Record<string,unknown>[];final:string|null;
     resolve(value:string):void;reject(error:BusinessAiError):void;settled:boolean;
@@ -66,7 +66,7 @@ export function createCodexClient(options:ClientOptions={}):CodexClient {
     function rpc<T>(method:string,params:unknown,timeout=requestTimeout):Promise<T>{
         return new Promise<T>((resolve,reject)=>{
             const id=nextId++,timer=clock.setTimeout(()=>{const entry=pending.get(id);if(!entry)return;pending.delete(id);entry.reject(new BusinessAiError('AI_TIMEOUT'));},timeout);
-            pending.set(id,{resolve:value=>resolve(value as T),reject,timer});
+            pending.set(id,{method,resolve:value=>resolve(value as T),reject,timer});
             try{send({id,method,params});}catch(error){clock.clearTimeout(timer);pending.delete(id);reject(error);}
         });
     }
@@ -107,7 +107,11 @@ export function createCodexClient(options:ClientOptions={}):CodexClient {
         if(typeof value.id!=='number')return;
         const entry=pending.get(value.id);if(!entry)return;
         pending.delete(value.id);clock.clearTimeout(entry.timer);
-        if(value.error!==undefined)entry.reject(new BusinessAiError('AI_UNAVAILABLE'));
+        if(value.error!==undefined){
+            const code=record(value.error)?value.error.code:null;
+            try{console.warn('[ai-runtime-rpc]',JSON.stringify({at:new Date().toISOString(),method:entry.method,protocolCode:typeof code==='number'&&Number.isSafeInteger(code)?code:null}));}catch{}
+            entry.reject(new BusinessAiError('AI_UNAVAILABLE'));
+        }
         else if(Object.hasOwn(value,'result'))entry.resolve(value.result);
         else entry.reject(new BusinessAiError('AI_RESPONSE_INVALID'));
     }

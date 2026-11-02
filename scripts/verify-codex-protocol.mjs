@@ -15,6 +15,26 @@ function client(fx,runtimeDir,extra={}){assert.equal(typeof protocol.createCodex
 async function readyProfile(){assert.equal(typeof profiles.accountFingerprint,'function','Account binding is missing');return {...profile,accountFingerprint:profiles.accountFingerprint(account)};}
 function store(runtimeDir,metadata){assert.equal(typeof profiles.createRuntimeProfileStore,'function','Manual runtime profile store is missing');return profiles.createRuntimeProfileStore({runtimeDir,metadata});}
 
+// Break: opaque RPC failures cannot be diagnosed, or raw provider fields expose task/credential data.
+test('RPC failure diagnostics identify the local method without exposing provider content',async t=>{
+ const dir=await temporaryRuntime(t),events=[],previous=console.warn;let responseCode=-32001;
+ const fx=fakeCodex({onRequest(request,child){if(request.method==='model/list'){child.send({id:request.id,error:{code:responseCode,message:'PRIVATE_PROVIDER_DETAILS',data:{token:'PRIVATE_CREDENTIAL',method:'PRIVATE_FOREIGN_METHOD'}}});return false;}}}),api=client(fx,dir);t.after(()=>api.close());
+ console.warn=(tag,text)=>events.push({tag,...JSON.parse(text)});
+ try{await assert.rejects(api.request('model/list',{privateInput:'PRIVATE_TASK_DATA'}),e=>e.code==='AI_UNAVAILABLE');responseCode='PRIVATE_PROTOCOL_CODE';await assert.rejects(api.request('model/list',{}),e=>e.code==='AI_UNAVAILABLE');}finally{console.warn=previous;}
+ assert.equal(events.length,2,'Both failed requests need safe diagnostic events');
+ assert.deepEqual(events.map(e=>e.method),['model/list','model/list']);assert.deepEqual(events.map(e=>e.protocolCode),[-32001,null]);
+ assert.ok(events.every(e=>e.tag==='[ai-runtime-rpc]'&&Number.isFinite(Date.parse(e.at))));assert.equal(JSON.stringify(events).includes('PRIVATE_'),false);assert.equal(fx.turnStartCalls,0);
+});
+
+// Break: a failed diagnostic output must never replace or suppress the original RPC failure.
+test('an unavailable diagnostic sink does not change RPC failure handling',async t=>{
+ const dir=await temporaryRuntime(t),previous=console.warn;let calls=0;
+ const fx=fakeCodex({onRequest(request,child){if(request.method==='model/list'){child.send({id:request.id,error:{code:-32001,message:'PRIVATE_PROVIDER_DETAILS'}});return false;}}}),api=client(fx,dir);t.after(()=>api.close());
+ console.warn=()=>{calls++;throw Error('SYNTHETIC_LOG_SINK_FAILURE');};
+ try{await assert.rejects(api.request('model/list',{}),e=>e.code==='AI_UNAVAILABLE');assert.equal(calls,1);}finally{console.warn=previous;}
+ assert.equal(fx.turnStartCalls,0);
+});
+
 // Break: falling back to a process/global model would send a turn without an owner choice.
 test('no saved owner model means no process or inference starts',async t=>{
   const dir=await temporaryRuntime(t),fx=fakeCodex(),api=client(fx,dir);t.after(()=>api.close());
