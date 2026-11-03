@@ -34,7 +34,7 @@ for(const [kind,format,locations]of [
  const value=await unit('image:table',{kind,locations,localText:'',contextText:''}),calls=[];
  const result=await read({...manifest([value]),format},scope,execution(async input=>{calls.push(input);return JSON.stringify(unitResponse(value,{text:'טבלת שטחי חיצים',tables:[[['שטח','סוג חץ','לוח תמרורים'],['3.49','חץ משולש','13']]]}));}));
  assert.equal(result.units[0].complete,true);assert.equal(calls.length,2);assert.equal(result.units[0].views[0].method,'visual-double-pass');
- for(const input of calls){const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);assert.equal(region.tableColumnOrder,'physical-left-to-right','Independent table readings need the same coordinate convention');}
+ for(const input of calls){const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);assert.equal(region.tableColumnOrder,'physical-left-to-right','Independent table readings need the same coordinate convention');assert.equal(region.tableQuoteRepresentation,'ascii-double-quote','Visually identical double-quote marks in table labels need the same serialization in both blind readings');}
  assert.ok(!calls[1].text.includes('3.49'),'The blind confirmation must not receive the first numeric answer');
 }));
 test('unsupported_profile_preserves_saved_reading',async()=>fixture(async root=>{
