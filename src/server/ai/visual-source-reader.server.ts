@@ -133,6 +133,16 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                         }
                     }catch(error){if(error instanceof BusinessAiError)throw error;uncertainties.push('Invalid enlarged confirmation: '+view.id);}
                 }
+                else if((unit.kind==='XLSX_IMAGE'||unit.kind==='IMAGE_FRAME')&&!primary.uncertainties.length&&confirmation?.uncertainties.length&&confirmationView&&!retriedRegions.has(regionKey)){
+                    // New image adapters use the same single retry when the second witness is uncertain.
+                    // Keep that attempt and require two clear, independently matching numeric readings.
+                    retriedRegions.add(regionKey);initialReading=confirmation;
+                    const retryView=[view,confirmationView].sort((a,b)=>b.width*b.height-a.width*a.height)[0];
+                    try{
+                        confirmation=await ask(retryView,true);
+                        if(!confirmation.uncertainties.length&&compareNumericReadings(primary,confirmation).matched)resolvedRegions.set(regionKey,{reading:primary,confirmation});
+                    }catch(error){if(error instanceof BusinessAiError)throw error;uncertainties.push('Invalid enlarged confirmation: '+view.id);}
+                }
                 proofs.push({viewId:view.id,imageHash:view.sha256,textHash:digest(unitReadingLiteral(primary)),method,confirmationHash:digest(unitReadingLiteral(confirmation??primary)),reading:primary,confirmation,
                     ...(initialReading?{initialReading}:{}),...(imagesSeen.get(primary)?{readingImage:imagesSeen.get(primary)}:{}),...(confirmation&&imagesSeen.get(confirmation)?{confirmationImage:imagesSeen.get(confirmation)}:{})});
             }
