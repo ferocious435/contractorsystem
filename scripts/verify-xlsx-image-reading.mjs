@@ -5,6 +5,24 @@ import {digest} from './codex-runtime/visual-reading-fixtures.mjs';
 import {assembleDocumentReading} from '../src/utils/document-reading-history.ts';
 const image=()=>sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="80"><rect width="200" height="80" fill="white"/><text x="6" y="45" font-size="25">IMAGE ONLY 72</text></svg>')).png().toBuffer();
 const sheet=(name='Measured quantities',picture={name:'source.png'})=>({name,rows:[xlsxRow(1,[['A1','Gate'],['C1','25']])],pictures:[picture]});
+const mergedSheet=(rows,refs)=>`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows.join('')}</sheetData><mergeCells count="${refs.length}">${refs.map(ref=>`<mergeCell ref="${ref}"/>`).join('')}</mergeCells></worksheet>`;
+
+test('valid merged cells retain their range and the physical columns of adjacent values',async()=>{
+ const rows=[xlsxRow(1,[['A1','Merged heading'],['C1','25']]),xlsxRow(2,[['C2','72']])],bytes=xlsxWithImages([{name:'Merged grid',rows}],{},{'xl/worksheets/sheet1.xml':mergedSheet(rows,['A1:B2'])}),before=Buffer.from(bytes),m=await buildVisualSourceManifest(bytes,'merged.xlsx');
+ assert.deepEqual(m.issues,[]);assert.match(m.nativeText,/# Merged cells:.*A1:B2/);assert.match(m.nativeText,/Merged heading\t\t25/);assert.match(m.nativeText,/(?:^|\n)\t\t72/);assert.deepEqual(bytes,before);
+});
+
+test('invalid or overlapping merges and values hidden inside a merge remain explicit gaps',async()=>{
+ for(const [refs,cells]of [[['A1:B1','B1:C1'],[['A1','Title']]], [['B1:A1'],[['B1','Title']]], [['A1:B1'],[['A1','Title'],['B1','HIDDEN 99']]], [['A1:XFE1'],[['A1','Title']]]]){
+  const rows=[xlsxRow(1,cells)],m=await buildVisualSourceManifest(xlsxWithImages([{name:'Invalid merge',rows}],{},{'xl/worksheets/sheet1.xml':mergedSheet(rows,refs)}),'invalid-merge.xlsx');assert.ok(m.issues.some(issue=>issue.includes('MERGE_UNVERIFIED')),JSON.stringify(refs));
+ }
+});
+
+test('an empty picture cell coordinate is not silently invented as column A',async()=>{
+ const normal=xlsxWithImages([sheet()],{'source.png':await image()}),{createRequire}=await import('node:module'),require=createRequire(import.meta.url),{unzipSync,zipSync,strFromU8,strToU8}=createRequire(require.resolve('officeparser'))('fflate'),files=unzipSync(normal);
+ files['xl/drawings/drawing1.xml']=strToU8(strFromU8(files['xl/drawings/drawing1.xml']).replace('<xdr:col>0</xdr:col>','<xdr:col></xdr:col>'));
+ const m=await buildVisualSourceManifest(Buffer.from(zipSync(files)),'empty-anchor.xlsx');assert.ok(m.issues.some(issue=>issue.endsWith('IMAGE_CELL_UNVERIFIED')));assert.equal(m.units[0].locations[0].cellRange,undefined);
+});
 
 test('XLSX image keeps every sheet binding and does not shift an empty cell',async()=>{
  const png=await image(),bytes=xlsxWithImages([sheet(),sheet('Agreed prices',{name:'source.png',from:{col:1,row:4},to:{col:3,row:6}})],{'source.png':png}),before=Buffer.from(bytes),m=await buildVisualSourceManifest(bytes,'source.xlsx');

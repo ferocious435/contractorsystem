@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import path from 'node:path';
-import type {OfficeParserAST,CellMetadata} from 'officeparser';
+import type {OfficeParserAST,OfficeContentNode,CellMetadata} from 'officeparser';
 import type {ReadingLocation} from './visual-source-reading';
 
 type PackageFile={path:string;content:Buffer};
@@ -17,6 +17,34 @@ function descendants(node:Node,predicate:(element:Element)=>boolean):Element[]{
     return result;
 }
 const relatedPart=(part:string)=>path.posix.join(path.posix.dirname(part),'_rels',path.posix.basename(part)+'.rels');
+const cellPosition=(reference:string)=>{
+    const match=/^([A-Z]{1,3})([1-9]\d*)$/.exec(reference);if(!match)return null;
+    let col=0;for(const letter of match[1])col=col*26+letter.charCodeAt(0)-64;
+    const row=Number(match[2]);return col<=16384&&row<=1048576?{col:col-1,row:row-1}:null;
+};
+/** An ordinary merge is readable only when its bounds, anchor and covered cells agree with the package. */
+function checkedMergedCells(doc:Document,sheet:OfficeContentNode):{valid:boolean;ranges:string[]} {
+    const elements=descendants(doc,element=>element.localName==='mergeCell'),rawCells=descendants(doc,element=>element.localName==='c');
+    if(elements.length>10000||elements.length*rawCells.length>10_000_000)return {valid:false,ranges:[]};
+    const cells=(sheet.children||[]).flatMap(row=>row.children||[]).filter(cell=>cell.type==='cell');
+    const metadata=new Map(cells.map(cell=>{const meta=cell.metadata as CellMetadata;return [meta?.row+':'+meta?.col,meta];}));
+    const ranges:Array<{ref:string;from:{col:number;row:number};to:{col:number;row:number}}>=[];
+    for(const element of elements){
+        const ref=element.getAttribute('ref')||'',parts=ref.split(':'),from=cellPosition(parts[0]),to=cellPosition(parts[1]||'');
+        if(parts.length!==2||!from||!to||from.col>to.col||from.row>to.row||from.col===to.col&&from.row===to.row)return {valid:false,ranges:[]};
+        if(ranges.some(range=>from.col<=range.to.col&&to.col>=range.from.col&&from.row<=range.to.row&&to.row>=range.from.row))return {valid:false,ranges:[]};
+        const anchor=metadata.get(from.row+':'+from.col);
+        if(!anchor||(anchor.colSpan||1)!==to.col-from.col+1||(anchor.rowSpan||1)!==to.row-from.row+1)return {valid:false,ranges:[]};
+        for(const cell of rawCells){
+            const position=cellPosition(cell.getAttribute('r')||'');if(!position)return {valid:false,ranges:[]};
+            if(position.col<from.col||position.col>to.col||position.row<from.row||position.row>to.row||position.col===from.col&&position.row===from.row)continue;
+            if(descendants(cell,node=>['v','t','f'].includes(node.localName)).some(node=>(node.textContent||'').trim()))return {valid:false,ranges:[]};
+        }
+        ranges.push({ref,from,to});
+    }
+    if(cells.some(cell=>{const meta=cell.metadata as CellMetadata;return ((meta?.colSpan||1)>1||(meta?.rowSpan||1)>1)&&!ranges.some(range=>range.from.row===meta.row&&range.from.col===meta.col);}))return {valid:false,ranges:[]};
+    return {valid:true,ranges:ranges.map(range=>range.ref)};
+}
 function harmlessPictureMetadata(list:Element):boolean {
     if(list.namespaceURI!==artNs||list.localName!=='extLst')return false;
     const attrs=(element:Element)=>Array.from(element.attributes).filter(attribute=>attribute.namespaceURI!=='http://www.w3.org/2000/xmlns/');
@@ -45,7 +73,9 @@ function packageTarget(part:string,relationship:Relationship|undefined):string|n
 function cellMarker(anchor:Element,name:string):string|undefined {
     const marker=children(anchor).find(element=>element.localName===name);
     if(!marker)return undefined;
-    const values=children(marker),col=Number(values.find(element=>element.localName==='col')?.textContent),row=Number(values.find(element=>element.localName==='row')?.textContent);
+    const values=children(marker),cols=values.filter(element=>element.localName==='col'),rows=values.filter(element=>element.localName==='row');
+    if(cols.length!==1||rows.length!==1||!/^\d+$/.test(cols[0].textContent?.trim()||'')||!/^\d+$/.test(rows[0].textContent?.trim()||''))return undefined;
+    const col=Number(cols[0].textContent),row=Number(rows[0].textContent);
     if(!Number.isSafeInteger(col)||col<0||col>16383||!Number.isSafeInteger(row)||row<0||row>1048575)return undefined;
     let index=col+1,letters='';while(index){letters=String.fromCharCode(65+(index-1)%26)+letters;index=Math.floor((index-1)/26);}
     return letters+(row+1);
@@ -91,9 +121,13 @@ export async function extractXlsxSource(file:Buffer):Promise<{nativeText:string;
     const {OfficeParser}=await import('officeparser');
     const ast=await OfficeParser.parseOffice(file,{fileType:'xlsx',ocr:false,extractAttachments:false,newlineDelimiter:'\n'}) as OfficeParserAST;
     const nativeSheets=ast.content.filter(node=>node.type==='sheet');
-    let gridSafe=nativeSheets.length===sheets.length,columns=0,rows=0;
+    let gridSafe=nativeSheets.length===sheets.length,columns=0,rows=0;const mergeNotes:string[]=[];
     for(const [index,sheet] of nativeSheets.entries()){
         if(sheet.metadata?.sheetName!==sheets[index]?.name)issue('XLSX_SHEET_ORDER_UNVERIFIED');
+        const part=packageTarget('xl/workbook.xml',sheets[index]?.relationship),doc=part?xml(part):null;
+        const merges=doc?checkedMergedCells(doc,sheet):{valid:false,ranges:[]};
+        if(!merges.valid)issue('XLSX_CELL_ANNOTATION_OR_MERGE_UNVERIFIED');
+        else if(merges.ranges.length)mergeNotes.push(JSON.stringify(sheets[index]?.name)+': '+merges.ranges.join(', '));
         for(const row of sheet.children||[]){
             if(row.type!=='row'){gridSafe=false;continue;}rows++;let previous=-1;
             for(const cell of row.children||[]){
@@ -101,15 +135,20 @@ export async function extractXlsxSource(file:Buffer):Promise<{nativeText:string;
                 if(cell.type!=='cell'||!meta||!Number.isSafeInteger(meta.col)||!Number.isSafeInteger(meta.row)
                     ||meta.col!<0||meta.col!>16383||meta.row!<0||meta.row!>1048575||meta.col!<=previous)gridSafe=false;
                 previous=meta?.col??previous;columns=Math.max(columns,previous+1);
-                if((meta?.colSpan||1)>1||(meta?.rowSpan||1)>1||cell.comments?.length)issue('XLSX_CELL_ANNOTATION_OR_MERGE_UNVERIFIED');
+                if(cell.comments?.length)issue('XLSX_CELL_ANNOTATION_OR_MERGE_UNVERIFIED');
             }
         }
     }
     if(columns*rows>1_000_000+file.length*16)gridSafe=false;
     if(!gridSafe)issue('XLSX_CELL_GRID_UNVERIFIED');
-    const native=gridSafe?await ast.to('csv',{renderMetadata:false,csvConfig:{columnDelimiter:'\t',mergeSheets:true}})
+    // CSV's span skip omits physical empty columns. The range is recorded separately;
+    // emit each anchor at its original coordinate without changing any source bytes.
+    const native=gridSafe?await ast.to('csv',{renderMetadata:false,csvConfig:{columnDelimiter:'\t',mergeSheets:true},onNode:node=>{
+        if(node.type==='cell'&&node.metadata&&(node.metadata as CellMetadata).colSpan)(node.metadata as CellMetadata).colSpan=1;
+    }})
         :await ast.to('text',{textConfig:{preserveLayout:true}});
     let nativeText=String(native.value||'');
+    if(mergeNotes.length)nativeText='# Merged cells: '+mergeNotes.join('; ')+'\n'+nativeText;
     if(nativeSheets.length===1)nativeText='# Sheet: '+JSON.stringify(sheets[0]?.name||'Sheet1')+'\n'+nativeText;
     for(const warning of ast.warnings||[])issue('PARSER:'+warning.code);
     for(const message of native.messages||[])issue('XLSX_NATIVE_EXPORT:'+String(message));

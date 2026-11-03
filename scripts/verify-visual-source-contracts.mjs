@@ -39,6 +39,36 @@ test('spacing_around_a_label_colon_is_not_a_different_number_or_label',()=>{
  assert.equal(compare(first,{...first,text:'תאריך : 20/07/2025\nכמות : 1,234.50 ₪'}).matched,false);
  assert.equal(compare(first,{...first,text:'תאריך : 20/07/2025\nמחיר : 1.234,50 ₪'}).matched,false);
 });
+test('spacing_in_a_letter_number_identifier_does_not_reject_the_same_table_values',()=>{
+ const compare=api(response,'compareNumericReadings'),first=unitResponse(undefined,{text:'',tables:[[['סוג','שטח','לוח'],['חץ בודד','1.00','ישן ד- 13']]]}),second={...first,tables:[[['סוג','שטח','לוח'],['חץ בודד','1.00','ישן ד-13']]]};
+ const original=structuredClone(first);assert.equal(compare(first,second).matched,true);assert.deepEqual(first,original,'Comparison must preserve the original transcript');
+});
+test('equivalent_quote_glyphs_do_not_change_table_units_or_standard_identifiers',()=>{
+ const compare=api(response,'compareNumericReadings'),first=unitResponse(undefined,{text:'ת״י ISO 9001:2015',tables:[[['שטח (מ״ר)'],['2.52']]]}),second={...first,text:'ת"י ISO 9001:2015',tables:[[['שטח (מ"ר)'],['2.52']]]};
+ assert.equal(compare(first,second).matched,true);
+});
+test('formatting_tolerance_cannot_change_signs_units_currency_identifiers_or_ranges',()=>{
+ const compare=api(response,'compareNumericReadings');
+ for(const [first,second]of [['יתרה: -12 ₪','יתרה: 12 ₪'],['שטח: 12 מ״ר','שטח: 12 מ״ק'],['מחיר: 12 ₪','מחיר: 12 $'],['קוד א-13','קוד א-31'],['מקטע 17-21','מקטע 21-17'],['פריט A1 23','פריט A123']]){
+  assert.equal(compare(unitResponse(undefined,{text:first}),unitResponse(undefined,{text:second})).matched,false,first+' / '+second);
+ }
+});
+
+test('a_quote_style_note_is_resolved_by_a_second_identical_literal_reading_without_erasing_the_note',()=>{
+ const unresolved=api(response,'unresolvedReadingUncertainties'),first=unitResponse(undefined,{text:'מערכת ת״י ISO 9001:2015',uncertainties:['Точный тип кавычек в ת״י неразличим.']}),second={...first,text:'מערכת ת"י ISO 9001:2015',uncertainties:['Точное начертание кавычек неразличимо.']},original=structuredClone(first);
+ assert.deepEqual(unresolved(first,second),[]);assert.deepEqual(unresolved(second,first),[]);assert.deepEqual(first,original);
+});
+test('matching_guesses_do_not_resolve_uncertain_words_signatures_or_quantities',()=>{
+ const unresolved=api(response,'unresolvedReadingUncertainties');
+ for(const note of ['Рукописная подпись неразборчива.','Неуверенно читается число 12.','Мелкие буквы и кавычки неразличимы.']){
+  const first=unitResponse(undefined,{text:'ת"י ISO 9001:2015',uncertainties:[note]});assert.deepEqual(unresolved(first,{...first,uncertainties:[]}),[note]);
+ }
+});
+test('a_quote_style_note_stays_unresolved_without_matching_full_content_and_a_second_witness',()=>{
+ const unresolved=api(response,'unresolvedReadingUncertainties'),note='Точный тип кавычек неразличим.',first=unitResponse(undefined,{text:'ת"י ISO 9001:2015',uncertainties:[note]});
+ assert.deepEqual(unresolved(first,null),[note]);assert.deepEqual(unresolved(first,{...first,text:'ת"י ISO 9001:2018',uncertainties:[]}),[note]);assert.deepEqual(unresolved(first,{...first,text:'א"י ISO 9001:2015',uncertainties:[]}),[note]);
+});
+
 test('counter_only_is_not_document_body',()=>{
  api(contracts,'assessVisualReading');
  for(const text of ['1','[PAGE 1]\n1','-- 1 of 3 --','report.pdf 01.11.2026','QA.19.01.05C 28.11.23'])assert.equal(hasDocumentBodyText(text),false);

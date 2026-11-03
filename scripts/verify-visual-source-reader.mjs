@@ -37,6 +37,11 @@ for(const [kind,format,locations]of [
  for(const input of calls){const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);assert.equal(region.tableColumnOrder,'physical-left-to-right','Independent table readings need the same coordinate convention');assert.equal(region.tableQuoteRepresentation,'ascii-double-quote','Visually identical double-quote marks in table labels need the same serialization in both blind readings');}
  assert.ok(!calls[1].text.includes('3.49'),'The blind confirmation must not receive the first numeric answer');
 }));
+test('matching_readings_with_only_a_quote_style_note_finish_after_two_reads_and_keep_the_original_notes',async()=>fixture(async()=>{
+ const value=await unit('docx:quote',{kind:'DOCX_IMAGE',localText:'',contextText:''}),note='Точный тип кавычек в ת״י неразличим.';let calls=0;
+ const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async()=>{calls++;return JSON.stringify(unitResponse(value,{text:'ת"י ISO 9001:2015',uncertainties:[note]}));}));
+ assert.equal(calls,2);assert.equal(result.units[0].complete,true);assert.deepEqual(result.units[0].formattingNotes,[note]);assert.deepEqual(result.units[0].views[0].reading.uncertainties,[note]);assert.deepEqual(result.units[0].views[0].confirmation.uncertainties,[note]);
+}));
 test('unsupported_profile_preserves_saved_reading',async()=>fixture(async root=>{
  const before=sourceDocument(),copy=structuredClone(before),value=await unit();
  await assert.rejects(()=>read(manifest([value]),scope,execution(async()=>{throw new BusinessAiError('AI_INPUT_UNSUPPORTED');})),error=>error.code==='AI_INPUT_UNSUPPORTED');

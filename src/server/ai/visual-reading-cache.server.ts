@@ -4,7 +4,7 @@ import {lstat,mkdir,realpath,readFile,writeFile,rename,unlink} from 'node:fs/pro
 import path from 'node:path';
 import {BusinessAiError,record,validUuid} from './contracts';
 import {VISUAL_READING_RULES,validReadingHash,type ReadingScope,type ReadingUnit,type UnitReading,type VerifiedUnit} from '@/utils/visual-source-reading';
-import {validateUnitReading,compareNumericReadings} from '@/utils/visual-source-response';
+import {validateUnitReading,compareNumericReadings,unresolvedReadingUncertainties} from '@/utils/visual-source-response';
 import {hasDocumentBodyText,hasRenderedEmptyPageProof} from '@/utils/document-source-readiness';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -53,22 +53,26 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
         const readView=unit.views.find(v=>v.id===readingViewId&&JSON.stringify(v.rect)===JSON.stringify(view.rect));
         if(!readView)return false;
         let reading:UnitReading;try{reading=validateUnitReading(JSON.stringify(proof.reading),unit,readView.id);}catch{return false;}
-        if(reading.uncertainties.length||proof.textHash!==digest(unitReadingLiteral(reading)))return false;
+        if(proof.textHash!==digest(unitReadingLiteral(reading)))return false;
         const key=JSON.stringify(view.rect),region=regions.get(key)??{hashes:new Set<string>(),physical:false};
         region.hashes.add(digest(unitReadingLiteral(reading)));region.physical||=proof.method==='physical-empty';regions.set(key,region);
         if(proof.method==='physical-empty'){
+            if(reading.uncertainties.length)return false;
             const page=unit.locations[0]?.page;
             if(!page||!record(proof.emptyPageProof)||proof.emptyPageProof.imageSha256!==view.sha256
                 ||!hasRenderedEmptyPageProof({page,text:reading.text,confidence:0,emptyPageProof:proof.emptyPageProof as never}))return false;
         }else if(proof.method==='no-numbers'){
-            if(unitHasNumbers(reading)||proof.confirmationHash!==proof.textHash)return false;
+            if(reading.uncertainties.length||unitHasNumbers(reading)||proof.confirmationHash!==proof.textHash)return false;
             if(proof.initialReading){try{const initial=validateUnitReading(JSON.stringify(proof.initialReading),unit,view.id);if(unitHasNumbers(initial))return false;}catch{return false;}}
         }else{
             if(!['native-match','local-ocr-match','visual-double-pass'].includes(String(proof.method))||!record(proof.confirmation))return false;
             const confirmation=proof.confirmation as unknown as UnitReading;
             // A blind enlargement has the same source region and id, even when its pixel hash differs.
             try{validateUnitReading(JSON.stringify(confirmation),unit,confirmation.viewId);}catch{return false;}
-            if(confirmation.uncertainties.length||proof.confirmationHash!==digest(unitReadingLiteral(confirmation))||!compareNumericReadings(reading,confirmation).matched)return false;
+            const unresolved=proof.method==='visual-double-pass'
+                ?[...unresolvedReadingUncertainties(reading,confirmation),...unresolvedReadingUncertainties(confirmation,reading)]
+                :[...reading.uncertainties,...confirmation.uncertainties];
+            if(unresolved.length||proof.confirmationHash!==digest(unitReadingLiteral(confirmation))||!compareNumericReadings(reading,confirmation).matched)return false;
             if(proof.method!=='visual-double-pass'&&confirmation.text!==unit.localText)return false;
         }
     }
@@ -117,7 +121,19 @@ export function reverifySavedNumericUnit(value:unknown,unit:ReadingUnit):Verifie
         ||!record(value.createdBy)||!validUuid(value.createdBy.jobId)||value.createdBy.rulesVersion!==VISUAL_READING_RULES
         ||!Number.isSafeInteger(value.createdBy.profileRevision)||(value.createdBy.profileRevision as number)<1)return null;
     const checked={...structuredClone(value),complete:true,uncertainties:[]} as unknown as VerifiedUnit;
-    if(!value.uncertainties.every(reason=>reason.startsWith('Numeric or source verification failed: '))){
+    const formattingNotes=new Set<string>();
+    try{
+        for(const proof of checked.views){
+            if(proof.method!=='visual-double-pass'||!proof.confirmation)continue;
+            const reading=validateUnitReading(JSON.stringify(proof.reading),unit,proof.reading.viewId);
+            const confirmation=validateUnitReading(JSON.stringify(proof.confirmation),unit,proof.confirmation.viewId);
+            for(const [a,b] of [[reading,confirmation],[confirmation,reading]]){
+                if(a.uncertainties.length&&!unresolvedReadingUncertainties(a,b).length)for(const note of a.uncertainties)formattingNotes.add(note);
+            }
+        }
+    }catch{return null;}
+    if(formattingNotes.size)checked.formattingNotes=[...new Set([...(checked.formattingNotes??[]),...formattingNotes])];
+    if(!value.uncertainties.every(reason=>reason.startsWith('Numeric or source verification failed: ')||formattingNotes.has(reason))){
         try{
             const pairs=new Map<string,VerifiedUnit['views'][number]>(),known=new Set<string>();
             const sourceView=(reading:UnitReading)=>unit.views.find(view=>view.id===reading.viewId);

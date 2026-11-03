@@ -17,7 +17,22 @@ export function validateUnitReading(raw:string,expected:ReadingUnit,viewId:strin
 }
 const hasNumber=(value:string)=>/\p{N}/u.test(value);
 const numberTokens=(value:string)=>value.match(/\p{N}+(?:[.,/]\p{N}+)*/gu)||[];
-const lineKey=(value:string)=>value.normalize('NFKC').replace(/[\u200e\u200f]/g,'').replace(/\s+/g,' ').replace(/\s*:\s*/g,':').trim();
+// Compare presentation consistently; keep the stored transcription, digits, signs and labels intact.
+export const normalizeReadingTypography=(value:string)=>value.normalize('NFKC').replace(/[\u200e\u200f]/g,'').replace(/[\u05f4\u201c\u201d]/g,'"')
+    .replace(/[\u05f3\u2018\u2019]/g,"'").replace(/\s+/g,' ').replace(/(?<=\p{L})\s*-\s*(?=\p{N})/gu,'-').replace(/\s*:\s*/g,':').trim();
+const lineKey=normalizeReadingTypography;
+const quoteStyleOnly=(note:string)=>/(?:кавыч|гершаим|gershayim|quotation|quote)/iu.test(note)
+    &&!/(?:^|[^\p{L}])(?:букв|слов|текст|цифр|числ|номер|сумм|дата|диапазон|порядок|значен|подпис|штамп|количеств|нечита|неразборчив|letters?|words?|digits?|numbers?|amount|signature|stamp|unreadable|illegible|value|date)/iu.test(note);
+const literalShape=(reading:UnitReading)=>JSON.stringify({text:lineKey(reading.text),tables:reading.tables.map(table=>table.map(row=>row.map(lineKey)))});
+/** Font/codepoint ambiguity can be resolved only by a matching independent full reading.
+ * Raw responses and their original uncertainty notes are never rewritten. */
+export function unresolvedReadingUncertainties(reading:UnitReading,confirmation:UnitReading|null):string[]{
+    if(!reading.uncertainties.length)return [];
+    if(!confirmation||reading.unitId!==confirmation.unitId||!reading.uncertainties.every(quoteStyleOnly)
+        ||!confirmation.uncertainties.every(quoteStyleOnly)||literalShape(reading)!==literalShape(confirmation)
+        ||!compareNumericReadings(reading,confirmation).matched)return [...reading.uncertainties];
+    return [];
+}
 function numericPositions(reading:UnitReading) {
     const positions:string[]=[];
     for(const [tableIndex,table] of reading.tables.entries())for(const [rowIndex,row] of table.entries()){

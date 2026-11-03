@@ -27,7 +27,7 @@ export type VerifiedView = {
 };
 export type VerifiedUnit = {
     unitId:string;inputHash:string;textHash:string;text:string;tables:string[][][];visualDescription:string;
-    uncertainties:string[];views:VerifiedView[];complete:boolean;
+    uncertainties:string[];views:VerifiedView[];complete:boolean;formattingNotes?:string[];
     createdBy?:{jobId:string;rulesVersion:string;profileRevision:number};
 };
 export type RegistryUnit = {

@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import {BusinessAiError,validUuid,type AiExecutionContext} from './contracts';
 import {getRuntimeDirectory} from './codex-client.server';
 import {checkedReadingDirectory,createVisualReadingCache,readingUnitInputHash,unitReadingLiteral,unitHasNumbers,verifiedReadingUnit,retainedReadingUnit} from './visual-reading-cache.server';
-import {validateUnitReading,compareNumericReadings,visualSourceResponseSchema} from '@/utils/visual-source-response';
+import {validateUnitReading,compareNumericReadings,unresolvedReadingUncertainties,visualSourceResponseSchema} from '@/utils/visual-source-response';
 import {extractImageTextLocally,getRenderedEmptyPageProof} from '@/utils/local-document-ocr';
 import {hasDocumentBodyText} from '@/utils/document-source-readiness';
 import {VISUAL_READING_RULES,type SourceManifest,type ReadingScope,type ReadingUnit,type RenderedView,type UnitReading,type VerifiedUnit,type VerifiedView} from '@/utils/visual-source-reading';
@@ -57,7 +57,7 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
         for(const unit of manifest.units){
             await execution.checkActive();
             const cached=await cache.read(scope,unit);if(cached){units.push(cached);await execution.reportProgress({phase:'reading',completedUnits:units.filter(u=>u.complete).length,totalUnits:manifest.units.length});continue;}
-            const readings=new Map<string,UnitReading>(),imagesSeen=new WeakMap<UnitReading,NonNullable<VerifiedView['readingImage']>>(),proofs:VerifiedView[]=[],uncertainties:string[]=[];
+            const readings=new Map<string,UnitReading>(),imagesSeen=new WeakMap<UnitReading,NonNullable<VerifiedView['readingImage']>>(),proofs:VerifiedView[]=[],uncertainties:string[]=[],formattingNotes=new Set<string>();
             const resolvedRegions=new Map<string,{reading:UnitReading;confirmation:UnitReading}>(),retriedRegions=new Set<string>();
             async function ask(view:RenderedView,blind:boolean,bytes:Uint8Array=view.bytes):Promise<UnitReading>{
                 await execution.checkActive();
@@ -117,10 +117,11 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                     }
                 }
                 let initialReading:UnitReading|undefined;
-                if(primary.uncertainties.length&&confirmation&&!confirmation.uncertainties.length&&!unitHasNumbers(primary)&&!unitHasNumbers(confirmation)){
+                const primaryIssues=unresolvedReadingUncertainties(primary,confirmation),confirmationIssues=confirmation?unresolvedReadingUncertainties(confirmation,primary):[];
+                if(primaryIssues.length&&confirmation&&!confirmationIssues.length&&!unitHasNumbers(primary)&&!unitHasNumbers(confirmation)){
                     initialReading=primary;primary=confirmation;readings.set(view.id,primary);confirmation=null;method='no-numbers';
                 }
-                else if(primary.uncertainties.length&&confirmation&&!confirmation.uncertainties.length&&confirmationView&&!retriedRegions.has(regionKey)){
+                else if(primaryIssues.length&&confirmation&&!confirmationIssues.length&&confirmationView&&!retriedRegions.has(regionKey)){
                     // The uncertain overview is retained, but is not a numeric witness.
                     // One extra blind enlargement must independently confirm the clear read.
                     retriedRegions.add(regionKey);
@@ -133,7 +134,7 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                         }
                     }catch(error){if(error instanceof BusinessAiError)throw error;uncertainties.push('Invalid enlarged confirmation: '+view.id);}
                 }
-                else if((unit.kind==='XLSX_IMAGE'||unit.kind==='IMAGE_FRAME')&&!primary.uncertainties.length&&confirmation?.uncertainties.length&&confirmationView&&!retriedRegions.has(regionKey)){
+                else if((unit.kind==='XLSX_IMAGE'||unit.kind==='IMAGE_FRAME')&&!primaryIssues.length&&confirmationIssues.length&&confirmation&&confirmationView&&!retriedRegions.has(regionKey)){
                     // New image adapters use the same single retry when the second witness is uncertain.
                     // Keep that attempt and require two clear, independently matching numeric readings.
                     retriedRegions.add(regionKey);initialReading=confirmation;
@@ -157,7 +158,11 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                         readingImage:imagesSeen.get(resolved.reading),confirmationImage:imagesSeen.get(resolved.confirmation),...(initial?{initialReading:initial}:{})});
                     readings.set(view.id,resolved.reading);
                 }
-                uncertainties.push(...proof.reading.uncertainties,...(proof.confirmation?.uncertainties??[]));
+                for(const [reading,witness] of [[proof.reading,proof.confirmation],[proof.confirmation,proof.reading]]){
+                    if(!reading)continue;
+                    const unresolved=unresolvedReadingUncertainties(reading,witness);uncertainties.push(...unresolved);
+                    if(reading.uncertainties.length&&!unresolved.length)for(const note of reading.uncertainties)formattingNotes.add(note);
+                }
                 if(proof.method==='visual-double-pass'&&(!proof.confirmation||!compareNumericReadings(proof.reading,proof.confirmation).matched))uncertainties.push('Numeric or source verification failed: '+view.id);
             }
             const fullViews=unit.views.filter(whole).sort((a,b)=>b.width*b.height-a.width*a.height);
@@ -169,6 +174,7 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
             const result:VerifiedUnit={unitId:unit.id,inputHash:readingUnitInputHash(unit),text,textHash:digest(text),tables:selected?.tables||[],
                 visualDescription:[...new Set([...readings.values()].map(v=>v.visualDescription).filter(Boolean))].join('\n'),uncertainties:[...new Set(uncertainties)],views:proofs,
                 complete:uncertainties.length===0&&proofs.length===unit.views.length,
+                ...(formattingNotes.size?{formattingNotes:[...formattingNotes]}:{}),
                 createdBy:{jobId:execution.jobId,rulesVersion:VISUAL_READING_RULES,profileRevision:execution.profile.revision}};
             if(result.complete&&!verifiedReadingUnit(result,unit)){result.complete=false;result.uncertainties.push('Source content is not verified');}
             units.push(result);

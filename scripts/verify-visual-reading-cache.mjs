@@ -72,6 +72,12 @@ test('contradictory_physical_folios_for_the_same_page_are_not_verified_or_cached
  await assert.rejects(()=>cache(root).write(scope,unit,contradictory));
  assert.equal((await cache(root).read(scope,unit)).text,'3');
 }));
+test('retained_matching_reads_resolve_only_quote_style_notes_and_preserve_both_original_answers',async()=>fixture(async root=>{
+ const unit=readingUnit({localText:''}),note='Точный тип кавычек в ת״י неразличим.',reading=unitResponse(unit,{text:'ת״י ISO 9001:2015',uncertainties:[note]}),confirmation={...reading,text:'ת"י ISO 9001:2015'};
+ const partial={...verified(unit),text:reading.text,textHash:digest(reading.text),complete:false,uncertainties:[note],createdBy:{jobId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',rulesVersion:'visual-reading-rules-v2',profileRevision:1},views:[{viewId:unit.views[0].id,imageHash:unit.views[0].sha256,textHash:digest(reading.text),method:'visual-double-pass',confirmationHash:digest(confirmation.text),reading,confirmation}]},original=structuredClone(partial);
+ const repaired=api.reverifySavedNumericUnit(partial,unit);assert.ok(repaired,'A font quote ambiguity must not trigger another model call');assert.equal(repaired.complete,true);assert.deepEqual(repaired.views,partial.views);assert.deepEqual(partial,original);assert.deepEqual(repaired.formattingNotes,[note]);await cache(root).write(scope,unit,repaired);assert.equal((await cache(root).read(scope,unit)).complete,true);
+ const meaningful=structuredClone(partial);meaningful.uncertainties=['Мелкие буквы неразличимы.'];meaningful.views[0].reading.uncertainties=['Мелкие буквы неразличимы.'];assert.equal(api.reverifySavedNumericUnit(meaningful,unit),null);
+}));
 test('saved_independent_numeric_reads_can_be_rechecked_without_repeating_the_model',()=>{
  assert.equal(typeof api.reverifySavedNumericUnit,'function');const unit=readingUnit({localText:''}),text='1. Work\n2. Quantity 12\n3. Terms',reading=unitResponse(unit,{text,visualDescription:'Underlined headings.'}),confirmation={...reading,visualDescription:'Items 1–3 are underlined.'};
  const saved={...verified(unit),text,textHash:digest(text),complete:false,uncertainties:['Numeric or source verification failed: '+unit.views[0].id],createdBy:{jobId:scope.ownerId,rulesVersion:'visual-reading-rules-v2',profileRevision:1},
