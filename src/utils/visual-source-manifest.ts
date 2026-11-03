@@ -5,6 +5,7 @@ import {loadPdfParse} from './pdf-parser-runtime';
 import {renderPdfView} from './visual-pdf-renderer';
 import {planPageViews,type ReadingUnit,type SourceManifest} from './visual-source-reading';
 import {prepareDocumentAnalysisInput} from './document-text-extraction';
+import {buildRasterSourceManifest,isRasterSource} from './raster-source-manifest';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 function finish(value:Omit<SourceManifest,'manifestHash'>):SourceManifest {
@@ -75,7 +76,7 @@ async function pdf(file:Buffer):Promise<SourceManifest> {
 export async function buildVisualSourceManifest(file:Buffer,title:string):Promise<SourceManifest> {
     const before=hash(file);
     const result=file.subarray(0,1024).toString('latin1').includes('%PDF-')?await pdf(file)
-        :/\.docx(?:$|[?#])/iu.test(title)?await word(file):await (async()=>{
+        :/\.docx(?:$|[?#])/iu.test(title)?await word(file):isRasterSource(file,title)?await buildRasterSourceManifest(file,title):await (async()=>{
             const native=await prepareDocumentAnalysisInput(file,title);
             if(native.kind!=='text')throw Error('SOURCE_VISUAL_FORMAT_UNSUPPORTED');
             return finish({sourceHash:before,format:'TEXT',nativeText:native.extractedText,nativeVerification:native.readingVerification,

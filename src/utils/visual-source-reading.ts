@@ -7,14 +7,14 @@ export type Rect = {x:number;y:number;width:number;height:number};
 export type Coverage = {complete:boolean;missingUnitIds:string[];verifiedUnitIds:string[];issues:string[]};
 export type NumericCheck = {matched:boolean;unresolved:string[]};
 export type ReadingScope = {ownerId:string;projectId:string;documentId:string;sourceHash:string};
-export type ReadingLocation = {page?:number;part?:string;anchor?:string;mediaName?:string};
+export type ReadingLocation = {page?:number;part?:string;anchor?:string;mediaName?:string;sheet?:string;cellRange?:string;frame?:number};
 export type RenderedView = {id:string;sha256:string;bytes:Uint8Array;width:number;height:number;rect:Rect};
 export type ReadingUnit = {
-    id:string;kind:'PDF_PAGE'|'DOCX_IMAGE';locations:ReadingLocation[];views:RenderedView[];
+    id:string;kind:'PDF_PAGE'|'DOCX_IMAGE'|'IMAGE_FRAME'|'XLSX_IMAGE';locations:ReadingLocation[];views:RenderedView[];
     contextText:string;localText:string;localMethod?:'native'|'local-ocr';emptyPageProof?:RenderedEmptyPageProof;
 };
 export type SourceManifest = {
-    sourceHash:string;manifestHash:string;format:'PDF'|'DOCX'|'TEXT';nativeText:string;nativeVerification:unknown;
+    sourceHash:string;manifestHash:string;format:'PDF'|'DOCX'|'TEXT'|'IMAGE'|'XLSX';nativeText:string;nativeVerification:unknown;
     units:ReadingUnit[];issues:string[];assembly:Array<{kind:'native';text:string}|{kind:'unit';unitId:string}>;
 };
 export type UnitReading = {unitId:string;viewId:string;text:string;tables:string[][][];visualDescription:string;uncertainties:string[]};
@@ -97,6 +97,12 @@ export function planPageViews(width:number,height:number,maxPixels:number,overla
 function locationValid(value:unknown,kind:ReadingUnit['kind']) {
     if(!object(value))return false;
     if(kind==='PDF_PAGE')return Number.isInteger(value.page)&&(value.page as number)>0;
+    if(kind==='IMAGE_FRAME')return value.part==='image'&&Number.isInteger(value.frame)&&(value.frame as number)>0
+        &&value.anchor==='image#frame'+value.frame&&identifier(value.mediaName);
+    if(kind==='XLSX_IMAGE')return typeof value.part==='string'&&/^xl\/worksheets\/[^/\\]+\.xml$/.test(value.part)
+        &&typeof value.anchor==='string'&&value.anchor.startsWith(value.part+'#')&&identifier(value.sheet)&&identifier(value.mediaName)
+        &&Number.isInteger(value.frame)&&(value.frame as number)>0
+        &&(value.cellRange===undefined||typeof value.cellRange==='string'&&/^[A-Z]{1,3}[1-9]\d*(?::[A-Z]{1,3}[1-9]\d*)?$/.test(value.cellRange));
     return typeof value.part==='string'&&/^word\/.+\.xml$/.test(value.part)&&typeof value.anchor==='string'
         &&value.anchor.startsWith(value.part+'#')&&identifier(value.mediaName);
 }
@@ -123,15 +129,17 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
         ||!validReadingHash(registry.manifestHash))return invalid('Reading source or text version changed');
     if(!object(registry.createdBy)||!identifier(registry.createdBy.jobId)||registry.createdBy.rulesVersion!==VISUAL_READING_RULES
         ||!Number.isSafeInteger(registry.createdBy.profileRevision)||(registry.createdBy.profileRevision as number)<1)return invalid('Server reading provenance is absent');
-    if(!['PDF','DOCX','TEXT'].includes(String(registry.format))||!Array.isArray(registry.expectedUnits)
+    if(!['PDF','DOCX','TEXT','IMAGE','XLSX'].includes(String(registry.format))||!Array.isArray(registry.expectedUnits)
         ||registry.expectedUnits.length>10000||!strings(registry.issues))return invalid('Invalid reading inventory');
     if(registry.format==='PDF'&&registry.expectedUnits.length===0)return invalid('PDF page inventory is empty');
+    if(registry.format==='IMAGE'&&registry.expectedUnits.length===0)return invalid('Image frame inventory is empty');
     const ids=new Set<string>();
     for(const raw of registry.expectedUnits){
         if(!object(raw)||!identifier(raw.id)||ids.has(raw.id))return invalid('Unknown or repeated reading unit');
         ids.add(raw.id);
         const kind=raw.kind;
-        let valid=(kind==='PDF_PAGE'||kind==='DOCX_IMAGE')&&raw.status==='READ'&&validReadingHash(raw.inputHash)&&validReadingHash(raw.textHash)
+        const compatible=registry.format==='IMAGE'?kind==='IMAGE_FRAME':registry.format==='XLSX'?kind==='XLSX_IMAGE':kind!=='IMAGE_FRAME'&&kind!=='XLSX_IMAGE';
+        let valid=(kind==='PDF_PAGE'||kind==='DOCX_IMAGE'||kind==='IMAGE_FRAME'||kind==='XLSX_IMAGE')&&compatible&&raw.status==='READ'&&validReadingHash(raw.inputHash)&&validReadingHash(raw.textHash)
             &&Array.isArray(raw.locations)&&raw.locations.length>0&&raw.locations.every(l=>locationValid(l,kind))
             &&strings(raw.uncertainties)&&raw.uncertainties.length===0&&Array.isArray(raw.views)&&raw.views.length>0
             &&Array.isArray(raw.verifiedViews)&&raw.verifiedViews.length===raw.views.length;
@@ -150,7 +158,7 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
             if(proof.method!=='physical-empty'||!emptyProofValid(proof.emptyPageProof,view,Array.isArray(raw.locations)?raw.locations[0]:null))physicalEmpty=false;
         }
         if([...regions.values()].some(region=>region.physical&&region.hashes.size!==1))valid=false;
-        if(kind==='PDF_PAGE'&&!coversReadingPage(views.filter(object).map(v=>v.rect as Rect)))valid=false;
+        if(['PDF_PAGE','IMAGE_FRAME','XLSX_IMAGE'].includes(String(kind))&&!coversReadingPage(views.filter(object).map(v=>v.rect as Rect)))valid=false;
         if(raw.literalHasBody!==true&&raw.visualHasContent!==true&&!physicalEmpty)valid=false;
         if(!valid){missingUnitIds.push(raw.id);issues.push('Unverified reading unit: '+raw.id);}else verifiedUnitIds.push(raw.id);
     }
