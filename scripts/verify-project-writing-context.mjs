@@ -1,7 +1,7 @@
 import './codex-runtime/load-server.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {digest,sourceDocument,visualRegistry} from './codex-runtime/visual-reading-fixtures.mjs';
+import {digest,sourceDocument,visualRegistry,imageRegistry} from './codex-runtime/visual-reading-fixtures.mjs';
 const {loadProjectWritingContext}=await import('../src/utils/project-writing-context-server.ts');
 const {createConsultantHandler}=await import('../src/server/ai/handlers/consultant.ts');
 const owner='10000000-0000-4000-8000-000000000001',project='30000000-0000-4000-8000-000000000003';
@@ -72,4 +72,8 @@ test('a_drawing_is_supplied_as_visual_context_without_becoming_a_literal_quote',
  assert.equal(context.sources.length,0);assert.equal(context.visualContext[0].description,description);assert.equal(context.omittedCount,0);
  let prompt;await createConsultantHandler({history:async()=>[],load:async()=>context}).execute({question:'מה בתרשים?'},{projectId:project,ownerId:owner,generate:async input=>{prompt=input.text;return JSON.stringify({body:'התרשים מציג מסלול מעבר.',sourceIds:[],unknowns:[],nextActions:[]});}});
  assert.ok(prompt.includes(description));assert.match(prompt,/never a literal quotation/);
+});
+test('a saved photo contributes its verified description and actual frame to the selected question context',async()=>{
+ const description='משאבות מחוברות בצילום למסלול מעבר.',proof=imageRegistry({text:''}),saved=sourceDocument({title:'צילום משאבות.jpg',project_id:project,deleted_at:null,extracted_text:'',extracted_text_hash:digest(''),parsed_json:{source_reading:proof,source_reading_visual_descriptions:[{unitId:proof.expectedUnits[0].id,location:proof.expectedUnits[0].locations[0],text:description}]}});
+ const context=await loadProjectWritingContext(clientFor([saved]),project,owner,'מה מופיע בצילום המשאבות?');assert.deepEqual(context.sources,[]);assert.equal(context.visualContext[0].description,description);assert.equal(context.visualContext[0].location.frame,1);assert.equal(context.visualContext[0].documentId,saved.id);assert.equal(context.omittedCount,0);
 });

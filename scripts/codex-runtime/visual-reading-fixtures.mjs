@@ -24,3 +24,10 @@ export function sourceDocument(overrides={}){
 export function readingAssembly(text=literal,overrides={}){
  return {text,textHash:digest(text),verification:visualRegistry({currentTextHash:digest(text)}),units:[],visualDescriptions:[],...overrides};
 }
+export function imageRegistry({format='IMAGE',text=literal,locations=[{part:'image',anchor:'image#frame1',mediaName:'source-image',frame:1}],complete=true}={}){
+ const registry=visualRegistry({format,currentTextHash:digest(text),complete}),unit=registry.expectedUnits[0];
+ Object.assign(unit,{id:'image:fixture:frame:1',kind:format==='XLSX'?'XLSX_IMAGE':'IMAGE_FRAME',locations,textHash:digest(text),literalHasBody:Boolean(text),visualHasContent:!text,status:complete?'READ':'REQUIRES_REVIEW'});
+ unit.verifiedViews[0]={...unit.verifiedViews[0],textHash:digest(text),method:'no-numbers',confirmationHash:digest(text)};
+ if(!complete){unit.uncertainties=['Unclear source image'];registry.issues=['Unclear source image'];}
+ return registry;
+}

@@ -17,6 +17,25 @@ function descendants(node:Node,predicate:(element:Element)=>boolean):Element[]{
     return result;
 }
 const relatedPart=(part:string)=>path.posix.join(path.posix.dirname(part),'_rels',path.posix.basename(part)+'.rels');
+function harmlessPictureMetadata(list:Element):boolean {
+    if(list.namespaceURI!==artNs||list.localName!=='extLst')return false;
+    const attrs=(element:Element)=>Array.from(element.attributes).filter(attribute=>attribute.namespaceURI!=='http://www.w3.org/2000/xmlns/');
+    return children(list).every(extension=>{
+        const leaves=children(extension),leaf=leaves[0],owner=list.parentNode as Element|null;
+        if(extension.namespaceURI!==artNs||extension.localName!=='ext'||attrs(extension).some(attribute=>attribute.name!=='uri')
+            ||leaves.length!==1||children(leaf).length||(leaf.textContent||'').trim())return false;
+        const uri=(extension.getAttribute('uri')||'').toUpperCase();
+        // Creation IDs identify the element, not its pixels: MS-ODRAWXML CT_CreationId.
+        if(uri==='{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}'&&owner?.namespaceURI===drawingNs&&owner.localName==='cNvPr'
+            &&leaf.namespaceURI==='http://schemas.microsoft.com/office/drawing/2014/main'&&leaf.localName==='creationId'){
+            return attrs(leaf).every(attribute=>attribute.name==='id'&&/^\{[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\}$/i.test(attribute.value));
+        }
+        // DPI controls Office's display/compression preference; the source pixels are retained verbatim.
+        return uri==='{28A0092B-C50C-407E-A947-70E740481C1C}'&&owner?.namespaceURI===artNs&&owner.localName==='blip'
+            &&leaf.namespaceURI==='http://schemas.microsoft.com/office/drawing/2010/main'&&leaf.localName==='useLocalDpi'
+            &&attrs(leaf).length===1&&attrs(leaf)[0].name==='val'&&['0','1','true','false'].includes(leaf.getAttribute('val')||'');
+    });
+}
 function packageTarget(part:string,relationship:Relationship|undefined):string|null {
     if(!relationship||relationship.external||!relationship.target||/[\\\u0000-\u001f?#%]/u.test(relationship.target)
         ||/^[a-z][a-z\d+.-]*:/i.test(relationship.target)||relationship.target.startsWith('//'))return null;
@@ -130,9 +149,13 @@ export async function extractXlsxSource(file:Buffer):Promise<{nativeText:string;
                     const location:ReadingLocation={part,anchor:part+'#'+path.posix.basename(drawing)+':'+(++occurrence),sheet:sheet.name,mediaName:resource||link||'missing-resource',...(cellRange?{cellRange}:{})};
                     if(!resource||!/^xl\/media\/[^/]+$/.test(resource)||!imageRel?.type.endsWith('/image')){issue(location.anchor+':IMAGE_LINK_UNVERIFIED');continue;}
                     usedMedia.add(resource);
-                    const transform=descendants(object,element=>element.localName==='srcRect'&&Array.from(element.attributes).some(attribute=>Number(attribute.value)!==0)
+                    const transform=descendants(object,element=>['srcRect','fillRect'].includes(element.localName)&&Array.from(element.attributes).some(attribute=>Number(attribute.value)!==0)
                         ||element.localName==='xfrm'&&['rot','flipH','flipV'].some(name=>element.hasAttribute(name)&&!['0','false'].includes(element.getAttribute(name)||''))
-                        ||element.localName==='prstGeom'&&element.getAttribute('prst')!=='rect'||element.localName==='custGeom'||element.localName==='extLst');
+                        ||element.localName==='prstGeom'&&element.getAttribute('prst')!=='rect'||element.localName==='custGeom'
+                        ||element.namespaceURI===artNs&&(element.localName==='tile'
+                            ||['effectLst','effectDag'].includes(element.localName)&&children(element).length>0
+                            ||element.localName==='blip'&&children(element).some(child=>child.localName!=='extLst'||!harmlessPictureMetadata(child)))
+                        ||element.localName==='extLst'&&!harmlessPictureMetadata(element));
                     if(transform.length){issue(location.anchor+':IMAGE_TRANSFORM_UNVERIFIED');continue;}
                     const bytes=byPath.get(resource);if(!bytes?.length){issue(location.anchor+':IMAGE_MISSING_OR_EMPTY');continue;}
                     const hash=digest(bytes);let image=byHash.get(hash);

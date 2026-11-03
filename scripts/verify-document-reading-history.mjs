@@ -60,6 +60,12 @@ test('an_incomplete_attempt_preserves_the_previous_good_text',()=>{
  const patch=call('createReadingPatch',before,reading);
  assert.equal(patch.extracted_text,oldText);assert.equal(patch.ocr_status,'REQUIRES_REVIEW');assert.equal(patch.parsed_json.source_reading.complete,false);
 });
+test('partial Excel image reading keeps the complete new grid as a separate version without replacing the old text',()=>{
+ const before=saved(),grid='# Sheet: Quantities\n'+('Gate\t\t25\n'.repeat(30000))+'LAST_CELL_VALUE',reading=readingAssembly(grid);reading.verification.format='XLSX';reading.verification.complete=false;reading.verification.issues=['Missing embedded image'];
+ const patch=call('createReadingPatch',before,reading),after={...before,...patch};assert.equal(after.extracted_text,oldText);assert.equal(after.ocr_status,'REQUIRES_REVIEW');
+ const attempt=call('resolveReadingVersion',after,{textHash:digest(grid)});assert.equal(attempt?.text,grid,'A partial picture must not discard the complete native cell grid');assert.equal(attempt.reading.complete,false);
+ const repeated=call('createReadingPatch',after,reading);assert.equal(repeated.parsed_json.source_reading_history.length,1);assert.equal(repeated.parsed_json.owner_note,'keep');
+});
 test('assembly_retains_native_order_and_excludes_descriptions_from_quotable_text',()=>{
  const unit=readingUnit(),reply=unitResponse(unit),manifest={sourceHash,manifestHash:'2'.repeat(64),format:'DOCX',nativeText:'Before\nAfter',nativeVerification:null,units:[unit],issues:[],assembly:[{kind:'native',text:'Before\n'},{kind:'unit',unitId:unit.id},{kind:'native',text:'\nAfter'}]};
  const verified={unitId:unit.id,inputHash:'3'.repeat(64),textHash:digest(literal),text:literal,tables:[],visualDescription:'A source diagram.',uncertainties:[],complete:true,

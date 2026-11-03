@@ -81,6 +81,13 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
     const text=retainPrevious?before.text:reading.text,textHash=hash(text);
     const history=Array.isArray(parsed.source_reading_history)?[...parsed.source_reading_history]:[];
     if(before.text&&before.textHash!==textHash&&!history.some(v=>object(v)&&v.sourceHash===before.sourceHash&&v.textHash===before.textHash))history.push(before);
+    // An unresolved workbook picture must not discard its newly extracted full cell grid.
+    // Retain the previous current transcript and expose this explicitly partial attempt as a version.
+    if(retainPrevious&&reading.verification.format==='XLSX'&&reading.text&&reading.textHash!==textHash
+        &&!history.some(value=>object(value)&&value.sourceHash===reading.verification.sourceHash&&value.textHash===reading.textHash)){
+        history.push({sourceHash:reading.verification.sourceHash,textHash:reading.textHash,text:reading.text,
+            reading:reading.verification,visualDescriptions:reading.visualDescriptions});
+    }
     const changed=before.textHash!==textHash;
     return {extracted_text:text,extracted_text_hash:textHash,ocr_status:reading.verification.complete?'COMPLETED':'REQUIRES_REVIEW',processed_at:new Date().toISOString(),
         parsed_json:{...parsed,source_reading:{...reading.verification,currentTextHash:textHash},source_reading_units:reading.units,

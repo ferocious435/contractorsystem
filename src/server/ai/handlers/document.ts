@@ -10,6 +10,8 @@ import {prepareDocumentAnalysisInput,makeTextInput,type PreparedDocumentAnalysis
 import {stageDocumentReading} from './document-reading';
 import {readingAnalysisFingerprint} from '@/utils/document-reading-history';
 import {VISUAL_READING_VERSION,type OwnedSourceDocument} from '@/utils/visual-source-reading';
+import {isRasterSource} from '@/utils/raster-source-manifest';
+import {isXlsxSource} from '@/utils/xlsx-source-manifest';
 import {assessDocumentSourceReadiness} from '@/utils/document-source-readiness';
 import {preserveStableDocumentText} from '@/utils/stable-document-reading';
 import {prepareDocumentAiInput,type DocumentAiProfile} from '@/utils/document-ai-input';
@@ -60,7 +62,7 @@ export function createDocumentHandler({database=createAdminClient,download=downl
         if(document.ai_status==='VALIDATED'&&operation!=='read_source')return {result:{success:false,partial:true,alreadyValidated:true,documentId:document.id,ai_status:'VALIDATED',message:'הנתונים אושרו ידנית ונשמרו. לא בוצע ניתוח חוזר.'},effects:[]};
         const file=await download(client,document);
         if(document.content_hash&&document.content_hash!==digest(file))throw new BusinessAiError('AI_SOURCE_CHANGED',undefined,409);
-        const visual=operation==='read_source'||[document.title,document.storage_path].some(value=>/\.(?:pdf|docx)(?:$|[?#])/i.test(String(value||'')))||file.subarray(0,1024).toString('latin1').includes('%PDF-');
+        const visual=operation==='read_source'||[document.title,document.storage_path].some(value=>/\.(?:pdf|docx)(?:$|[?#])/i.test(String(value||''))||isRasterSource(file,String(value||''))||isXlsxSource(file,String(value||'')))||file.subarray(0,1024).toString('latin1').includes('%PDF-');
         const staged=visual?await stageDocumentReading({client,document,file,execution}):null;
         if(staged)document=staged.document;
         const effects=async()=>{const values=await transaction.effects();if(values.some(e=>e.type!=='DOCUMENT_ANALYSIS'||e.targetId!==document.id))throw new BusinessAiError('AI_EFFECT_INVALID');return values;};

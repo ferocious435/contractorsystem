@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';import test from 'node:test';import shar
 import {buildVisualSourceManifest} from '../src/utils/visual-source-manifest.ts';
 import {xlsxWithImages,xlsxRow} from './fixtures/xlsx-image-fixtures.mjs';
 import {digest} from './codex-runtime/visual-reading-fixtures.mjs';
+import {assembleDocumentReading} from '../src/utils/document-reading-history.ts';
 const image=()=>sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="80"><rect width="200" height="80" fill="white"/><text x="6" y="45" font-size="25">IMAGE ONLY 72</text></svg>')).png().toBuffer();
 const sheet=(name='Measured quantities',picture={name:'source.png'})=>({name,rows:[xlsxRow(1,[['A1','Gate'],['C1','25']])],pictures:[picture]});
 
@@ -51,4 +52,24 @@ test('an absolute picture retains its true anchor without inventing a cell',asyn
 });
 test('a nonrectangular picture mask is not silently certified as the whole original image',async()=>{
  const m=await buildVisualSourceManifest(xlsxWithImages([sheet()],{'source.png':await image()},{'xl/drawings/drawing1.xml':absolutePicture('ellipse')}),'masked.xlsx');assert.ok(m.issues.length,'Unsupported masks must leave an explicit gap');assert.equal(m.units.length,0);
+});
+const creationMetadata='<a:extLst><a:ext uri="{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}"><a16:creationId xmlns:a16="http://schemas.microsoft.com/office/drawing/2014/main" id="{00000000-0000-4000-8000-000000000001}"/></a:ext></a:extLst>';
+const localDpiMetadata='<a:extLst><a:ext uri="{28A0092B-C50C-407E-A947-70E740481C1C}"><a14:useLocalDpi xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main" val="0"/></a:ext></a:extLst>';
+const withMetadata=(creation,dpi='')=>absolutePicture('rect').replace('<xdr:cNvPr id="1" name="Photo"/>','<xdr:cNvPr id="1" name="Photo">'+creation+'</xdr:cNvPr>').replace('<a:blip r:embed="rIdImage1"/>','<a:blip r:embed="rIdImage1">'+dpi+'</a:blip>');
+test('normal Excel creation identifiers do not block reading the unchanged picture pixels',async()=>{
+ const png=await image(),m=await buildVisualSourceManifest(xlsxWithImages([sheet()],{'source.png':png},{'xl/drawings/drawing1.xml':withMetadata(creationMetadata)}),'identifier.xlsx');assert.deepEqual(m.issues,[]);assert.equal(m.units.length,1);assert.equal(m.units[0].views[0].sha256,digest(png));
+});
+test('local DPI metadata preserves the original pixel reading without a false transform gap',async()=>{
+ const png=await image(),m=await buildVisualSourceManifest(xlsxWithImages([sheet()],{'source.png':png},{'xl/drawings/drawing1.xml':withMetadata(creationMetadata,localDpiMetadata)}),'dpi.xlsx');assert.deepEqual(m.issues,[]);assert.equal(m.units.length,1);assert.equal(m.units[0].views[0].sha256,digest(png));
+});
+test('unknown metadata content cannot borrow the harmless creation-identifier allowance',async()=>{
+ const unknown=creationMetadata.replace('a16:creationId','a16:unknownVisualEffect'),m=await buildVisualSourceManifest(xlsxWithImages([sheet()],{'source.png':await image()},{'xl/drawings/drawing1.xml':withMetadata(unknown)}),'unknown.xlsx');assert.ok(m.issues.length);assert.equal(m.units.length,0);
+});
+test('image text is assembled on a separate line rather than inside the last native cell',async()=>{
+ const m=await buildVisualSourceManifest(xlsxWithImages([sheet()],{'source.png':await image()}),'source.xlsx'),unit=m.units[0],text='IMAGE ONLY 72',verified={unitId:unit.id,inputHash:'3'.repeat(64),textHash:digest(text),text,tables:[],visualDescription:'',uncertainties:[],complete:true,views:unit.views.map(view=>({viewId:view.id,imageHash:view.sha256,textHash:digest(text),method:'visual-double-pass',confirmationHash:digest(text)}))};
+ const result=assembleDocumentReading(m,[verified]);assert.match(result.text,/Gate\t\t25\r?\n/,'The last native cell was merged with image text');assert.match(result.text,/(?:^|\r?\n)IMAGE ONLY 72(?:\r?\n|$)/);assert.ok(result.text.startsWith(m.nativeText));
+});
+test('pixel effects, tiling and fill cropping remain unverified instead of silently reading different visible content',async()=>{
+ const normal=absolutePicture('rect'),variants=[normal.replace('<a:blip r:embed="rIdImage1"/>','<a:blip r:embed="rIdImage1"><a:lum bright="100000"/></a:blip>'),normal.replace('<a:stretch><a:fillRect/></a:stretch>','<a:tile tx="1000"/>'),normal.replace('<a:fillRect/>','<a:fillRect l="50000"/>')];
+ for(const drawing of variants){const m=await buildVisualSourceManifest(xlsxWithImages([sheet()],{'source.png':await image()},{'xl/drawings/drawing1.xml':drawing}),'effect.xlsx');assert.ok(m.issues.length,'Unrendered picture effect must leave a reading gap');assert.equal(m.units.length,0);assert.match(m.nativeText,/Gate\t\t25/);}
 });

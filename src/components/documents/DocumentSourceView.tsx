@@ -9,14 +9,10 @@ import { StatusChip } from '@/components/ui/titanium/StatusChip';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import type { ProjectDocument } from './types';
 import {assessVisualReading,VISUAL_READING_VERSION,type VisualDescription} from '@/utils/visual-source-reading';
+import {visualSourceLocationLabel} from '@/utils/visual-source-location';
 
 function wordPartLabel(part: unknown) {
-  if (typeof part !== 'string') return 'חלק במסמך';
-  if (/^word\/header\d+\.xml$/.test(part)) return 'כותרת עליונה';
-  if (/^word\/footer\d+\.xml$/.test(part)) return 'כותרת תחתונה';
-  if (part === 'word/document.xml') return 'גוף המסמך';
-  if (/^word\/(?:footnotes|endnotes|comments)\d*\.xml$/.test(part)) return 'הערות המסמך';
-  return 'חלק במסמך';
+  return visualSourceLocationLabel({part:typeof part==='string'?part:undefined});
 }
 
 function imageReviewReason(reason: unknown) {
@@ -44,6 +40,8 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
   const transcripts=(visualMatches&&Array.isArray(visual?.units)?visual.units:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'
     &&value.complete===true&&typeof value.text==='string'&&Boolean(value.text.trim())&&confirmedUnits.some(unit=>unit.id===value.unitId&&unit.textHash===value.textHash));
   const descriptions=visualDescriptions||(Array.isArray(document.parsed_json?.source_reading_visual_descriptions)?document.parsed_json.source_reading_visual_descriptions as VisualDescription[]:[]);
+  const imageSource=visual?.format==='IMAGE'||visual?.format==='XLSX';
+  const visualOnlyRead=visualMatches&&imageSource&&readiness.extractionComplete&&!readiness.hasReadableText&&descriptions.some(description=>description.text.trim());
   const docx = reading?.version === DOCX_READING_VERSION ? reading : undefined;
   const isWord = Boolean(docx) || [document.title, document.storage_path, document.file_url].some(value => /\.docx(?:$|[?#\s._()\d-])/i.test(value || ''));
   const imageHashMatches = Boolean(docx && typeof docx.sourceHash === 'string' && /^[a-f\d]{64}$/i.test(docx.sourceHash)
@@ -91,6 +89,13 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
       </>}
       {visualPartReviews.length>0&&<ul aria-label="חלקים נוספים שדורשים בדיקה">{visualPartReviews.map((part,index)=><li key={index}>{part.part} — {part.reason}</li>)}</ul>}
     </div>}
+    {imageSource&&<div role="group" aria-label="קריאת תמונות המקור">
+      {!visualMatches?<Feedback tone="warning">אימות התמונות אינו תואם לקובץ השמור</Feedback>:<>
+        <p className="ti-meta">תמונות ופריימים שקריאתם אומתה: <BidiText kind="code" value={`${confirmedUnits.length} / ${units.length}`}/></p>
+        {units.some(unit=>!verifiedUnitIds.has(String(unit.id)))&&<ul aria-label="תמונות שדורשות בדיקה">{units.filter(unit=>!verifiedUnitIds.has(String(unit.id))).map(unit=><li key={String(unit.id)}>{Array.isArray(unit.locations)?unit.locations.map(location=>visualSourceLocationLabel(location)).join(', '):'תמונה במקור'} — קריאת התמונה טרם אומתה</li>)}</ul>}
+        {Array.isArray(visual?.issues)&&visual.issues.length>0&&<Feedback tone="warning">יש חלקים נוספים בקובץ שקריאתם טרם אומתה: <BidiText kind="code" value={String(visual.issues.length)}/>. הקריאה נשארת חלקית.</Feedback>}
+      </>}
+    </div>}
     {!readiness.extractionComplete && <Feedback tone="warning">שלמות קריאת המקור טרם אומתה. אישור ידני אינו מעיד שכל העמודים נקראו.</Feedback>}
     {(pdf||isWord)&&!visual&&readiness.extractionComplete&&<Feedback tone="warning">הטקסט נקרא; תוכן התמונות והתרשימים טרם נבדק חזותית.</Feedback>}
     {readingCurrent&&(!readiness.extractionComplete||(pdf||isWord)&&!visual)&&onCompleteReading&&<Button onClick={onCompleteReading} pending={completingReading} busyLabel="קורא את המקור…">השלמת קריאת המקור</Button>}
@@ -100,11 +105,11 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
     {/* A source image is an original signed file; next/image cannot optimize private links. */}
     {/* eslint-disable-next-line @next/next/no-img-element */}
     {previewUrl && previewKind === 'image' && <img className="ti-source-image" src={previewUrl} alt={document.title || 'מסמך מקור'} />}
-    {sourceReadError ? <Feedback tone="warning"><p>{sourceReadError}</p>{onRetryRead && <Button onClick={onRetryRead} pending={retryingRead}>ניסיון נוסף</Button>}</Feedback> : fullText ? <details className="ti-source-text" open={fullText.length <= 32000}><summary>הטקסט המלא שנשמר</summary><pre>{textChunks.map((text,index)=><span className="ti-source-text__chunk" dir="auto" key={index}>{text}</span>)}</pre></details> : <Feedback>אין עדיין טקסט שמור לתצוגה. אפשר לפתוח את קובץ המקור; פתיחה אינה מפעילה ניתוח.</Feedback>}
-    {descriptions.length>0&&<section aria-label="תיאורי תרשימים ותוכן חזותי"><h4 className="ti-section-title">תיאורי תרשימים ותוכן חזותי</h4><p className="ti-meta">תיאור של מה שמופיע בתמונה; אינו ציטוט מילולי מהמסמך.</p>{descriptions.map((description,index)=><div key={index}><p className="ti-meta">{description.location?.page?`עמוד ${description.location.page}`:wordPartLabel(description.location?.part)}</p><p className="ti-copy ti-preserve-lines" dir="auto">{description.text}</p></div>)}</section>}
+    {sourceReadError ? <Feedback tone="warning"><p>{sourceReadError}</p>{onRetryRead && <Button onClick={onRetryRead} pending={retryingRead}>ניסיון נוסף</Button>}</Feedback> : fullText ? <details className="ti-source-text" open={fullText.length <= 32000}><summary>הטקסט המלא שנשמר</summary><pre>{textChunks.map((text,index)=><span className="ti-source-text__chunk" dir="auto" key={index}>{text}</span>)}</pre></details> : visualOnlyRead?<Feedback tone="info">התוכן החזותי נקרא ונשמר בתיאורים להלן. לא נמצא טקסט מילולי לתצוגה.</Feedback>:<Feedback>אין עדיין טקסט שמור לתצוגה. אפשר לפתוח את קובץ המקור; פתיחה אינה מפעילה ניתוח.</Feedback>}
+    {descriptions.length>0&&<section aria-label="תיאורי תרשימים ותוכן חזותי"><h4 className="ti-section-title">תיאורי תרשימים ותוכן חזותי</h4><p className="ti-meta">תיאור של מה שמופיע בתמונה; אינו ציטוט מילולי מהמסמך.</p>{descriptions.map((description,index)=><div key={index}><p className="ti-meta">{visualSourceLocationLabel(description.location||{})}</p><p className="ti-copy ti-preserve-lines" dir="auto">{description.text}</p></div>)}</section>}
     {transcripts.length>0&&<section aria-label="הטקסט שנקרא בתמונות"><h4 className="ti-section-title">הטקסט שנקרא בתמונות</h4>{transcripts.map(transcript=>{
-      const unit=units.find(unit=>unit.id===transcript.unitId),location=Array.isArray(unit?.locations)?unit.locations[0]:null;
-      return <details key={String(transcript.unitId)}><summary>{location?.page?`עמוד ${location.page}`:wordPartLabel(location?.part)}</summary><pre className="ti-copy ti-preserve-lines" dir="auto">{String(transcript.text)}</pre></details>;
+      const unit=units.find(unit=>unit.id===transcript.unitId),locations=Array.isArray(unit?.locations)?unit.locations:[];
+      return <details key={String(transcript.unitId)}><summary>{locations.map(location=>visualSourceLocationLabel(location)).join(', ')||'חלק במסמך'}</summary><pre className="ti-copy ti-preserve-lines" dir="auto">{String(transcript.text)}</pre></details>;
     })}</section>}
     {previewKind === 'unsupported' && <p className="ti-meta">לסוג הקובץ הזה אין תצוגה ישירה בדפדפן.</p>}
     <div className="ti-actions">{onPreview && <Button onClick={onPreview}>פתיחת המקור וסקירת הניתוח</Button>}{sourceUrl && <a className="ti-button ti-button--secondary" href={sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} aria-hidden="true" />פתיחת קובץ המקור</a>}</div>

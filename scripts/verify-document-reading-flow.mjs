@@ -11,7 +11,7 @@ import {assessDocumentSourceReadiness} from '../src/utils/document-source-readin
 import {readingAnalysisFingerprint} from '../src/utils/document-reading-history.ts';
 import {refreshWorkChangeReading} from '../src/utils/work-change-reading-server.ts';
 import {docx,paragraph} from './fixtures/docx-image-fixtures.mjs';
-import {digest,literal,sourceDocument,visualRegistry} from './codex-runtime/visual-reading-fixtures.mjs';
+import {digest,literal,sourceDocument,visualRegistry,imageRegistry} from './codex-runtime/visual-reading-fixtures.mjs';
 import {savedProfile} from './codex-runtime/queue-fixtures.mjs';
 const project=sourceDocument().project_id,id=sourceDocument().id,jobId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const job=(overrides={})=>({id:jobId,projectId:project,kind:'document_analysis',clientContextId:id,conversationId:null,state:'QUEUED',revision:1,result:null,error:null,operation:'analyze',...overrides});
@@ -88,6 +88,15 @@ test('a_verified_drawing_without_letters_can_be_analyzed_without_fabricating_lit
  assert.equal(assessDocumentSourceReadiness(row).extractionComplete,true);
  const prepared=makeTextInput(Buffer.from('source'),'verified','',{readingVerification:proof,visualDescriptions});assert.equal(prepared.extractedText,'');
  const analysis=validateDocumentAnalysis(JSON.stringify(reply()),{...prepared,title:'source.pdf'});assert.equal(analysis.full_markdown,'');assert.equal(analysis.analysis_status,'COMPLETE');
+});
+test('a verified photo description cannot supply a quotation or price for the financial result',()=>{
+ const proof=imageRegistry({text:''}),description='A construction site. The estimated work could cost 1200.',visualDescriptions=[{unitId:proof.expectedUnits[0].id,location:proof.expectedUnits[0].locations[0],text:description}],prepared=makeTextInput(Buffer.from('source'),'verified','',{readingVerification:proof,visualDescriptions});
+ const proposed=reply();proposed.financial_data={total_amount:1200,items:[{item_code:null,description:'Estimated site work',unit:null,quantity:1,unit_price_excl_vat:1200,quote:description}]};
+ const result=validateDocumentAnalysis(JSON.stringify(proposed),{...prepared,title:'site.png'});assert.equal(result.full_markdown,'');assert.equal(result.analysis_status,'COMPLETE');assert.equal(result.financial_data.total_amount,null);assert.deepEqual(result.financial_data.items,[]);
+});
+test('a long Excel source and its late image transcript are saved fully while analysis is partial',()=>{
+ const full='# Sheet: Quantities\n'+('Gate\t\t25\n'.repeat(40000))+'LATE_IMAGE_TEXT',locations=[{part:'xl/worksheets/sheet1.xml',anchor:'xl/worksheets/sheet1.xml#drawing1:1#frame1',mediaName:'xl/media/image.png',sheet:'Quantities',cellRange:'A40001:C40003',frame:1}],proof=imageRegistry({format:'XLSX',text:full,locations}),prepared=makeTextInput(Buffer.from('source'),'verified',full,{readingVerification:proof});
+ assert.equal(prepared.extractedText,full);assert.equal(prepared.wasTruncated,true);assert.ok(!prepared.aiText.includes('LATE_IMAGE_TEXT'));const result=validateDocumentAnalysis(JSON.stringify(reply()),{...prepared,title:'source.xlsx'});assert.equal(result.full_markdown,full);assert.equal(result.analysis_status,'PARTIAL');
 });
 test('long_verified_source_is_preserved_exactly_while_limited_analysis_stays_partial',()=>{
  const full='  Exact source line.\n'.repeat(9000)+'\n ',proof=visualRegistry({currentTextHash:digest(full)});

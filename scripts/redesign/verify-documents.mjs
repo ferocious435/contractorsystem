@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {documentFixture,documentStates,completePdfReading} from './fixtures.mjs';
-import {sourceDocument,visualRegistry,digest} from '../codex-runtime/visual-reading-fixtures.mjs';
+import {sourceDocument,visualRegistry,imageRegistry,digest} from '../codex-runtime/visual-reading-fixtures.mjs';
 const {DocumentListRow}=await import('../../src/components/documents/DocumentListRow.tsx');
 const {DocumentsCatalogView,selectCatalogDocuments}=await import('../../src/components/documents/DocumentsCatalogView.tsx');
 const {DocumentSourceView}=await import('../../src/components/documents/DocumentSourceView.tsx');
@@ -17,6 +17,21 @@ const rowProps={selected:false,processing:false,analysisAvailable:true,onSelect:
 const imageReading=(part,index,overrides={})=>({part,anchor:`${part}#rId${index}:${index}`,mediaName:`word/media/image${index}.png`,sha256:'b'.repeat(64),status:'READ',confidence:92,numericReviewRequired:false,reason:null,...overrides});
 const embeddedImageDocument=(overrides={})=>documentFixture('embedded-images',{title:'הוראות.docx',content_hash:'a'.repeat(64),ocr_status:'COMPLETED',extracted_text:'הוראה שלמה עם תמונות בכותרת המסמך.',parsed_json:{source_reading:{version:'docx-image-coverage-v1',complete:false,sourceHash:'a'.repeat(64),expectedImageReferences:3,images:[imageReading('word/header1.xml',1),imageReading('word/header1.xml',2),imageReading('word/header1.xml',3,{status:'REQUIRES_REVIEW',confidence:68,numericReviewRequired:true,reason:'OCR_NUMBERS_REQUIRE_REVIEW'})],issues:[]}},...overrides});
 const visibleText=html=>html.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+
+test('an Excel image displays every sheet and cell binding instead of a generic Word part',()=>{
+ const locations=[{part:'xl/worksheets/sheet1.xml',anchor:'xl/worksheets/sheet1.xml#drawing1:1#frame1',mediaName:'xl/media/photo.png',sheet:'Measured quantities',cellRange:'A2:C4',frame:1},{part:'xl/worksheets/sheet2.xml',anchor:'xl/worksheets/sheet2.xml#drawing2:1#frame1',mediaName:'xl/media/photo.png',sheet:'Agreed prices',cellRange:'B5:D7',frame:1}],registry=imageRegistry({format:'XLSX',locations});
+ registry.units=[{unitId:registry.expectedUnits[0].id,complete:true,text:'יש להשאיר את המעבר פתוח.',textHash:registry.currentTextHash}];
+ const document=sourceDocument({title:'source.xlsx',parsed_json:{source_reading:registry}}),text=visibleText(render(DocumentSourceView,{document,fullText:document.extracted_text}));
+ for(const value of ['Measured quantities','A2:C4','Agreed prices','B5:D7'])assert.ok(text.includes(value),'Missing actual image location '+value);
+});
+test('an unread Excel image shows its actual sheet and cell as a reading gap',()=>{
+ const locations=[{part:'xl/worksheets/sheet1.xml',anchor:'xl/worksheets/sheet1.xml#drawing1:1#frame1',mediaName:'xl/media/photo.png',sheet:'Site photo',cellRange:'A2:C4',frame:1}],registry=imageRegistry({format:'XLSX',locations,complete:false});
+ const document=sourceDocument({title:'source.xlsx',parsed_json:{source_reading:registry}}),text=visibleText(render(DocumentSourceView,{document,fullText:document.extracted_text}));assert.ok(text.includes('Site photo'));assert.ok(text.includes('A2:C4'));assert.match(text,/טרם אומתה/u);
+});
+test('a completely read photo without letters shows the visual result without a missing-text error',()=>{
+ const registry=imageRegistry({text:''}),document=sourceDocument({title:'site.png',extracted_text:'',extracted_text_hash:digest(''),parsed_json:{source_reading:registry,source_reading_visual_descriptions:[{unitId:registry.expectedUnits[0].id,location:registry.expectedUnits[0].locations[0],text:'A construction site with an open route.'}]}});
+ const text=visibleText(render(DocumentSourceView,{document,fullText:''}));assert.ok(text.includes('A construction site with an open route.'));assert.ok(!text.includes('אין עדיין טקסט שמור'));assert.ok(text.includes('1 / 1'));assert.match(text,/אינו ציטוט מילולי/u);
+});
 
 test('legacy physical PDF coverage still offers visual source reading',()=>{
  const document=documentFixture('physical-only',{title:'physical.pdf',ocr_status:'COMPLETED',extracted_text:'Complete native paragraph.',parsed_json:{source_reading:completePdfReading}});
