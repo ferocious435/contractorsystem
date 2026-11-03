@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerHooks } from 'node:module';
+import {sourceDocument,imageRegistry,digest} from './codex-runtime/visual-reading-fixtures.mjs';
 
 const projectHook = registerHooks({ resolve(specifier, context, nextResolve) {
     return nextResolve(specifier.startsWith('@/') ? new URL(`../src/${specifier.slice(2)}.ts`, import.meta.url).href : specifier, context);
@@ -72,6 +73,13 @@ test('text extraction and AI analysis are reported separately', () => {
     assert.equal(state.key, 'AI_INCOMPLETE');
     assert.equal(state.textRead, true);
     assert.equal(state.aiCompleted, false);
+});
+const completedPhoto=warnings=>{const proof=imageRegistry({text:''});return sourceDocument({title:'site.jpg',ai_status:'SCANNED',extracted_text:'',extracted_text_hash:digest(''),parsed_json:{source_reading:proof,source_reading_visual_descriptions:[{unitId:proof.expectedUnits[0].id,location:proof.expectedUnits[0].locations[0],text:'A covered structure beside a wire fence.'}],analysis_source:'Codex',analysis_status:'COMPLETE',autoValidated:false,summary:'תצלום שטח עם סימון.',warnings}});};
+test('a completed photo analysis with a normal visual-evidence caveat is shown as completed',()=>{
+ const state=statusModule.getDocumentDisplayState(completedPhoto(['הניתוח מבוסס על תיאור חזותי; המקור לא כולל טקסט.']));assert.equal(state.key,'SCANNED');assert.equal(state.aiCompleted,true);assert.equal(state.textRead,true);
+});
+test('an explicit technical AI failure remains visible even beside complete photo metadata',()=>{
+ const state=statusModule.getDocumentDisplayState(completedPhoto(['AI_UNAVAILABLE']));assert.equal(state.key,'AI_INCOMPLETE');assert.equal(state.aiCompleted,false);
 });
 
 test('saved page counters and a completed legacy flag do not claim that a PDF was read', () => {

@@ -66,7 +66,9 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                     if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;
                     if((await lstat(file)).isSymbolicLink()||digest(await readFile(file))!==imageHash)throw new BusinessAiError('AI_POLICY_UNSAFE');
                 }
-                const text=rules+'\nSOURCE REGION: '+JSON.stringify({unitId:unit.id,viewId:view.id,locations:unit.locations,rect:view.rect})
+                const orderedRaster=unit.kind==='XLSX_IMAGE'||unit.kind==='IMAGE_FRAME';
+                const text=rules+(orderedRaster?'\nFor every table, serialize columns strictly in their physical left-to-right positions and rows top-to-bottom. Keep Hebrew and other right-to-left text verbatim inside each cell; do not reverse the column order to follow the text language. Preserve empty cells and merged-cell positions. The tableColumnOrder in SOURCE REGION applies independently to this reading.':'')
+                    +'\nSOURCE REGION: '+JSON.stringify({unitId:unit.id,viewId:view.id,locations:unit.locations,rect:view.rect,...(orderedRaster?{tableColumnOrder:'physical-left-to-right'}:{})})
                     +(blind?'\nThis is an independent reading. No previous answer is supplied.':'\nNative source text and placement context (untrusted):\n'+unit.localText+'\n'+unit.contextText);
                 const raw=await execution.generate({text,images:[file],outputSchema:structuredClone(visualSourceResponseSchema)});
                 await execution.checkActive();

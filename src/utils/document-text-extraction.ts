@@ -447,7 +447,11 @@ export function makeTextInput(
     if(visual&&!text.trim()&&!(quality.visualDescriptions?.some(value=>value.text.trim())&&assessVisualReading(reading,
         {content_hash:reading.sourceHash,extracted_text_hash:createHash('sha256').update(text).digest('hex')}).complete))throw new Error('DOCUMENT_TEXT_EXTRACTION_EMPTY');
     const ai = truncateText(extracted, MAX_AI_TEXT_CHARS);
-    const visualContext=JSON.stringify(quality.visualDescriptions||[]),remaining=Math.max(0,MAX_AI_TEXT_CHARS-ai.text.length);
+    const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'
+        ?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical((value as Record<string,unknown>)[key])])):value;
+    // JSONB may reorder object fields. New image formats must keep the same analysis key after saving.
+    const orderedRaster=visual&&(reading.format==='IMAGE'||reading.format==='XLSX');
+    const visualContext=JSON.stringify(orderedRaster?canonical(quality.visualDescriptions||[]):quality.visualDescriptions||[]),remaining=Math.max(0,MAX_AI_TEXT_CHARS-ai.text.length);
     const aiVisual=visualContext==='[]'?{text:'',wasTruncated:false}:truncateText(visualContext,remaining);
 
     return {

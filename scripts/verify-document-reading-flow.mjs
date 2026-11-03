@@ -109,6 +109,11 @@ test('database_key_order_and_job_provenance_do_not_force_a_second_analysis',()=>
  assert.equal(readingAnalysisFingerprint(proof),readingAnalysisFingerprint(roundtrip));roundtrip.expectedUnits[0].textHash='9'.repeat(64);
  assert.notEqual(readingAnalysisFingerprint(proof),readingAnalysisFingerprint(roundtrip));
 });
+test('saving a photo description with reordered JSON fields preserves its analysis cache input',()=>{
+ const proof=imageRegistry({text:''}),visualDescriptions=[{unitId:proof.expectedUnits[0].id,location:{part:'image',anchor:'image#frame1',mediaName:'source-image',frame:1},text:'A covered structure beside a wire fence.'}],reorder=value=>Array.isArray(value)?value.map(reorder):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).reverse().map(([key,child])=>[key,reorder(child)])):value;
+ const first=makeTextInput(Buffer.from('source'),'verified','',{readingVerification:proof,visualDescriptions}),restored=makeTextInput(Buffer.from('source'),'verified','',{readingVerification:reorder(proof),visualDescriptions:reorder(visualDescriptions)});
+ assert.equal(first.aiVisualContext,restored.aiVisualContext,'Database field ordering must not change the unchanged photo analysis input');assert.deepEqual(JSON.parse(first.aiVisualContext),visualDescriptions);
+});
 test('work_change_local_refresh_retains_complete_and_partial_visual_readings_without_io',async()=>{
  for(const complete of [true,false]){
   const row=sourceDocument();row.parsed_json.source_reading.complete=complete;if(!complete){row.parsed_json.source_reading.issues=['Unclear source'];row.ocr_status='REQUIRES_REVIEW';}

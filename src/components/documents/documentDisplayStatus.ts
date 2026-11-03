@@ -1,6 +1,7 @@
 import type { ProjectDocument } from './types';
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
 import type {JobDto} from '@/server/ai/contracts';
+import {VISUAL_READING_VERSION} from '@/utils/visual-source-reading';
 
 export function documentJobStatusText(job:JobDto):string {
     const reading=job.progress?.phase==='reading'||job.operation==='read_source';
@@ -28,14 +29,16 @@ export interface DocumentDisplayState {
 }
 
 const AI_FAILURE_PATTERN = /AI_|GEMINI|QUOTA|RATE.?LIMIT|RESOURCE_EXHAUSTED|TOO MANY REQUESTS|ניתוח.*לא|לא.*הושלם/i;
+const AI_TECHNICAL_FAILURE_PATTERN = /AI_|GEMINI|QUOTA|RATE.?LIMIT|RESOURCE_EXHAUSTED|TOO MANY REQUESTS/i;
 
-function warningSignalsAiFailure(warning: unknown) {
-    if (typeof warning === 'string') return AI_FAILURE_PATTERN.test(warning);
+function warningSignalsAiFailure(warning: unknown, narrative = true) {
+    const pattern=narrative?AI_FAILURE_PATTERN:AI_TECHNICAL_FAILURE_PATTERN;
+    if (typeof warning === 'string') return pattern.test(warning);
     if (!warning || typeof warning !== 'object' || Array.isArray(warning)) return false;
 
     const record = warning as Record<string, unknown>;
     return [record.code, record.message, record.technical_message]
-        .some((value) => typeof value === 'string' && AI_FAILURE_PATTERN.test(value));
+        .some((value) => typeof value === 'string' && pattern.test(value));
 }
 
 export function hasIncompleteAiAnalysis(doc: ProjectDocument) {
@@ -47,6 +50,10 @@ export function hasIncompleteAiAnalysis(doc: ProjectDocument) {
     const analysisStatus = String(parsed.analysis_status || '').toUpperCase();
     const summary = String(parsed.summary || '');
     const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
+    const reading=parsed.source_reading&&typeof parsed.source_reading==='object'&&!Array.isArray(parsed.source_reading)
+        ?parsed.source_reading as Record<string,unknown>:null;
+    const structuredImageComplete=Boolean(analysisSource==='codex'&&analysisStatus==='COMPLETE'&&parsed.autoValidated===false
+        &&reading?.version===VISUAL_READING_VERSION&&['IMAGE','XLSX'].includes(String(reading.format))&&assessDocumentSourceReadiness(doc).extractionComplete);
 
     return Boolean(
         parsed.system_error
@@ -58,7 +65,7 @@ export function hasIncompleteAiAnalysis(doc: ProjectDocument) {
         || analysisStatus.includes('AI_PENDING')
         || analysisSource.includes('fallback')
         || summary.includes('סיווג לפי שם הקובץ')
-        || warnings.some(warningSignalsAiFailure)
+        || warnings.some(warning=>warningSignalsAiFailure(warning,!structuredImageComplete))
     );
 }
 

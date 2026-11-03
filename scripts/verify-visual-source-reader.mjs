@@ -27,6 +27,16 @@ test('second_numeric_read_is_blind',async()=>fixture(async()=>{
  const result=await read(manifest([value]),scope,execution(async input=>{calls.push(input);return JSON.stringify(unitResponse(value,{text:'Quantity '+token}));}));
  assert.equal(calls.length,2);assert.equal(calls[1].text.includes(token),false);assert.equal(result.units[0].views[0].method,'visual-double-pass');assert.equal(result.units[0].complete,true);
 }));
+for(const [kind,format,locations]of [
+ ['XLSX_IMAGE','XLSX',[{part:'xl/worksheets/sheet1.xml',anchor:'xl/worksheets/sheet1.xml#drawing1:1#frame1',mediaName:'xl/media/table.png',sheet:'Road quantities',cellRange:'A2:C8',frame:1}]],
+ ['IMAGE_FRAME','IMAGE',[{part:'image',anchor:'image#frame1',mediaName:'source-image',frame:1}]],
+])test(kind+'_both_independent_table_requests_fix_the_same_physical_column_order',async()=>fixture(async()=>{
+ const value=await unit('image:table',{kind,locations,localText:'',contextText:''}),calls=[];
+ const result=await read({...manifest([value]),format},scope,execution(async input=>{calls.push(input);return JSON.stringify(unitResponse(value,{text:'טבלת שטחי חיצים',tables:[[['שטח','סוג חץ','לוח תמרורים'],['3.49','חץ משולש','13']]]}));}));
+ assert.equal(result.units[0].complete,true);assert.equal(calls.length,2);assert.equal(result.units[0].views[0].method,'visual-double-pass');
+ for(const input of calls){const region=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);assert.equal(region.tableColumnOrder,'physical-left-to-right','Independent table readings need the same coordinate convention');}
+ assert.ok(!calls[1].text.includes('3.49'),'The blind confirmation must not receive the first numeric answer');
+}));
 test('unsupported_profile_preserves_saved_reading',async()=>fixture(async root=>{
  const before=sourceDocument(),copy=structuredClone(before),value=await unit();
  await assert.rejects(()=>read(manifest([value]),scope,execution(async()=>{throw new BusinessAiError('AI_INPUT_UNSUPPORTED');})),error=>error.code==='AI_INPUT_UNSUPPORTED');
