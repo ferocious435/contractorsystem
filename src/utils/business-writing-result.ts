@@ -1,13 +1,16 @@
 import {BusinessAiError,record,type JsonValue} from '@/server/ai/contracts';
 import {isLetterDraftSnapshot} from './letter-snapshot';
 import type {LetterDraftSnapshot,LetterSourceRef} from './letter-draft-types';
-export interface WritingFacts {kind:'letter'|'consultant';projectName:string;userText:string;sources:Array<LetterSourceRef&{sourceId:string}>;payload?:Record<string,unknown>;}
+export interface WritingFacts {kind:'letter'|'consultant';projectName:string;userText:string;sources:Array<LetterSourceRef&{sourceId:string}>;unverifiedSourceLabels?:string[];payload?:Record<string,unknown>;}
 export interface WritingResult {body:string;sourceIds:string[];unknowns?:string[];nextActions?:string[];}
 const invalid=(code='AI_WRITING_INVALID')=>new BusinessAiError(code,'התשובה כוללת פרט שלא אומת. הטקסט הקודם נשמר.',422);
 const numbers=(text:string)=>text.normalize('NFKC').match(/\p{N}+(?:[.,/:\-]\p{N}+)*/gu)??[];
 function checkedBody(value:unknown,facts:WritingFacts):string {
     if(typeof value!=='string'||!value.trim()||value.length>30000)throw invalid();
-    const evidence=[facts.userText,facts.projectName,...facts.sources.map(source=>source.quote??'')].join('\n'),allowed=new Set(numbers(evidence));
+    const evidence=[facts.userText,facts.projectName,...facts.sources.map(source=>source.quote??'')].join('\n');
+    // An unread filename may identify a reading gap; it supplies no quote or financial evidence.
+    const labels=facts.kind==='consultant'?facts.unverifiedSourceLabels??[]:[];
+    const allowed=new Set(numbers([evidence,...labels].join('\n')));
     const factualText=value.replace(/^\s*\d{1,3}[.)]\s+/gm,'');
     if(numbers(factualText).some(number=>!allowed.has(number)))throw invalid('AI_FACT_UNVERIFIED');
     // Dates/codes from the input are allowed. Financial figures are rendered from the server snapshot.

@@ -17,7 +17,7 @@ export async function ownedWritingProject(client: SupabaseClient, projectId: str
 export interface ProjectWritingContext {
     project: {id: string; name: string};
     sources: Array<LetterSourceRef & {sourceId: string}>;
-    unverified: Array<{documentId: string; reason: string}>;
+    unverified: Array<{documentId: string; title?: string | null; reason: string}>;
     money: {scope: 'PROJECT'; baseNet: number | null; variations: IndividualPricingSummary};
     omittedCount: number;
     visualContext?:Array<{documentId:string;title:string|null;textHash:string;description:string;location:ReadingLocation}>;
@@ -81,7 +81,7 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         const label = document.title ? document.title + ' — ' : '';
         if (!readiness.canCompare) {
             const reasons = {UNREADABLE: 'לא נקרא תוכן מהימן', EXTRACTION_INCOMPLETE: 'קריאת המקור לא הושלמה', DRAFT: 'מסמך מסומן כטיוטה', FRAGMENT: 'המקור מסומן כקטע בלבד'};
-            unverified.push({documentId: document.id, reason: label + (reasons[readiness.status as keyof typeof reasons] || 'מצב המקור דורש בדיקה')}); return [];
+            unverified.push({documentId: document.id, title: document.title || null, reason: label + (reasons[readiness.status as keyof typeof reasons] || 'מצב המקור דורש בדיקה')}); return [];
         }
         let limited = false;
         const excerpts = queries.flatMap(({query, weights}, priority) => {
@@ -89,7 +89,7 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
             if (selection.limitations.some(reason => reason !== 'no_subject_match')) limited = true;
             return selection.source_anchors.map((anchor, part) => ({document, anchor, part, priority, score: selection.relevance_score || 0}));
         });
-        if (limited) unverified.push({documentId: document.id, reason: label + 'נבחר קטע מוגבל; יש לבדוק את ההקשר וההפניות המלאים'});
+        if (limited) unverified.push({documentId: document.id, title: document.title || null, reason: label + 'נבחר קטע מוגבל; יש לבדוק את ההקשר וההפניות המלאים'});
         return excerpts;
     }).sort((a, b) => a.priority - b.priority || a.part - b.part || b.score - a.score || a.document.id.localeCompare(b.document.id));
     const sources: ProjectWritingContext['sources'] = []; const seen = new Set<string>(); let characters = 0;
@@ -107,7 +107,7 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         const relevant=sources.some(source=>source.documentId===document.id)||queries.some(({query,weights})=>
             selectContractContext({id:document.id,extracted_text:description.text},query,2400,weights).source_anchors.length>0);
         if(!relevant)continue;
-        if(visualContext.length>=32||visualCharacters+description.text.length>8000){unverified.push({documentId:document.id,reason:'לא כל תיאורי התרשימים נכללו בהקשר שנבחר'});continue;}
+        if(visualContext.length>=32||visualCharacters+description.text.length>8000){unverified.push({documentId:document.id,title:document.title||null,reason:'לא כל תיאורי התרשימים נכללו בהקשר שנבחר'});continue;}
         visualContext.push({documentId:document.id,title:document.title||null,textHash:current.get(document.id)!.textHash,description:description.text,location:description.location});visualCharacters+=description.text.length;
     }
     const traced = rows.filter(row => isTrustedBaseContractRow(row as LedgerLikeRow));

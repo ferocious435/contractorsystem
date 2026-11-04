@@ -37,10 +37,11 @@ test('different dated sources for the subject are retained instead of six fragme
  assert.equal(context.omittedCount,0);
 });
 test('an explicit draft and a PDF with an unread page remain reading gaps rather than verified sources',async()=>{
- const incomplete={...doc('partial','מת״מ: אישור מותנה.','פרוטוקול.pdf'),parsed_json:{source_reading:{version:'page-coverage-v1',complete:false,totalPages:2,readPages:[1],unreadablePages:[2]}}};
+ const incomplete={...doc('partial','מת״מ: אישור מותנה.','נספח 15.1.25 (002).pdf'),parsed_json:{source_reading:{version:'page-coverage-v1',complete:false,totalPages:2,readPages:[1],unreadablePages:[2]}}};
  const context=await loadProjectWritingContext(clientFor([doc('draft','טיוטה\nמת״מ: אישור.'),incomplete]),project,owner,'מה מצב מת״מ?');
  assert.equal(context.sources.length,0);
  assert.deepEqual(context.unverified.map(row=>row.documentId).sort(),['draft','partial']);
+ assert.equal(context.unverified.find(row=>row.documentId==='partial').title,incomplete.title);
 });
 test('a new consultant subject keeps its detailed condition despite earlier questions on another subject',async()=>{
  const oldQuestion='מה מתועד במסמך החפיפה על חדרי תאורה, תיאום תכנון התאורה, מיקומי התאורה והתוכנית האחרונה?';

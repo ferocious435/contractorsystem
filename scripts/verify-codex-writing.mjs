@@ -32,6 +32,24 @@ test('a rejected consultant fact retains its exact untrusted response and suppli
  const directory=path.join(writingRuntime,'ContractorSystem/ai-runtime/jobs',job.id);assert.ok(existsSync(directory),'A rejected answer must keep its source-bound diagnostic');const files=(await fs.readdir(directory)).filter(name=>name.startsWith('consultant-response-')&&name.endsWith('.json'));assert.equal(files.length,1);
  const saved=JSON.parse(await fs.readFile(path.join(directory,files[0]),'utf8'));assert.equal(saved.response,raw);assert.equal(saved.jobId,job.id);assert.equal(saved.ownerId,ownerId);assert.equal(saved.projectId,projectId);assert.equal(saved.acceptedAsEvidence,false);assert.ok(saved.input.text.includes(question));assert.ok(saved.input.text.includes(sources[0].quote));assert.equal(saved.profileRevision,savedProfile.revision);
 });
+
+test('a consultant can identify an unread dated version without promoting it to a verified source',async()=>{
+ const body='קריאת נספח 15.1.25 והקובץ המסומן (002) לא הושלמה.',handler=consultants.createConsultantHandler({load:async execution=>({project:{id:execution.projectId,name:'פרויקט'},sources:[sources[0]],unverified:[{documentId:'unread',title:'נספח 15.1.25 (002).docx',reason:'נספח 15.1.25 (002).docx — קריאת המקור לא הושלמה'}],money:{scope:'PROJECT',baseNet:null,variations:summarizeIndividualPricing([])},omittedCount:0}),history:async()=>[]});
+ const result=await handler.execute({question:'מה חסר להשלמת בדיקת הגרסאות?'},{projectId,ownerId,generate:async()=>JSON.stringify({body,sourceIds:['S1'],unknowns:['נדרש התוכן המלא של נספח 15.1.25 ושל הקובץ (002).'],nextActions:[]})});
+ assert.ok(result.result.response.includes(body));assert.deepEqual(result.result.sourceIds,['S1']);assert.deepEqual(result.effects,[]);
+});
+
+test('unread file labels cannot validate an invented quantity, payment, quotation or source identifier',()=>{
+ const context={kind:'consultant',projectName:'פרויקט',userText:'בדוק את הגרסאות.',sources:[sources[0]],unverifiedSourceLabels:['נספח 15.1 (002).docx','טיוטת אישור לביצוע.docx']};
+ for(const value of [
+  {body:'יש לבצע עבודה במגרש 9999.',sourceIds:['S1'],code:'AI_FACT_UNVERIFIED'},
+  {body:'יש לשלם 15.1 ₪.',sourceIds:['S1'],code:'AI_AMOUNT_UNVERIFIED'},
+  {body:'יש לשלם 002 ₪.',sourceIds:['S1'],code:'AI_AMOUNT_UNVERIFIED'},
+  {body:'נכתב במקור: "אישור לביצוע".',sourceIds:['S1'],code:'AI_QUOTE_UNVERIFIED'},
+  {body:'קריאת הקובץ (002) לא הושלמה.',sourceIds:['unread'],code:'AI_SOURCE_UNVERIFIED'},
+ ]){const {code,...result}=value;assert.throws(()=>writing.validateWritingResult(JSON.stringify({...result,unknowns:[],nextActions:[]}),context),error=>error.code===code);}
+ assert.throws(()=>writing.validateWritingResult(JSON.stringify({body:'נדרש בירור על הקובץ (002).',sourceIds:[]}),{...context,kind:'letter'}),error=>error.code==='AI_FACT_UNVERIFIED');
+});
 test('a date explicitly supplied by the user is allowed in natural letter prose',()=>{
   const result=validate({body:'שלום, נבקש לתאם את העבודה ליום 15.11.2026. נשמח לאישורכם.',sourceIds:['S1']});assert.ok(result.body.includes('15.11.2026'));
 });
