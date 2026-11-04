@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {LetterDraftSession} from '../src/components/features/smart-letter/letterDraftSession.ts';
 import {letterDraftSnapshot,letterDraftProject} from './redesign/fixtures.mjs';
 import {queueFixture,savedProfile,projectId} from './codex-runtime/queue-fixtures.mjs';
@@ -15,7 +18,20 @@ const sources=Array.from({length:7},(_,index)=>({sourceId:'S'+(index+1),document
 const snapshot=structuredClone(letterDraftSnapshot);snapshot.items[0].sources=sources;
 const payload={letterType:'general',recipient:'למנהל הפרויקט',subject:'תיאום עבודה',keyPoints:'נא לתאם את המועד 15.11.2026 לפי התכנית.',tone:'friendly',itemIds:snapshot.items.map(item=>item.ledgerItemId)};
 const facts={kind:'letter',projectName:'פרויקט סינתטי',userText:payload.subject+'\n'+payload.keyPoints,sources};
+const priorAppData=process.env.LOCALAPPDATA,writingRuntime=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-writing-audit-'));
+process.env.LOCALAPPDATA=writingRuntime;
+test.after(async()=>{if(priorAppData===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=priorAppData;assert.ok(path.resolve(writingRuntime).startsWith(path.resolve(os.tmpdir())+path.sep));await fs.rm(writingRuntime,{recursive:true,force:true});});
 function validate(raw,allowed=facts){assert.equal(typeof writing.validateWritingResult,'function','Business writing result validation is missing');return writing.validateWritingResult(JSON.stringify(raw),allowed,snapshot);}
+
+test('a rejected consultant fact retains its exact untrusted response and supplied source context',async()=>{
+ const raw=JSON.stringify({body:'העבודה מתייחסת למגרש 9999.',sourceIds:['S1'],unknowns:[],nextActions:[]});
+ const fx=queueFixture({onGenerate:async()=>raw}),handler=consultants.createConsultantHandler({load:async execution=>({project:{id:execution.projectId,name:'פרויקט סינתטי'},sources:[sources[0]],unverified:[],money:{scope:'PROJECT',baseNet:null,variations:summarizeIndividualPricing([])},omittedCount:0}),history:async()=>[]});
+ const question='בדוק את המקור בלי להוסיף מספר מגרש.',job=await fx.store.enqueue(ownerId,projectId,'consultant',{question},'rejected-fact-audit',savedProfile,{conversationId:letterDraftProject,clientContextId:letterDraftProject});
+ await createAiWorker({store:fx.store,client:fx.client,handlerFor:()=>handler,clock:fx.clock,startedAt:0}).run();
+ assert.equal(fx.rows.get(job.id).state,'FAILED');assert.equal(fx.rows.get(job.id).error.code,'AI_FACT_UNVERIFIED');assert.equal(fx.rows.get(job.id).result,null);assert.equal(fx.modelTurns,1);
+ const directory=path.join(writingRuntime,'ContractorSystem/ai-runtime/jobs',job.id);assert.ok(existsSync(directory),'A rejected answer must keep its source-bound diagnostic');const files=(await fs.readdir(directory)).filter(name=>name.startsWith('consultant-response-')&&name.endsWith('.json'));assert.equal(files.length,1);
+ const saved=JSON.parse(await fs.readFile(path.join(directory,files[0]),'utf8'));assert.equal(saved.response,raw);assert.equal(saved.jobId,job.id);assert.equal(saved.ownerId,ownerId);assert.equal(saved.projectId,projectId);assert.equal(saved.acceptedAsEvidence,false);assert.ok(saved.input.text.includes(question));assert.ok(saved.input.text.includes(sources[0].quote));assert.equal(saved.profileRevision,savedProfile.revision);
+});
 test('a date explicitly supplied by the user is allowed in natural letter prose',()=>{
   const result=validate({body:'שלום, נבקש לתאם את העבודה ליום 15.11.2026. נשמח לאישורכם.',sourceIds:['S1']});assert.ok(result.body.includes('15.11.2026'));
 });

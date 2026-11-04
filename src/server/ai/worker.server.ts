@@ -5,6 +5,7 @@ import {inspectRuntimeProfile} from './profile.server';
 import {getAiJobStore,type AiJobRecord,type AiJobStore} from './jobs.server';
 import {getCodexClient,type CodexClient} from './codex-client.server';
 import {getAiHandler} from './handlers/index';
+import {retainConsultantResponse} from './consultant-response-log.server';
 interface WorkerClock {now():number;setTimeout(callback:()=>void,ms:number):unknown;clearTimeout(timer:unknown):void;}
 interface WorkerOptions {store:AiJobStore;client:Pick<CodexClient,'runTurn'>;handlerFor:(kind:AiJobKind)=>AiJobHandler|null;clock?:WorkerClock;startedAt?:number;workerId?:string;inspectProfile?:(owner:string)=>Promise<RuntimeProfile|null>;}
 const executionState=globalThis as typeof globalThis&{contractorAiExecutions?:WeakSet<object>};
@@ -50,7 +51,7 @@ export function createAiWorker(options:WorkerOptions) {
         let generation:Promise<unknown>=Promise.resolve();
         const execution:AiExecutionContext=Object.freeze({jobId:job.id,ownerId:job.ownerId,projectId:job.projectId,profile:Object.freeze({...job.profile}),signal:controller.signal,checkActive,
             async reportProgress(progress:DocumentJobProgress){await checkActive();await available(()=>options.store.reportProgress(job.id,job.leaseToken,progress));await checkActive();},
-            generate(input:AiTurnInput):Promise<string>{const next=generation.then(async()=>{await checkActive();const text=await options.client.runTurn(input,execution.profile,controller.signal);await checkActive();return text;});generation=next.catch(()=>{});return next;}});
+            generate(input:AiTurnInput):Promise<string>{const next=generation.then(async()=>{await checkActive();const text=await options.client.runTurn(input,execution.profile,controller.signal);await checkActive();if(job.kind==='consultant')await retainConsultantResponse(job,input,text);return text;});generation=next.catch(()=>{});return next;}});
         trusted.add(execution);
         try{
             if(job.profile.ownerId!==job.ownerId)throw new BusinessAiError('AI_PROFILE_INVALID');
