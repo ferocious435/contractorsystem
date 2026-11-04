@@ -77,6 +77,15 @@ test('an_incomplete_attempt_preserves_the_previous_good_text',()=>{
  const patch=call('createReadingPatch',before,reading);
  assert.equal(patch.extracted_text,oldText);assert.equal(patch.ocr_status,'REQUIRES_REVIEW');assert.equal(patch.parsed_json.source_reading.complete,false);
 });
+
+test('a_partial_Word_reading_retains_its_new_full_assembly_without_promoting_it_to_complete',()=>{
+ const before=saved(),text='Newly assembled source photograph text.\n'.repeat(9000)+'LAST SOURCE IMAGE',reading=readingAssembly(text);
+ Object.assign(reading.verification,{format:'DOCX',complete:false,nativeComplete:false,issues:['word/document.xml:UNSUPPORTED_PICT']});
+ const patch=call('createReadingPatch',before,reading),after={...before,...patch},version=call('resolveReadingVersion',after,{textHash:digest(text)});
+ assert.equal(after.extracted_text,oldText);assert.equal(after.ocr_status,'REQUIRES_REVIEW');assert.equal(after.parsed_json.source_reading.complete,false);
+ assert.equal(version?.text,text,'A partial Word pass must not discard the newly assembled source text');assert.equal(version.reading.complete,false);
+ assert.equal(call('createReadingPatch',after,reading).parsed_json.source_reading_history.length,1);
+});
 test('partial Excel image reading keeps the complete new grid as a separate version without replacing the old text',()=>{
  const before=saved(),grid='# Sheet: Quantities\n'+('Gate\t\t25\n'.repeat(30000))+'LAST_CELL_VALUE',reading=readingAssembly(grid);reading.verification.format='XLSX';reading.verification.complete=false;reading.verification.issues=['Missing embedded image'];
  const patch=call('createReadingPatch',before,reading),after={...before,...patch};assert.equal(after.extracted_text,oldText);assert.equal(after.ocr_status,'REQUIRES_REVIEW');

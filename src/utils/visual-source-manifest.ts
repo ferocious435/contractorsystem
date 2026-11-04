@@ -40,7 +40,10 @@ async function word(file:Buffer):Promise<SourceManifest> {
     for(const match of result.imageContextText.matchAll(expression))imageContexts.set(match[1],
         `\n${match[1]}\n${result.imageContextText.slice(Math.max(0,match.index!-400),match.index)}\n${result.imageContextText.slice(match.index!+match[0].length,match.index!+match[0].length+400)}\n`);
     let start=0;
-    for(const match of result.text.matchAll(expression)){
+    // Table rendering may flatten the generated image block's line breaks.
+    // Keep the legacy prompt context above stable so verified images retain their cache identity.
+    const assemblyExpression=/\[DOCX_IMAGE ([^\]\r\n ]+)[^\]\r\n]*\][\s\S]*?\[END_DOCX_IMAGE\]/g;
+    for(const match of result.text.matchAll(assemblyExpression)){
         if(match.index!>start)assembly.push({kind:'native',text:result.text.slice(start,match.index)});
         const unit=byAnchor.get(match[1]);
         if(unit){

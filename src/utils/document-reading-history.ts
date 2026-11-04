@@ -82,9 +82,9 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
     const text=retainPrevious?before.text:reading.text,textHash=hash(text);
     const history=Array.isArray(parsed.source_reading_history)?[...parsed.source_reading_history]:[];
     if(before.text&&before.textHash!==textHash&&!history.some(v=>object(v)&&v.sourceHash===before.sourceHash&&v.textHash===before.textHash))history.push(before);
-    // An unresolved workbook picture must not discard its newly extracted full cell grid.
-    // Retain the previous current transcript and expose this explicitly partial attempt as a version.
-    if(retainPrevious&&reading.verification.format==='XLSX'&&reading.text&&reading.textHash!==textHash
+    // Keep the full newly assembled source even when another region is still unresolved.
+    // The previous transcript stays current; the new attempt is an explicitly partial version.
+    if(retainPrevious&&reading.text&&reading.textHash!==textHash
         &&!history.some(value=>object(value)&&value.sourceHash===reading.verification.sourceHash&&value.textHash===reading.textHash)){
         history.push({sourceHash:reading.verification.sourceHash,textHash:reading.textHash,text:reading.text,
             reading:reading.verification,visualDescriptions:reading.visualDescriptions});

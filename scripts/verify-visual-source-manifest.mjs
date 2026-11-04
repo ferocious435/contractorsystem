@@ -5,6 +5,8 @@ import {PDFDocument,StandardFonts,degrees,rgb} from 'pdf-lib';
 import {docx,image,alternate,paragraph,relationships} from './fixtures/docx-image-fixtures.mjs';
 import {digest,visualRegistry,sourceDocument} from './codex-runtime/visual-reading-fixtures.mjs';
 import {assessVisualReading} from '../src/utils/visual-source-reading.ts';
+import {assembleDocumentReading} from '../src/utils/document-reading-history.ts';
+import {readingUnitInputHash} from '../src/server/ai/visual-reading-cache.server.ts';
 const load=async file=>import(file).catch(error=>{if(error.code==='ERR_MODULE_NOT_FOUND'&&error.url?.endsWith(file.slice(2)))return {};throw error;});
 const manifestApi=await load('../src/utils/visual-source-manifest.ts'),renderer=await load('../src/utils/visual-pdf-renderer.ts');
 const build=(...args)=>{assert.equal(typeof manifestApi.buildVisualSourceManifest,'function','Missing visual source manifest builder');return manifestApi.buildVisualSourceManifest(...args);};
@@ -29,6 +31,13 @@ test('word_header_alternate_repeated_image_has_all_locations',async()=>{
  assert.equal(manifest.units[0].views[0].width,80);
  assert.ok(manifest.assembly.some(x=>x.kind==='native'&&x.text.includes('Before')));
  assert.equal(digest(file),before);
+});
+
+test('a_Word_table_keeps_its_read_image_in_source_order_when_cell_line_breaks_are_flattened',async()=>{
+ const file=docx({body:`<w:tbl><w:tr><w:tc>${paragraph('Before photo')+image()+paragraph('After photo')}</w:tc></w:tr></w:tbl>`,media:{'image1.png':await png('red')}}),before=digest(file),manifest=await build(file,'table-photo.docx'),unit=manifest.units[0];
+ assert.equal(manifest.units.length,1);assert.equal(unit.contextText,'','Keep the existing image prompt and cache binding for flattened table cells');assert.equal(manifest.issues.length,0,'A table cell must retain the image placement');
+ const text='The source image contains the site access instruction.',reading={unitId:unit.id,inputHash:readingUnitInputHash(unit),text,textHash:digest(text),tables:[],visualDescription:'',uncertainties:[],complete:true,views:[{viewId:unit.views[0].id,imageHash:unit.views[0].sha256}]};
+ const assembled=assembleDocumentReading(manifest,[reading]);assert.match(assembled.text,/Before photo[\s\S]*site access instruction[\s\S]*After photo/);assert.ok(!assembled.text.includes('[DOCX_IMAGE '));assert.equal(digest(file),before);
 });
 test('rotated_pdf_tile_gap_is_detected',async()=>{
  const file=await pdf({rotated:true}),before=digest(file),manifest=await build(file,'rotated.pdf');
