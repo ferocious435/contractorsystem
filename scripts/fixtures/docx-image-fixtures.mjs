@@ -17,7 +17,7 @@ export function docx({body=paragraph('Keep access open.'),media={'image1.png':pn
   'word/document.xml':`<w:document ${ns}><w:body>${body}</w:body></w:document>`,
   'word/_rels/document.xml.rels':relationships(rels),
   ...Object.fromEntries(Object.entries(media).map(([name,data])=>[`word/media/${name}`,data])),
-  ...Object.fromEntries(Object.entries(parts).map(([name,body])=>[name,name.endsWith('.rels')?body:`<w:${name.includes('header')?'hdr':name.includes('footer')?'ftr':'footnotes'} ${ns}>${body}</w:${name.includes('header')?'hdr':name.includes('footer')?'ftr':'footnotes'}>`])),
+  ...Object.fromEntries(Object.entries(parts).map(([name,body])=>[name,name.endsWith('.rels')?body:`<w:${name.includes('header')?'hdr':name.includes('footer')?'ftr':name.includes('comments')?'comments':'footnotes'} ${ns}>${body}</w:${name.includes('header')?'hdr':name.includes('footer')?'ftr':name.includes('comments')?'comments':'footnotes'}>`])),
  };
  return Buffer.from(zipSync(Object.fromEntries(Object.entries(files).map(([name,value])=>[name,typeof value==='string'?strToU8(value):value]))));
 }

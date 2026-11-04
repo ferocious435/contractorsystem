@@ -28,6 +28,8 @@ test('second_numeric_read_is_blind',async()=>fixture(async()=>{
  assert.equal(calls.length,2);assert.equal(calls[1].text.includes(token),false);assert.equal(result.units[0].views[0].method,'visual-double-pass');assert.equal(result.units[0].complete,true);
 }));
 for(const [kind,format,locations]of [
+ ['PDF_PAGE','PDF',[{page:1}]],
+ ['DOCX_IMAGE','DOCX',[{part:'word/document.xml',anchor:'word/document.xml#rId1:1',mediaName:'word/media/table.png'}]],
  ['XLSX_IMAGE','XLSX',[{part:'xl/worksheets/sheet1.xml',anchor:'xl/worksheets/sheet1.xml#drawing1:1#frame1',mediaName:'xl/media/table.png',sheet:'Road quantities',cellRange:'A2:C8',frame:1}]],
  ['IMAGE_FRAME','IMAGE',[{part:'image',anchor:'image#frame1',mediaName:'source-image',frame:1}]],
 ])test(kind+'_both_independent_table_requests_fix_the_same_physical_column_order',async()=>fixture(async()=>{

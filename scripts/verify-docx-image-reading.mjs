@@ -11,6 +11,25 @@ hook.deregister();
 const recognizeImage=async()=>({text:'Keep the gate open.',confidence:95});
 const read=(buffer,recognize=recognizeImage)=>extract(buffer,{recognizeImage:recognize});
 
+test('linked Word comments preserve their author date and exact annotated range',async()=>{
+ const body='<w:p><w:commentRangeStart w:id="2"/><w:r><w:t>Design price requires clarification.</w:t></w:r><w:commentRangeEnd w:id="2"/><w:r><w:commentReference w:id="2"/></w:r></w:p>';
+ const comment='<w:comment w:id="2" w:author="Reviewer" w:date="2024-12-01T09:37:00Z">'+paragraph('Is the updated design included?')+'</w:comment>';
+ const r=await read(docx({body,media:{},rels:[],parts:{'word/comments.xml':comment}}));
+ assert.equal(r.requiresReview,false);assert.deepEqual(r.readingVerification.issues,[]);
+ assert.match(r.text,/\[DOCX_COMMENT_RANGE_START 2\][\s\S]*Design price requires clarification\.[\s\S]*\[DOCX_COMMENT_RANGE_END 2\]/);
+ assert.match(r.text,/\[DOCX_COMMENT 2 author="Reviewer" date="2024-12-01T09:37:00Z" kind=ANNOTATION\][\s\S]*Is the updated design included\?[\s\S]*\[END_DOCX_COMMENT\]/);
+ assert.equal(r.text.match(/Is the updated design included\?/g).length,1);
+ assert.ok(!r.imageContextText.includes('[DOCX_COMMENT '),'Placing native comments must preserve the earlier image prompt and its verified cache');
+});
+
+test('an orphan or multiply referenced Word comment remains an explicit unresolved source',async()=>{
+ const comment='<w:comment w:id="2" w:author="Reviewer">'+paragraph('This is a review question.')+'</w:comment>';
+ for(const body of [paragraph('No comment reference.'),'<w:p><w:r><w:t>Ambiguous attachment</w:t><w:commentReference w:id="2"/><w:commentReference w:id="2"/></w:r></w:p>']){
+  const r=await read(docx({body,media:{},rels:[],parts:{'word/comments.xml':comment}}));
+  assert.equal(r.requiresReview,true);assert.match(r.text,/This is a review question\./);assert.ok(r.readingVerification.issues.length>0);
+ }
+});
+
 test('a linked footnote stays linked when image text is substituted',async()=>{
  const body='<w:p><w:r><w:t>Keep access open.</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p>'+image();
  const r=await read(docx({body,parts:{'word/footnotes.xml':'<w:footnote w:id="1">'+paragraph('Use the eastern entrance.')+'</w:footnote>'}}));

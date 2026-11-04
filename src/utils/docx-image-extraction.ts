@@ -156,10 +156,56 @@ export async function extractDocxWithImages(
     }
     verification.expectedImageReferences = verification.images.length;
 
+    // OfficeParser does not place Word review comments. Bind them to their
+    // original ranges before rendering; a comment is an annotation, never an instruction.
+    const commentPart = normalizedParts.get('word/comments.xml');
+    const placeComments = () => {
+        if (!commentPart) return;
+        const comments = descendants(commentPart, el => el.namespaceURI === WORD_NS && el.localName === 'comment');
+        const anchors = [...normalizedParts].filter(([part]) => !/^word\/comments\d*\.xml$/.test(part))
+            .flatMap(([part, doc]) => descendants(doc, el => el.namespaceURI === WORD_NS
+                && ['commentRangeStart', 'commentRangeEnd', 'commentReference'].includes(el.localName)).map(element => ({part, element})));
+        const ids = new Set<string>();
+        for (const comment of comments) {
+            const id = comment.getAttributeNS(WORD_NS, 'id') || '';
+            const matching = anchors.filter(a => a.element.getAttributeNS(WORD_NS, 'id') === id);
+            const references = matching.filter(a => a.element.localName === 'commentReference');
+            const starts = matching.filter(a => a.element.localName === 'commentRangeStart');
+            const ends = matching.filter(a => a.element.localName === 'commentRangeEnd');
+            const duplicate = comments.filter(c => c.getAttributeNS(WORD_NS, 'id') === id).length !== 1;
+            const validRange = starts.length === 0 && ends.length === 0 || starts.length === 1 && ends.length === 1
+                && starts[0].part === ends[0].part && matching.indexOf(starts[0]) < matching.indexOf(ends[0]);
+            if (!/^\d+$/.test(id) || ids.has(id) || duplicate || references.length !== 1 || !validRange
+                || matching.some(a => a.part !== references[0]?.part)
+                || matching.some(a => !['p','r'].includes((a.element.parentNode as Element)?.localName))) {
+                issue(`word/comments.xml:COMMENT_ANCHOR_UNVERIFIED:${id}`); continue;
+            }
+            ids.add(id);
+            if (descendants(comment, el => el.namespaceURI === WORD_NS && ['tbl','instrText','fldSimple','del'].includes(el.localName)).length) {
+                issue(`word/comments.xml:COMMENT_LAYOUT_UNVERIFIED:${id}`); continue;
+            }
+            const content = descendants(comment, el => el.namespaceURI === WORD_NS && el.localName === 'p').map(paragraph =>
+                descendants(paragraph, el => el.namespaceURI === WORD_NS && ['t','tab','br','cr'].includes(el.localName))
+                    .map(el => el.localName === 't' ? el.textContent || '' : el.localName === 'tab' ? '\t' : '\n').join('')).join('\n');
+            const annotation = `\n[DOCX_COMMENT ${id} author=${JSON.stringify(comment.getAttributeNS(WORD_NS,'author') || '')} date=${JSON.stringify(comment.getAttributeNS(WORD_NS,'date') || '')} kind=ANNOTATION]\n${content}\n[END_DOCX_COMMENT]\n`;
+            for (const {element} of matching) {
+                const doc = element.ownerDocument!, parent = element.parentNode as Element;
+                const text = doc.createElementNS(WORD_NS,'w:t'); text.setAttribute('xml:space','preserve');
+                text.appendChild(doc.createTextNode(element.localName === 'commentReference' ? annotation
+                    : `\n[DOCX_COMMENT_RANGE_${element.localName === 'commentRangeStart' ? 'START' : 'END'} ${id}]\n`));
+                if (parent.localName === 'r') parent.replaceChild(text,element);
+                else { const run = doc.createElementNS(WORD_NS,'w:r'); run.appendChild(text); parent.replaceChild(run,element); }
+            }
+        }
+        for (const {element} of anchors) if (element.parentNode) issue(`word/comments.xml:COMMENT_ANCHOR_UNVERIFIED:${element.getAttributeNS(WORD_NS,'id') || ''}`);
+        for (const [part, doc] of normalizedParts) byPath.set(part,Buffer.from(tools.serializeXml(doc),'utf8'));
+    };
+
     const { OfficeParser } = await import('officeparser');
-    const ast = await OfficeParser.parseOffice(Buffer.from(tools.zipSync(Object.fromEntries(byPath))), {
+    const parseNative = async () => await OfficeParser.parseOffice(Buffer.from(tools.zipSync(Object.fromEntries(byPath))), {
         fileType: 'docx', ocr: false, extractAttachments: false, newlineDelimiter: '\n',
     }) as OfficeParserAST;
+    let ast = await parseNative();
     for (const warning of ast.warnings || []) issue(`PARSER:${warning.code}`);
     async function renderText(preserveNotes: boolean) {
         const consumed = new Set<string>(), issues = [...verification.issues];
@@ -205,9 +251,10 @@ export async function extractDocxWithImages(
     }
     // Native annotations may improve without changing the image prompt or its verified cache key.
     const legacy = await renderText(false);
+    if (commentPart) { placeComments(); ast = await parseNative(); for (const warning of ast.warnings || []) issue(`PARSER:${warning.code}`); }
     const hasNotes = [...normalizedParts.values()].some(doc => descendants(doc, el => el.namespaceURI === WORD_NS
         && ['footnoteReference', 'endnoteReference'].includes(el.localName)).length > 0);
-    const rendered = hasNotes ? await renderText(true) : legacy;
+    const rendered = hasNotes || commentPart ? await renderText(hasNotes) : legacy;
     verification.issues = rendered.issues;
     verification.complete = verification.images.every((image) => image.status === 'READ' && !image.numericReviewRequired)
         && verification.issues.length === 0;
