@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs/promises';
 import {registerHooks} from 'node:module';
 import {digest,literal,sourceHash,sourceDocument,readingAssembly,readingUnit,unitResponse} from './codex-runtime/visual-reading-fixtures.mjs';
 const load=async file=>import(file).catch(error=>{if(error.code==='ERR_MODULE_NOT_FOUND'&&error.url?.endsWith(file.slice(2)))return {};throw error;});
@@ -50,6 +51,22 @@ test('identical_reading_does_not_append_history',()=>{
  const doc=sourceDocument(),patch=call('createReadingPatch',doc,readingAssembly(literal));
  assert.equal(patch.parsed_json.source_reading_history.length,0);
  const again=call('createReadingPatch',{...doc,...patch},readingAssembly(literal));assert.equal(again.parsed_json.source_reading_history.length,0);
+});
+
+test('changed_image_attempts_keep_raw_history_within_the_existing_read_only_commit_contract',async()=>{
+ const sql=await fs.readFile('supabase/migrations/20261101085114_document_reading_jobs.sql','utf8');
+ const allowed=[...sql.match(/\(previous_json-array\[([^\]]*)\]/)[1].matchAll(/'([^']+)'/g)].map(match=>match[1]);
+ const oldUnits=[{unitId:'docx:logo',text:'old uncertain lettering',complete:false,views:[]}],before=saved();before.parsed_json.source_reading_units=oldUnits;const untouched=structuredClone(before);
+ const strip=parsed=>Object.fromEntries(Object.entries(parsed).filter(([key])=>!allowed.includes(key)));
+ for(const text of [oldText,literal]){
+  const reading=readingAssembly(text),patch=call('createReadingPatch',before,reading),after={...before,...patch};
+  assert.deepEqual(strip(patch.parsed_json),strip(before.parsed_json),'The read-only database commit must accept all changed metadata');
+  assert.deepEqual(patch.parsed_json.source_reading_history.find(version=>version.units)?.units,oldUnits);
+  assert.equal(call('resolveReadingVersion',after,{textHash:digest(oldText)}).text,oldText);
+  assert.deepEqual(call('projectDocumentForCatalog',after).parsed_json.source_reading_history,undefined);
+  assert.deepEqual(call('createReadingPatch',after,reading).parsed_json.source_reading_history,patch.parsed_json.source_reading_history,'An unchanged repeat must not duplicate an image attempt');
+ }
+ assert.deepEqual(before,untouched,'Adding history must not mutate the previous saved document');
 });
 test('complete_long_text_is_saved_without_summarizing_the_original',()=>{
  const full='Exact original paragraph.\n'.repeat(9000)+'END OF SOURCE';

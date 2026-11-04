@@ -91,16 +91,17 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
     }
     const changed=before.textHash!==textHash;
     const previousUnits=Array.isArray(parsed.source_reading_units)?parsed.source_reading_units:[];
-    const unitHistory=Array.isArray(parsed.source_reading_unit_history)?[...parsed.source_reading_unit_history]:[];
     if(previousUnits.length&&JSON.stringify(previousUnits)!==JSON.stringify(reading.units)){
         const unitsHash=hash(JSON.stringify(previousUnits));
-        if(!unitHistory.some(value=>object(value)&&value.sourceHash===before.sourceHash&&value.unitsHash===unitsHash))
-            unitHistory.push({sourceHash:before.sourceHash,textHash:before.textHash,unitsHash,units:structuredClone(previousUnits)});
+        if(!history.some(value=>object(value)&&value.sourceHash===before.sourceHash&&value.unitsHash===unitsHash)){
+            const index=history.findIndex(value=>object(value)&&value.sourceHash===before.sourceHash&&value.textHash===before.textHash&&!value.unitsHash);
+            const previous={...(index<0?before:history[index]),unitsHash,units:structuredClone(previousUnits)};
+            if(index<0)history.push(previous);else history[index]=previous;
+        }
     }
     return {extracted_text:text,extracted_text_hash:textHash,ocr_status:reading.verification.complete?'COMPLETED':'REQUIRES_REVIEW',processed_at:new Date().toISOString(),
         parsed_json:{...parsed,source_reading:{...reading.verification,currentTextHash:textHash},source_reading_units:reading.units,
             source_reading_visual_descriptions:reading.visualDescriptions,source_reading_history:history,
-            ...(unitHistory.length?{source_reading_unit_history:unitHistory}:{}),
             ...(changed?{analysis_stale:true,analysis_reading_text_hash:typeof parsed.analysis_reading_text_hash==='string'?parsed.analysis_reading_text_hash:before.textHash}:{})}};
 }
 
