@@ -157,19 +157,45 @@ export function reverifySavedNumericUnit(value:unknown,unit:ReadingUnit):Verifie
             const sourceView=(reading:UnitReading)=>unit.views.find(view=>view.id===reading.viewId);
             const sameRegion=(a:RenderedSourceView,b:RenderedSourceView)=>JSON.stringify(a.rect)===JSON.stringify(b.rect);
             type RenderedSourceView=ReadingUnit['views'][number];
-            for(const proof of checked.views){
+            type Candidate={reading:UnitReading;image:NonNullable<VerifiedUnit['views'][number]['readingImage']>;source:RenderedSourceView;proof:VerifiedUnit['views'][number];index:number};
+            const candidates=new Map<string,Candidate[]>(),clearReads=new Map<string,UnitReading[]>();let crossEligible=true,crossUsed=false;
+            const exactImage=(image:VerifiedUnit['views'][number]['readingImage'],view:RenderedSourceView)=>image?.sha256===view.sha256&&image.width===view.width&&image.height===view.height&&JSON.stringify(image.rect)===JSON.stringify(view.rect);
+            for(const [index,proof] of checked.views.entries()){
                 if(!record(proof)||!record(proof.reading))return null;
                 const reading=validateUnitReading(JSON.stringify(proof.reading),unit,proof.reading.viewId),target=unit.views.find(view=>view.id===proof.viewId),original=sourceView(reading);
                 if(!target||!original||!sameRegion(target,original))return null;
                 for(const reason of reading.uncertainties)known.add(reason);
                 const confirmation=proof.confirmation?validateUnitReading(JSON.stringify(proof.confirmation),unit,proof.confirmation.viewId):null;
                 for(const reason of confirmation?.uncertainties??[])known.add(reason);
+                if(proof.textHash!==digest(unitReadingLiteral(reading))||proof.confirmationHash!==digest(unitReadingLiteral(confirmation??reading)))return null;
+                const witness=confirmation?sourceView(confirmation):undefined,key=JSON.stringify(target.rect);
+                if(proof.method==='visual-double-pass'&&confirmation){
+                    if(!witness||!sameRegion(target,witness)||!exactImage(proof.readingImage,original)||!exactImage(proof.confirmationImage,witness))crossEligible=false;
+                    else{
+                        const clear=clearReads.get(key)??[];for(const value of [reading,confirmation])if(!value.uncertainties.length)clear.push(value);clearReads.set(key,clear);
+                        const choices=candidates.get(key)??[];
+                        if(!reading.uncertainties.length&&confirmation.uncertainties.length)choices.push({reading,image:proof.readingImage!,source:original,proof,index});
+                        if(reading.uncertainties.length&&!confirmation.uncertainties.length)choices.push({reading:confirmation,image:proof.confirmationImage!,source:witness,proof,index});
+                        candidates.set(key,choices);
+                    }
+                }
                 if(proof.method!=='visual-double-pass'||reading.uncertainties.length||!confirmation||confirmation.uncertainties.length||!unitHasNumbers(reading)||!proof.initialReading)continue;
-                const initial=validateUnitReading(JSON.stringify(proof.initialReading),unit,proof.initialReading.viewId),witness=sourceView(confirmation),initialView=sourceView(initial);
-                const exactImage=(image:VerifiedUnit['views'][number]['readingImage'],view:RenderedSourceView)=>image?.sha256===view.sha256&&image.width===view.width&&image.height===view.height&&JSON.stringify(image.rect)===JSON.stringify(view.rect);
+                const initial=validateUnitReading(JSON.stringify(proof.initialReading),unit,proof.initialReading.viewId),initialView=sourceView(initial);
                 if(!initial.uncertainties.length||!witness||!initialView||!sameRegion(target,witness)||!sameRegion(target,initialView)
                     ||!exactImage(proof.readingImage,original)||!exactImage(proof.confirmationImage,witness)||!compareNumericReadings(reading,confirmation).matched)continue;
-                const key=JSON.stringify(target.rect),previous=pairs.get(key);if(previous&&!compareNumericReadings(previous.reading,reading).matched)return null;pairs.set(key,proof);
+                const previous=pairs.get(key);if(previous&&!compareNumericReadings(previous.reading,reading).matched)return null;pairs.set(key,proof);
+            }
+            // Two independent clear responses may be retained in different proof entries,
+            // each beside its earlier uncertain peer. Do not generate them again.
+            if(crossEligible)for(const [key,choices] of candidates){
+                if(pairs.has(key))continue;
+                for(let i=0;i<choices.length&&!pairs.has(key);i++)for(let j=i+1;j<choices.length;j++){
+                    const a=choices[i],b=choices[j];
+                    if(a.index===b.index||a.source.id===b.source.id||a.source.sha256===b.source.sha256||!compareNumericReadings(a.reading,b.reading).matched)continue;
+                    if((clearReads.get(key)??[]).some(reading=>!compareNumericReadings(a.reading,reading).matched))return null;
+                    pairs.set(key,{...a.proof,reading:a.reading,confirmation:b.reading,readingImage:a.image,confirmationImage:b.image,
+                        textHash:digest(unitReadingLiteral(a.reading)),confirmationHash:digest(unitReadingLiteral(b.reading))});crossUsed=true;break;
+                }
             }
             if(!pairs.size||value.uncertainties.some(reason=>!reason.startsWith('Numeric or source verification failed: ')&&!known.has(reason)))return null;
             for(const proof of checked.views){
@@ -177,6 +203,12 @@ export function reverifySavedNumericUnit(value:unknown,unit:ReadingUnit):Verifie
                 const initial=proof.initialReading??(proof.reading.uncertainties.length?proof.reading:proof.confirmation?.uncertainties.length?proof.confirmation:undefined);
                 Object.assign(proof,{reading:pair.reading,confirmation:pair.confirmation,textHash:pair.textHash,confirmationHash:pair.confirmationHash,method:'visual-double-pass',
                     readingImage:pair.readingImage,confirmationImage:pair.confirmationImage,...(initial?{initialReading:initial}:{})});
+            }
+            if(crossUsed){
+                const primaryId=unit.views.filter(view=>view.rect.x===0&&view.rect.y===0&&view.rect.width===1&&view.rect.height===1).sort((a,b)=>b.width*b.height-a.width*a.height)[0]?.id??unit.views[0]?.id;
+                const primary=checked.views.find(proof=>proof.viewId===primaryId)!.reading;checked.text=unitReadingLiteral(primary);checked.textHash=digest(checked.text);checked.tables=structuredClone(primary.tables);
+                checked.visualDescription=[...new Set(checked.views.flatMap(proof=>[proof.reading.visualDescription,proof.confirmation?.visualDescription??'']).filter(Boolean))].join('\n');
+                if(primary.contentRole)checked.contentRole=primary.contentRole;
             }
         }catch{return null;}
     }

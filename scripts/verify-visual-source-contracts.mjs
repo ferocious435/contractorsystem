@@ -37,6 +37,13 @@ test('numeric_labels_and_decimal_separators_are_not_discarded',()=>{
  assert.equal(compare(raw,{...raw,tables:[[['מחיר ב','1,234.50'],['מחיר א','1.234,50']]]}).matched,false);
  assert.equal(compare(raw,{...raw,tables:[[['מחיר א','1.234,50'],['מחיר ב','1,234.50']]]}).matched,false);
 });
+
+test('issuer_contact_punctuation_and_conventional_city_prefix_spelling_do_not_change_verified_numbers',()=>{
+ const compare=api(response,'compareNumericReadings'),body='3. Fee 15,000 ₪\n4. Payment 100%\n5. Terms + 45',contact='רח\' אימבר 14, קריית אריה, ת.ד. 7562 פ"ת 49170, טלפון 03-9239003, פקס 03-9239004',variant='רח\' אימבר 14, קרית אריה, ת.ד.7562, פ"ת 49170, טלפון 03-9239003, פקס 03-9239004',first=unitResponse(undefined,{text:body+'\n'+contact}),second={...first,text:body+'\n'+variant};
+ assert.equal(compare(first,second).matched,true);assert.equal(first.text,body+'\n'+contact,'Preserve the original literal source');
+ for(const change of [text=>text.replace('9239004','9239005'),text=>text.replace('7562','7563'),text=>text.replace('אימבר','אמבר'),text=>text.replace('אריה','גת'),text=>text.replace('15,000','15.000'),text=>text.replace('100%','10%'),text=>text.replace('Payment','No payment')])assert.equal(compare(first,{...second,text:change(second.text)}).matched,false);
+ assert.equal(compare(unitResponse(undefined,{text:'',tables:[[[contact]]]}),unitResponse(undefined,{text:'',tables:[[[variant]]]})).matched,false,'Table cell labels retain their strict source identity');
+});
 test('a_layout_description_of_already_transcribed_item_numbers_does_not_invalidate_equal_source_numbers',()=>{
  const compare=api(response,'compareNumericReadings'),first=unitResponse(undefined,{text:'1. Work description\n2. Quantity 12\n3. Payment terms',visualDescription:'The headings are underlined.'});
  assert.equal(compare(first,{...first,visualDescription:'Items 1–3 have underlined headings.'}).matched,true);

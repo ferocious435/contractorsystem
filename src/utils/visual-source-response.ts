@@ -30,6 +30,16 @@ const numberTokens=(value:string)=>value.match(/\p{N}+(?:[.,/]\p{N}+)*/gu)||[];
 export const normalizeReadingTypography=(value:string)=>value.normalize('NFKC').replace(/[\u200e\u200f]/g,'').replace(/[\u05f4\u201c\u201d]/g,'"')
     .replace(/[\u05f3\u2018\u2019]/g,"'").replace(/\s+/g,' ').replace(/(?<=\p{L})\s*-\s*(?=\p{N})/gu,'-').replace(/\s*:\s*/g,':').trim();
 const lineKey=normalizeReadingTypography;
+function numericLineKey(line:string):string {
+    // A complete postal/phone/fax footer is metadata. Keep every word, number and sign,
+    // while comparing its punctuation and conventional Kiryat-prefix spelling consistently.
+    if(/^(?:רח'|רחוב)\s/u.test(line)&&/ת\.\s*ד\./u.test(line)&&/טלפון\s+\d/u.test(line)
+        &&/פקס\s+[+\d][\d -]*$/u.test(line)&&!/[₪$€£%<>=±]/u.test(line)){
+        const tokens=line.replace(/(?<!\p{L})קריית(?=\s)/gu,'קרית').match(/\p{N}+(?:[.,/]\p{N}+)*|\p{L}+|[+−-]/gu)||[];
+        return JSON.stringify({contactTokens:tokens});
+    }
+    return line;
+}
 const quoteStyleOnly=(note:string)=>/(?:кавыч|гершаим|gershayim|quotation|quote)/iu.test(note)
     &&!/(?:^|[^\p{L}])(?:букв|слов|текст|цифр|числ|номер|сумм|дата|диапазон|порядок|значен|подпис|штамп|количеств|нечита|неразборчив|letters?|words?|digits?|numbers?|amount|signature|stamp|unreadable|illegible|value|date)/iu.test(note);
 const literalShape=(reading:UnitReading)=>JSON.stringify({text:lineKey(reading.text),tables:reading.tables.map(table=>table.map(row=>row.map(lineKey)))});
@@ -56,7 +66,7 @@ function numericPositions(reading:UnitReading) {
             // A description may refer to item numbers already checked in the literal
             // transcript. Its wording is interpretation, never a second source quote.
             if(field==='description'&&numberTokens(line).every(number=>literalNumbers.has(number)))continue;
-            positions.push(JSON.stringify({field,index:i,line}));
+            positions.push(JSON.stringify({field,index:i,line:field==='text'?numericLineKey(line):line}));
         }
     }
     return positions;

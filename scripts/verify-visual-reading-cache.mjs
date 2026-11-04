@@ -103,3 +103,15 @@ test('a_saved_clear_pair_can_resolve_an_earlier_uncertain_view_of_only_the_same_
  assert.equal(api.reverifySavedNumericUnit({...saved,inputHash:api.readingUnitInputHash(differentRegion)},differentRegion),null);
  assert.equal(api.reverifySavedNumericUnit(saved,{...unit,contextText:'changed'}),null);
 });
+
+test('two_retained_clear_reads_in_different_source_views_can_repair_their_uncertain_peers',()=>{
+ const first=readingUnit({localText:''}).views[0],bytes=Buffer.from('second-clear-source-image'),second={...first,id:'page:1:enlarged',bytes,sha256:digest(bytes),width:200,height:200},unit=readingUnit({localText:'',views:[first,second]}),text='Quantity: 12\nA fully read instruction.',a=unitResponse(unit,{text}),b={...a,viewId:second.id},unclear={...b,text:'Quantity: 12\n[Unclear instruction]',uncertainties:['Unclear spelling']},image=view=>({sha256:view.sha256,width:view.width,height:view.height,rect:view.rect});
+ const saved={...verified(unit),text:unclear.text,textHash:digest(unclear.text),complete:false,uncertainties:['Unclear spelling'],createdBy:{jobId:scope.ownerId,rulesVersion:'visual-reading-rules-v2',profileRevision:1},views:[
+  {viewId:first.id,imageHash:first.sha256,textHash:digest(text),method:'visual-double-pass',confirmationHash:digest(unclear.text),reading:a,confirmation:unclear,readingImage:image(first),confirmationImage:image(second)},
+  {viewId:second.id,imageHash:second.sha256,textHash:digest(unclear.text),method:'visual-double-pass',confirmationHash:digest(text),reading:unclear,confirmation:b,readingImage:image(second),confirmationImage:image(second)}]},before=structuredClone(saved);
+ const result=api.reverifySavedNumericUnit(saved,unit);assert.equal(result?.complete,true);assert.equal(result.text,text);assert.equal(result.textHash,digest(text));assert.ok(result.views.some(view=>view.initialReading?.uncertainties.includes('Unclear spelling')));assert.deepEqual(saved,before);
+ const wrong=structuredClone(saved);wrong.views[1].confirmation.text='Quantity: 21\nA fully read instruction.';wrong.views[1].confirmationHash=digest(wrong.views[1].confirmation.text);assert.equal(api.reverifySavedNumericUnit(wrong,unit),null);
+ const unbound=structuredClone(saved);unbound.views[1].confirmationImage.sha256='9'.repeat(64);assert.equal(api.reverifySavedNumericUnit(unbound,unit),null);
+ assert.equal(api.reverifySavedNumericUnit({...saved,uncertainties:['A different unresolved region']},unit),null);
+ const changed={...unit,views:[first,{...second,rect:{x:0,y:0,width:0.5,height:1}}]};assert.equal(api.reverifySavedNumericUnit({...saved,inputHash:api.readingUnitInputHash(changed)},changed),null);
+});
