@@ -1,0 +1,121 @@
+/* Shared input adaptation; screen rules do not change the printed document. */
+@media screen {
+.ti-selection-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 18px;
+  min-block-size: 36px;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.ti-table .ti-selection-checkbox > input[type="checkbox"] {
+  flex: 0 0 18px;
+  inline-size: 18px;
+  block-size: 18px;
+  min-height: 18px;
+  margin: 0;
+}
+
+.ti-selection-checkbox:has(> input:disabled) { cursor: not-allowed; }
+}
+
+@media screen and (any-pointer: coarse) {
+  .titanium-theme :is(button, .ti-button, .ti-tab, .ti-dev-link, summary),
+  .titanium-theme .ti-radar-finding__details button:not(.ti-button):not(.ti-evidence-marker__button) {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+    touch-action: manipulation;
+  }
+
+  .titanium-theme :is(input, select, textarea) {
+    font-size: 1rem;
+    scroll-margin-block: 64px;
+  }
+
+  .titanium-theme :is(.ti-input, .ti-select, .ti-topbar__role > select) {
+    min-block-size: 44px;
+  }
+
+  .titanium-theme label:has(> input[type="checkbox"]) {
+    min-block-size: 44px;
+  }
+
+  .titanium-theme .ti-selection-checkbox {
+    inline-size: 44px;
+    min-inline-size: 44px;
+    block-size: 44px;
+  }
+
+  /* The selection column is 48px; keep its 44px label inside that column.
+     Fixed virtual rows stay 80px and queue headings stay 44px. */
+  .titanium-theme .ti-table :is(th, td):has(> .ti-selection-checkbox) {
+    padding: 2px;
+  }
+
+  .titanium-theme .ti-selection-checkbox:has(> input:focus-visible) {
+    outline: 2px solid var(--ti-focus);
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
+
+  .titanium-theme :is(.ti-scroll, .ti-ledger-scroll, .ti-pricelist-scroll, .ti-source-text pre) {
+    overscroll-behavior: contain;
+    touch-action: pan-x pan-y pinch-zoom;
+    scrollbar-width: auto;
+  }
+}
+
+@media screen and (hover: none) {
+  .titanium-theme .ti-button:hover:not(:disabled) {
+    border-color: var(--ti-control);
+    box-shadow: inset 0 1px 0 #e2e8ff4d, 0 4px 10px #0005;
+  }
+
+  .titanium-theme :is(.ti-button, .ti-tab, .ti-nav-item):active:not(:disabled) {
+    border-color: var(--ti-focus);
+    filter: brightness(1.12);
+  }
+}
+
+@media screen and (max-width: 767px) {
+  .ti-app {
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+
+  .ti-portfolio-shell {
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+
+  .titanium-theme.ti-dialog:not(.ti-nav-dialog) {
+    width: calc(100% - 16px - env(safe-area-inset-left) - env(safe-area-inset-right));
+    max-width: calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right));
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+
+  .ti-nav-dialog {
+    inset-block-start: max(8px, env(safe-area-inset-top));
+    inset-inline-start: max(8px, env(safe-area-inset-right));
+    height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+
+  .ti-nav-dialog .ti-project-navigation { overflow-y: auto; }
+  .ti-dialog__header { position: sticky; top: 0; z-index: 4; background: var(--ti-surface); }
+  .ti-topbar__tools { flex-wrap: wrap; min-width: 0; }
+  .ti-source-frame { height: min(520px, 60dvh); }
+  .ti-source-text pre { max-height: min(520px, 60dvh); }
+}
+
+/* A keyboard or a landscape viewport must not squeeze a data table to zero. */
+@media screen and (max-width: 1023px) and (max-height: 600px) {
+  .ti-app { height: auto; min-height: 100dvh; overflow: visible; }
+  .ti-app__workspace { min-height: calc(100dvh - 16px); }
+  .ti-app__main, .ti-app__main:has(.ti-pricing-root) { overflow: visible; }
+  .ti-pricing-route { height: auto; min-height: 100dvh; overflow: visible; }
+  .ti-pricing-root { height: auto; min-height: 100%; overflow: visible; }
+  .ti-ledger-scroll { flex: 0 0 auto; height: max(240px, 60dvh); }
+}

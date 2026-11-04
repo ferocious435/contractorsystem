@@ -1,9 +1,10 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Rubik } from "next/font/google";
 import localFont from "next/font/local";
 import { UIMotionProvider } from "@/components/ui/titanium/UIMotionProvider";
 import "./globals.css";
 import "@/styles/titanium.css";
+import "@/styles/adaptive-input.css";
 
 const heebo = localFont({
   src: [
@@ -24,6 +25,13 @@ const printFont = Rubik({
 export const metadata: Metadata = {
   title: "CONTRACTORSYSTEM",
   description: "מערכת ניהול תקציבים לקבלנים",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({

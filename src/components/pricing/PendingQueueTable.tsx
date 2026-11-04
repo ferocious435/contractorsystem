@@ -8,6 +8,7 @@ import { BidiText } from '@/components/ui/titanium/BidiText';
 import { Dialog } from '@/components/ui/titanium/Dialog';
 import { Feedback } from '@/components/ui/titanium/Feedback';
 import { StatusChip } from '@/components/ui/titanium/StatusChip';
+import { SelectionCheckbox } from '@/components/ui/titanium/SelectionCheckbox';
 const WorkChangeReviewPanel = React.lazy(() => import('./WorkChangeReviewPanel'));
 interface PendingQueueTableProps {
     compactTools?: React.ReactNode;
@@ -131,7 +132,7 @@ interface QueueRowProps {
 const PendingQueueRow = React.memo(function PendingQueueRow({ item, groupIdx, itemIdx, isSelected, isScanning, confidencePercent, onToggleSelection, onSelectForEstimation, onRescan, onDetails, onReview }: QueueRowProps) {
     const summary = getEvidenceSummary(item.evidence_data);
     return <tr data-queue-row={item.id} data-selected={isSelected || undefined} aria-busy={isScanning || undefined}>
-  <td><input type="checkbox" aria-label={'בחירת פריט: ' + item.title} checked={isSelected} disabled={!onToggleSelection} onChange={() => onToggleSelection?.(item.id)}/></td>
+  <td><SelectionCheckbox aria-label={'בחירת פריט: ' + item.title} checked={isSelected} disabled={!onToggleSelection} onChange={() => onToggleSelection?.(item.id)}/></td>
   <td><BidiText kind="code" value={(groupIdx + 1) + '-' + (itemIdx + 1)}/></td>
   <td><div className="ti-queue-priority"><StatusChip tone={item.severity === 'HIGH' ? 'danger' : item.severity === 'MEDIUM' ? 'warning' : 'neutral'}>{item.severity === 'HIGH' ? 'עדיפות גבוהה' : item.severity === 'MEDIUM' ? 'עדיפות בינונית' : 'עדיפות רגילה'}</StatusChip>{confidencePercent && <span className="ti-meta">Confidence <BidiText kind="percent" value={confidencePercent}/></span>}</div></td>
   <td><button type="button" className="ti-queue-description" aria-label={'פרטי פריט: ' + item.title} onClick={() => onDetails(item)}><strong>{item.title}</strong><span>{item.description}</span></button></td>
@@ -316,7 +317,7 @@ function PendingQueueTable({ items, selectedIds = [], onToggleSelection, onSelec
   {operationError && <Feedback tone="danger">{operationError}</Feedback>}
   {selectedIds.length > 0 && <div className="ti-queue-bulk ti-queue-bulk--wide" aria-label="פעולות בבחירה"><span className="ti-meta">נבחרו {selectedIds.length}</span>{bulkActions}</div>}
   <div ref={scrollContainerRef} className="ti-ledger-scroll" onScroll={handleScroll} role="region" tabIndex={0} aria-label="תור התמחור · גלילה אופקית ואנכית">
-   <table className="ti-table ti-queue-table" style={{ minWidth: 1152 }}><colgroup>{[48, 72, 160, 320, 200, 352].map((width, index) => <col key={index} style={{ width }}/>)}</colgroup><thead><tr><th><input type="checkbox" aria-label="בחירת כל הפריטים בתור" checked={allSelected} disabled={!onSelectAll || !items.length} onChange={handleSelectAllChange}/></th><th>פריט</th><th>עדיפות</th><th>תיאור השינוי</th><th>מקורות</th><th>פעולות</th></tr></thead><tbody>{items.length ? queueRowsContent : <tr><td colSpan={6}><p className="ti-copy">אין פריטים שממתינים לתמחור כרגע. אם נוספו מסמכים, יש לבצע סנכרון לפני מסקנה סופית.</p></td></tr>}</tbody></table>
+   <table className="ti-table ti-queue-table" style={{ minWidth: 1152 }}><colgroup>{[48, 72, 160, 320, 200, 352].map((width, index) => <col key={index} style={{ width }}/>)}</colgroup><thead><tr><th><SelectionCheckbox aria-label="בחירת כל הפריטים בתור" checked={allSelected} disabled={!onSelectAll || !items.length} onChange={handleSelectAllChange}/></th><th>פריט</th><th>עדיפות</th><th>תיאור השינוי</th><th>מקורות</th><th>פעולות</th></tr></thead><tbody>{items.length ? queueRowsContent : <tr><td colSpan={6}><p className="ti-copy">אין פריטים שממתינים לתמחור כרגע. אם נוספו מסמכים, יש לבצע סנכרון לפני מסקנה סופית.</p></td></tr>}</tbody></table>
   </div>
   <Dialog open={selectionToolsOpen} labelledBy="queue-selection-title" onClose={()=>setSelectionToolsOpen(false)}><header className="ti-dialog__header"><h2 id="queue-selection-title" className="ti-section-title">פעולות בבחירה ({selectedIds.length})</h2><Button onClick={()=>setSelectionToolsOpen(false)}>סגירה</Button></header><div className="ti-ledger-tool-list">{bulkActions}</div></Dialog>
   <Dialog open={Boolean(detailItem)} labelledBy="queue-source-title" onClose={() => setDetailItem(null)}><header className="ti-dialog__header"><h2 id="queue-source-title" className="ti-section-title">פרטי השינוי והמקורות</h2><Button onClick={() => setDetailItem(null)}>סגירה</Button></header>{detailItem && <QueueSourceDetails item={detailItem}/>}</Dialog>
