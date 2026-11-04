@@ -19,6 +19,16 @@ async function fixture(action){const root=await fs.mkdtemp(path.join(os.tmpdir()
 function read(...args){assert.equal(typeof api.readVisualSource,'function','Missing existing-runtime visual source reader');return api.readVisualSource(...args);}
 
 const branding=(value,overrides={})=>unitResponse(value,{contentRole:'BRANDING_ONLY',text:'',tables:[],visualDescription:'A standalone blue company emblem with small lettering.',uncertainties:[],...overrides});
+test('worksite_photographs_keep_the_work_observation_without_demanding_incidental_vehicle_identifiers',async()=>fixture(async()=>{
+ const value=await unit('docx:worksite',{kind:'DOCX_IMAGE',localText:'',contextText:'Photographs of material being poured into a roadside drain.'});let calls=0;
+ const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async input=>{calls++;assert.match(input.text,/For a worksite photograph, prioritize the visible work/u);assert.match(input.text,/vehicle registration plates/u);assert.match(input.text,/not substantive reading gaps/u);return JSON.stringify(unitResponse(value,{contentRole:'CONTENT',text:'',tables:[],visualDescription:'A mixer truck is pouring grey material into a roadside drain opening.',uncertainties:[],nonBlockingNotes:['The registration of a background vehicle is not established.']}));}));
+ assert.equal(calls,1);assert.equal(result.units[0].complete,true);assert.equal(result.units[0].contentRole,'CONTENT');assert.equal(result.units[0].text,'');assert.ok(result.units[0].visualDescription.includes('drain opening'));assert.equal(result.units[0].nonBlockingNotes.length,1);assert.deepEqual(result.units[0].uncertainties,[]);assert.equal(assembleDocumentReading({...manifest([value]),format:'DOCX'},result.units).visualDescriptions.length,1);
+}));
+test('a_vehicle_identifier_explicitly_required_by_the_source_context_still_requires_matching_numeric_readings',async()=>fixture(async()=>{
+ const value=await unit('docx:vehicle-record',{kind:'DOCX_IMAGE',localText:'',contextText:'Incident identification record: establish the registration plate of the involved truck.'});let calls=0;
+ const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async input=>{calls++;assert.match(input.text,/source context explicitly makes the identifier relevant/u);if(calls===1)assert.match(input.text,/Incident identification record/u);else assert.ok(!input.text.includes('Incident identification record'),'The confirmation must remain blind');assert.match(input.text,/Do not apply this incidental-marking exception to document text/u);return JSON.stringify(unitResponse(value,{contentRole:'CONTENT',text:calls%2?'276-82-703':'276-82-603',visualDescription:'Registration plate of the involved truck.'}));}));
+ assert.ok(calls>=2);assert.equal(result.units[0].complete,false);assert.ok(result.units[0].uncertainties.some(note=>note.startsWith('Numeric or source verification failed:')));
+}));
 test('branding_is_recognized_without_transcribing_its_small_lettering',async()=>fixture(async root=>{
  const value=await unit('docx:branding',{kind:'DOCX_IMAGE',locations:[{part:'word/header1.xml',anchor:'word/header1.xml#rId1:1',mediaName:'word/media/logo.png'}],localText:''});let calls=0;
  const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async()=>{calls++;return JSON.stringify(branding(value));}));
