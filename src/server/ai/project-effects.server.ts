@@ -29,9 +29,17 @@ function compare(row:Row,key:string,operator:string,wanted:unknown):boolean {con
 }
 async function countedRows(client:SupabaseClient,table:string,configure:(query:unknown)=>unknown):Promise<Row[]> {
     const rows:Row[]=[];let expected:number|null=null;
-    for(let start=0;;start+=500){const base=client.from(table).select('*,xmin',{count:'exact'}).order('id').range(start,start+499);
-        const response=await configure(base) as {data:unknown;error:unknown;count:number|null};if(response.error)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
-        if(!Array.isArray(response.data)||!Number.isSafeInteger(response.count)||Number(response.count)<0||expected!==null&&expected!==response.count||response.data.some(row=>!record(row)||!validUuid(row.id))||response.data.length===0&&rows.length<Number(response.count))throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+    for(let start=0;;start+=500){const started=Date.now(),base=client.from(table).select('*,xmin',{count:'exact'}).order('id').range(start,start+499);
+        const response=await configure(base) as {data:unknown;error:unknown;count:number|null;status?:number};
+        const unverified=(reason:string):never=>{
+            const error=response.error,code=record(error)&&typeof error.code==='string'&&/^[A-Z0-9_-]{1,40}$/i.test(error.code)?error.code:null;
+            const message=record(error)&&typeof error.message==='string'?error.message:'';
+            const errorCategory=/timeout|timed out/iu.test(message)?'timeout':/fetch failed|failed to fetch/iu.test(message)?'fetch-failed':/terminated|ECONN|socket/iu.test(message)?'connection-closed':/aborted/iu.test(message)?'aborted':error?'other':null;
+            try{console.warn('[ai-project-read]',JSON.stringify({at:new Date().toISOString(),table,reason,start,status:response.status??null,count:response.count,returnedRows:Array.isArray(response.data)?response.data.length:null,elapsedMs:Math.max(0,Date.now()-started),errorCode:code,errorCategory}));}catch{}
+            throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+        };
+        if(response.error)unverified('response-error');
+        if(!Array.isArray(response.data)||!Number.isSafeInteger(response.count)||Number(response.count)<0||expected!==null&&expected!==response.count||response.data.some(row=>!record(row)||!validUuid(row.id))||response.data.length===0&&rows.length<Number(response.count))unverified('coverage');
         expected=Number(response.count);rows.push(...response.data as Row[]);if(rows.length>=expected)break;
     }
     if(rows.length!==expected||new Set(rows.map(row=>row.id)).size!==rows.length)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');return rows;

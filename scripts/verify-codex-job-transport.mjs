@@ -29,3 +29,20 @@ test('the final commit is sent once without a control-request retry or timeout',
  let calls=0;const store=createAiJobStore({rpc(name){assert.equal(name,'contractor_ai_complete');calls++;return {abortSignal(){throw Error('Final commit must not use the control-request policy');},then(resolve,reject){return Promise.resolve({data:true,error:null}).then(resolve,reject);}};}});
  assert.equal(await store.complete(job,lease,{result:{answer:'retained'},effects:[]}),true);assert.equal(calls,1);
 });
+
+test('a_cancelled_database_claim_recovers_using_the_same_request_without_creating_a_second_job',async()=>{
+ const calls=[],row={id:job,project_id:project,owner_id:ownerId,kind:'document_analysis',state:'RUNNING',revision:2,payload:{documentId:job,operation:'read_source'},profile_snapshot:{},context_snapshot:{},lease_token:lease,request_key:'same-durable-request',input_hash:'fixture',attempt:1,lease_expires_at:new Date(31000).toISOString(),result:null,error:null};
+ const store=createAiJobStore({rpc(name,params){calls.push({name,params:structuredClone(params)});return Promise.resolve(calls.length===1?{data:null,error:{code:'57014',message:'canceling statement due to statement timeout'},status:500}:{data:row,error:null,status:200});}});
+ const result=await store.claim('same-worker',1000);assert.equal(result.id,job);assert.equal(result.requestKey,'same-durable-request');assert.equal(calls.length,2);assert.deepEqual(calls[0],calls[1]);
+});
+
+test('a_persisting_database_claim_timeout_stops_after_two_retries',async()=>{
+ let calls=0;const store=createAiJobStore({rpc(){calls++;return Promise.resolve({data:null,error:{code:'57014',message:'statement timeout'},status:500});}});
+ await assert.rejects(store.claim('same-worker',1000),error=>error.code==='AI_UNAVAILABLE');assert.equal(calls,3);
+});
+
+test('an_uncertain_claim_response_or_a_final_commit_is_never_replayed',async()=>{
+ for(const operation of ['claim','complete']){let calls=0;const store=createAiJobStore({rpc(){calls++;if(operation==='claim')return Promise.reject(Object.assign(Error('connection lost'),{code:'ECONNRESET'}));return Promise.resolve({data:null,error:{code:'57014',message:'statement timeout'},status:500});}});
+  await assert.rejects(operation==='claim'?store.claim('same-worker',1000):store.complete(job,lease,{result:{answer:'retained'},effects:[]}),error=>error.code==='AI_UNAVAILABLE');assert.equal(calls,1);
+ }
+});

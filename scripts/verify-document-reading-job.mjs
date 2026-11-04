@@ -14,7 +14,7 @@ import {xlsxWithImages,xlsxRow} from './fixtures/xlsx-image-fixtures.mjs';
 const load=async file=>import(file).catch(error=>{if(error.code==='ERR_MODULE_NOT_FOUND'&&error.url?.endsWith(file.slice(2)))return {};throw error;});
 const {createDocumentHandler}=await import('../src/server/ai/handlers/document.ts');
 const reading=await load('../src/server/ai/handlers/document-reading.ts');
-async function run({validated=false,cancel=false,changedSource=false,unclear=false,operation='read_source',source='docx',photo=false,repeat=false,validAnalysis=false}={}){
+async function run({validated=false,cancel=false,changedSource=false,unclear=false,operation='read_source',source='docx',photo=false,repeat=false,validAnalysis=false,snapshotFailure=null}={}){
  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-reading-job-')),previous=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=temp;
  try{
   const png=await sharp({create:{width:80,height:50,channels:3,background:'black'}}).png().toBuffer();
@@ -22,6 +22,7 @@ async function run({validated=false,cancel=false,changedSource=false,unclear=fal
   const doc=rows.documents.find(d=>d.id===pricingIds.work);
   Object.assign(doc,{title:'source.'+source,content_hash:changedSource?'9'.repeat(64):digest(file),extracted_text:'Previous source text.',extracted_text_hash:digest('Previous source text.'),ai_status:validated?'VALIDATED':'PENDING',parsed_json:{owner_note:'keep',summary:'Manual summary',financial_data:{total_amount:123}}});
   const before=structuredClone(rows),inputs=[];let database=pricingReadClient(rows),prepared;
+  if(snapshotFailure){const from=database.from.bind(database);database.from=table=>{const query=from(table);if(table==='documents'){const then=query.then.bind(query);query.then=(resolve,reject)=>then(response=>snapshotFailure==='response-error'?{data:null,count:null,status:503,error:{code:'57014',message:'PRIVATE SOURCE CONTENT'}}:{...response,count:null,status:200}).then(resolve,reject);}return query;};}
   const fx=queueFixture({onGenerate:async input=>{
    if(cancel){const current=[...fx.rows.values()][0];await fx.store.cancel(ownerId,current.id,current.revision);}
    inputs.push(input);
@@ -42,6 +43,12 @@ test('reading_payload_is_strict_and_default_analysis_remains_compatible',()=>{
  const handler=createDocumentHandler();assert.deepEqual(handler.validate({documentId:pricingIds.work}),{documentId:pricingIds.work});
  assert.deepEqual(handler.validate({documentId:pricingIds.work,operation:'read_source'}),{documentId:pricingIds.work,operation:'read_source'});
  for(const payload of [{documentId:pricingIds.work,operation:'shell'},{documentId:pricingIds.work,operation:'read_source',source_reading:{complete:true}}])assert.throws(()=>handler.validate(payload));
+});
+
+for(const reason of ['response-error','coverage'])test('a_project_snapshot_'+reason+'_records_safe_diagnostics_before_any_image_reading',async()=>{
+ const warnings=[],original=console.warn;let result;console.warn=(...values)=>warnings.push(values);try{result=await run({snapshotFailure:reason});}finally{console.warn=original;}
+ assert.equal(result.job.state,'FAILED');assert.equal(result.job.error.code,'AI_SOURCE_UNVERIFIED');assert.equal(result.modelTurns,0);assert.deepEqual(result.rows,result.before);
+ const record=warnings.find(values=>values[0]==='[ai-project-read]');assert.ok(record,'The source failure must identify the failing table and response status');const metadata=JSON.parse(record[1]);assert.equal(metadata.table,'documents');assert.equal(metadata.reason,reason);assert.equal(metadata.status,reason==='response-error'?503:200);assert.ok(metadata.elapsedMs>=0);assert.equal(metadata.errorCode,reason==='response-error'?'57014':null);assert.ok(!JSON.stringify(warnings).includes('PRIVATE SOURCE CONTENT'));
 });
 test('validated_document_can_be_read_without_changing_manual_fields',async()=>{
  assert.equal(typeof reading.stageDocumentReading,'function','Missing atomic document reading stage');

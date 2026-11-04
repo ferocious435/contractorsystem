@@ -39,7 +39,7 @@ function checkedProgress(value:unknown):DocumentJobProgress {
 function ids(...values:unknown[]){if(values.some(value=>!validUuid(value)))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);}
 const safeError='העוזר לא השלים את הפעולה. הנתונים נשמרו.';
 export function createAiJobStore(transport:RpcTransport) {
-    async function rpc(name:string,p:JsonObject):Promise<unknown>{
+    async function rpc(name:string,p:JsonObject,claimTimeoutAttempts=0):Promise<unknown>{
         const control=['read','heartbeat','progress'].includes(name),started=Date.now();let signal:AbortSignal|undefined;
         function unavailable(error:unknown,status?:number){let value=error,transportCode:string|null=null;
             for(let i=0;i<3&&record(value);i++,value=value.cause){if(typeof value.code==='string'&&/^[A-Z0-9_]{1,60}$/.test(value.code)){transportCode=value.code;break;}}
@@ -49,6 +49,11 @@ export function createAiJobStore(transport:RpcTransport) {
             if(control&&request.abortSignal){signal=AbortSignal.timeout(8000);request=request.abortSignal(signal);}
             response=await request;
         }catch(error){unavailable(error);throw new BusinessAiError('AI_UNAVAILABLE');}
+        // PostgreSQL 57014 rolls back the statement. Only that explicit claim failure is safe to repeat.
+        if(name==='claim'&&response.status===500&&response.error?.code==='57014'&&claimTimeoutAttempts<2){
+            unavailable(response.error,response.status);await new Promise(resolve=>setTimeout(resolve,500*(claimTimeoutAttempts+1)));
+            return rpc(name,p,claimTimeoutAttempts+1);
+        }
         if(response.error){const code=response.error.message?.match(/\bAI_[A-Z_]+\b/)?.[0]??'AI_UNAVAILABLE';
             if(code==='AI_UNAVAILABLE')unavailable(response.error,response.status);
             const status=code==='AI_ACCESS_DENIED'?403:/(?:CONFLICT|CHANGED|LEASE_LOST)$/.test(code)?409:code.endsWith('_INVALID')?400:503;
