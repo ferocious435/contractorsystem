@@ -3,6 +3,8 @@ import type {JobDto} from '../server/ai/contracts';
 
 export const VISUAL_READING_VERSION = 'visual-source-reading-v2';
 export const VISUAL_READING_RULES = 'visual-reading-rules-v2';
+export const BRANDING_RECOGNITION_VERSION = 'branding-recognition-v1';
+export type ContentRole = 'CONTENT'|'BRANDING_ONLY'|'UNKNOWN';
 export type Rect = {x:number;y:number;width:number;height:number};
 export type Coverage = {complete:boolean;missingUnitIds:string[];verifiedUnitIds:string[];issues:string[]};
 export type NumericCheck = {matched:boolean;unresolved:string[]};
@@ -17,23 +19,27 @@ export type SourceManifest = {
     sourceHash:string;manifestHash:string;format:'PDF'|'DOCX'|'TEXT'|'IMAGE'|'XLSX';nativeText:string;nativeVerification:unknown;
     units:ReadingUnit[];issues:string[];assembly:Array<{kind:'native';text:string}|{kind:'unit';unitId:string}>;
 };
-export type UnitReading = {unitId:string;viewId:string;text:string;tables:string[][][];visualDescription:string;uncertainties:string[]};
-export type ReadingMethod = 'native-match'|'local-ocr-match'|'visual-double-pass'|'no-numbers'|'physical-empty';
+export type UnitReading = {unitId:string;viewId:string;text:string;tables:string[][][];visualDescription:string;uncertainties:string[];contentRole?:ContentRole;nonBlockingNotes?:string[]};
+export type ReadingMethod = 'native-match'|'local-ocr-match'|'visual-double-pass'|'no-numbers'|'physical-empty'|'branding-recognition';
 export type VerifiedView = {
     viewId:string;imageHash:string;textHash:string;method:ReadingMethod;confirmationHash:string;
     reading:UnitReading;confirmation:UnitReading|null;emptyPageProof?:RenderedEmptyPageProof;
     initialReading?:UnitReading;
+    recognitionVersion?:typeof BRANDING_RECOGNITION_VERSION;
     readingImage?:Omit<RenderedView,'id'|'bytes'>;confirmationImage?:Omit<RenderedView,'id'|'bytes'>;
 };
 export type VerifiedUnit = {
     unitId:string;inputHash:string;textHash:string;text:string;tables:string[][][];visualDescription:string;
     uncertainties:string[];views:VerifiedView[];complete:boolean;formattingNotes?:string[];
     createdBy?:{jobId:string;rulesVersion:string;profileRevision:number};
+    contentRole?:ContentRole;nonBlockingNotes?:string[];
+    brandingOrigin?:ReadingScope&{unitId:string;jobId:string;inputHash:string;profileRevision:number;profileFingerprint:string};
 };
 export type RegistryUnit = {
     id:string;kind:ReadingUnit['kind'];locations:ReadingLocation[];views:Array<Omit<RenderedView,'bytes'>>;
     status:'READ'|'REQUIRES_REVIEW';inputHash:string;textHash:string;literalHasBody:boolean;visualHasContent:boolean;
     verifiedViews:Array<Omit<VerifiedView,'reading'|'confirmation'|'initialReading'>>;uncertainties:string[];
+    contentRole?:ContentRole;nonBlockingNotes?:string[];
 };
 export type VisualReadingVerification = {
     version:typeof VISUAL_READING_VERSION;sourceHash:string;currentTextHash:string;manifestHash:string;
@@ -138,11 +144,15 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
         if(!object(raw)||!identifier(raw.id)||ids.has(raw.id))return invalid('Unknown or repeated reading unit');
         ids.add(raw.id);
         const kind=raw.kind;
+        const branding=raw.contentRole==='BRANDING_ONLY';
         const compatible=registry.format==='IMAGE'?kind==='IMAGE_FRAME':registry.format==='XLSX'?kind==='XLSX_IMAGE':kind!=='IMAGE_FRAME'&&kind!=='XLSX_IMAGE';
         let valid=(kind==='PDF_PAGE'||kind==='DOCX_IMAGE'||kind==='IMAGE_FRAME'||kind==='XLSX_IMAGE')&&compatible&&raw.status==='READ'&&validReadingHash(raw.inputHash)&&validReadingHash(raw.textHash)
             &&Array.isArray(raw.locations)&&raw.locations.length>0&&raw.locations.every(l=>locationValid(l,kind))
             &&strings(raw.uncertainties)&&raw.uncertainties.length===0&&Array.isArray(raw.views)&&raw.views.length>0
             &&Array.isArray(raw.verifiedViews)&&raw.verifiedViews.length===raw.views.length;
+        if(raw.contentRole!==undefined&&!['CONTENT','BRANDING_ONLY','UNKNOWN'].includes(String(raw.contentRole)))valid=false;
+        if(branding&&(kind==='PDF_PAGE'||raw.literalHasBody!==false||raw.visualHasContent!==true
+            ||raw.textHash!=='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'))valid=false;
         const views=Array.isArray(raw.views)?raw.views:[],proofs=Array.isArray(raw.verifiedViews)?raw.verifiedViews:[];
         const viewIds=new Set<string>(),regions=new Map<string,{hashes:Set<string>;physical:boolean}>();let physicalEmpty=views.length>0;
         for(const view of views){
@@ -152,7 +162,11 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
             viewIds.add(view.id);
             const matches=proofs.filter(p=>object(p)&&p.viewId===view.id),proof=matches[0];
             if(matches.length!==1||!object(proof)||proof.imageHash!==view.sha256||!validReadingHash(proof.textHash)
-                ||!validReadingHash(proof.confirmationHash)||!['native-match','local-ocr-match','visual-double-pass','no-numbers','physical-empty'].includes(String(proof.method))){valid=false;physicalEmpty=false;continue;}
+                ||!validReadingHash(proof.confirmationHash)||!(branding?proof.method==='branding-recognition'&&proof.recognitionVersion===BRANDING_RECOGNITION_VERSION
+                    &&proof.textHash==='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+                    &&proof.confirmationHash===proof.textHash&&view.rect.x===0&&view.rect.y===0&&view.rect.width===1&&view.rect.height===1
+                    :['native-match','local-ocr-match','visual-double-pass','no-numbers','physical-empty'].includes(String(proof.method)))){valid=false;physicalEmpty=false;continue;}
+            if(branding)for(const image of [proof.readingImage,proof.confirmationImage])if(!object(image)||image.sha256!==view.sha256||image.width!==view.width||image.height!==view.height||JSON.stringify(image.rect)!==JSON.stringify(view.rect))valid=false;
             const key=JSON.stringify(view.rect),region=regions.get(key)??{hashes:new Set<string>(),physical:false};
             region.hashes.add(proof.textHash);region.physical||=proof.method==='physical-empty';regions.set(key,region);
             if(proof.method!=='physical-empty'||!emptyProofValid(proof.emptyPageProof,view,Array.isArray(raw.locations)?raw.locations[0]:null))physicalEmpty=false;

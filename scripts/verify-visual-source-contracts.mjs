@@ -7,6 +7,15 @@ const contracts=await load('../src/utils/visual-source-reading.ts');
 const response=await load('../src/utils/visual-source-response.ts');
 function api(module,name){assert.equal(typeof module[name],'function',`Missing visual reading contract: ${name}`);return module[name];}
 
+test('branding_coverage_requires_the_same_complete_image_in_both_recognition_witnesses',()=>{
+ const registry=visualRegistry({format:'DOCX'}),entry=registry.expectedUnits[0];Object.assign(entry,{kind:'DOCX_IMAGE',contentRole:'BRANDING_ONLY',locations:[{part:'word/header1.xml',anchor:'word/header1.xml#rId1:1',mediaName:'word/media/logo.png'}],literalHasBody:false,visualHasContent:true,textHash:digest('')});
+ entry.verifiedViews[0]={...entry.verifiedViews[0],method:'branding-recognition',recognitionVersion:'branding-recognition-v1',textHash:digest(''),confirmationHash:digest(''),readingImage:{sha256:entry.views[0].sha256,width:100,height:100,rect:entry.views[0].rect},confirmationImage:{sha256:entry.views[0].sha256,width:100,height:100,rect:entry.views[0].rect}};
+ const source=sourceDocument({title:'letter.docx',parsed_json:{source_reading:registry}});assert.equal(assessDocumentSourceReadiness(source).canCompare,true);
+ for(const mutate of [value=>{delete value.verifiedViews[0].confirmationImage;},value=>{value.verifiedViews[0].confirmationImage.sha256='4'.repeat(64);},value=>{value.textHash=digest('Payment 9000');}]){
+  const invalid=structuredClone(registry);mutate(invalid.expectedUnits[0]);assert.equal(assessDocumentSourceReadiness({...source,parsed_json:{source_reading:invalid}}).canCompare,false);
+ }
+});
+
 test('missing_view_is_incomplete',()=>{
  const assess=api(contracts,'assessVisualReading'),registry=visualRegistry();
  assert.equal(assess(registry,sourceDocument()).complete,true);

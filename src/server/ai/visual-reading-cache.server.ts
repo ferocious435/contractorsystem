@@ -3,7 +3,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {lstat,mkdir,realpath,readFile,writeFile,rename,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {BusinessAiError,record,validUuid} from './contracts';
-import {VISUAL_READING_RULES,validReadingHash,type ReadingScope,type ReadingUnit,type UnitReading,type VerifiedUnit} from '@/utils/visual-source-reading';
+import {VISUAL_READING_RULES,BRANDING_RECOGNITION_VERSION,validReadingHash,type ReadingScope,type ReadingUnit,type UnitReading,type VerifiedUnit} from '@/utils/visual-source-reading';
 import {validateUnitReading,compareNumericReadings,unresolvedReadingUncertainties} from '@/utils/visual-source-response';
 import {hasDocumentBodyText,hasRenderedEmptyPageProof} from '@/utils/document-source-readiness';
 
@@ -45,6 +45,15 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
     if(!record(value)||value.unitId!==unit.id||value.inputHash!==readingUnitInputHash(unit)||typeof value.text!=='string'||value.textHash!==digest(value.text)
         ||value.complete!==true||!Array.isArray(value.uncertainties)||value.uncertainties.length||!Array.isArray(value.views)||value.views.length!==unit.views.length
         ||typeof value.visualDescription!=='string'||!Array.isArray(value.tables))return false;
+    if(value.contentRole!==undefined&&!['CONTENT','BRANDING_ONLY','UNKNOWN'].includes(String(value.contentRole)))return false;
+    const branding=value.contentRole==='BRANDING_ONLY';
+    if(branding&&(unit.kind==='PDF_PAGE'||value.text!==''||value.tables.length||!value.visualDescription.trim()))return false;
+    if(value.brandingOrigin!==undefined){
+        const origin=value.brandingOrigin;
+        if(!branding||!record(origin)||!['ownerId','projectId','documentId','jobId'].every(key=>validUuid(origin[key]))
+            ||!validReadingHash(origin.sourceHash)||!validReadingHash(origin.inputHash)||!validReadingHash(origin.profileFingerprint)
+            ||origin.unitId!==unit.id||!record(value.createdBy)||origin.jobId!==value.createdBy.jobId||origin.profileRevision!==value.createdBy.profileRevision)return false;
+    }
     const regions=new Map<string,{hashes:Set<string>;physical:boolean}>();
     for(const view of unit.views){
         const proofs=value.views.filter(p=>record(p)&&p.viewId===view.id),proof=proofs[0];
@@ -53,10 +62,19 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
         const readView=unit.views.find(v=>v.id===readingViewId&&JSON.stringify(v.rect)===JSON.stringify(view.rect));
         if(!readView)return false;
         let reading:UnitReading;try{reading=validateUnitReading(JSON.stringify(proof.reading),unit,readView.id);}catch{return false;}
+        if((reading.contentRole==='BRANDING_ONLY')!==branding||!branding&&record(proof.confirmation)&&proof.confirmation.contentRole==='BRANDING_ONLY')return false;
         if(proof.textHash!==digest(unitReadingLiteral(reading)))return false;
         const key=JSON.stringify(view.rect),region=regions.get(key)??{hashes:new Set<string>(),physical:false};
         region.hashes.add(digest(unitReadingLiteral(reading)));region.physical||=proof.method==='physical-empty';regions.set(key,region);
-        if(proof.method==='physical-empty'){
+        if(branding){
+            if(proof.method!=='branding-recognition'||proof.recognitionVersion!==BRANDING_RECOGNITION_VERSION||!record(proof.confirmation)
+                ||reading.contentRole!=='BRANDING_ONLY'||reading.text!==''||reading.tables.length||reading.uncertainties.length
+                ||view.rect.x!==0||view.rect.y!==0||view.rect.width!==1||view.rect.height!==1)return false;
+            for(const image of [proof.readingImage,proof.confirmationImage])if(!record(image)||image.sha256!==view.sha256||image.width!==view.width||image.height!==view.height||JSON.stringify(image.rect)!==JSON.stringify(view.rect))return false;
+            try{const confirmation=validateUnitReading(JSON.stringify(proof.confirmation),unit,proof.confirmation.viewId as string);
+                if(confirmation.contentRole!=='BRANDING_ONLY'||proof.confirmationHash!==digest(unitReadingLiteral(confirmation)))return false;
+            }catch{return false;}
+        }else if(proof.method==='physical-empty'){
             if(reading.uncertainties.length)return false;
             const page=unit.locations[0]?.page;
             if(!page||!record(proof.emptyPageProof)||proof.emptyPageProof.imageSha256!==view.sha256
@@ -96,7 +114,7 @@ export function retainedReadingUnit(value:unknown,unit:ReadingUnit):VerifiedUnit
         for(const view of unit.views){
             const proofs=value.views.filter(proof=>record(proof)&&proof.viewId===view.id),proof=proofs[0];
             if(proofs.length!==1||!record(proof)||proof.imageHash!==view.sha256||!record(proof.reading)||typeof proof.reading.viewId!=='string'
-                ||!['native-match','local-ocr-match','visual-double-pass','physical-empty','no-numbers'].includes(String(proof.method)))return null;
+                ||!['native-match','local-ocr-match','visual-double-pass','physical-empty','no-numbers','branding-recognition'].includes(String(proof.method)))return null;
             const reading=validateUnitReading(JSON.stringify(proof.reading),unit,proof.reading.viewId),original=unit.views.find(source=>source.id===reading.viewId);
             if(!original||JSON.stringify(original.rect)!==JSON.stringify(view.rect)||proof.textHash!==digest(unitReadingLiteral(reading)))return null;
             for(const witness of [proof.confirmation,proof.initialReading])if(witness!==null&&witness!==undefined){
@@ -181,12 +199,15 @@ export function createVisualReadingCache(root:string) {
                 const savedScope=payload.scope;
                 if(payload.version!=='visual-unit-cache-v2'||!['ownerId','projectId','documentId','sourceHash'].every(k=>savedScope[k]===scope[k as keyof ReadingScope])
                     ||payload.inputHash!==readingUnitInputHash(unit)||payload.payloadHash!==digest(JSON.stringify(payload.unit))||!verifiedReadingUnit(payload.unit,unit))return null;
+                const origin=(payload.unit as VerifiedUnit).brandingOrigin;
+                if(origin&&(origin.ownerId!==scope.ownerId||origin.projectId!==scope.projectId))return null;
                 return payload.unit as VerifiedUnit;
             }catch(error){if(error instanceof BusinessAiError)throw error;return null;}
         },
         async write(scope:ReadingScope,unit:ReadingUnit,result:VerifiedUnit):Promise<void>{
             const file=filename(scope,unit);
             if(!verifiedReadingUnit(result,unit))throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+            if(result.brandingOrigin&&(result.brandingOrigin.ownerId!==scope.ownerId||result.brandingOrigin.projectId!==scope.projectId))throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
             const payload=JSON.stringify({version:'visual-unit-cache-v2',scope:{ownerId:scope.ownerId,projectId:scope.projectId,documentId:scope.documentId,sourceHash:scope.sourceHash},inputHash:readingUnitInputHash(unit),unit:result,payloadHash:digest(JSON.stringify(result))});
             if(Buffer.byteLength(payload)>maxBytes)throw new BusinessAiError('AI_RESPONSE_TOO_LARGE');
             await checkedReadingDirectory(absolute,path.dirname(file),true);

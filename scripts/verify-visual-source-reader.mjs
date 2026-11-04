@@ -6,6 +6,8 @@ import path from 'node:path';
 import sharp from 'sharp';
 import {readingUnit,unitResponse,digest,sourceHash,literal,sourceDocument} from './codex-runtime/visual-reading-fixtures.mjs';
 import {BusinessAiError} from '../src/server/ai/contracts.ts';
+import {assembleDocumentReading,createReadingPatch} from '../src/utils/document-reading-history.ts';
+import {assessDocumentSourceReadiness} from '../src/utils/document-source-readiness.ts';
 const load=async file=>import(file).catch(error=>{if(error.code==='ERR_MODULE_NOT_FOUND'&&error.url?.endsWith(file.slice(2)))return {};throw error;});
 const api=await load('../src/server/ai/visual-source-reader.server.ts'),cacheApi=await load('../src/server/ai/visual-reading-cache.server.ts');
 const scope={ownerId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',projectId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',documentId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',sourceHash};
@@ -15,6 +17,52 @@ async function unit(id='pdf:1',overrides={}){const bytes=await sharp({create:{wi
 function execution(generate,extra={}){return {jobId,ownerId:scope.ownerId,projectId:scope.projectId,profile:{ownerId:scope.ownerId,accountFingerprint:'synthetic',model:'fixture',effort:null,revision:1},signal:new AbortController().signal,checkActive:async()=>{},reportProgress:async()=>{},generate,...extra};}
 async function fixture(action){const root=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-visual-reader-')),previous=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=root;try{await action(path.join(root,'ContractorSystem','ai-runtime'));}finally{if(previous===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=previous;assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));await fs.rm(root,{recursive:true,force:true});}}
 function read(...args){assert.equal(typeof api.readVisualSource,'function','Missing existing-runtime visual source reader');return api.readVisualSource(...args);}
+
+const branding=(value,overrides={})=>unitResponse(value,{contentRole:'BRANDING_ONLY',text:'',tables:[],visualDescription:'A standalone blue company emblem with small lettering.',uncertainties:[],...overrides});
+test('branding_is_recognized_without_transcribing_its_small_lettering',async()=>fixture(async root=>{
+ const value=await unit('docx:branding',{kind:'DOCX_IMAGE',locations:[{part:'word/header1.xml',anchor:'word/header1.xml#rId1:1',mediaName:'word/media/logo.png'}],localText:''});let calls=0;
+ const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async()=>{calls++;return JSON.stringify(branding(value));}));
+ assert.equal(result.units[0].complete,true);assert.equal(result.units[0].contentRole,'BRANDING_ONLY');assert.equal(calls,2);assert.equal(result.units[0].text,'');assert.deepEqual(result.units[0].tables,[]);assert.equal(result.units[0].views[0].method,'branding-recognition');assert.ok(await cacheApi.createVisualReadingCache(root).read(scope,value));
+ const body='יש להשאיר את המעבר פתוח.',sourceManifest={...manifest([value]),format:'DOCX',nativeText:body,assembly:[{kind:'native',text:body},{kind:'unit',unitId:value.id}]},assembled=assembleDocumentReading(sourceManifest,result.units);assembled.verification.createdBy={jobId,rulesVersion:'visual-reading-rules-v2',profileRevision:1};const saved={...sourceDocument({id:scope.documentId,project_id:scope.projectId,title:'protocol.docx'}),...createReadingPatch(sourceDocument({title:'protocol.docx'}),assembled)};
+ assert.equal(assessDocumentSourceReadiness(saved).canCompare,true);assert.equal(saved.extracted_text,body);assert.equal(saved.parsed_json.source_reading.expectedUnits[0].contentRole,'BRANDING_ONLY');assert.deepEqual(assembled.visualDescriptions,[],'Branding must not become project evidence in visual context');
+ for(const change of [proof=>{proof.confirmation=null;},proof=>{proof.method='no-numbers';}]){const invalid=structuredClone(result.units[0]);change(invalid.views[0]);assert.equal(cacheApi.verifiedReadingUnit(invalid,value),false);}
+ const disguised=structuredClone(result.units[0]);delete disguised.contentRole;disguised.views[0].method='no-numbers';disguised.views[0].confirmation=null;assert.equal(cacheApi.verifiedReadingUnit(disguised,value),false,'Removing a role label must not bypass independent recognition');
+}));
+test('recognizing_branding_keeps_the_previous_partial_image_attempt_even_when_body_text_is_unchanged',async()=>fixture(async()=>{
+ const value=await unit('docx:history',{kind:'DOCX_IMAGE',locations:[{part:'word/header1.xml',anchor:'word/header1.xml#rId1:1',mediaName:'word/media/logo.png'}],localText:''}),result=await read({...manifest([value]),format:'DOCX'},scope,execution(async()=>JSON.stringify(branding(value)))),old={unitId:value.id,inputHash:'3'.repeat(64),text:'ISO 9001',textHash:digest('ISO 9001'),tables:[],visualDescription:'A company emblem',uncertainties:['Small lettering unclear'],views:[],complete:false};
+ const body=literal,source=sourceDocument({title:'protocol.docx',parsed_json:{source_reading_units:[old]}}),assembled=assembleDocumentReading({...manifest([value]),format:'DOCX',nativeText:body,assembly:[{kind:'native',text:body},{kind:'unit',unitId:value.id}]},result.units);assembled.verification.createdBy={jobId,rulesVersion:'visual-reading-rules-v2',profileRevision:1};
+ const saved={...source,...createReadingPatch(source,assembled)};assert.equal(saved.extracted_text,body);assert.deepEqual(saved.parsed_json.source_reading_unit_history?.[0]?.units,[old]);const again=createReadingPatch(saved,assembled);assert.equal(again.parsed_json.source_reading_unit_history.length,1);
+}));
+test('branding_recognition_is_reused_across_owned_documents_without_copying_their_context',async()=>fixture(async()=>{
+ const value=await unit('docx:branding',{kind:'DOCX_IMAGE',locations:[{part:'word/header1.xml',anchor:'word/header1.xml#rId1:1',mediaName:'word/media/logo.png'}],localText:'',contextText:'First sender'});let calls=0;
+ const first=await read({...manifest([value]),format:'DOCX'},scope,execution(async()=>{calls++;return JSON.stringify(branding(value));}));assert.equal(first.units[0].complete,true);
+ const target={...value,contextText:'A different sender',locations:[{part:'word/footer1.xml',anchor:'word/footer1.xml#rId4:1',mediaName:'word/media/logo.png'}]},nextScope={...scope,documentId:'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',sourceHash:'4'.repeat(64)};
+ const result=await read({...manifest([target]),format:'DOCX',sourceHash:nextScope.sourceHash},nextScope,execution(async()=>{throw Error('The identical branding image must not be sent to the model again');},{jobId:'ffffffff-ffff-4fff-8fff-ffffffffffff'}));
+ assert.equal(calls,2);assert.equal(result.units[0].complete,true);assert.notEqual(result.units[0].inputHash,first.units[0].inputHash);assert.equal(result.units[0].brandingOrigin.documentId,scope.documentId);assert.deepEqual(result.units[0].views,first.units[0].views);assert.equal(cacheApi.verifiedReadingUnit(result.units[0],target),true);
+}));
+test('a_changed_company_logo_can_be_recognized_without_matching_an_old_logo',async()=>fixture(async()=>{
+ const first=await unit('docx:branding',{kind:'DOCX_IMAGE',localText:''});let calls=0;const generate=value=>async()=>{calls++;return JSON.stringify(branding(value));};
+ assert.equal((await read({...manifest([first]),format:'DOCX'},scope,execution(generate(first)))).units[0].complete,true);
+ const bytes=await sharp({create:{width:96,height:64,channels:3,background:'white'}}).png().toBuffer(),next={...first,views:[{...first.views[0],bytes,sha256:digest(bytes),width:96,height:64}]},nextScope={...scope,documentId:'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',sourceHash:'5'.repeat(64)};
+ const result=await read({...manifest([next]),format:'DOCX',sourceHash:nextScope.sourceHash},nextScope,execution(generate(next)));assert.equal(result.units[0].complete,true);assert.equal(result.units[0].contentRole,'BRANDING_ONLY');assert.equal(calls,4);
+}));
+for(const difference of ['owner','project','profile'])test('branding_reuse_does_not_cross_'+difference,async()=>fixture(async()=>{
+ const value=await unit('docx:isolated-branding',{kind:'DOCX_IMAGE',localText:''});let calls=0;const generate=async()=>{calls++;return JSON.stringify(branding(value));};assert.equal((await read({...manifest([value]),format:'DOCX'},scope,execution(generate))).units[0].complete,true);
+ const nextScope={...scope,documentId:'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',...(difference==='owner'?{ownerId:'ffffffff-ffff-4fff-8fff-ffffffffffff'}:difference==='project'?{projectId:'ffffffff-ffff-4fff-8fff-ffffffffffff'}:{})},nextExecution=execution(generate,{ownerId:nextScope.ownerId,projectId:nextScope.projectId,profile:{ownerId:nextScope.ownerId,accountFingerprint:'synthetic',model:'fixture',effort:null,revision:difference==='profile'?2:1}});
+ const result=await read({...manifest([value]),format:'DOCX'},nextScope,nextExecution);assert.equal(result.units[0].complete,true);assert.equal(calls,4);
+}));
+test('uncertain_image_purpose_does_not_promote_a_document_photo_to_branding',async()=>fixture(async()=>{
+ const value=await unit('docx:ambiguous',{kind:'DOCX_IMAGE',localText:''});let calls=0;const result=await read({...manifest([value]),format:'DOCX'},scope,execution(async()=>{calls++;return JSON.stringify(calls===1?branding(value):unitResponse(value,{contentRole:'CONTENT',text:'A project instruction is visible.',visualDescription:'A photo of a letter with a logo.'}));}));
+ assert.equal(calls,2);assert.equal(result.units[0].complete,false);assert.ok(result.issues.length>0);
+}));
+for(const kind of ['DOCX_IMAGE','PDF_PAGE'])test(kind+'_a_document_with_a_logo_keeps_its_substantive_text_and_numbers',async()=>fixture(async()=>{
+ const value=await unit(kind==='PDF_PAGE'?'pdf:1':'docx:letter',{kind,localText:''}),format=kind==='PDF_PAGE'?'PDF':'DOCX';let calls=0;
+ const result=await read({...manifest([value]),format},scope,execution(async()=>{calls++;return JSON.stringify(unitResponse(value,{contentRole:'CONTENT',text:'Project work: quantity 12; price 34.',visualDescription:'A document containing a company emblem.'}));}));assert.equal(result.units[0].complete,true);assert.equal(result.units[0].text,'Project work: quantity 12; price 34.');assert.equal(calls,2);assert.equal(result.units[0].views[0].method,'visual-double-pass');
+}));
+for(const invalid of ['page','literal','table'])test('branding_does_not_hide_'+invalid,async()=>fixture(async()=>{
+ const value=await unit(invalid==='page'?'pdf:1':'docx:mixed',{kind:invalid==='page'?'PDF_PAGE':'DOCX_IMAGE',localText:''}),overrides=invalid==='literal'?{text:'Payment is required.'}:invalid==='table'?{tables:[[['Work','Price'],['Pipe','34']]]}:{};
+ const result=await read({...manifest([value]),format:invalid==='page'?'PDF':'DOCX'},scope,execution(async()=>JSON.stringify(branding(value,overrides))));assert.equal(result.units[0].complete,false);
+}));
 
 test('resume_skips_verified_units',async()=>fixture(async()=>{
  const a=await unit(),b=await unit('pdf:2'),calls=[];

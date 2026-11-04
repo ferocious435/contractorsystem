@@ -1,18 +1,27 @@
 import type {NumericCheck,ReadingUnit,UnitReading} from './visual-source-reading';
 
 const object=(v:unknown):v is Record<string,unknown>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-export const visualSourceResponseSchema={type:'object',additionalProperties:false,required:['unitId','viewId','text','tables','visualDescription','uncertainties'],properties:{
+export const visualSourceResponseSchema={type:'object',additionalProperties:false,required:['unitId','viewId','text','tables','visualDescription','uncertainties','contentRole','nonBlockingNotes'],properties:{
     unitId:{type:'string'},viewId:{type:'string'},text:{type:'string'},tables:{type:'array',items:{type:'array',items:{type:'array',items:{type:'string'}}}},
     visualDescription:{type:'string'},uncertainties:{type:'array',items:{type:'string'}},
+    contentRole:{type:'string',enum:['CONTENT','BRANDING_ONLY','UNKNOWN']},nonBlockingNotes:{type:'array',items:{type:'string'}},
 }};
 export function validateUnitReading(raw:string,expected:ReadingUnit,viewId:string):UnitReading {
     if(Buffer.byteLength(raw,'utf8')>4*1024*1024)throw Error('Image reading response is too large');
     const value:unknown=JSON.parse(raw);
-    if(!object(value)||Object.keys(value).sort().join('|')!==['unitId','viewId','text','tables','visualDescription','uncertainties'].sort().join('|')
+    const required=['unitId','viewId','text','tables','visualDescription','uncertainties'];
+    if(!object(value)||!required.every(key=>Object.hasOwn(value,key))||Object.keys(value).some(key=>![...required,'contentRole','nonBlockingNotes'].includes(key))
         ||value.unitId!==expected.id||value.viewId!==viewId||!expected.views.some(view=>view.id===viewId)
         ||typeof value.text!=='string'||typeof value.visualDescription!=='string'||!Array.isArray(value.uncertainties)
         ||!value.uncertainties.every(v=>typeof v==='string')||!Array.isArray(value.tables)
-        ||!value.tables.every(table=>Array.isArray(table)&&table.every(row=>Array.isArray(row)&&row.every(cell=>typeof cell==='string'))))throw Error('Invalid image reading response');
+        ||!value.tables.every(table=>Array.isArray(table)&&table.every(row=>Array.isArray(row)&&row.every(cell=>typeof cell==='string')))
+        ||value.contentRole!==undefined&&!['CONTENT','BRANDING_ONLY','UNKNOWN'].includes(String(value.contentRole))
+        ||value.nonBlockingNotes!==undefined&&(!Array.isArray(value.nonBlockingNotes)||!value.nonBlockingNotes.every(note=>typeof note==='string')))throw Error('Invalid image reading response');
+    if(value.contentRole==='BRANDING_ONLY'){
+        const view=expected.views.find(view=>view.id===viewId)!;
+        if(expected.kind==='PDF_PAGE'||view.rect.x!==0||view.rect.y!==0||view.rect.width!==1||view.rect.height!==1
+            ||value.text.trim()||value.tables.length||value.uncertainties.length||!value.visualDescription.trim())throw Error('Branding classification cannot hide substantive or uncertain source content');
+    }
     return value as UnitReading;
 }
 const hasNumber=(value:string)=>/\p{N}/u.test(value);

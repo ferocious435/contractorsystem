@@ -37,6 +37,8 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
   const units=(Array.isArray(visual?.expectedUnits)?visual.expectedUnits:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object');
   const verifiedUnitIds=new Set(visualMatches?assessVisualReading(visual,document).verifiedUnitIds:[]);
   const confirmedUnits=units.filter(unit=>verifiedUnitIds.has(String(unit.id)));
+  const brandingUnits=confirmedUnits.filter(unit=>unit.contentRole==='BRANDING_ONLY');
+  const recognitionNotes=[...new Set(confirmedUnits.flatMap(unit=>Array.isArray(unit.nonBlockingNotes)?unit.nonBlockingNotes.filter((note):note is string=>typeof note==='string'):[]))];
   const transcripts=(visualMatches&&Array.isArray(visual?.units)?visual.units:[]).filter((value):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'
     &&value.complete===true&&typeof value.text==='string'&&Boolean(value.text.trim())&&confirmedUnits.some(unit=>unit.id===value.unitId&&unit.textHash===value.textHash));
   const descriptions=visualDescriptions||(Array.isArray(document.parsed_json?.source_reading_visual_descriptions)?document.parsed_json.source_reading_visual_descriptions as VisualDescription[]:[]);
@@ -77,7 +79,9 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
     <div className="ti-source-view__header"><FileText size={20} aria-hidden="true" /><h3 className="ti-section-title">מקור המסמך</h3></div>
     <p className="ti-source-name"><BidiText kind="file" value={document.title || 'מסמך ללא שם'} /></p>
     {!readingCurrent&&<Feedback tone="info">מוצגת גרסת הקריאה שאליה מפנה הציטוט. הקריאה העדכנית של המסמך נשמרה בנפרד.</Feedback>}
-    <div className="ti-source-states"><StatusChip tone="neutral">הקובץ נשמר</StatusChip>{document.ai_status === 'VALIDATED' && <StatusChip tone="success">אושר ידנית</StatusChip>}<StatusChip tone={readiness.extractionComplete ? 'info' : 'warning'}>{readiness.extractionComplete ? 'הטקסט נקרא' : 'הקריאה לא הושלמה'}</StatusChip><StatusChip tone={aiIncomplete ? 'warning' : 'neutral'}>{aiIncomplete ? 'ניתוח AI לא הושלם' : analysisComplete ? 'ניתוח הושלם' : 'השלמת ניתוח נבדקת בנפרד'}</StatusChip></div>
+    <div className="ti-source-states"><StatusChip tone="neutral">הקובץ נשמר</StatusChip>{document.ai_status === 'VALIDATED' && <StatusChip tone="success">אושר ידנית</StatusChip>}<StatusChip tone={readiness.extractionComplete ? 'info' : 'warning'}>{readiness.extractionComplete ? brandingUnits.length?'תוכן המסמך נקרא':'הטקסט נקרא' : 'הקריאה לא הושלמה'}</StatusChip><StatusChip tone={aiIncomplete ? 'warning' : 'neutral'}>{aiIncomplete ? 'ניתוח AI לא הושלם' : analysisComplete ? 'ניתוח הושלם' : 'השלמת ניתוח נבדקת בנפרד'}</StatusChip></div>
+    {brandingUnits.length>0&&<p className="ti-meta" data-source-branding="recognized">סמלילים וסימני מיתוג זוהו חזותית; אינם הוראות או תנאים בפרויקט.</p>}
+    {recognitionNotes.length>0&&<ul aria-label="הערות זיהוי שאינן מעכבות קריאה">{recognitionNotes.map(note=><li key={note}>{note}</li>)}</ul>}
     {pdf && <p className="ti-meta">{pages ? <>נקראו <BidiText kind="code" value={`${readPages.length} / ${pages}`} /> עמודים{missing.length > 0 && <> · עמודים שלא נקראו: <BidiText kind="code" value={missing.join(', ')} /></>}</> : 'מספר העמודים לא אומת'}</p>}
     {isWord && <div role="group" aria-label="קריאת חלקי המסמך">
       {visualMatches&&visual?.format==='DOCX'?<><p className="ti-meta">תמונות ייחודיות שקריאתן אומתה: <BidiText kind="code" value={`${confirmedUnits.length} / ${units.length}`}/></p>

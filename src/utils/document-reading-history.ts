@@ -33,12 +33,13 @@ export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUn
             &&verified.uncertainties.length===0&&verified.views.length===unit.views.length&&unit.views.length>0
             &&unit.views.every(view=>verified.views.filter(proof=>proof.viewId===view.id&&proof.imageHash===view.sha256).length===1));
         if(!complete)issues.push('Unverified unit: '+unit.id);
-        if(complete&&verified?.visualDescription.trim())for(const location of unit.locations)visualDescriptions.push({unitId:unit.id,location,text:verified.visualDescription});
+        if(complete&&verified?.contentRole!=='BRANDING_ONLY'&&verified?.visualDescription.trim())for(const location of unit.locations)visualDescriptions.push({unitId:unit.id,location,text:verified.visualDescription});
         return {id:unit.id,kind:unit.kind,locations:unit.locations,views:unit.views.map(viewWithoutBytes),status:complete?'READ' as const:'REQUIRES_REVIEW' as const,
             inputHash:verified?.inputHash||'',textHash:verified?.textHash||'',literalHasBody:hasDocumentBodyText(verified?.text||''),visualHasContent:Boolean(verified?.visualDescription.trim()),
             verifiedViews:(verified?.views||[]).map(proof=>({viewId:proof.viewId,imageHash:proof.imageHash,textHash:proof.textHash,method:proof.method,confirmationHash:proof.confirmationHash,
                 ...(proof.readingImage?{readingImage:proof.readingImage}:{}),...(proof.confirmationImage?{confirmationImage:proof.confirmationImage}:{}),
-                ...(proof.emptyPageProof?{emptyPageProof:proof.emptyPageProof}:{})})),uncertainties:verified?.uncertainties||['Unit not read']};
+                ...(proof.emptyPageProof?{emptyPageProof:proof.emptyPageProof}:{}),...(proof.recognitionVersion?{recognitionVersion:proof.recognitionVersion}:{})})),uncertainties:verified?.uncertainties||['Unit not read'],
+            ...(verified?.contentRole?{contentRole:verified.contentRole}:{}),...(verified?.nonBlockingNotes?.length?{nonBlockingNotes:verified.nonBlockingNotes}:{})};
     });
     const text=manifest.assembly.map(block=>{
         if(block.kind==='native')return block.text;
@@ -89,9 +90,17 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
             reading:reading.verification,visualDescriptions:reading.visualDescriptions});
     }
     const changed=before.textHash!==textHash;
+    const previousUnits=Array.isArray(parsed.source_reading_units)?parsed.source_reading_units:[];
+    const unitHistory=Array.isArray(parsed.source_reading_unit_history)?[...parsed.source_reading_unit_history]:[];
+    if(previousUnits.length&&JSON.stringify(previousUnits)!==JSON.stringify(reading.units)){
+        const unitsHash=hash(JSON.stringify(previousUnits));
+        if(!unitHistory.some(value=>object(value)&&value.sourceHash===before.sourceHash&&value.unitsHash===unitsHash))
+            unitHistory.push({sourceHash:before.sourceHash,textHash:before.textHash,unitsHash,units:structuredClone(previousUnits)});
+    }
     return {extracted_text:text,extracted_text_hash:textHash,ocr_status:reading.verification.complete?'COMPLETED':'REQUIRES_REVIEW',processed_at:new Date().toISOString(),
         parsed_json:{...parsed,source_reading:{...reading.verification,currentTextHash:textHash},source_reading_units:reading.units,
             source_reading_visual_descriptions:reading.visualDescriptions,source_reading_history:history,
+            ...(unitHistory.length?{source_reading_unit_history:unitHistory}:{}),
             ...(changed?{analysis_stale:true,analysis_reading_text_hash:typeof parsed.analysis_reading_text_hash==='string'?parsed.analysis_reading_text_hash:before.textHash}:{})}};
 }
 
