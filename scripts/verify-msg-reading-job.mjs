@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';import test from 'node:test';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {registerHooks} from 'node:module';
-import {msgFixture,nativeMsgFixture} from './fixtures/msg-fixtures.mjs';import {digest} from './codex-runtime/visual-reading-fixtures.mjs';
+import {msgFixture,nativeMsgFixture,uncompressedRtf} from './fixtures/msg-fixtures.mjs';import {digest} from './codex-runtime/visual-reading-fixtures.mjs';
 import {queueFixture,projectId,savedProfile} from './codex-runtime/queue-fixtures.mjs';import {ownerId} from './codex-runtime/fixtures.mjs';
 import {pricingRows,pricingReadClient,pricingIds,applyPricingEffects} from './codex-runtime/pricing-fixtures.mjs';
 let nativeCalls=0;globalThis.__msgNativeForJobTest=async()=>{nativeCalls++;return nativeMsgFixture();};
@@ -9,10 +9,10 @@ const {createReadingPatch,resolveReadingVersion,getCurrentDocumentReading}=await
 const {buildVisualSourceManifest}=await import('../src/utils/visual-source-manifest.ts');
 const {assembleDocumentReading}=await import('../src/utils/document-reading-history.ts');
 const {prepareDocumentAnalysisInput}=await import('../src/utils/document-text-extraction.ts');
-async function run({operation='read_source',repeat=false,tamper,validated=false,changedSource=false,body='יש לשמור מעבר פתוח.',attachments=[],oldText=''}={}){
+async function run({operation='read_source',repeat=false,tamper,validated=false,changedSource=false,body='יש לשמור מעבר פתוח.',attachments=[],oldText='',rtf,rtfInSync}={}){
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'contractorsystem-msg-job-')),prior=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=directory;
  try{
-  const file=msgFixture({body,attachments}),rows=pricingRows(),doc=rows.documents.find(d=>d.id===pricingIds.work);Object.assign(doc,{title:'source.msg',content_hash:changedSource?'9'.repeat(64):digest(file),extracted_text:oldText,extracted_text_hash:digest(oldText),ocr_status:'REQUIRES_REVIEW',ai_status:validated?'VALIDATED':'PENDING',parsed_json:{owner_note:'keep',summary:'Manual summary',financial_data:{total_amount:123}}});
+  const file=msgFixture({body,attachments,rtf,rtfInSync}),rows=pricingRows(),doc=rows.documents.find(d=>d.id===pricingIds.work);Object.assign(doc,{title:'source.msg',content_hash:changedSource?'9'.repeat(64):digest(file),extracted_text:oldText,extracted_text_hash:digest(oldText),ocr_status:'REQUIRES_REVIEW',ai_status:validated?'VALIDATED':'PENDING',parsed_json:{owner_note:'keep',summary:'Manual summary',financial_data:{total_amount:123}}});
   const before=structuredClone(rows);let database=pricingReadClient(rows),prepared;const startNative=nativeCalls;
   const fx=queueFixture({onGenerate:async()=>JSON.stringify({type:'Instruction',category:'EXECUTION',is_reference:false,reference_family:null,authority_scope:null,incorporated_by_contract:null,summary:'Keep the route open.',full_markdown:'Not the source',financial_data:{total_amount:null,items:[]},date:null,parties:[],key_terms:[],warnings:[]})});
   const handler=createDocumentHandler({database:()=>database,download:async()=>file,runtimeDir:path.join(directory,'ContractorSystem','ai-runtime'),models:async()=>({data:[{model:savedProfile.model,inputModalities:['text','image']}]})});
@@ -27,6 +27,19 @@ test('upload_and_analyze_use_the_full_msg_reader',async()=>{
 });
 test('unchanged_complete_msg_skips_all_inference',async()=>{
  const result=await run({repeat:true});assert.equal(result.job.state,'SUCCEEDED');assert.equal(result.prepared.result.cached,true);assert.equal(result.modelTurns,0);assert.equal(result.nativeTurns,result.firstNative);assert.equal(result.doc.extracted_text,result.firstDoc.extracted_text);assert.deepEqual(result.doc.parsed_json.source_reading,result.firstDoc.parsed_json.source_reading);
+});
+
+test('a_legacy_text_proof_cannot_bypass_the_msg_reader',async()=>{
+ const result=await run({repeat:true,tamper:document=>{document.parsed_json.source_reading.format='TEXT';delete document.parsed_json.source_reading.msg;}});
+ assert.equal(result.job.state,'SUCCEEDED');assert.equal(result.prepared.result.cached,false);assert.equal(result.doc.parsed_json.source_reading.format,'MSG');assert.equal(result.modelTurns,0);
+ assert.ok(result.doc.parsed_json.source_reading_history.some(version=>version.reading?.format==='TEXT'),'Keep the previous evidence even when the text is unchanged');
+});
+
+test('legacy_full_msg_with_unsynchronized_rtf_is_not_reused',async()=>{
+ const result=await run({body:'Old instruction',rtf:uncompressedRtf('{\\rtf1 New instruction}'),rtfInSync:false,repeat:true,tamper:document=>{
+  const reading=document.parsed_json.source_reading;reading.complete=true;reading.nativeComplete=true;reading.issues=[];reading.msg.issues=[];for(const part of reading.msg.parts){part.issues=[];part.status='READ';part.nativeComplete=true;}
+ }});
+ assert.equal(result.job.state,'SUCCEEDED');assert.equal(result.prepared.result.cached,false);assert.equal(result.doc.parsed_json.source_reading.complete,false);assert.equal(result.modelTurns,0);assert.ok(result.doc.extracted_text.includes('Old instruction'));
 });
 test('read_source_only_records_its_owned_document_and_preserves_manual_business_fields',async()=>{
  const result=await run({validated:true});assert.equal(result.job.state,'SUCCEEDED');assert.equal(result.doc.ai_status,'VALIDATED');assert.equal(result.doc.parsed_json.owner_note,'keep');assert.equal(result.doc.parsed_json.summary,'Manual summary');assert.deepEqual(result.doc.parsed_json.financial_data,{total_amount:123});assert.equal(result.modelTurns,0);

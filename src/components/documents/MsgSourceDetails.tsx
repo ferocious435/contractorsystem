@@ -10,6 +10,7 @@ import type {RegistryUnit} from '@/utils/visual-source-reading';
 type Props={projectId:string;documentId:string;sourceHash:string;proof:MsgReadingProof;selectedPartId?:string|null;onSelectPart?:(partId:string)=>void;units?:RegistryUnit[]};
 
 function limitation(issue:string):string {
+    if(/RTF_TEXT_SYNC/.test(issue))return 'ההתאמה בין גרסאות גוף ההודעה טרם אומתה';
     if(/HTML/.test(issue))return 'תוכן נוסף בגוף ההודעה טרם אומת';
     if(/RTF/.test(issue))return 'אובייקט מוטמע בגוף ההודעה טרם נקרא';
     if(/PAYLOAD/.test(issue))return 'אין קובץ עצמאי מאומת לחלק המוטמע';

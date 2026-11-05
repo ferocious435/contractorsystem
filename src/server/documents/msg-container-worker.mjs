@@ -32,16 +32,23 @@ async function stream(storage,entry,name){
 }
 async function text(storage,entry,property){const bytes=await stream(storage,entry,'__substg1.0_'+property+'001F');if(!bytes)return null;if(bytes.length%2)throw Error('MSG_UNICODE_INVALID');return new TextDecoder('utf-16le',{fatal:true}).decode(bytes).replace(/\0+$/u,'');}
 function add(part){if(parts.length>=limits.maxParts)throw Error('MSG_PART_COUNT_LIMIT');parts.push(part);return part;}
-async function walk(storage,entry,part,depth){
+function rtfTextInSync(properties,headerSize){
+    // PidTagRtfInSync: TRUE confirms identical text, apart from whitespace/formatting.
+    // https://learn.microsoft.com/office/client-developer/outlook/mapi/pidtagrtfinsync-canonical-property
+    if(!properties||properties.length<headerSize||(properties.length-headerSize)%16)return false;
+    const values=[];for(let offset=headerSize;offset+16<=properties.length;offset+=16)if(properties.readUInt32LE(offset)===0x0e1f000b)values.push(properties.readUInt16LE(offset+8));
+    return values.length===1&&values[0]===1;
+}
+async function walk(storage,entry,part,depth,propertiesHeaderSize=32){
     if(depth>limits.maxDepth){part.issues.push('MSG_DEPTH_LIMIT');return;}
     if(!entry.streams['__properties_version1.0']){part.issues.push('MSG_STRUCTURE_UNCONFIRMED');return;}
+    const properties=await stream(storage,entry,'__properties_version1.0');
     let body=null;try{body=await text(storage,entry,'1000');}catch{part.issues.push('MSG_BODY_ENCODING');}
     part.body={text:body??'',textHash:hash(body??''),complete:body!==null,issues:body===null?['MSG_BODY_UNCONFIRMED']:[]};
     if(body===null)part.issues.push('MSG_BODY_UNCONFIRMED');
-    const rtf=await stream(storage,entry,'__substg1.0_10090102');if(rtf){try{const expanded=unpackRtf(rtf).toString('latin1');if(/\\(?:pict|object|objdata|shp)\b/.test(expanded))part.issues.push('MSG_RTF_EMBEDDED_CONTENT_UNVERIFIED');}catch(error){part.issues.push(error.message);}}
+    let expandedRtf='';const rtf=await stream(storage,entry,'__substg1.0_10090102');if(rtf){if(!rtfTextInSync(properties,propertiesHeaderSize))part.issues.push('MSG_RTF_TEXT_SYNC_UNCONFIRMED');try{expandedRtf=unpackRtf(rtf).toString('latin1');if(/\\(?:pict|object|objdata|shp)\b/.test(expandedRtf))part.issues.push('MSG_RTF_EMBEDDED_CONTENT_UNVERIFIED');}catch(error){part.issues.push(error.message);}}
     const html=await stream(storage,entry,'__substg1.0_10130102')??await stream(storage,entry,'__substg1.0_1013001F');
     const attachmentNames=Object.keys(entry.storages).filter(name=>name.startsWith('__attach_version1.0_#')).sort(),childParts=[];
-    const properties=await stream(storage,entry,'__properties_version1.0');
     if(!properties||properties.length<24||properties.readUInt32LE(20)!==attachmentNames.length)part.issues.push('MSG_ATTACHMENT_INVENTORY_UNCONFIRMED');
     for(const name of attachmentNames){
         if(parts.length>=limits.maxParts){part.issues.push('MSG_PART_COUNT_LIMIT');break;}
@@ -52,8 +59,18 @@ async function walk(storage,entry,part,depth){
         if(data){totalBytes+=data.length;if(totalBytes>limits.maxTotalPartBytes){child.issues.push('MSG_TOTAL_PART_BYTES_LIMIT');continue;}child.payloadHash=hash(data);child.byteLength=data.length;payloads[child.id]=data.toString('base64');
             if(data.subarray(0,8).toString('hex')==='d0cf11e0a1b11ae1'&&(/\.msg$/i.test(child.name)||child.mimeType==='application/vnd.ms-outlook')){child.kind='MESSAGE';if(depth>=limits.maxDepth)child.issues.push('MSG_DEPTH_LIMIT');else try{const nested=await new Ole(new Reader(data)).read();await walk(nested,nested._directoryTree.root,child,depth+1);}catch{child.issues.push('MSG_NESTED_MESSAGE_UNREADABLE');}}
         }else if(childEntry.storages['__substg1.0_3701000D']){
-            child.kind='MESSAGE';child.issues.push('MSG_EMBEDDED_MESSAGE_UNVERIFIED');const nestedName='__substg1.0_3701000D';await walk(childStorage.storage(nestedName),childEntry.storages[nestedName],child,depth+1);
+            child.kind='MESSAGE';child.issues.push('MSG_EMBEDDED_MESSAGE_UNVERIFIED');const nestedName='__substg1.0_3701000D';await walk(childStorage.storage(nestedName),childEntry.storages[nestedName],child,depth+1,24);
         }else child.issues.push('MSG_ATTACHMENT_BYTES_UNAVAILABLE');
+    }
+    if(/\\(?:fromhtml[1-9]\d*|htmltag\d*)\b/.test(expandedRtf)){
+        // Synchronized text does not certify graphics in HTML encapsulated by RTF.
+        // Only image references backed by physical, separately read attachments are covered.
+        for(const match of expandedRtf.matchAll(/<(?:img|v:imagedata)\b[^>]*>/gi)){
+            const attribute=match[0].match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i),src=attribute?.[1]??attribute?.[2]??attribute?.[3]??'';
+            if(!/^cid:/i.test(src))part.issues.push('MSG_RTF_EMBEDDED_CONTENT_UNVERIFIED');
+            else if(!childParts.some(p=>p.contentId===src.slice(4)))part.issues.push('MSG_CID_TARGET_UNAVAILABLE');
+        }
+        if(/<(?:svg|object|embed|canvas|iframe|video|audio)\b|\b(?:background(?:-image)?|list-style(?:-image)?)\s*:[^;}]*\burl\s*\(|<[^>]+\bbackground\s*=/i.test(expandedRtf))part.issues.push('MSG_RTF_EMBEDDED_CONTENT_UNVERIFIED');
     }
     if(html){const raw=html.toString(entry.streams['__substg1.0_1013001F']?'utf16le':'utf8');for(const match of raw.matchAll(/\bcid:([^\s"'<>]+)/gi))if(!childParts.some(p=>p.contentId===match[1]))part.issues.push('MSG_CID_TARGET_UNAVAILABLE');part.issues.push('MSG_HTML_ALTERNATIVE_UNVERIFIED');}
     for(const name of Object.keys(entry.storages))if(!/^__(?:attach_version1\.0_#|recip_version1\.0_#|nameid_version1\.0$)/.test(name))part.issues.push('MSG_UNKNOWN_STORAGE');

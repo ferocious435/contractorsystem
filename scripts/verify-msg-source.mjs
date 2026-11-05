@@ -45,7 +45,7 @@ test('unconfirmed_rtf_objects_remain_a_gap',async()=>{
  const result=await extract(msgFixture({rtf:uncompressedRtf('{\\rtf1\\ansi text {\\object data}}')}));assert.ok(result.issues.some(s=>s.includes('RTF')));
 });
 test('valid_compressed_and_uncompressed_rtf_alternatives_are_checked',async()=>{
- for(const rtf of [compressedRtfFixture(),uncompressedRtf('{\\rtf1 Hello}')]){const result=await extract(msgFixture({body:'Hello',rtf}),'Hello');assert.deepEqual(result.issues,[]);}
+ for(const rtf of [compressedRtfFixture(),uncompressedRtf('{\\rtf1 Hello}')]){const result=await extract(msgFixture({body:'Hello',rtf,rtfInSync:true}),'Hello');assert.deepEqual(result.issues,[]);}
  const bad=compressedRtfFixture();bad[12]^=1;const result=await extract(msgFixture({body:'Hello',rtf:bad}),'Hello');assert.ok(result.issues.some(s=>s.includes('RTF')));
 });
 test('native_extractor_reads_real_synthetic_msg_without_an_AI_client',async t=>{

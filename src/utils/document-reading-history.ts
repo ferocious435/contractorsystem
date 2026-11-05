@@ -87,7 +87,7 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
     const before=currentVersion({...saved,content_hash:saved.content_hash||reading.verification.sourceHash}),retainPrevious=!reading.verification.complete&&before.text.length>0;
     const text=retainPrevious?before.text:reading.text,textHash=hash(text);
     const history=Array.isArray(parsed.source_reading_history)?[...parsed.source_reading_history]:[];
-    if(object(previousReading)&&previousReading.format==='MSG'&&reading.verification.format==='MSG'
+    if(object(previousReading)&&reading.verification.format==='MSG'
         &&readingAnalysisFingerprint(previousReading)!==readingAnalysisFingerprint(reading.verification)){
         const evidenceHash=readingAnalysisFingerprint(previousReading);
         if(!history.some(v=>object(v)&&v.sourceHash===before.sourceHash&&v.textHash===before.textHash&&v.evidenceHash===evidenceHash))history.push({...before,evidenceHash});

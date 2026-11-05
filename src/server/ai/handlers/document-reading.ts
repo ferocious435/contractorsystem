@@ -11,6 +11,8 @@ import {preserveStableDocumentText} from '@/utils/stable-document-reading';
 import {makeTextInput} from '@/utils/document-text-extraction';
 import {assessVisualReading,VISUAL_READING_VERSION,VISUAL_READING_RULES,type OwnedSourceDocument,type ReadingAssembly,type VerifiedUnit} from '@/utils/visual-source-reading';
 import type {DocxReadingVerification} from '@/utils/document-source-readiness';
+import {isMsgSource} from '@/utils/msg-source-manifest';
+import {readMsgContainer} from '@/server/documents/msg-container.server';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 export async function stageDocumentReading({client,document,file,execution}:{client:SupabaseClient;document:OwnedSourceDocument;file:Buffer;execution:AiExecutionContext}):Promise<{document:OwnedSourceDocument;reading:ReadingAssembly;cached:boolean}> {
@@ -21,7 +23,11 @@ export async function stageDocumentReading({client,document,file,execution}:{cli
     const previousScope=previousMsg&&record(previousMsg.scope)?previousMsg.scope:null;
     const scopeMatches=previous?.format!=='MSG'||Boolean(previousScope&&Object.entries(scope).every(([key,value])=>previousScope[key]===value));
     if(document.content_hash&&document.content_hash!==sourceHash)throw new BusinessAiError('AI_SOURCE_CHANGED',undefined,409);
-    if(scopeMatches&&record(parsed.source_reading)&&parsed.source_reading.version===VISUAL_READING_VERSION&&assessVisualReading(parsed.source_reading,{...document,extracted_text_hash:current.textHash}).complete){
+    const msgInput=isMsgSource(file,String(document.title||''));
+    let cached=scopeMatches&&record(parsed.source_reading)&&parsed.source_reading.version===VISUAL_READING_VERSION
+        &&(!msgInput||parsed.source_reading.format==='MSG')&&assessVisualReading(parsed.source_reading,{...document,extracted_text_hash:current.textHash}).complete;
+    if(cached&&msgInput){const physical=await readMsgContainer(file);await execution.checkActive();cached=physical.issues.length===0&&physical.inventoryHash===previousMsg?.inventoryHash;}
+    if(cached&&record(parsed.source_reading)){
         const reading:ReadingAssembly={text:current.text,textHash:current.textHash,verification:parsed.source_reading as unknown as ReadingAssembly['verification'],
             units:Array.isArray(parsed.source_reading_units)?parsed.source_reading_units:[],visualDescriptions:current.visualDescriptions};
         await execution.reportProgress({phase:'reading',completedUnits:reading.verification.expectedUnits.length,totalUnits:reading.verification.expectedUnits.length});

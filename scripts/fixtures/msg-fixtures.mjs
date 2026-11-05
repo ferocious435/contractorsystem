@@ -5,10 +5,10 @@ const strings={'001A':'IPM.Note','0037':'Synthetic source','0C1A':'Synthetic sen
 const tag=(id,type)=>Number.parseInt(id+type,16);
 function properties(values,headerSize=32,attachments=0){
  const result=Buffer.alloc(headerSize+values.length*16);
- if(headerSize===32){result.writeUInt32LE(attachments,12);result.writeUInt32LE(attachments,20);}
+ if(headerSize>=24){result.writeUInt32LE(attachments,12);result.writeUInt32LE(attachments,20);}
  values.forEach(([property,value],i)=>{const offset=headerSize+i*16;result.writeUInt32LE(property,offset);result.writeUInt32LE(6,offset+4);if(typeof value==='bigint')result.writeBigUInt64LE(value,offset+8);else result.writeUInt32LE(value,offset+8);});return result;
 }
-function messageTree(options={}){
+function messageTree(options={},headerSize=32){
  const {body='אושר',attachments=[],subject='Synthetic source',date='2024-10-01T10:00:00.000Z'}=options;
  const entries=[],values=[];
  const add=(id,value,type='001F')=>{const bytes=type==='001F'?unicode(value):Buffer.from(value);entries.push({name:'__substg1.0_'+id+type,data:bytes});values.push([tag(id,type),bytes.length]);};
@@ -16,15 +16,16 @@ function messageTree(options={}){
  if(!options.omitBody)add('1000',body);
  if(options.html!==undefined)add('1013',Buffer.from(options.html),'0102');
  if(options.rtf!==undefined)add('1009',options.rtf,'0102');
+ if(options.rtfInSync!==undefined)values.push([tag('0E1F','000B'),Number(options.rtfInSync)]);
  const headers='Date: Tue, 01 Oct 2024 10:00:00 +0000\r\nFrom: Synthetic sender <sender@example.invalid>\r\nTo: reader@example.invalid\r\nSubject: '+subject+'\r\n';
  add('007D',headers);values.push([tag('0039','0040'),BigInt(Date.parse(date)+11644473600000)*10000n]);
- entries.unshift({name:'__properties_version1.0',data:properties(values,32,options.attachmentCountOverride??attachments.length)});
+ entries.unshift({name:'__properties_version1.0',data:properties(values,headerSize,options.attachmentCountOverride??attachments.length)});
  attachments.forEach((attachment,i)=>{
   const children=[],props=[];
   const text=(id,value)=>{const bytes=unicode(value);children.push({name:'__substg1.0_'+id+'001F',data:bytes});props.push([tag(id,'001F'),bytes.length]);};
   text('3707',attachment.name||'attachment.bin');text('3704',attachment.name||'attachment.bin');text('370E',attachment.mimeType||'application/octet-stream');
   if(attachment.contentId)text('3712',attachment.contentId);
-  if(attachment.embedded){children.push({name:'__substg1.0_3701000D',children:messageTree(attachment.embedded)});props.push([tag('3705','0003'),5]);}
+  if(attachment.embedded){children.push({name:'__substg1.0_3701000D',children:messageTree(attachment.embedded,24)});props.push([tag('3705','0003'),5]);}
   else if(!attachment.missing){const bytes=Buffer.from(attachment.data??'binary');children.push({name:'__substg1.0_37010102',data:bytes});props.push([tag('3701','0102'),bytes.length],[tag('3705','0003'),1]);}
   children.unshift({name:'__properties_version1.0',data:properties(props,8)});
   entries.push({name:'__attach_version1.0_#'+i.toString(16).padStart(8,'0'),children});

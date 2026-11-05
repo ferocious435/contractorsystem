@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';import test from 'node:test';import sharp from 'sharp';
-import {msgFixture,nativeMsgFixture} from './fixtures/msg-fixtures.mjs';
+import {msgFixture,nativeMsgFixture,uncompressedRtf} from './fixtures/msg-fixtures.mjs';
 import {docx,image,paragraph} from './fixtures/docx-image-fixtures.mjs';
 import {digest,readingUnit,sourceDocument} from './codex-runtime/visual-reading-fixtures.mjs';
 import {createMsgSourceExtractor} from '../src/server/documents/msg-source.server.ts';import {readMsgContainer} from '../src/server/documents/msg-container.server.ts';
@@ -59,4 +59,22 @@ test('same_named_visual_attachments_keep_distinct_source_locations',async()=>{
 for(const [name,mutate]of [['missing_locations',r=>{delete r.expectedUnits[0].locations;}],['missing_message_headers',r=>{delete r.msg.parts[0].headers;}],['missing_body_ranges',r=>{r.msg.parts[0].textRanges=[];}],['changed_container_path',r=>{r.msg.parts[1].containerPath.push('forged');}]])test('corrupt_MSG_proof_'+name,async()=>{
  const {reading,document}=completed(await build(msgFixture({attachments:[{name:'two.pdf',data:pdfBytes}]}))),proof=structuredClone(reading.verification);mutate(proof);let result;
  assert.doesNotThrow(()=>{result=assessVisualReading(proof,document);});assert.equal(result.complete,false);
+});
+
+test('unsynchronized_rtf_cannot_be_reported_as_a_complete_message',async()=>{
+ for(const rtfInSync of [false,undefined,2]){
+  const file=msgFixture({body:'Old instruction',rtf:uncompressedRtf('{\\rtf1 New instruction}'),rtfInSync}),{reading,document}=completed(await build(file));
+  assert.equal(assessVisualReading(reading.verification,document).complete,false,'An unconfirmed alternative must remain visible');assert.ok(reading.text.includes('Old instruction'));assert.ok(reading.verification.msg.parts[0].issues.includes('MSG_RTF_TEXT_SYNC_UNCONFIRMED'));
+ }
+ const {reading,document}=completed(await build(msgFixture({body:'Same instruction',rtf:uncompressedRtf('{\\rtf1 Same instruction}'),rtfInSync:true})));assert.equal(assessVisualReading(reading.verification,document).complete,true);
+});
+
+test('rtf_html_cannot_hide_an_unaccounted_visual_object',async()=>{
+ for(const markup of ['<img src="cid:missing">','<svg><path d="M0 0 L10 10"/></svg>','<img src="data:image/png;base64,AA==">']){
+  const {reading,document}=completed(await build(msgFixture({body:'Visible instruction',rtf:uncompressedRtf('{\\rtf1\\fromhtml1{\\*\\htmltag1 '+markup+'}Visible instruction}'),rtfInSync:true})));
+  assert.equal(assessVisualReading(reading.verification,document).complete,false,'Synchronized text does not confirm an inline drawing');
+ }
+ const png=await sharp({create:{width:12,height:12,channels:3,background:'blue'}}).png().toBuffer();
+ const {reading,document}=completed(await build(msgFixture({body:'Visible instruction',rtf:uncompressedRtf('{\\rtf1\\fromhtml1{\\*\\htmltag1 <style>v:behavior{behavior:url(#default#VML)}</style><img src="cid:known">}Visible instruction}'),rtfInSync:true,attachments:[{name:'photo.png',mimeType:'image/png',data:png,contentId:'known'}]})));
+ assert.equal(assessVisualReading(reading.verification,document).complete,true,'A verified physical image remains usable');
 });

@@ -142,3 +142,9 @@ test('damaged_part_locations_do_not_crash_the_source_panel',()=>{
  let html;assert.doesNotThrow(()=>{html=renderToStaticMarkup(React.createElement(sourceView.DocumentSourceView,{document,fullText:assembled.text}));});
  assert.match(html,/הקריאה לא הושלמה/);
 });
+
+test('unsynchronized_body_is_described_as_a_version_gap_not_an_embedded_object',()=>{
+ const document=structuredClone(doc);document.parsed_json.source_reading.msg.issues=['MSG_RTF_TEXT_SYNC_UNCONFIRMED'];document.parsed_json.source_reading.msg.parts[0].issues=['MSG_RTF_TEXT_SYNC_UNCONFIRMED'];
+ const html=renderToStaticMarkup(React.createElement(sourceView.DocumentSourceView,{document,fullText:assembled.text}));
+ assert.match(html,/גרסאות/);assert.doesNotMatch(html,/אובייקט מוטמע/);
+});
