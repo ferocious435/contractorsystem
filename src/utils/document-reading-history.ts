@@ -41,17 +41,22 @@ export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUn
                 ...(proof.emptyPageProof?{emptyPageProof:proof.emptyPageProof}:{}),...(proof.recognitionVersion?{recognitionVersion:proof.recognitionVersion}:{})})),uncertainties:verified?.uncertainties||['Unit not read'],
             ...(verified?.contentRole?{contentRole:verified.contentRole}:{}),...(verified?.nonBlockingNotes?.length?{nonBlockingNotes:verified.nonBlockingNotes}:{})};
     });
+    const msg=manifest.msg?structuredClone(manifest.msg):undefined;
+    if(msg)for(const part of msg.parts)part.textRanges=[];
+    let textLength=0;
     const text=manifest.assembly.map(block=>{
-        if(block.kind==='native')return block.text;
+        const remember=(value:string)=>{if(msg&&block.msgPartId){const part=msg.parts.find(p=>p.id===block.msgPartId);if(!part)issues.push('MSG_ASSEMBLY_PART_UNKNOWN');else if(value.length){const last=part.textRanges.at(-1);if(last?.end===textLength)last.end+=value.length;else part.textRanges.push({start:textLength,end:textLength+value.length});}}textLength+=value.length;return value;};
+        if(block.kind==='native')return remember(block.text);
         const unit=manifest.units.find(u=>u.id===block.unitId);
         if(!unit){issues.push('Unknown assembly unit: '+block.unitId);return '';}
         const verified=byId.get(unit.id),entry=expectedUnits.find(u=>u.id===unit.id);
         const literal=entry?.status==='READ'?verified!.text:unit.localText;
-        return manifest.format==='PDF'?`\n[PAGE ${unit.locations[0]?.page}]\n${literal}\n`:literal;
+        return remember(manifest.format==='PDF'||manifest.format==='MSG'&&unit.kind==='PDF_PAGE'?`\n[PAGE ${unit.locations[0]?.page}]\n${literal}\n`:literal);
     }).join('');
+    if(msg)for(const part of [...msg.parts].reverse())part.status=part.nativeComplete&&part.issues.length===0&&part.unitIds.every(id=>expectedUnits.some(u=>u.id===id&&u.status==='READ'))&&msg.parts.filter(p=>p.parentId===part.id).every(p=>p.status==='READ')?'READ':'REQUIRES_REVIEW';
     const textHash=hash(text);
     const verification:VisualReadingVerification={version:VISUAL_READING_VERSION,sourceHash:manifest.sourceHash,currentTextHash:textHash,manifestHash:manifest.manifestHash,
-        format:manifest.format,nativeComplete:manifest.issues.length===0,expectedUnits,issues,complete:issues.length===0,
+        format:manifest.format,nativeComplete:manifest.issues.length===0,expectedUnits,issues,complete:issues.length===0,...(msg?{msg}:{}),
         // The live handler replaces these deliberately invalid placeholders with the actual job provenance.
         createdBy:{jobId:'',rulesVersion:VISUAL_READING_RULES,profileRevision:0}};
     return {text,textHash,verification,units,visualDescriptions};

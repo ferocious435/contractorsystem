@@ -1,5 +1,7 @@
 import type {DocumentSourceInput, RenderedEmptyPageProof} from './document-source-readiness';
 import type {JobDto} from '../server/ai/contracts';
+import type {MsgReadingProof} from './msg-source-types';
+import {assessMsgReadingProof} from './msg-reading-proof';
 
 export const VISUAL_READING_VERSION = 'visual-source-reading-v2';
 export const VISUAL_READING_RULES = 'visual-reading-rules-v2';
@@ -9,15 +11,15 @@ export type Rect = {x:number;y:number;width:number;height:number};
 export type Coverage = {complete:boolean;missingUnitIds:string[];verifiedUnitIds:string[];issues:string[]};
 export type NumericCheck = {matched:boolean;unresolved:string[]};
 export type ReadingScope = {ownerId:string;projectId:string;documentId:string;sourceHash:string};
-export type ReadingLocation = {page?:number;part?:string;anchor?:string;mediaName?:string;sheet?:string;cellRange?:string;frame?:number};
+export type ReadingLocation = {page?:number;part?:string;anchor?:string;mediaName?:string;sheet?:string;cellRange?:string;frame?:number;msgPartId?:string;msgPartName?:string};
 export type RenderedView = {id:string;sha256:string;bytes:Uint8Array;width:number;height:number;rect:Rect};
 export type ReadingUnit = {
     id:string;kind:'PDF_PAGE'|'DOCX_IMAGE'|'IMAGE_FRAME'|'XLSX_IMAGE';locations:ReadingLocation[];views:RenderedView[];
     contextText:string;localText:string;localMethod?:'native'|'local-ocr';emptyPageProof?:RenderedEmptyPageProof;
 };
 export type SourceManifest = {
-    sourceHash:string;manifestHash:string;format:'PDF'|'DOCX'|'TEXT'|'IMAGE'|'XLSX';nativeText:string;nativeVerification:unknown;
-    units:ReadingUnit[];issues:string[];assembly:Array<{kind:'native';text:string}|{kind:'unit';unitId:string}>;
+    sourceHash:string;manifestHash:string;format:'PDF'|'DOCX'|'TEXT'|'IMAGE'|'XLSX'|'MSG';nativeText:string;nativeVerification:unknown;msg?:MsgReadingProof;
+    units:ReadingUnit[];issues:string[];assembly:Array<({kind:'native';text:string}|{kind:'unit';unitId:string})&{msgPartId?:string}>;
 };
 export type UnitReading = {unitId:string;viewId:string;text:string;tables:string[][][];visualDescription:string;uncertainties:string[];contentRole?:ContentRole;nonBlockingNotes?:string[]};
 export type ReadingMethod = 'native-match'|'local-ocr-match'|'visual-double-pass'|'no-numbers'|'physical-empty'|'branding-recognition';
@@ -44,7 +46,7 @@ export type RegistryUnit = {
 export type VisualReadingVerification = {
     version:typeof VISUAL_READING_VERSION;sourceHash:string;currentTextHash:string;manifestHash:string;
     format:SourceManifest['format'];nativeComplete:boolean;expectedUnits:RegistryUnit[];issues:string[];complete:boolean;
-    createdBy:{jobId:string;rulesVersion:string;profileRevision:number};
+    createdBy:{jobId:string;rulesVersion:string;profileRevision:number};msg?:MsgReadingProof;
 };
 export type OwnedSourceDocument = DocumentSourceInput & Record<string,unknown> & {
     id:string;project_id:string;extracted_text_hash?:string|null;storage_bucket?:string|null;
@@ -135,7 +137,7 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
         ||!validReadingHash(registry.manifestHash))return invalid('Reading source or text version changed');
     if(!object(registry.createdBy)||!identifier(registry.createdBy.jobId)||registry.createdBy.rulesVersion!==VISUAL_READING_RULES
         ||!Number.isSafeInteger(registry.createdBy.profileRevision)||(registry.createdBy.profileRevision as number)<1)return invalid('Server reading provenance is absent');
-    if(!['PDF','DOCX','TEXT','IMAGE','XLSX'].includes(String(registry.format))||!Array.isArray(registry.expectedUnits)
+    if(!['PDF','DOCX','TEXT','IMAGE','XLSX','MSG'].includes(String(registry.format))||!Array.isArray(registry.expectedUnits)
         ||registry.expectedUnits.length>10000||!strings(registry.issues))return invalid('Invalid reading inventory');
     if(registry.format==='PDF'&&registry.expectedUnits.length===0)return invalid('PDF page inventory is empty');
     if(registry.format==='IMAGE'&&registry.expectedUnits.length===0)return invalid('Image frame inventory is empty');
@@ -145,7 +147,7 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
         ids.add(raw.id);
         const kind=raw.kind;
         const branding=raw.contentRole==='BRANDING_ONLY';
-        const compatible=registry.format==='IMAGE'?kind==='IMAGE_FRAME':registry.format==='XLSX'?kind==='XLSX_IMAGE':kind!=='IMAGE_FRAME'&&kind!=='XLSX_IMAGE';
+        const compatible=registry.format==='MSG'||(registry.format==='IMAGE'?kind==='IMAGE_FRAME':registry.format==='XLSX'?kind==='XLSX_IMAGE':kind!=='IMAGE_FRAME'&&kind!=='XLSX_IMAGE');
         let valid=(kind==='PDF_PAGE'||kind==='DOCX_IMAGE'||kind==='IMAGE_FRAME'||kind==='XLSX_IMAGE')&&compatible&&raw.status==='READ'&&validReadingHash(raw.inputHash)&&validReadingHash(raw.textHash)
             &&Array.isArray(raw.locations)&&raw.locations.length>0&&raw.locations.every(l=>locationValid(l,kind))
             &&strings(raw.uncertainties)&&raw.uncertainties.length===0&&Array.isArray(raw.views)&&raw.views.length>0
@@ -177,6 +179,7 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
         if(!valid){missingUnitIds.push(raw.id);issues.push('Unverified reading unit: '+raw.id);}else verifiedUnitIds.push(raw.id);
     }
     issues.push(...registry.issues);
+    if(registry.format==='MSG')issues.push(...assessMsgReadingProof(registry.msg,{sourceHash:String(registry.sourceHash),text:String(source.extracted_text??''),expectedUnits:registry.expectedUnits as RegistryUnit[]}).issues);
     if(registry.nativeComplete!==true)issues.push('Native source reading is incomplete');
     return {complete:registry.complete===true&&issues.length===0,missingUnitIds,verifiedUnitIds,issues};
 }

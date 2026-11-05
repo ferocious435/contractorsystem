@@ -7,6 +7,8 @@ import {planPageViews,type ReadingUnit,type SourceManifest} from './visual-sourc
 import {prepareDocumentAnalysisInput} from './document-text-extraction';
 import {buildRasterSourceManifest,isRasterSource} from './raster-source-manifest';
 import {buildXlsxSourceManifest,isXlsxSource} from './xlsx-source-manifest';
+import {buildMsgSourceManifest,isMsgSource} from './msg-source-manifest';
+import {extractMsgSource} from '@/server/documents/msg-source.server';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 function finish(value:Omit<SourceManifest,'manifestHash'>):SourceManifest {
@@ -81,7 +83,7 @@ export async function buildVisualSourceManifest(file:Buffer,title:string):Promis
     const before=hash(file);
     const result=file.subarray(0,1024).toString('latin1').includes('%PDF-')?await pdf(file)
         :/\.docx(?:$|[?#])/iu.test(title)?await word(file):isRasterSource(file,title)?await buildRasterSourceManifest(file,title)
-        :isXlsxSource(file,title)?await buildXlsxSourceManifest(file):await (async()=>{
+        :isXlsxSource(file,title)?await buildXlsxSourceManifest(file):isMsgSource(file,title)?await buildMsgSourceManifest(file,title,{extract:extractMsgSource,buildPart:buildVisualSourceManifest}):await (async()=>{
             const native=await prepareDocumentAnalysisInput(file,title);
             if(native.kind!=='text')throw Error('SOURCE_VISUAL_FORMAT_UNSUPPORTED');
             return finish({sourceHash:before,format:'TEXT',nativeText:native.extractedText,nativeVerification:native.readingVerification,

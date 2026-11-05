@@ -8,6 +8,7 @@ const suites=[
     'scripts/verify-codex-job-transport.mjs',
     'scripts/verify-codex-documents.mjs',
     'scripts/verify-msg-source.mjs',
+    'scripts/verify-msg-source-manifest.mjs',
     'scripts/verify-visual-source-contracts.mjs',
     'scripts/verify-visual-source-manifest.mjs',
     'scripts/verify-raster-source-reading.mjs',
