@@ -106,6 +106,7 @@ const KNOWN_FILE_EXTENSIONS = new Set([
     ...Object.keys(GOOGLE_NATIVE_FORMATS),
     ...Object.keys(CONVERTER_REQUIRED_FORMATS),
     ".doc",
+    ".msg",
 ]);
 
 type OfficeParserNode = { type: string; children?: OfficeParserNode[]; metadata?: { col?: number; row?: number; colSpan?: number; rowSpan?: number; sheetName?: string }; comments?: unknown[] };
@@ -468,6 +469,7 @@ export function makeTextInput(
 
 export async function prepareDocumentAnalysisInput(fileBuffer: Buffer, title: string): Promise<PreparedDocumentAnalysisInput> {
     const extension = getFileExtension(title);
+    if(extension==='.msg')throw new Error('MSG_SOURCE_READING_REQUIRED');
     const directMimeType = getSupportedGeminiMimeTypeFromBuffer(fileBuffer);
 
     if (directMimeType === PDF_MIME_TYPE) {

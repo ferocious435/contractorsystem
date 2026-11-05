@@ -179,7 +179,11 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
         if(!valid){missingUnitIds.push(raw.id);issues.push('Unverified reading unit: '+raw.id);}else verifiedUnitIds.push(raw.id);
     }
     issues.push(...registry.issues);
-    if(registry.format==='MSG')issues.push(...assessMsgReadingProof(registry.msg,{sourceHash:String(registry.sourceHash),text:String(source.extracted_text??''),expectedUnits:registry.expectedUnits as RegistryUnit[]}).issues);
+    if(registry.format==='MSG'){
+        issues.push(...assessMsgReadingProof(registry.msg,{sourceHash:String(registry.sourceHash),text:String(source.extracted_text??''),expectedUnits:registry.expectedUnits as RegistryUnit[]}).issues);
+        const owned=source as DocumentSourceInput&{id?:string;project_id?:string},scope=object(registry.msg)&&object(registry.msg.scope)?registry.msg.scope:null;
+        if(owned.id||owned.project_id){if(!scope||!identifier(scope.ownerId)||scope.sourceHash!==registry.sourceHash||owned.id&&scope.documentId!==owned.id||owned.project_id&&scope.projectId!==owned.project_id)issues.push('MSG_READING_SCOPE_UNCONFIRMED');}
+    }
     if(registry.nativeComplete!==true)issues.push('Native source reading is incomplete');
     return {complete:registry.complete===true&&issues.length===0,missingUnitIds,verifiedUnitIds,issues};
 }

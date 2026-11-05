@@ -86,6 +86,11 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
     const before=currentVersion({...saved,content_hash:saved.content_hash||reading.verification.sourceHash}),retainPrevious=!reading.verification.complete&&before.text.length>0;
     const text=retainPrevious?before.text:reading.text,textHash=hash(text);
     const history=Array.isArray(parsed.source_reading_history)?[...parsed.source_reading_history]:[];
+    if(object(previousReading)&&previousReading.format==='MSG'&&reading.verification.format==='MSG'
+        &&readingAnalysisFingerprint(previousReading)!==readingAnalysisFingerprint(reading.verification)){
+        const evidenceHash=readingAnalysisFingerprint(previousReading);
+        if(!history.some(v=>object(v)&&v.sourceHash===before.sourceHash&&v.textHash===before.textHash&&v.evidenceHash===evidenceHash))history.push({...before,evidenceHash});
+    }
     if(before.text&&before.textHash!==textHash&&!history.some(v=>object(v)&&v.sourceHash===before.sourceHash&&v.textHash===before.textHash))history.push(before);
     // Keep the full newly assembled source even when another region is still unresolved.
     // The previous transcript stays current; the new attempt is an explicitly partial version.
@@ -104,9 +109,20 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
             if(index<0)history.push(previous);else history[index]=previous;
         }
     }
+    let currentReading={...reading.verification,currentTextHash:textHash};
+    let currentDescriptions=reading.visualDescriptions;
+    if(retainPrevious&&textHash!==reading.textHash&&currentReading.msg){
+        if(object(previousReading)&&previousReading.version===VISUAL_READING_VERSION&&previousReading.format==='MSG'&&previousReading.currentTextHash===before.textHash&&Array.isArray(previousReading.expectedUnits)&&Array.isArray(previousReading.issues))currentReading=structuredClone(previousReading) as unknown as VisualReadingVerification;
+        else {
+            const msg=structuredClone(currentReading.msg);for(const part of msg.parts){part.textRanges=[];part.status='REQUIRES_REVIEW';part.nativeComplete=false;}
+            currentReading={...currentReading,complete:false,nativeComplete:false,msg,issues:[...currentReading.issues,'MSG_CURRENT_TEXT_IS_PREVIOUS_VERSION']};
+        }
+        currentReading={...currentReading,complete:false,nativeComplete:false,issues:[...new Set([...currentReading.issues,'MSG_CURRENT_TEXT_IS_PREVIOUS_VERSION'])]};
+        currentDescriptions=before.visualDescriptions||[];
+    }
     return {extracted_text:text,extracted_text_hash:textHash,ocr_status:reading.verification.complete?'COMPLETED':'REQUIRES_REVIEW',processed_at:new Date().toISOString(),
-        parsed_json:{...parsed,source_reading:{...reading.verification,currentTextHash:textHash},source_reading_units:reading.units,
-            source_reading_visual_descriptions:reading.visualDescriptions,source_reading_history:history,
+        parsed_json:{...parsed,source_reading:currentReading,source_reading_units:reading.units,
+            source_reading_visual_descriptions:currentDescriptions,source_reading_history:history,
             ...(changed?{analysis_stale:true,analysis_reading_text_hash:typeof parsed.analysis_reading_text_hash==='string'?parsed.analysis_reading_text_hash:before.textHash}:{})}};
 }
 

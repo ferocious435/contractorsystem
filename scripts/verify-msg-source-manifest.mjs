@@ -8,7 +8,7 @@ const extract=createMsgSourceExtractor({container:readMsgContainer,native:async(
 const manifestModule=()=>import('../src/utils/msg-source-manifest.ts');
 const verified=(unit,text='Read source page')=>({unitId:unit.id,inputHash:'3'.repeat(64),text,textHash:digest(text),tables:[],visualDescription:'',uncertainties:[],complete:true,
  views:unit.views.map(view=>({viewId:view.id,imageHash:view.sha256,textHash:digest(text),method:'native-match',confirmationHash:digest(text)}))});
-function completed(manifest,units=manifest.units.map(u=>verified(u))){const reading=assembleDocumentReading(manifest,units);reading.verification.createdBy={jobId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',rulesVersion:'visual-reading-rules-v2',profileRevision:1};const document=sourceDocument({title:'source.msg',content_hash:manifest.sourceHash,extracted_text:reading.text,extracted_text_hash:reading.textHash,parsed_json:{source_reading:reading.verification}});return {reading,document};}
+function completed(manifest,units=manifest.units.map(u=>verified(u))){const reading=assembleDocumentReading(manifest,units);reading.verification.createdBy={jobId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',rulesVersion:'visual-reading-rules-v2',profileRevision:1};const document=sourceDocument({title:'source.msg',content_hash:manifest.sourceHash,extracted_text:reading.text,extracted_text_hash:reading.textHash,parsed_json:{source_reading:reading.verification}});reading.verification.msg.scope={ownerId:'fixture-owner',projectId:document.project_id,documentId:document.id,sourceHash:manifest.sourceHash};return {reading,document};}
 const pdfBytes=Buffer.from('%PDF-1.7 synthetic boundary fixture');
 async function part(bytes,title){
  if(title==='two.pdf'){
