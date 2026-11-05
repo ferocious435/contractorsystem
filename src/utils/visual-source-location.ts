@@ -11,5 +11,5 @@ export function visualSourceLocationLabel(location:ReadingLocation):string {
     else if(location.part==='word/document.xml')label='גוף המסמך';
     else if(/^word\/(?:footnotes|endnotes|comments)\d*\.xml$/.test(location.part||''))label='הערות המסמך';
     if(Number.isInteger(location.frame)&&location.frame!>0)label+=' · פריים '+location.frame;
-    return label;
+    return location.msgPartName?location.msgPartName+' · '+label:label;
 }

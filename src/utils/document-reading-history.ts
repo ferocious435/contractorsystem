@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import {assessDocumentSourceReadiness,hasDocumentBodyText,type DocumentSourceInput} from './document-source-readiness';
 import {VISUAL_READING_VERSION,VISUAL_READING_RULES,validReadingHash,type SourceManifest,type VerifiedUnit,type ReadingAssembly,
     type VisualDescription,type VisualReadingVerification,type OwnedSourceDocument,type DocumentReadingPatch,type ReadingTextVersion,type EffectiveDocumentReading} from './visual-source-reading';
+import type {MsgReadingPart} from './msg-source-types';
 
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -126,10 +127,41 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
             ...(changed?{analysis_stale:true,analysis_reading_text_hash:typeof parsed.analysis_reading_text_hash==='string'?parsed.analysis_reading_text_hash:before.textHash}:{})}};
 }
 
-export function resolveReadingVersion(saved:OwnedSourceDocument,query:{textHash?:string;quote?:string;page?:number}):ReadingTextVersion|null {
+type ReadingQuery={textHash?:string;quote?:string;page?:number;partId?:string};
+
+/** A quote/page belongs to one physical MSG part; never choose the first duplicate. */
+export function resolveMsgReadingPart(version:ReadingTextVersion,query:ReadingQuery):MsgReadingPart|null {
+    const reading=version.reading;
+    if(!object(reading)||reading.format!=='MSG'||!object(reading.msg)||reading.msg.sourceHash!==version.sourceHash
+        ||reading.currentTextHash!==version.textHash||!Array.isArray(reading.msg.parts)||!Array.isArray(reading.expectedUnits))return null;
+    const units=reading.expectedUnits;
+    const candidates=reading.msg.parts.flatMap((part):MsgReadingPart[]=>{
+        if(!object(part)||!validReadingHash(part.id)||query.partId&&part.id!==query.partId||typeof part.name!=='string'
+            ||!Array.isArray(part.textRanges)||!Array.isArray(part.unitIds)||!part.unitIds.every(id=>typeof id==='string')
+            ||!['MESSAGE','FILE','INLINE'].includes(String(part.kind))||!['READ','REQUIRES_REVIEW'].includes(String(part.status)))return [];
+        const unitIds=part.unitIds as string[];
+        let end=0;
+        const ranges=part.textRanges;
+        if(!ranges.every(range=>{if(!object(range)||!Number.isInteger(range.start)||!Number.isInteger(range.end)||Number(range.start)<end
+            ||Number(range.end)<Number(range.start)||Number(range.end)>version.text.length)return false;end=Number(range.end);return true;}))return [];
+        const text=ranges.map(range=>version.text.slice(range.start,range.end)).join('');
+        if(query.quote&&!text.includes(query.quote))return [];
+        if(query.page!==undefined&&(!Number.isInteger(query.page)||query.page<1||!units.some(unit=>object(unit)&&unitIds.includes(String(unit.id))
+            &&Array.isArray(unit.locations)&&unit.locations.some(location=>object(location)&&location.msgPartId===part.id&&location.page===query.page))))return [];
+        return [{id:part.id,name:part.name,kind:part.kind as MsgReadingPart['kind'],parentId:typeof part.parentId==='string'?part.parentId:null,
+            mimeType:typeof part.mimeType==='string'?part.mimeType:'application/octet-stream',payloadHash:validReadingHash(part.payloadHash)?part.payloadHash:null,
+            unitIds:part.unitIds as string[],status:part.status as MsgReadingPart['status'],text}];
+    });
+    return candidates.length===1?candidates[0]:null;
+}
+
+export function resolveReadingVersion(saved:OwnedSourceDocument,query:ReadingQuery):ReadingTextVersion|null {
     let versions=readingVersions(saved);
     if(query.textHash)versions=versions.filter(v=>v.textHash===query.textHash);
-    if(query.quote)versions=versions.filter(v=>v.text.includes(query.quote!));
+    versions=versions.filter(v=>{
+        if(object(v.reading)&&v.reading.format==='MSG'&&(query.partId||query.quote||query.page!==undefined))return resolveMsgReadingPart(v,query)!==null;
+        return !query.partId&&(!query.quote||v.text.includes(query.quote));
+    });
     if(query.page!==undefined)versions=versions.filter(v=>{
         if(!Number.isInteger(query.page)||query.page!<1)return false;
         if(!object(v.reading))return true;

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@/components/ui/titanium/Dialog';
 import { Button } from '@/components/ui/titanium/Button';
 import { BidiText } from '@/components/ui/titanium/BidiText';
@@ -8,7 +8,7 @@ import { Feedback } from '@/components/ui/titanium/Feedback';
 import { DocumentSourceView } from './DocumentSourceView';
 import { X } from 'lucide-react';
 import type { ParsedDocumentJson, ParsedFinancialItem, ParsedSystemError, ProjectDocument,SourceContext } from './types';
-import {fetchDocumentReading} from './documentAiApi';
+import {fetchDocumentReading,msgPartPreview} from './documentAiApi';
 import type {ReadingDetail} from '@/utils/visual-source-reading';
 import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import { normalizeDocumentPage } from '@/components/features/contradiction-radar/utils/documentPage';
@@ -220,22 +220,27 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
     const [previewError, setPreviewError] = useState<string | null>(null);
     const [readingDetail,setReadingDetail]=useState<ReadingDetail|null>(null),[readingError,setReadingError]=useState<string|null>(null);
     const [selectedReading,setSelectedReading]=useState<string|null>(null);
-    useEffect(()=>setSelectedReading(null),[doc.id,projectId]);
-    const shownReading=selectedReading&&readingDetail?.textHash!==selectedReading?null:readingDetail;
+    const [selectedMsgPart,setSelectedMsgPart]=useState<string|undefined>();
+    useEffect(()=>{setSelectedReading(null);setSelectedMsgPart(undefined);},[doc.id,projectId,sourceContext?.partId,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page]);
+    const requestedPartId=selectedMsgPart||sourceContext?.partId;
+    const shownReading=selectedReading&&readingDetail?.textHash!==selectedReading||requestedPartId&&readingDetail?.part?.id!==requestedPartId?null:readingDetail;
     const hasSourceContext=Boolean(sourceContext);
     useEffect(()=>{
         const controller=new AbortController();setReadingDetail(null);setReadingError(null);
-        const page=normalizeDocumentPage(sourceContext?.page),query=selectedReading?{textHash:selectedReading}:{...(sourceContext?.textHash?{textHash:sourceContext.textHash}:{}),...(sourceContext?.quote?{quote:sourceContext.quote}:{}),...(page?{page}:{})};
+        const page=normalizeDocumentPage(sourceContext?.page),query={...(selectedReading?{textHash:selectedReading}:{...(sourceContext?.textHash?{textHash:sourceContext.textHash}:{}),...(sourceContext?.quote?{quote:sourceContext.quote}:{}),...(page?{page}:{})}),...(requestedPartId?{partId:requestedPartId}:{})};
         void fetchDocumentReading(projectId,doc.id,query,controller.signal).then(detail=>{if(!controller.signal.aborted)setReadingDetail(detail);})
             .catch(()=>{if(!controller.signal.aborted&&(hasSourceContext||selectedReading))setReadingError('לא נמצאה גרסת קריאה חד-משמעית לציטוט הזה. קובץ המקור זמין לפתיחה.');});
         return()=>controller.abort();
-    },[projectId,doc.id,doc.extracted_text_hash,doc.processed_at,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page,hasSourceContext,selectedReading]);
+    },[projectId,doc.id,doc.extracted_text_hash,doc.processed_at,sourceContext?.textHash,sourceContext?.quote,sourceContext?.page,hasSourceContext,selectedReading,requestedPartId]);
 
     const jsonData: ParsedDocumentJson = normalizeParsedJson(doc.parsed_json);
     const documentType = safeStructuredText(jsonData.document_type || jsonData.type, inferDocumentType(doc.title, doc.category));
     const summary = getUsefulSummary(jsonData, doc);
-    const readablePreviewText = shownReading?.text ?? (sourceContext||selectedReading?null:doc.extracted_text || getReadableDocumentText(jsonData, doc));
+    const readablePreviewText = shownReading?.part?.text ?? shownReading?.text ?? (sourceContext||selectedReading?null:doc.extracted_text || getReadableDocumentText(jsonData, doc));
     const sourceDocument=shownReading?{...doc,extracted_text:shownReading.text,extracted_text_hash:shownReading.textHash,parsed_json:{...doc.parsed_json,source_reading:shownReading.reading,source_reading_visual_descriptions:shownReading.visualDescriptions}}:doc;
+    const attachmentPreview=useMemo(()=>msgPartPreview(shownReading,projectId,doc.id),[shownReading,projectId,doc.id]);
+    const selectMsgPart=useCallback((partId:string)=>{setSelectedReading(shownReading?.textHash||sourceContext?.textHash||doc.extracted_text_hash||null);setSelectedMsgPart(partId);},[shownReading?.textHash,sourceContext?.textHash,doc.extracted_text_hash]);
+    const shownDescriptions=shownReading?.part?shownReading.visualDescriptions.filter(description=>shownReading.part!.unitIds.includes(description.unitId)):shownReading?.visualDescriptions;
     const warningSystemErrors = Array.isArray(jsonData.warnings)
         ? jsonData.warnings
             .map((warning) => getRecord(warning))
@@ -269,6 +274,12 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
             setPreviewError(null);
 
             try {
+                if(attachmentPreview){
+                    const inline=attachmentPreview.kind==='pdf'||attachmentPreview.kind==='image';
+                    setPreviewMeta({inlineUrl:attachmentPreview.url,previewKind:attachmentPreview.kind,canPreviewInline:inline});
+                    setPreviewUrl(inline?attachmentPreview.url:null);
+                    return;
+                }
                 const params = new URLSearchParams({ projectId, documentId: doc.id });
                 const res = await fetch(`/api/documents/signed-url?${params.toString()}`);
                 const data = await res.json();
@@ -301,7 +312,7 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
         return () => {
             cancelled = true;
         };
-    }, [doc.id, projectId]);
+    }, [doc.id, projectId, attachmentPreview]);
 
     const rawConfidence = jsonData.confidence ?? jsonData.confidence_score ?? jsonData.document_confidence;
     const parsedConfidence = typeof rawConfidence === 'number' ? rawConfidence : Number(rawConfidence);
@@ -310,7 +321,7 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
         : null;
     const previewKind = previewMeta?.previewKind || 'unsupported';
     const sourceUrl = previewMeta?.inlineUrl || previewMeta?.signedUrl || null;
-    const contextPage = normalizeDocumentPage(sourceContext?.page);
+    const contextPage = selectedMsgPart?null:normalizeDocumentPage(sourceContext?.page);
     const pdfSource = previewKind === 'pdf' || /\.pdf$/i.test(doc.title || '');
 
     const handleValidate = async () => {
@@ -334,7 +345,7 @@ export default function ScreenOfTruthModal({ document: doc, projectId, onClose, 
         {readingDetail&&<DocumentReadingVersions versions={readingDetail.versions} value={selectedReading||readingDetail.textHash} onChange={setSelectedReading}/>}
         {sourceContext?.quote&&shownReading&&!shownReading.text.includes(sourceContext.quote)&&<Feedback tone="warning">הציטוט שבהפניה אינו מופיע בגרסת הקריאה שנבחרה.</Feedback>}
         <div className="ti-source-dialog__columns">
-            <DocumentSourceView document={sourceDocument} fullText={readablePreviewText} visualDescriptions={shownReading?.visualDescriptions} readingCurrent={shownReading?.current??!selectedReading} sourceReadError={readingError||sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} onCompleteReading={onCompleteReading} completingReading={completingReading} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} />
+            <DocumentSourceView document={sourceDocument} fullText={readablePreviewText} visualDescriptions={shownDescriptions} readingCurrent={shownReading?.current??!selectedReading} sourceReadError={readingError||sourceReadError} onRetryRead={onRetryRead} retryingRead={retryingRead} onCompleteReading={onCompleteReading} completingReading={completingReading} previewUrl={withSourcePage(previewUrl, contextPage, pdfSource)} previewKind={previewKind} previewError={previewError ? 'לא הצלחנו לטעון את קובץ המקור בתצוגה מקדימה.' : null} sourceUrl={withSourcePage(sourceUrl, contextPage, pdfSource)} selectedMsgPartId={shownReading?.part?.id||requestedPartId} onSelectMsgPart={selectMsgPart}/>
             <section className="ti-source-analysis" aria-label="תוצאת הניתוח"><h3 className="ti-section-title">מה המערכת הבינה מהמסמך</h3>
                 {jsonData.analysis_stale===true&&<Feedback tone="warning">קריאת המקור השתנתה מאז הניתוח הזה. הנתונים הידניים נשמרו; יש לבדוק אותם מול הטקסט העדכני.</Feedback>}
                 {hasSystemError && <Feedback tone="warning" title={isAlreadyValidated ? 'האישור הידני נשמר; ניתוח AI לא הושלם' : 'ניתוח AI לא הושלם'}>{getSystemErrorText(systemErrors, jsonData.system_error)}</Feedback>}

@@ -10,6 +10,9 @@ import { hasIncompleteAiAnalysis } from './documentDisplayStatus';
 import type { ProjectDocument } from './types';
 import {assessVisualReading,VISUAL_READING_VERSION,type VisualDescription} from '@/utils/visual-source-reading';
 import {visualSourceLocationLabel} from '@/utils/visual-source-location';
+import {MsgSourceDetails} from './MsgSourceDetails';
+import type {MsgReadingProof} from '@/utils/msg-source-types';
+import type {RegistryUnit} from '@/utils/visual-source-reading';
 
 function wordPartLabel(part: unknown) {
   return visualSourceLocationLabel({part:typeof part==='string'?part:undefined});
@@ -22,9 +25,10 @@ function imageReviewReason(reason: unknown) {
   return 'קריאת התמונה לא אומתה';
 }
 
-export function DocumentSourceView({ document, fullText, visualDescriptions, readingCurrent=true, previewUrl, previewKind, previewError, sourceUrl, sourceReadError, onRetryRead, retryingRead, onCompleteReading, completingReading, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate }: {
+export function DocumentSourceView({ document, fullText, visualDescriptions, readingCurrent=true, previewUrl, previewKind, previewError, sourceUrl, sourceReadError, onRetryRead, retryingRead, onCompleteReading, completingReading, onPreview, canValidate, validating, validationDisabledReason, validationError, onValidate, selectedMsgPartId, onSelectMsgPart }: {
   document: ProjectDocument; fullText?: string | null; previewUrl?: string | null; previewKind?: 'pdf' | 'image' | 'text' | 'office' | 'unsupported'; previewError?: string | null; sourceUrl?: string | null;
   visualDescriptions?:VisualDescription[];readingCurrent?:boolean;
+  selectedMsgPartId?:string|null;onSelectMsgPart?:(partId:string)=>void;
   sourceReadError?: string | null; onRetryRead?(): Promise<void>; retryingRead?: boolean;
   onCompleteReading?():Promise<void>;completingReading?:boolean;
   onPreview?(): void; canValidate?: boolean; validating?: boolean; validationDisabledReason?: string; validationError?: string | null; onValidate?(): Promise<void>;
@@ -82,6 +86,7 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
     <div className="ti-source-states"><StatusChip tone="neutral">הקובץ נשמר</StatusChip>{document.ai_status === 'VALIDATED' && <StatusChip tone="success">אושר ידנית</StatusChip>}<StatusChip tone={readiness.extractionComplete ? 'info' : 'warning'}>{readiness.extractionComplete ? brandingUnits.length?'תוכן המסמך נקרא':'הטקסט נקרא' : 'הקריאה לא הושלמה'}</StatusChip><StatusChip tone={aiIncomplete ? 'warning' : 'neutral'}>{aiIncomplete ? 'ניתוח AI לא הושלם' : analysisComplete ? 'ניתוח הושלם' : 'השלמת ניתוח נבדקת בנפרד'}</StatusChip></div>
     {brandingUnits.length>0&&<p className="ti-meta" data-source-branding="recognized">סמלילים וסימני מיתוג זוהו חזותית; אינם הוראות או תנאים בפרויקט.</p>}
     {recognitionNotes.length>0&&<ul aria-label="הערות זיהוי שאינן מעכבות קריאה">{recognitionNotes.map(note=><li key={note}>{note}</li>)}</ul>}
+    {visual?.format==='MSG'&&Boolean(visual.msg)&&typeof visual.msg==='object'&&Array.isArray((visual.msg as MsgReadingProof).parts)&&document.project_id&&document.content_hash&&<MsgSourceDetails projectId={document.project_id} documentId={document.id} sourceHash={document.content_hash} proof={visual.msg as MsgReadingProof} units={units as RegistryUnit[]} selectedPartId={selectedMsgPartId} onSelectPart={onSelectMsgPart}/>}
     {pdf && <p className="ti-meta">{pages ? <>נקראו <BidiText kind="code" value={`${readPages.length} / ${pages}`} /> עמודים{missing.length > 0 && <> · עמודים שלא נקראו: <BidiText kind="code" value={missing.join(', ')} /></>}</> : 'מספר העמודים לא אומת'}</p>}
     {isWord && <div role="group" aria-label="קריאת חלקי המסמך">
       {visualMatches&&visual?.format==='DOCX'?<><p className="ti-meta">תמונות ייחודיות שקריאתן אומתה: <BidiText kind="code" value={`${confirmedUnits.length} / ${units.length}`}/></p>

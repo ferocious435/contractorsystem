@@ -12,6 +12,7 @@ type DocumentStorageRecord = {
 export type DocumentPreviewKind = "pdf" | "image" | "text" | "office" | "unsupported";
 
 const CONTENT_TYPES_BY_EXTENSION: Record<string, string> = {
+    ".msg": "application/vnd.ms-outlook",
     ".pdf": "application/pdf",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -171,6 +172,8 @@ export function getDocumentContentType(doc: DocumentStorageRecord, buffer?: Buff
 export function getDocumentPreviewKind(doc: DocumentStorageRecord, contentType = getDocumentContentType(doc)): DocumentPreviewKind {
     const normalizedContentType = contentType.split(";")[0]?.trim().toLowerCase() || "";
     const extension = getFileExtension(doc.title) || getFileExtension(getDocumentStoragePath(doc)) || getFileExtension(doc.file_url);
+
+    if (extension === ".msg") return "unsupported";
 
     if (normalizedContentType === "application/pdf" || extension === ".pdf") return "pdf";
     if (normalizedContentType.startsWith("image/") || [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(extension)) return "image";

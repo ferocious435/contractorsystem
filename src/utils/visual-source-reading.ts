@@ -1,6 +1,6 @@
 import type {DocumentSourceInput, RenderedEmptyPageProof} from './document-source-readiness';
 import type {JobDto} from '../server/ai/contracts';
-import type {MsgReadingProof} from './msg-source-types';
+import type {MsgReadingProof,MsgReadingPart} from './msg-source-types';
 import {assessMsgReadingProof} from './msg-reading-proof';
 
 export const VISUAL_READING_VERSION = 'visual-source-reading-v2';
@@ -57,7 +57,7 @@ export type VisualDescription = {unitId:string;location:ReadingLocation;text:str
 export type ReadingAssembly = {text:string;textHash:string;verification:VisualReadingVerification;units:VerifiedUnit[];visualDescriptions:VisualDescription[]};
 export type DocumentReadingPatch = {extracted_text:string;extracted_text_hash:string;ocr_status:'COMPLETED'|'REQUIRES_REVIEW';parsed_json:Record<string,unknown>;processed_at:string};
 export type EffectiveDocumentReading = {text:string;textHash:string;sourceHash:string;visualDescriptions:VisualDescription[];ready:boolean};
-export type ReadingDetail = EffectiveDocumentReading & {current:boolean;reading:unknown;versions:Array<Omit<ReadingTextVersion,'text'|'reading'>>};
+export type ReadingDetail = EffectiveDocumentReading & {current:boolean;reading:unknown;versions:Array<Omit<ReadingTextVersion,'text'|'reading'>>;part?:MsgReadingPart};
 export type DocumentJobOptions = {signal?:AbortSignal;onAccepted?:(job:JobDto)=>void;onProgress?:(job:JobDto)=>void};
 
 const object = (value:unknown):value is Record<string,unknown> => Boolean(value)&&typeof value==='object'&&!Array.isArray(value);

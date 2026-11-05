@@ -10,6 +10,7 @@ export type MsgPartReading = Omit<MsgPart,'body'> & {
     status:'READ'|'REQUIRES_REVIEW';
 };
 export type MsgInventoryPart = Pick<MsgPart,'id'|'parentId'|'kind'|'name'|'mimeType'|'containerPath'|'payloadHash'|'byteLength'> & {bodyTextHash:string|null};
+export type MsgReadingPart = Pick<MsgPartReading,'id'|'name'|'kind'|'parentId'|'mimeType'|'payloadHash'|'unitIds'|'status'> & {text:string};
 export type MsgReadingProof = {version:'msg-source-v1';sourceHash:string;rootPartId:string;inventoryHash:string;inventory:MsgInventoryPart[];parts:MsgPartReading[];issues:string[];scope?:{ownerId:string;projectId:string;documentId:string;sourceHash:string}};
 export type MsgLimits = {maxSourceBytes:number;maxPartBytes:number;maxTotalPartBytes:number;maxParts:number;maxDepth:number;timeoutMs:number;maxOutputBytes:number};
 export type MsgReadOptions = {signal?:AbortSignal;limits?:Partial<MsgLimits>};

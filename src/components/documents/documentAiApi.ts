@@ -33,10 +33,19 @@ export async function fetchSavedDocument(projectId:string,documentId:string,sign
     if(!response.ok||!record(body)||body.success!==true||!Array.isArray(body.documents))throw new Error('SAVED_DOCUMENT_READ_FAILED');
     const document=body.documents.find(value=>record(value)&&value.id===documentId&&value.project_id===projectId);if(!document)throw new Error('SAVED_DOCUMENT_NOT_FOUND');return document as ProjectDocument;
 }
-export async function fetchDocumentReading(projectId:string,documentId:string,query:{textHash?:string;quote?:string;page?:number}={},signal?:AbortSignal):Promise<ReadingDetail>{
+export async function fetchDocumentReading(projectId:string,documentId:string,query:{textHash?:string;quote?:string;page?:number;partId?:string}={},signal?:AbortSignal):Promise<ReadingDetail>{
     const response=await fetch('/api/documents/reading',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId,documentId,...query}),signal,cache:'no-store'}),body:unknown=await response.json();
     signal?.throwIfAborted();if(!response.ok||!record(body)||typeof body.text!=='string'||typeof body.textHash!=='string'||typeof body.sourceHash!=='string'
-        ||!Array.isArray(body.visualDescriptions)||!Array.isArray(body.versions)||typeof body.current!=='boolean')throw new Error('SOURCE_READING_NOT_FOUND');return body as unknown as ReadingDetail;
+        ||!Array.isArray(body.visualDescriptions)||!Array.isArray(body.versions)||typeof body.current!=='boolean'
+        ||query.partId&&(!record(body.part)||body.part.id!==query.partId||typeof body.part.text!=='string'))throw new Error('SOURCE_READING_NOT_FOUND');return body as unknown as ReadingDetail;
+}
+
+export function msgPartPreview(detail:ReadingDetail|null,projectId:string,documentId:string):{url:string;kind:'pdf'|'image'|'unsupported'}|null {
+    const part=detail?.part,reading=detail?.reading;
+    if(!detail||!part?.payloadHash||!record(reading)||!record(reading.msg)||reading.msg.rootPartId===part.id)return null;
+    const units=Array.isArray(reading.expectedUnits)?reading.expectedUnits.filter(unit=>record(unit)&&part.unitIds.includes(String(unit.id))):[];
+    const kind=units.some(unit=>unit.kind==='PDF_PAGE')?'pdf':units.some(unit=>unit.kind==='IMAGE_FRAME')?'image':'unsupported';
+    return {url:'/api/documents/attachment?'+new URLSearchParams({projectId,documentId,sourceHash:detail.sourceHash,partId:part.id}),kind};
 }
 /** The upload, including an existing duplicate, continues through the ordinary program worker. */
 export async function uploadDocumentAndAnalyze(projectId:string,file:File,category:string,options:DocumentJobOptions&{onUploaded?:(document:ProjectDocument)=>void}={}):Promise<ProjectDocument>{
