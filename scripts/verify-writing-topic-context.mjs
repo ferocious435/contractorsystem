@@ -43,6 +43,18 @@ test('filename and header date conflict is explicit and quoted from the saved he
  const unknown=select([document('unknown','מפעל נגב:\nנדרשת מדידת סחף קרקע ליד קיר כלונסאות.','פרוטוקול 01.01.2099.txt')]);
  assert.ok(unknown.warnings.some(warning=>warning.documentId==='unknown'&&/תאריך|מועד/u.test(warning.reason)));
 });
+test('a provable filename date conflict stays visible across short and full year formats',()=>{
+ for(const [header,filename] of [['30.07.25','06.08.2025'],['30.07.2025','06.08.25'],['30.07.25','30.07.2024']]){
+  const result=select([document('conflict','תאריך: '+header+'\n\nמפעל נגב:\nנדרשת מדידת סחף קרקע ליד קיר כלונסאות.','פרוטוקול '+filename+'.txt')]);
+  assert.ok(result.warnings.some(warning=>warning.reason.includes(header)&&warning.reason.includes(filename)),header+' versus '+filename);
+ }
+ const same=select([document('same','תאריך: 30.07.25\n\nמפעל נגב:\nנדרשת מדידת סחף קרקע ליד קיר כלונסאות.','פרוטוקול 30.07.2025.txt')]);
+ assert.equal(same.warnings.length,0);
+});
+test('an impossible four-digit year is not accepted as a dated header',()=>{
+ const result=select([document('zero','תאריך: 01.01.0000\n\nמפעל נגב:\nנדרשת מדידת סחף קרקע ליד קיר כלונסאות.')]);
+ assert.ok(result.warnings.some(warning=>warning.documentId==='zero'&&warning.reason.includes('לא נמצא תאריך')));
+});
 test('late explicit receipt is retained alongside the older pending instruction',()=>{
  const pending='נדרשת מדידת סחף קרקע ליד קיר כלונסאות.';
  const received='מדידת קיר כלונסאות התקבלה ואושרה על ידי הפיקוח.';

@@ -39,7 +39,7 @@ function dateParts(raw: string): {key: string; family: number} | null {
     if (!match) return null;
     const day = Number(match[1]), month = Number(match[2]), year = Number(match[3]);
     const leap = year % 4 === 0 && (match[3].length === 2 || year % 100 !== 0 || year % 400 === 0);
-    if (month < 1 || month > 12 || day < 1 || day > [31,leap ? 29 : 28,31,30,31,30,31,31,30,31,30,31][month - 1]) return null;
+    if (month < 1 || month > 12 || day < 1 || match[3].length === 4 && year === 0 || day > [31,leap ? 29 : 28,31,30,31,30,31,31,30,31,30,31][month - 1]) return null;
     return {key: [match[3], String(month).padStart(2, '0'), String(day).padStart(2, '0')].join('-'), family: match[3].length};
 }
 function headerDate(text: string): DatedRange | null {
@@ -112,7 +112,8 @@ export function selectWritingTopicContext(documents: readonly WritingTopicDocume
             const date = headerDate(document.text);
             const filenameDates = [...(document.title || '').matchAll(/\d{1,2}[/.]\d{1,2}[/.](?:\d{4}|\d{2})(?!\d)/gu)]
                 .map(match => ({raw: match[0], ...dateParts(match[0])})).filter(value => value.key);
-            const conflict = date && filenameDates.find(value => value.family === date.family && value.key !== date.key);
+            // Different day/month/year suffixes conflict even when the century is unspecified.
+            const conflict = date && filenameDates.find(value => value.family === date.family ? value.key !== date.key : value.key!.slice(-8) !== date.key.slice(-8));
             const uncertain = !date || !!conflict;
             if (!date) warn(document.id, 'לא נמצא תאריך מפורש בכותרת התוכן; שם הקובץ וזמן ההעלאה אינם קובעים את סדר ההנחיות.');
             if (conflict) warn(document.id, `התאריך בשם הקובץ ${conflict.raw} אינו תואם לתאריך בכותרת ${date!.raw}; מועד המקור דורש בדיקה ואין להסיק שהוא ההנחיה האחרונה.`);
