@@ -98,6 +98,29 @@ test('an unknown or omitted source marker cannot borrow a known numeric quantity
  }
 });
 
+test('grouped selected references stay unchanged in the body, reading gaps and proposed actions',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק את ההתקדמות.',sources:[{...sources[0],sourceId:'S27',quote:'המדידה טרם הוגשה.'},{...sources[1],sourceId:'S28',quote:'הנושא נשאר במעקב.'}]};
+ const raw={body:'המדידה טרם הוגשה [S27, S28]. אין אישור לתשלום לפי המקורות [S27,S28].',sourceIds:['S27','S28'],unknowns:['לא הוכחה סגירת הנושא [S27, S28].'],nextActions:['מומלץ לבקש את המדידה [S28, S27].']};
+ assert.deepEqual(writing.validateWritingResult(JSON.stringify(raw),allowed),raw);
+});
+
+test('each grouped reference must be known and selected even when its number occurs in the source',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק.',sources:[{...sources[0],sourceId:'S27',quote:'יש לבדוק את מגרש 999.'},{...sources[1],sourceId:'S28',quote:'נדרש מעקב.'}]};
+ for(const raw of [
+  {body:'נדרש בירור [S27, S999].',sourceIds:['S27']},
+  {body:'נדרש בירור [S27, S28].',sourceIds:['S27']},
+  {body:'נדרש בירור.',sourceIds:['S27'],unknowns:['לא הוכח [S27, S28].']},
+  {body:'נדרש בירור.',sourceIds:['S27'],nextActions:['מומלץ לבדוק [S27, S999].']},
+ ]) assert.throws(()=>writing.validateWritingResult(JSON.stringify({unknowns:[],nextActions:[],...raw}),allowed),error=>error.code==='AI_SOURCE_UNVERIFIED');
+});
+
+test('grouped references do not hide an invented quantity or a monetary figure outside the brackets',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק.',sources:[{...sources[0],sourceId:'S27',quote:'יש לבדוק את מגרש 999.'},{...sources[1],sourceId:'S28',quote:'נדרש מעקב.'}]};
+ for(const [body,code] of [['נדרש בירור במגרש 888 [S27, S28].','AI_FACT_UNVERIFIED'],['יש לשלם 999 ₪ לפי המקורות [S27, S28].','AI_AMOUNT_UNVERIFIED']]){
+  assert.throws(()=>writing.validateWritingResult(JSON.stringify({body,sourceIds:['S27','S28'],unknowns:[],nextActions:[]}),allowed),error=>error.code===code);
+ }
+});
+
 test('ordinary correspondence is generated without a financial line or a zero payment demand',async()=>{
  const handler=letters.createLetterHandler({loadContext:async execution=>({project:{id:execution.projectId,name:'פרויקט'},sources:[sources[0]],unverified:[],omittedCount:0})});
  const input=handler.validate({...payload,purpose:'correspondence',itemIds:[]});

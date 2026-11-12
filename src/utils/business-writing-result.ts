@@ -5,13 +5,14 @@ import {unverifiedWritingNumbers,maskKnownWritingDates} from './writing-number-e
 export interface WritingFacts {kind:'letter'|'consultant';projectName:string;userText:string;sources:Array<LetterSourceRef&{sourceId:string}>;unverifiedSourceLabels?:string[];payload?:Record<string,unknown>;}
 export interface WritingResult {body:string;sourceIds:string[];unknowns?:string[];nextActions?:string[];}
 const invalid=(code='AI_WRITING_INVALID')=>new BusinessAiError(code,'התשובה כוללת פרט שלא אומת. הטקסט הקודם נשמר.',422);
-const SOURCE_MARKER=/\[(S\d+)\]/gu;
+const SOURCE_MARKER=/\[(S\d+(?:\s*,\s*S\d+)*)\]/gu;
+const sourceMarkers=(text:string)=>[...text.matchAll(SOURCE_MARKER)].flatMap(match=>match[1].split(/\s*,\s*/u));
 function checkedBody(value:unknown,facts:WritingFacts):string {
     if(typeof value!=='string'||!value.trim()||value.length>30000)throw invalid();
     const evidence=[facts.userText,facts.projectName,...facts.sources.map(source=>source.quote??'')].join('\n');
     // An unread filename may identify a reading gap; it supplies no quote or financial evidence.
     const labels=facts.kind==='consultant'?facts.unverifiedSourceLabels??[]:[];
-    if([...value.matchAll(SOURCE_MARKER)].some(match=>!facts.sources.some(source=>source.sourceId===match[1])))throw invalid('AI_SOURCE_UNVERIFIED');
+    if(sourceMarkers(value).some(id=>!facts.sources.some(source=>source.sourceId===id)))throw invalid('AI_SOURCE_UNVERIFIED');
     const factualText=value.replace(/^\s*\d{1,3}[.)]\s+/gm,'').replace(SOURCE_MARKER,' [source] ');
     if(unverifiedWritingNumbers(factualText,[evidence,...labels].join('\n')).length)throw invalid('AI_FACT_UNVERIFIED');
     // Dates/codes from the input are allowed. Financial figures are rendered from the server snapshot.
@@ -30,7 +31,7 @@ export function validateWritingResult(raw:string,facts:WritingFacts,snapshot?:Le
     if(!Array.isArray(value.sourceIds)||value.sourceIds.some(id=>typeof id!=='string'||!allowed.has(id))||new Set(value.sourceIds).size!==value.sourceIds.length)throw invalid('AI_SOURCE_UNVERIFIED');
     const result:WritingResult={body:checkedBody(value.body,facts),sourceIds:value.sourceIds};
     if(facts.kind==='consultant')for(const key of ['unknowns','nextActions'] as const){if(!Array.isArray(value[key])||value[key].length>20)throw invalid();result[key]=value[key].map(text=>checkedBody(text,facts));}
-    if([result.body,...result.unknowns||[],...result.nextActions||[]].some(text=>[...text.matchAll(SOURCE_MARKER)].some(match=>!result.sourceIds.includes(match[1]))))throw invalid('AI_SOURCE_UNVERIFIED');
+    if([result.body,...result.unknowns||[],...result.nextActions||[]].some(text=>sourceMarkers(text).some(id=>!result.sourceIds.includes(id))))throw invalid('AI_SOURCE_UNVERIFIED');
     return result as unknown as JsonValue;
 }
 const money=(value:number)=>value.toFixed(2)+' ₪';
