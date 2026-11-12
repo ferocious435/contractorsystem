@@ -7,6 +7,8 @@ import type {LetterSourceRef} from './letter-draft-types';
 import {writingRetrievalQuery} from './writing-context-query';
 import {getCurrentDocumentReading} from './document-reading-history';
 import type {ReadingLocation} from './visual-source-reading';
+import {selectWritingTopicContext, type WritingTopicSelection} from './writing-topic-context';
+import {anchorSourceRange} from './radar-evidence-assessment';
 export class ProjectWritingError extends Error {constructor(readonly code:string,readonly status:number,message:string){super(message);}}
 export async function ownedWritingProject(client: SupabaseClient, projectId: string, userId: string) {
     const {data, error} = await client.from('projects').select('*').eq('id', projectId).eq('contractor_id', userId).maybeSingle();
@@ -58,7 +60,7 @@ async function savedLedgerRows(client: SupabaseClient, projectId: string): Promi
     return result;
 }
 /** Reads saved data only. A context excerpt never establishes contractual authority. */
-export async function loadProjectWritingContext(client: SupabaseClient, projectId: string, userId: string, question: string, previousQuestion = ''): Promise<ProjectWritingContext> {
+export async function loadProjectWritingContext(client: SupabaseClient, projectId: string, userId: string, question: string, previousQuestion = '', options: {includeTopicHistory?: boolean} = {}): Promise<ProjectWritingContext> {
     const project = await ownedWritingProject(client, projectId, userId);
     const [documents, rows] = await Promise.all([
         savedProjectDocuments(client, projectId),
@@ -76,7 +78,15 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         for(const term of meaningfulRetrievalTerms(acronyms)) weights.set(term,Math.max(1,weights.get(term)||0)*12);
         return {query, weights};
     });
-    const candidates = documents.flatMap(document => {
+    const topicDocuments = options.includeTopicHistory ? readable.map(document => ({id: document.id, title: document.title || null,
+        text: current.get(document.id)!.text, textHash: current.get(document.id)!.textHash})) : [];
+    const topic = options.includeTopicHistory ? selectWritingTopicContext(topicDocuments, question) : null;
+    const previousTopic = options.includeTopicHistory && previousQuestion.trim() ? selectWritingTopicContext(topicDocuments, previousQuestion) : null;
+    for (const warning of [...topic?.warnings || [], ...previousTopic?.warnings || []]) {
+        const document = documents.find(document => document.id === warning.documentId);
+        unverified.push({...warning, title: document?.title || null, reason: (document?.title ? document.title + ' — ' : '') + warning.reason});
+    }
+    const generalCandidates = documents.flatMap(document => {
         const readiness = assessDocumentSourceReadiness(document);
         const label = document.title ? document.title + ' — ' : '';
         if (!readiness.canCompare) {
@@ -92,11 +102,27 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
         if (limited) unverified.push({documentId: document.id, title: document.title || null, reason: label + 'נבחר קטע מוגבל; יש לבדוק את ההקשר וההפניות המלאים'});
         return excerpts;
     }).sort((a, b) => a.priority - b.priority || a.part - b.part || b.score - a.score || a.document.id.localeCompare(b.document.id));
+    const topicCandidatesFor = (selection: WritingTopicSelection | null) => (selection?.sources || []).flatMap(source => {
+        const document = readable.find(document => document.id === source.documentId);
+        return document ? [{document, anchor: anchorSourceRange({...document, extracted_text: current.get(document.id)!.text}, source.anchor.start, source.anchor.end)}] : [];
+    });
+    const topicCandidates = topicCandidatesFor(topic), previousTopicCandidates = topicCandidatesFor(previousTopic);
+    const allTopicCandidates = [...topicCandidates, ...previousTopicCandidates];
+    const candidates = topic ? [...topicCandidates, ...generalCandidates.filter(candidate => candidate.priority === 0),
+        ...previousTopicCandidates, ...generalCandidates.filter(candidate => candidate.priority > 0)] : generalCandidates;
     const sources: ProjectWritingContext['sources'] = []; const seen = new Set<string>(); let characters = 0;
     for (const {document, anchor} of candidates) {
         const key = JSON.stringify([document.id, anchor.start, anchor.end]);
         if (seen.has(key)) continue;
-        if (sources.length >= 32 || characters + anchor.quote.length > 32000) continue;
+        if (sources.length >= 32 || characters + anchor.quote.length > 32000) {
+            if (allTopicCandidates.some(source => source.document.id === document.id && source.anchor.start === anchor.start && source.anchor.end === anchor.end)
+                && !unverified.some(source => source.documentId === document.id && source.reason.includes('לא כל הקטעים הקשורים'))) {
+                unverified.push({documentId: document.id, title: document.title || null, reason: (document.title ? document.title + ' — ' : '') + 'לא כל הקטעים הקשורים נכללו בהקשר; אין להסיק מכך שההיסטוריה נבדקה במלואה.'});
+            }
+            continue;
+        }
+        if (topic && allTopicCandidates.length && !allTopicCandidates.some(source => source.anchor === anchor)
+            && sources.some(source => source.documentId === document.id && source.quote && anchor.quote.includes(source.quote))) continue;
         if (!anchor.quote.trim() || current.get(document.id)!.text.slice(anchor.start, anchor.end) !== anchor.quote) continue;
         sources.push({sourceId: 'S' + (sources.length + 1), documentId: document.id, title: document.title || null,
             pageLabel: anchor.page === null ? null : String(anchor.page), quote: anchor.quote,

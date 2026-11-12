@@ -84,6 +84,20 @@ test('an exact known short date still works in ordinary letter price-request pro
  assert.deepEqual(writing.validateWritingResult(JSON.stringify(raw),allowed),raw);
 });
 
+test('a selected source marker is a reference rather than an invented project number',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק את המקור.',sources:[{...sources[0],sourceId:'S27',quote:'יש להמשיך בבדיקת הנתונים.'}]};
+ for(const body of ['נדרש בירור לפי המקור [S27].','אין אישור לתשלום לפי המקור [S27].']){
+  const raw={body,sourceIds:['S27'],unknowns:[],nextActions:[]};
+  assert.deepEqual(writing.validateWritingResult(JSON.stringify(raw),allowed),raw);
+ }
+});
+test('an unknown or omitted source marker cannot borrow a known numeric quantity',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק את המקור.',sources:[{...sources[0],sourceId:'S27',quote:'יש לבדוק את מגרש 999.'}]};
+ for(const raw of [{body:'נדרש בירור [S999].',sourceIds:['S27']},{body:'נדרש בירור [S27].',sourceIds:[]}]){
+  assert.throws(()=>writing.validateWritingResult(JSON.stringify({...raw,unknowns:[],nextActions:[]}),allowed),error=>error.code==='AI_SOURCE_UNVERIFIED');
+ }
+});
+
 test('ordinary correspondence is generated without a financial line or a zero payment demand',async()=>{
  const handler=letters.createLetterHandler({loadContext:async execution=>({project:{id:execution.projectId,name:'פרויקט'},sources:[sources[0]],unverified:[],omittedCount:0})});
  const input=handler.validate({...payload,purpose:'correspondence',itemIds:[]});

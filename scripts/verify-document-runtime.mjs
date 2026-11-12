@@ -25,6 +25,7 @@ const suites=[
     'scripts/verify-project-writing-context.mjs',
     'scripts/verify-codex-writing.mjs',
     'scripts/verify-writing-number-evidence.mjs',
+    'scripts/verify-writing-topic-context.mjs',
     'scripts/verify-document-display-status.mjs',
     'scripts/verify-document-source-readiness.mjs',
     'scripts/verify-pdf-empty-page-reading.mjs',

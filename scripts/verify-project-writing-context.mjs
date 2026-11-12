@@ -78,3 +78,42 @@ test('a saved photo contributes its verified description and actual frame to the
  const description='משאבות מחוברות בצילום למסלול מעבר.',proof=imageRegistry({text:''}),saved=sourceDocument({title:'צילום משאבות.jpg',project_id:project,deleted_at:null,extracted_text:'',extracted_text_hash:digest(''),parsed_json:{source_reading:proof,source_reading_visual_descriptions:[{unitId:proof.expectedUnits[0].id,location:proof.expectedUnits[0].locations[0],text:description}]}});
  const context=await loadProjectWritingContext(clientFor([saved]),project,owner,'מה מופיע בצילום המשאבות?');assert.deepEqual(context.sources,[]);assert.equal(context.visualContext[0].description,description);assert.equal(context.visualContext[0].location.frame,1);assert.equal(context.visualContext[0].documentId,saved.id);assert.equal(context.omittedCount,0);
 });
+
+test('consultant topic history includes later direct rows before large general background',async()=>{
+ const question='מה מצב מדידת סחף קרקע ליד קיר כלונסאות במפעל נגב ואיך התקדמה ההנחיה?';
+ const docs=Array.from({length:30},(_,i)=>doc('background-'+i,'חוזה\n'+('מדידת סחף קרקע במפעל נגב ליד קיר כלונסאות, כללי תיאום כלליים. '.repeat(100))));
+ const early='נדרשת מדידת סחף קרקע ליד קיר כלונסאות.',late='מדידה ליד קיר כלונסאות טרם הועברה. הקבלן הבטיח למסור בימים הקרובים.';
+ const other='\n\nתאורה:\n'+('תאורה וריצוף בבדיקה.\n'.repeat(150));
+ docs.push(doc('early','פרוטוקול\nתאריך: 14.05.25\n\nמפעל נגב:\n'+early+'\nהקבלן\t21.05.25'+other),doc('late','פרוטוקול\nתאריך: 30.07.25\n\nמפעל נגב:\n'+late+'\nהקבלן\t13.08.25'+other));
+ const context=await loadProjectWritingContext(clientFor(docs),project,owner,question,'',{includeTopicHistory:true});
+ assert.ok(context.sources.some(source=>source.documentId==='early'&&source.quote.includes(early)));
+ assert.ok(context.sources.some(source=>source.documentId==='late'&&source.quote.includes(late)));
+ assert.ok(context.sources.some(source=>source.documentId==='late'&&source.quote.includes('30.07.25')));
+ assert.ok(context.sources.length<=32);assert.ok(context.sources.reduce((sum,source)=>sum+source.quote.length,0)<=32000);
+ for(const source of context.sources)assert.ok(docs.find(doc=>doc.id===source.documentId).extracted_text.includes(source.quote));
+});
+test('topic history retains draft and unread-page gaps and does not date an undated source from upload time',async()=>{
+ const text='מפעל נגב:\nנדרשת מדידת סחף קרקע ליד קיר כלונסאות.';
+ const partial={...doc('partial',text,'מדידה.pdf'),parsed_json:{source_reading:{version:'page-coverage-v1',complete:false,totalPages:2,readPages:[1],unreadablePages:[2]}}};
+ const docs=[doc('draft','טיוטה\n'+text),partial,{...doc('undated',text,'פרוטוקול 01.01.2099.txt'),created_at:'2099-01-01T00:00:00Z'}];
+ const context=await loadProjectWritingContext(clientFor(docs),project,owner,'מה מצב מדידת סחף קרקע ליד קיר כלונסאות במפעל נגב?','',{includeTopicHistory:true});
+ assert.ok(!context.sources.some(source=>['draft','partial'].includes(source.documentId)));
+ assert.ok(['draft','partial'].every(id=>context.unverified.some(source=>source.documentId===id)));
+ assert.ok(context.unverified.some(source=>source.documentId==='undated'&&/תאריך|מועד/u.test(source.reason)));
+});
+
+test('Hebrew query variants cannot crowd the concrete instruction history out of the source cap',async()=>{
+ const question='מה מתועד בנושא ניקוז מפעל נגב ומדידת אזורי סחף הקרקע ליד קיר הכלונסאות? הסבר איך ההנחיות התקדמו עם הזמן ומה עדיין לא הוכח כבוצע. הבדל בין טענת צד לבין הנחיה ותן הפניות למקורות. האם יש בסיס לראות את הנושא כסגור?';
+ const docs=Array.from({length:20},(_,i)=>doc('spec-'+i,'תאריך: 1.1.20\n\nכלונסאות:\nהפניות ופניות לסעיפי מפרט ניקוז וקירות כלונסאות, בהתאם לסוג הקרקע.'));
+ for(const [i,date] of ['1.5.25','14.5.25','21.5.25','28.5.25','24.6.25','1.7.25','30.7.25'].entries())docs.push(doc('history-'+i,'פרוטוקול\nתאריך: '+date+'\n\nמפעל נגב:\nהקבלן טרם הגיש את מדידת אזורי סחף הקרקע כנדרש. הנושא מעוכב ועל הקבלן להמציא את הנתונים לפיקוח.'));
+ const context=await loadProjectWritingContext(clientFor(docs),project,owner,question,'',{includeTopicHistory:true});
+ for(let i=0;i<7;i++)assert.ok(context.sources.some(source=>source.documentId==='history-'+i&&source.quote.includes('מדידת אזורי סחף הקרקע')),'missing actual topic history '+i);
+ assert.ok(context.sources.length<=32);
+});
+
+test('a precise current acronym is not displaced by a large previous topic',async()=>{
+ const docs=Array.from({length:30},(_,i)=>doc('lighting-'+i,'תאריך: '+(i+1)+'.1.25\n\nתאורה:\nתכנון התאורה ומיקומי המנורות עדיין בטיפול.'));
+ docs.push(doc('method','MTM: יש להמתין למסמך אחריות חתום ואישור בכתב.'));
+ const context=await loadProjectWritingContext(clientFor(docs),project,owner,'מה מצב מת״מ?','מה מצב תכנון התאורה ומיקומי המנורות? מוצגת ההיסטוריה.',{includeTopicHistory:true});
+ assert.equal(context.sources[0].documentId,'method');
+});

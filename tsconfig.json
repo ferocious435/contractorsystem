@@ -30,12 +30,13 @@
     }
   },
   "include": [
+    ".next/dev/types/**/*.ts",
+    ".next/types/**/*.ts",
     "next-env.d.ts",
+    "src/**/*.mts",
     "src/**/*.ts",
     "src/**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts",
-    "src/**/*.mts"
+    ".next-consultant/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
