@@ -85,6 +85,8 @@ jobs:
           node --import ./scripts/codex-runtime/load-server.mjs --test
           scripts/verify-open-workspace.mjs
           scripts/verify-project-writing-context.mjs
+          scripts/verify-codex-writing.mjs
+          scripts/verify-writing-number-evidence.mjs
           scripts/verify-action-readiness.mjs
           scripts/verify-correspondence-state.mjs
           scripts/verify-correspondence-loading.mjs

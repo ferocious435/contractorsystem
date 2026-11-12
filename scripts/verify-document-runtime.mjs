@@ -23,6 +23,8 @@ const suites=[
     'scripts/verify-document-reading-flow.mjs',
     'scripts/verify-document-source-actions.mjs',
     'scripts/verify-project-writing-context.mjs',
+    'scripts/verify-codex-writing.mjs',
+    'scripts/verify-writing-number-evidence.mjs',
     'scripts/verify-document-display-status.mjs',
     'scripts/verify-document-source-readiness.mjs',
     'scripts/verify-pdf-empty-page-reading.mjs',

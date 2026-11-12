@@ -54,6 +54,36 @@ test('a date explicitly supplied by the user is allowed in natural letter prose'
   const result=validate({body:'שלום, נבקש לתאם את העבודה ליום 15.11.2026. נשמח לאישורכם.',sourceIds:['S1']});assert.ok(result.body.includes('15.11.2026'));
 });
 
+test('equivalent date and range keep the accepted consultant response unchanged',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק את ההתקדמות.',sources:[{...sources[0],quote:'ביום 1.1.25 נדרשה מדידה בחתכים 1450-1499.'}]};
+ const body='ביום 01.01.25 נדרשה מדידה בחתכים 1450–1499.';
+ const raw={body,sourceIds:['S1'],unknowns:['האם ביום 01.01.25 הועברה המדידה?'],nextActions:['בדיקת חתכים 1450–1499.']};
+ assert.deepEqual(writing.validateWritingResult(JSON.stringify(raw),allowed),raw);
+});
+test('numeric equivalence cannot approve another date, code, range bound or quotation',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק.',sources:[{...sources[0],quote:'ביום 1.1.25 נדרשה מדידה בחתכים 1450-1499; סעיף 2.3.25 וקוד R1500-1599.'}]};
+ for(const body of ['ביום 02.01.25 נדרשה מדידה.','סעיף 02.03.25 חל.','קוד R1500–1599.','נדרשה מדידה בחתכים 1450–1500.']){
+  assert.throws(()=>writing.validateWritingResult(JSON.stringify({body,sourceIds:['S1'],unknowns:[],nextActions:[]}),allowed),error=>error.code==='AI_FACT_UNVERIFIED');
+ }
+ assert.throws(()=>writing.validateWritingResult(JSON.stringify({body:'נכתב: "ביום 01.01.25 נדרשה מדידה בחתכים 1450–1499."',sourceIds:['S1'],unknowns:[],nextActions:[]}),allowed),error=>error.code==='AI_QUOTE_UNVERIFIED');
+});
+test('a currency amount cannot hide as a known date',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'ביום 1.1.25 הועברה הנחיה.',sources:[]};
+ for(const body of ['יש לשלם 1.1.25 ₪.','המחיר 1.1.25 USD.','מחיר 1.1.25.']){
+  assert.throws(()=>writing.validateWritingResult(JSON.stringify({body,sourceIds:[],unknowns:[],nextActions:[]}),allowed),error=>error.code==='AI_AMOUNT_UNVERIFIED');
+ }
+});
+test('a known negative value cannot validate its unsigned opposite',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'המפלס -5.',sources:[]};
+ assert.throws(()=>writing.validateWritingResult(JSON.stringify({body:'המפלס 5.',sourceIds:[],unknowns:[],nextActions:[]}),allowed),error=>error.code==='AI_FACT_UNVERIFIED');
+});
+
+test('an exact known short date still works in ordinary letter price-request prose',()=>{
+ const allowed={kind:'letter',projectName:'פרויקט',userText:'נא לתאם ליום 15.11.',sources:[]};
+ const raw={body:'נא להעביר מחיר עד ליום 15.11.',sourceIds:[]};
+ assert.deepEqual(writing.validateWritingResult(JSON.stringify(raw),allowed),raw);
+});
+
 test('ordinary correspondence is generated without a financial line or a zero payment demand',async()=>{
  const handler=letters.createLetterHandler({loadContext:async execution=>({project:{id:execution.projectId,name:'פרויקט'},sources:[sources[0]],unverified:[],omittedCount:0})});
  const input=handler.validate({...payload,purpose:'correspondence',itemIds:[]});
