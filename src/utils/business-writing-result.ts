@@ -5,15 +5,17 @@ import {unverifiedWritingNumbers,maskKnownWritingDates} from './writing-number-e
 export interface WritingFacts {kind:'letter'|'consultant';projectName:string;userText:string;sources:Array<LetterSourceRef&{sourceId:string}>;unverifiedSourceLabels?:string[];payload?:Record<string,unknown>;}
 export interface WritingResult {body:string;sourceIds:string[];unknowns?:string[];nextActions?:string[];}
 const invalid=(code='AI_WRITING_INVALID')=>new BusinessAiError(code,'התשובה כוללת פרט שלא אומת. הטקסט הקודם נשמר.',422);
-const SOURCE_MARKER=/\[(S\d+(?:\s*,\s*S\d+)*)\]/gu;
-const sourceMarkers=(text:string)=>[...text.matchAll(SOURCE_MARKER)].flatMap(match=>match[1].split(/\s*,\s*/u));
+const SOURCE_MARKER=/(?<![\p{L}\p{N}_])S\d+(?![\p{L}\p{N}_])/gu;
+const isSourceMarker=(text:string,start:number)=>!/(?:סעיף|סעיפים|תת[ -]?סעיף|פרק|קוד|מק["״']?ט|clause|section|code|item)\s*(?:מס[.'״]?\s*)?$/iu.test(text.slice(Math.max(0,start-48),start));
+// A source ID has the same role in [S1], (S1, S2), or prose; a document code keeps its factual digits.
+const sourceMarkers=(text:string)=>[...text.matchAll(SOURCE_MARKER)].filter(match=>isSourceMarker(text,match.index)).map(match=>match[0]);
 function checkedBody(value:unknown,facts:WritingFacts):string {
     if(typeof value!=='string'||!value.trim()||value.length>30000)throw invalid();
     const evidence=[facts.userText,facts.projectName,...facts.sources.map(source=>source.quote??'')].join('\n');
     // An unread filename may identify a reading gap; it supplies no quote or financial evidence.
     const labels=facts.kind==='consultant'?facts.unverifiedSourceLabels??[]:[];
     if(sourceMarkers(value).some(id=>!facts.sources.some(source=>source.sourceId===id)))throw invalid('AI_SOURCE_UNVERIFIED');
-    const factualText=value.replace(/^\s*\d{1,3}[.)]\s+/gm,'').replace(SOURCE_MARKER,' [source] ');
+    const factualText=value.replace(SOURCE_MARKER,(id,start:number)=>isSourceMarker(value,start)?' [source] ':id).replace(/^\s*\d{1,3}[.)]\s+/gm,'');
     if(unverifiedWritingNumbers(factualText,[evidence,...labels].join('\n')).length)throw invalid('AI_FACT_UNVERIFIED');
     // Dates/codes from the input are allowed. Financial figures are rendered from the server snapshot.
     const withoutDates=maskKnownWritingDates(factualText,evidence);

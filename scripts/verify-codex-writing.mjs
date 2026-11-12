@@ -121,6 +121,29 @@ test('grouped references do not hide an invented quantity or a monetary figure o
  }
 });
 
+test('a selected source identifier remains a reference in parentheses or ordinary prose',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק.',sources:[{...sources[0],sourceId:'S27',quote:'המדידה טרם הוגשה.'},{...sources[1],sourceId:'S28',quote:'נדרש מעקב.'}]};
+ const raw={body:'המדידה טרם הוגשה (S27, S28). המקור S28 דורש מעקב.',sourceIds:['S27','S28'],unknowns:['לא הוכחה סגירה (S27).'],nextActions:['מומלץ לבדוק את המקורות S27 ו־S28.']};
+ assert.deepEqual(writing.validateWritingResult(JSON.stringify(raw),allowed),raw);
+});
+
+test('a bare or parenthesized reference still requires a known selected source',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק.',sources:[{...sources[0],sourceId:'S27',quote:'יש לבדוק את מגרש 999.'},{...sources[1],sourceId:'S28',quote:'נדרש מעקב.'}]};
+ for(const raw of [
+  {body:'נדרש בירור (S27, S999).',sourceIds:['S27']},
+  {body:'המקור S999 דורש בירור.',sourceIds:['S27']},
+  {body:'נדרש בירור (S27, S28).',sourceIds:['S27']},
+  {body:'המקור S28 דורש בירור.',sourceIds:['S27']},
+ ]) assert.throws(()=>writing.validateWritingResult(JSON.stringify({unknowns:[],nextActions:[],...raw}),allowed),error=>error.code==='AI_SOURCE_UNVERIFIED');
+});
+
+test('a document code cannot borrow the digits of a source identifier',()=>{
+ const allowed={kind:'consultant',projectName:'פרויקט',userText:'בדוק.',sources:[{...sources[0],sourceId:'S27',quote:'יש לבדוק את המדידה.'},{...sources[1],sourceId:'S28',quote:'נדרש מעקב.'}]};
+ for(const body of ['קוד S27 מחייב בדיקה לפי המקור [S28].','section S27 applies (S28).','קוד XS27 מחייב בדיקה.']){
+  assert.throws(()=>writing.validateWritingResult(JSON.stringify({body,sourceIds:['S27','S28'],unknowns:[],nextActions:[]}),allowed),error=>error.code==='AI_FACT_UNVERIFIED');
+ }
+});
+
 test('ordinary correspondence is generated without a financial line or a zero payment demand',async()=>{
  const handler=letters.createLetterHandler({loadContext:async execution=>({project:{id:execution.projectId,name:'פרויקט'},sources:[sources[0]],unverified:[],omittedCount:0})});
  const input=handler.validate({...payload,purpose:'correspondence',itemIds:[]});
