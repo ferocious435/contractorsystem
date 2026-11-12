@@ -2,6 +2,7 @@ import type {DocumentSourceInput, RenderedEmptyPageProof} from './document-sourc
 import type {JobDto} from '../server/ai/contracts';
 import type {MsgReadingProof,MsgReadingPart} from './msg-source-types';
 import {assessMsgReadingProof} from './msg-reading-proof';
+import type {FragmentComposition,FragmentSummary} from './visual-fragment-contracts';
 
 export const VISUAL_READING_VERSION = 'visual-source-reading-v2';
 export const VISUAL_READING_RULES = 'visual-reading-rules-v2';
@@ -36,12 +37,14 @@ export type VerifiedUnit = {
     createdBy?:{jobId:string;rulesVersion:string;profileRevision:number};
     contentRole?:ContentRole;nonBlockingNotes?:string[];
     brandingOrigin?:ReadingScope&{unitId:string;jobId:string;inputHash:string;profileRevision:number;profileFingerprint:string};
+    composition?:FragmentComposition;
 };
 export type RegistryUnit = {
     id:string;kind:ReadingUnit['kind'];locations:ReadingLocation[];views:Array<Omit<RenderedView,'bytes'>>;
     status:'READ'|'REQUIRES_REVIEW';inputHash:string;textHash:string;literalHasBody:boolean;visualHasContent:boolean;
     verifiedViews:Array<Omit<VerifiedView,'reading'|'confirmation'|'initialReading'>>;uncertainties:string[];
     contentRole?:ContentRole;nonBlockingNotes?:string[];
+    composition?:FragmentSummary;
 };
 export type VisualReadingVerification = {
     version:typeof VISUAL_READING_VERSION;sourceHash:string;currentTextHash:string;manifestHash:string;

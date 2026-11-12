@@ -1,28 +1,22 @@
-# ContractorSystem: консультант исправлен, отдельный сбой ожидания открыт
+# ContractorSystem: продолжение R05
 
-12 ноября2026. Числа/ссылки/подбор истории исправлены, реальный ответ Intel сохранён и повторно открыт. Автоматическое ожидание в UI сообщало о неполном ответе; повторное чтение истории открыло SUCCEEDED. Причина неизвестна. Общие R05/R08/полнаяR07 открыты. EV250–EV257.
+12 ноября2026. R05 частично. Владелец одобрил проект точечного чтения; план23bfebab одобрен владельцем, implementation разрешён. Выполняется задача1; новые компоненты ещё не установлены. EV258–EV260.
 
 ## Один следующий шаг
 
-Исследовать сбой ожидания ответа в интерфейсе без нового модельного запроса: сопоставить обычное чтение job87c448da и браузерный наблюдатель. Сохранённый ответ и повторное чтение истории работают; причина сбоя пока не установлена. Изменять механизм только после установления причины и нужного согласования.
-
-Не повторять успешный вопрос Intel, сверку7пар, импорт Word или чтение успешных изображений. Ничего не писать в защищённый архив. Согласования этого исправления действуют, повторно их не открывать.
+Завершить текущие проверки/сборку/сохранение задачи1 плана `docs/superpowers/plans/2026-11-12-r05-targeted-reading.md`, затем выполнить задачи2–5 самостоятельно в текущем чате. Действительный ответ владельца `01a1cfd1-4fde-7db3-abf1-526a76541bf8`, implementation allowed=true. Все согласования действуют; повторных вопросов по неизменённому плану нет. Точное выполнение — в `.superpowers/sdd/2026-11-12-r05-targeted-reading/progress.md`.
 
 ## Состояние для продолжения
 
-- Исходная рабочая ветка codex/recovery-audit-2026-09-07; ветка исполнения codex/consultant-evidence-2026-11-12. Последний отправленный программный SHA e179ffdcc2d438bf67ae3752864f0a754c6d953f, CI43200953242/20success. Статусный коммит содержит этот HANDOFF; его фактический SHA сверять с HEAD/origin и .superpowers/r08-protocol-batch-20261112/completion.json. EV256–EV257.
-- Изолированное дерево: C:/Users/97254/Documents/Codex/Projects/contractorsystem/.superpowers/r08-protocol-batch-20261112/implementation. Сборка сделана именно там;579 входов до/после одинаковы. Привязки native-worktree нет, поэтому всегда задавать явную папку. EV250–EV252.
-- Работает r01-r12-20261112-v53, BUILD fRUBlqWDC11ekGoBFxL7a, PID13128, http://127.0.0.1:3002/; визуальная проверка проведена также через http://localhost:3002/ — это тот же порт/процесс. Все735 файлов и Node проверены,3007 проверен/остановлен, v52/v49/v48 сохранены. EV253.
-- Физический дом установки C:/Users/97254/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/ContractorSystem; логический путь manifest не переписывать. Node runtime/node-b59feb2088f80e1f.exe, v24.22.1; зависимости dependencies/f00974a5ac7f1266678bff8f/node_modules. Ничего не устанавливать и не менять выбор модели. EV253.
-- База181 документ/209 jobs:204 прежних jobs неизменны, добавлены3FAILED+2SUCCEEDED consultant-jobs. Все20 таблиц/181Storage/14 оригиналов/8 защищённых файлов/28 исходных изменений и SHA профиля 3be1a5aabb12c37866afea5567b5b72a4ec622645444c8cfadf778adba96adb9 сохранены.153full/28partial/25active/3paused прежние. EV255.
-- Последний успешный контроль87c448da-c398-4ef1-b9a2-755dbf211d32, conversation f29340fe-03ec-4493-9215-c0fca175c88e;32 источника/15702 знака,17 цитат/9 документов проверены через программу, все7 целевых протоколов в контексте. Предыдущий успешный5aafd2ee тоже сохранён. Сырые FAILED-ответы не превращались в продуктовый результат. EV254.
-- Последние полные проверки: TS PASS;524documents(523pass/1existing skip),74writing,155financial,19UI; lint0errors/8unchanged-file warnings; production PASS. Квитанция .superpowers/r08-protocol-batch-20261112/final-evidence/final-review-release-full/build-checks.json; е179ffdc CI20success. EV252/EV256.
-- Конечная копия: C:/Users/97254/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/ContractorSystem/backups/2026-11-12-consultant-evidence-after-v53,20таблиц/181Storage/0ошибок, все байты проверены. Нового восстановления нет. Исходная копия до работы и v52-копия сохранены. EV255.
+- Корень `C:/Users/97254/Documents/Codex/Projects/contractorsystem`, ветка `codex/recovery-audit-2026-09-07`. Последний отправленный HEAD `34666a8870f9314f9875501437f2e3a9a6dff67c`, программный SHA `e179ffdcc2d438bf67ae3752864f0a754c6d953f`. Новые документы пока локальные. Не создавать новое дерево/ветку/агентов/AI-клиентов.
+- Свежая сверка фазы: `.superpowers/r05-finish-20261112/after-controls/manifest.json`, 2026-11-12T12:19:44.490Z, passed=true.181 документ/211jobs,28 partial =25 активных+3 паузы.20 таблиц сверены: только чтение двух выбранных документов и2 новых SUCCEEDED read_source; прежние209jobs/прочие деловые данные сохранены. Полнота не выросла. EV258.
+- Прежняя v53 `r01-r12-20261112-v53`, BUILD `fRUBlqWDC11ekGoBFxL7a`, http://127.0.0.1:3002/, последний проверенный PID26408. Перед продолжением проверить процесс заново. Перезапуск штатный, без новой установки.
+- Физический дом `C:/Users/97254/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/ContractorSystem`. Node `runtime/node-b59feb2088f80e1f.exe`,24.22.1; зависимости `dependencies/f00974a5ac7f1266678bff8f/node_modules`, officeparser8.4.1. Корневой node_modules7.2.3 не среда приёмки. Не устанавливать зависимости/не переписывать логические MSIX-пути manifest. Профиль SHA `3be1a5aabb12c37866afea5567b5b72a4ec622645444c8cfadf778adba96adb9` сохранять.
+- Контроли `aa281874-4957-4cbf-a5a3-3b09e7e39e57`/job08a49687 — partial0/2; `b8ba964e-4f44-4a75-8a8f-fa82179b00da`/job9871e2d9 — partial1/2. Прежняя полная единица и старый текст сохранены. Не повторять эти задания прежним механизмом. Расхождения включают слова, приблизительность и порядок обозначений; ослабление проверки чисел не подходит. EV258.
+- 1884 оригинала read-only,28 исходных изменений/8 защищённых файлов сохранить. Не возобновлять3 паузы: `079e3bb2-d4f5-4a2e-89b3-c7d75571a28b`, `8739836c-cee3-48ad-ae3d-c4bc228fcb1c`, `936cc9dd-ff07-4c8d-b2f8-d2dbd0a00834`.
 
-## Не менять
+Проект `docs/superpowers/specs/2026-11-12-r05-targeted-reading-design.md`, SHA `92c8e20762a69cd89eefa4b667d6d0663b520f2619f9d7aa45f82fa48a871bd4`, одобрение владельца `01a1cfb4-1e5b-75a1-bc7c-a45b6b3bf213`. Workflow `C:/Users/97254/.codex/skill-system/workflows/construction/r05-targeted-reading-2026-11-12.json`: implementation allowed=true; план23bfebab одобрен владельцем01a1cfd1. Точная редакция/самопроверка плана — `.superpowers/r05-finish-20261112/targeted-plan-self-review.json`. EV259.
 
-Три paused IDs:079e3bb2-d4f5-4a2e-89b3-c7d75571a28b;8739836c-cee3-48ad-ae3d-c4bc228fcb1c;936cc9dd-ff07-4c8d-b2f8-d2dbd0a00834. Без прямого решения не возобновлять. Финансы, архив реальных вопросов, письма и ручные значения сохранять. Работа в текущем чате без дополнительных AI-клиентов/субагентов.
+Отдельный сбой ожидания ответа консультанта в UI остаётся неисследованным; ответ/история работают. Прежнее исправление не переделывать, его отчёт `docs/CONSULTANT_EVIDENCE_FIX_2026_11_12_RU.md` и EV250–EV257 сохраняются. Общие R05/R08/полнаяR07 открыты.
 
-Неизменяемые согласования: spec docs/superpowers/specs/2026-11-12-consultant-evidence-fix-design.md SHA04c836a84f0084f8f8ffbe0190518634c5ebded27f2e5f9c87eb447455695e5b; plan docs/superpowers/plans/2026-11-12-consultant-evidence-fix.md SHAe6b36cd410082f2687333e05b8c8003fbb13fc1d69d74419fbee9a738ce80678. Журнал перенесён в .superpowers/r08-protocol-batch-20261112/final-evidence/.
-
-Полный отчёт: docs/CONSULTANT_EVIDENCE_FIX_2026_11_12_RU.md; текущий статус:_project/status/status-2026-11-12-consultant-evidence-fix.md; факты EV250–EV257 в evidence.md. Сначала читать AGENTS.md/HANDOFF/git status. Авторская самопроверка, независимого ревью нет.
+Журнал `.superpowers/r05-finish-20261112/LEDGER_RU.md`; статус `_project/status/status-2026-11-12-r05-targeted-reading.md`. Самопроверка авторская, независимого AI-ревью нет. Сначала AGENTS.md/HANDOFF/git status; продолжать действительный незавершённый разрешённый шаг.
