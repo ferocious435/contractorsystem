@@ -17,6 +17,7 @@ const suites=[
     'scripts/verify-visual-fragment-renderer.mjs',
     'scripts/verify-visual-fragment-reader.mjs',
     'scripts/verify-visual-fragment-resume.mjs',
+    'scripts/verify-document-reading-fragments.mjs',
     'scripts/verify-raster-source-reading.mjs',
     'scripts/verify-xlsx-image-reading.mjs',
     'scripts/verify-document-reading-history.mjs',

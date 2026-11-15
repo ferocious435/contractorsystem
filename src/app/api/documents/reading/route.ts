@@ -23,8 +23,7 @@ export async function POST(request:NextRequest) {
             parsed_json:{source_reading:version.reading,source_reading_visual_descriptions:version.visualDescriptions||[]}};
         const effective=getCurrentDocumentReading(historical);
         const isCurrent=current.textHash===version.textHash;
-        const parsed=record(owned.document.parsed_json)?owned.document.parsed_json:{};
-        const reading=record(version.reading)?{...version.reading,...(isCurrent?{units:Array.isArray(parsed.source_reading_units)?parsed.source_reading_units:[]}:{} )}:version.reading;
+        const reading=record(version.reading)?{...version.reading,units:version.units??[]}:version.reading;
         const part=query.partId||query.quote||query.page!==undefined?resolveMsgReadingPart(version,query):null;
         return NextResponse.json({success:true,...effective,current:isCurrent,reading,versions:documentReadingVersions(owned.document),...(part?{part}:{})});
     }catch{return NextResponse.json({success:false,error:'Unable to open the source reading'},{status:500});}

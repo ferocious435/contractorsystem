@@ -40,6 +40,10 @@ export async function fetchDocumentReading(projectId:string,documentId:string,qu
         ||query.partId&&(!record(body.part)||body.part.id!==query.partId||typeof body.part.text!=='string'))throw new Error('SOURCE_READING_NOT_FOUND');return body as unknown as ReadingDetail;
 }
 
+export function documentFragmentUrl(identity:{projectId:string;documentId:string;sourceHash:string;textHash:string;unitId:string;targetId:string}):string {
+    return '/api/documents/reading/fragment?'+new URLSearchParams(identity);
+}
+
 export function msgPartPreview(detail:ReadingDetail|null,projectId:string,documentId:string):{url:string;kind:'pdf'|'image'|'unsupported'}|null {
     const part=detail?.part,reading=detail?.reading;
     if(!detail||!part?.payloadHash||!record(reading)||!record(reading.msg)||reading.msg.rootPartId===part.id)return null;

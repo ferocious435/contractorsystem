@@ -13,6 +13,8 @@ import {visualSourceLocationLabel} from '@/utils/visual-source-location';
 import {MsgSourceDetails} from './MsgSourceDetails';
 import type {MsgReadingProof} from '@/utils/msg-source-types';
 import type {RegistryUnit} from '@/utils/visual-source-reading';
+import type {VerifiedUnit} from '@/utils/visual-source-reading';
+import {DocumentReadingFragments} from './DocumentReadingFragments';
 
 function wordPartLabel(part: unknown) {
   return visualSourceLocationLabel({part:typeof part==='string'?part:undefined});
@@ -108,6 +110,7 @@ export function DocumentSourceView({ document, fullText, visualDescriptions, rea
     {!readiness.extractionComplete && <Feedback tone="warning">שלמות קריאת המקור טרם אומתה. אישור ידני אינו מעיד שכל העמודים נקראו.</Feedback>}
     {(pdf||isWord)&&!visual&&readiness.extractionComplete&&<Feedback tone="warning">הטקסט נקרא; תוכן התמונות והתרשימים טרם נבדק חזותית.</Feedback>}
     {readingCurrent&&(!readiness.extractionComplete||(pdf||isWord)&&!visual)&&onCompleteReading&&<Button onClick={onCompleteReading} pending={completingReading} busyLabel="קורא את המקור…">השלמת קריאת המקור</Button>}
+    {visualMatches&&document.project_id&&document.content_hash&&document.extracted_text_hash&&Array.isArray(visual?.units)&&<DocumentReadingFragments documentId={document.id} projectId={document.project_id} sourceHash={document.content_hash} textHash={document.extracted_text_hash} units={visual.units as VerifiedUnit[]} sourceUnits={units as RegistryUnit[]}/>}
     {marker && <Feedback tone="warning" title={marker === 'DRAFT' ? 'טיוטה' : 'קטע מתוך מסמך'}>המקור מסומן כך במפורש ואינו הוראה מחייבת מאומתת. יש לבדוק את הגרסה המלאה ואת הקשר המסמך.</Feedback>}
     {previewError && <Feedback tone="warning">{previewError}</Feedback>}
     {previewUrl && (previewKind === 'pdf' || previewKind === 'text') && <iframe className="ti-source-frame" title="תצוגת מסמך מקור" src={previewUrl} />}
