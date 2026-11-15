@@ -1,4 +1,5 @@
 import 'server-only';
+import {mixedScriptTranscription} from './visual-transcription-instructions';
 import {createHash,randomUUID} from 'node:crypto';
 import {readFile,writeFile,lstat,realpath,rm} from 'node:fs/promises';
 import path from 'node:path';
@@ -72,7 +73,12 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
             await execution.checkActive();const image=await render(unit,rect);await execution.checkActive();
             if(!image){failures.push('Fragment check failed: original region could not be enlarged');continue;}
             const metadata={targetId:target.id,unitId:unit.id,address:target.address,anchors:target.anchors};
-            const text=rules+'\nIndependently read the single target block between/next to the named context blocks. Return the target and both complete context blocks in their physical source order. Use the targetId as the target block id, and the supplied ids for its two anchors. A table value is the entire physical left-to-right row with every empty cell; a text value is one complete line. Do not invent missing blocks or change a number to fit context. This request contains no proposed target answer.\nFRAGMENT TASK: '+JSON.stringify(metadata);
+            const text = [
+                rules,
+                mixedScriptTranscription,
+                'Independently read the single target block between/next to the named context blocks. Return the target and both complete context blocks in their physical source order. Use the targetId as the target block id, and the supplied ids for its two anchors. A table value is the entire physical left-to-right row with every empty cell; a text value is one complete line. Do not invent missing blocks or change a number to fit context. This request contains no proposed target answer.',
+                'FRAGMENT TASK: '+JSON.stringify(metadata),
+            ].join('\n');
             const raw:string[]=[],observationId=randomUUID();
             const physical={id:image.id,sha256:image.sha256,width:image.width,height:image.height,rect:image.rect};
             const origin={scope,unitId:unit.id,inputHash:readingUnitInputHash(unit),target,rect:image.rect,image:physical,locator,createdBy:{jobId:execution.jobId,profileRevision:execution.profile.revision}};

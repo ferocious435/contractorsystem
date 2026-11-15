@@ -27,6 +27,18 @@ test('confirmation_is_blind',async()=>temporary(async()=>{
  assert.equal(typeof result.composition.proofs[0].locator?.raw,'string','Keep the original coordinate search as provenance, not as a reading');
  assert.deepEqual(result.tables[0][2],['מקטע 0','כ570','מטר','']);
 }));
+test('both fragment reads specify script direction and literal Hebrew prefixes without supplying target text',async()=>temporary(async()=>{
+ const f=await fragmentReadingFixture(),h=harness(f);
+ await read(h.args);
+ for(const input of h.inputs.slice(1)){
+  assert.match(input.text,/Latin.*left to right/i);
+  assert.match(input.text,/Hebrew.*right to left/i);
+  assert.match(input.text,/prefix/i);
+  assert.match(input.text,/plene and defective spelling/i);
+  assert.match(input.text,/punctuation.*source/i);
+  assert.ok(!input.text.includes('כ570'));
+ }
+}));
 test('clipped_context_stays_partial',async()=>temporary(async()=>{
  for(const change of [v=>v.blocks.pop(),v=>v.blocks.find(b=>b.id.startsWith('fragment:')).value[2]='',v=>v.blocks[0].value[0]='a different neighboring row']){
   const f=await fragmentReadingFixture(),h=harness(f,(v,{locating})=>{if(!locating)change(v);}),result=await read(h.args);
