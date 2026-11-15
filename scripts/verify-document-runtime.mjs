@@ -14,6 +14,7 @@ const suites=[
     'scripts/verify-visual-source-contracts.mjs',
     'scripts/verify-visual-source-manifest.mjs',
     'scripts/verify-visual-fragment-contracts.mjs',
+    'scripts/verify-positioned-pdf.mjs',
     'scripts/verify-visual-fragment-renderer.mjs',
     'scripts/verify-visual-fragment-reader.mjs',
     'scripts/verify-visual-fragment-resume.mjs',

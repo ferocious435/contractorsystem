@@ -4,6 +4,7 @@ import {record,validUuid} from './contracts';
 import {readingUnitInputHash,retainedReadingUnit,unitReadingLiteral} from './visual-reading-cache.server';
 import {validReadingRect,validReadingHash,type ReadingScope,type ReadingUnit,type RenderedView,type VerifiedUnit} from '@/utils/visual-source-reading';
 import {normalizeReadingTypography} from '@/utils/visual-source-response';
+import {findPositionedDifference,confirmPositionedReading} from '@/server/documents/pdf-positioned-text.server';
 import {fragmentAddressKey,fragmentBlocks,fragmentValuesEqual,planFragmentTargets,primaryFragmentReading,
     type FragmentProof,type FragmentResponse,type FragmentTarget,type FragmentValue,type FragmentRenderer} from '@/utils/visual-fragment-contracts';
 
@@ -38,8 +39,9 @@ function response(value:unknown,target:FragmentTarget):FragmentResponse|null {
     }
     return value as unknown as FragmentResponse;
 }
+const normalizedFragmentText=(text:string)=>normalizeReadingTypography(text).replace(/\s*\)\s*,/gu,'),');
 function preservesAgreedText(chosen:string,source:string[]):boolean {
-    const values=source.map(normalizeReadingTypography),value=normalizeReadingTypography(chosen);
+    const values=source.map(normalizedFragmentText),value=normalizedFragmentText(chosen);
     if(values.every(v=>v===values[0]))return value===values[0];
     const numberCounts=values.map(v=>(v.match(/\p{N}+/gu)??[]).length);
     if(numberCounts.every(n=>n===numberCounts[0])&&(value.match(/\p{N}+/gu)??[]).length!==numberCounts[0])return false;
@@ -50,10 +52,25 @@ function preservesAgreedText(chosen:string,source:string[]):boolean {
     }
     return true;
 }
-function preservesAgreedContent(chosen:FragmentValue,base:VerifiedUnit,target:FragmentTarget):boolean {
+export function preservesAgreedContent(chosen:FragmentValue,base:VerifiedUnit,target:FragmentTarget):boolean {
     const values=base.views.flatMap(p=>[p.reading,...(p.confirmation?[p.confirmation]:[])]).map(r=>fragmentBlocks(r).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value);
     if(typeof chosen==='string')return values.every(v=>typeof v==='string')&&preservesAgreedText(chosen,values as string[]);
     return values.every(v=>Array.isArray(v)&&v.length===chosen.length)&&chosen.every((cell,i)=>preservesAgreedText(cell,(values as string[][]).map(row=>row[i])));
+}
+function sameWitnessText(a:FragmentValue,b:FragmentValue):boolean {
+    if(fragmentValuesEqual(a,b))return true;
+    // A space touching a closing bracket before a comma does not move the
+    // comma or bracket. Keep every word boundary, number, sign and raw answer.
+    const key=normalizedFragmentText;
+    if(typeof a==='string'||typeof b==='string')return typeof a==='string'&&typeof b==='string'&&key(a)===key(b);
+    return a.length===b.length&&a.every((s,i)=>key(s)===key(b[i]));
+}
+export function attemptReadings(raw:[string,string],target:FragmentTarget){
+    try{
+        const first=response(JSON.parse(raw[0]),target),second=response(JSON.parse(raw[1]),target);
+        if(!first||!second||first.blocks.some((b,i)=>b.id!==second.blocks[i].id||b.id!==target.id&&!fragmentValuesEqual(b.value,second.blocks[i].value)))return null;
+        return {readings:[first,second] as [FragmentResponse,FragmentResponse],values:[first,second].map(r=>r.blocks.find(b=>b.id===target.id)!.value) as [FragmentValue,FragmentValue]};
+    }catch{return null;}
 }
 /** Checks persisted witnesses; physical bytes are checked by verifyFragmentProof at creation/re-render. */
 export function verifyStoredFragmentProof(value:unknown,scope:ReadingScope,unit:ReadingUnit,base:VerifiedUnit,target:FragmentTarget):FragmentProof|null {
@@ -69,10 +86,19 @@ export function verifyStoredFragmentProof(value:unknown,scope:ReadingScope,unit:
             ||!Array.isArray(value.readings)||value.readings.length!==2||!validBase(unit,base))return null;
         const planned=planFragmentTargets(unit,base).targets.find(t=>t.id===target.id);
         if(!planned||canonicalFragmentJson(planned)!==canonicalFragmentJson(target))return null;
-        const first=response(JSON.parse(value.raw[0]),target),second=response(JSON.parse(value.raw[1]),target);
-        if(!first||!second||canonicalFragmentJson([first,second])!==canonicalFragmentJson(value.readings)
-            ||!first.blocks.every((b,i)=>b.id===second.blocks[i].id&&fragmentValuesEqual(b.value,second.blocks[i].value)))return null;
-        const chosen=first.blocks.find(b=>b.id===target.id)?.value,original=primaryFragmentReading(unit,base)!;
+        const pair=attemptReadings(value.raw as [string,string],target);
+        if(!pair||canonicalFragmentJson(pair.readings)!==canonicalFragmentJson(value.readings))return null;
+        let choice=0;
+        if(value.positioned!==undefined){
+            const witness=(value as unknown as FragmentProof).positioned!;
+            if(!witness?.match?.line||!validReadingRect(witness.match.line.rect)||!validReadingHash(witness.image?.sha256)
+                ||typeof witness.raw!=='string'||Buffer.byteLength(witness.raw)>65536
+                ||canonicalFragmentJson(witness.image.rect)!==canonicalFragmentJson(witness.match.line.rect))return null;
+            const match=findPositionedDifference(...pair.values,[witness.match.line],value.rect);
+            if(!match||canonicalFragmentJson(match)!==canonicalFragmentJson(witness.match)||!confirmPositionedReading(match,JSON.parse(witness.raw)))return null;
+            choice=match.choice;
+        }else if(!sameWitnessText(...pair.values))return null;
+        const chosen=pair.values[choice],original=primaryFragmentReading(unit,base)!;
         const targetValue=fragmentBlocks(original).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value;
         if(chosen===undefined||targetValue===undefined||canonicalFragmentJson(chosen)!==canonicalFragmentJson(value.value)
             ||typeof chosen!==typeof targetValue||Array.isArray(chosen)&&(!Array.isArray(targetValue)||chosen.length!==targetValue.length)
@@ -124,6 +150,16 @@ export function retainedFragmentComposition(value:unknown,unit:ReadingUnit,scope
 
 export async function verifyFragmentImages(value:VerifiedUnit,unit:ReadingUnit,scope:ReadingScope,render:FragmentRenderer):Promise<boolean> {
     const saved=retainedFragmentComposition(value,unit,scope);if(!saved)return false;
-    for(const proof of saved.composition!.proofs){const image=await render(unit,proof.rect);if(!image||!verifyFragmentProof(proof,scope,unit,saved,proof.target,image))return false;}
+    for(const proof of saved.composition!.proofs){const image=await render(unit,proof.rect);if(!image||!verifyFragmentProof(proof,scope,unit,saved,proof.target,image)||!await verifyPositionedImage(proof,unit,render))return false;}
     return true;
+}
+export async function verifyPositionedImage(proof:FragmentProof,unit:ReadingUnit,render:FragmentRenderer):Promise<boolean>{
+    const witness=proof.positioned;if(!witness)return true;
+    const pair=attemptReadings(proof.raw,proof.target);
+    const lines=await render.positionedLines?.(unit);
+    if(!pair||!lines)return false;
+    const match=findPositionedDifference(...pair.values,lines,proof.rect);
+    if(canonicalFragmentJson(match)!==canonicalFragmentJson(witness.match))return false;
+    const image=await render(unit,witness.match.line.rect);
+    return Boolean(image&&digest(image.bytes)===image.sha256&&canonicalFragmentJson({...image,bytes:undefined})===canonicalFragmentJson(witness.image));
 }

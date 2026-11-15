@@ -8,17 +8,23 @@ export type FragmentTarget={id:string;unitId:string;viewIds:string[];address:Fra
 export type FragmentPlan={targets:FragmentTarget[];issues:string[]};
 export type FragmentResponse={targetId:string;blocks:Array<{id:string;value:FragmentValue}>;uncertainties:string[]};
 export type FragmentLocator={raw:string;viewId:string;imageHash:string};
+export type PositionedLine={text:string;rect:Rect;objectIndex:number;rotation:number};
+export type PositionedDifference={line:PositionedLine;choice:0|1;cell:number};
+export type PositionedWitness={match:PositionedDifference;image:Omit<RenderedView,'bytes'>;raw:string};
 export type FragmentProof={
     version:'visual-fragment-proof-v1';scope:ReadingScope;unitId:string;inputHash:string;baseEvidenceHash:string;
     target:FragmentTarget;rect:Rect;image:Omit<RenderedView,'bytes'>;raw:[string,string];readings:[FragmentResponse,FragmentResponse];
     value:FragmentValue;createdBy:{jobId:string;profileRevision:number};
     locator?:FragmentLocator;
+    positioned?:PositionedWitness;
 };
 export type FragmentAttempt=Pick<FragmentProof,'scope'|'unitId'|'inputHash'|'target'|'rect'|'image'|'raw'|'createdBy'|'locator'>&{reason:string};
 export type FragmentComposition={version:'visual-fragment-assembly-v1';baseEvidenceHash:string;evidenceHash:string;proofs:FragmentProof[];pending:FragmentTarget[];issues:string[];locator?:FragmentLocator;attempts?:FragmentAttempt[]};
 export type FragmentSummary={version:'visual-fragment-assembly-v1';baseEvidenceHash:string;evidenceHash:string;scope:ReadingScope;
     accepted:Array<{targetId:string;address:FragmentAddress;rect:Rect;imageHash:string}>;pending:FragmentTarget[];issues:string[]};
-export type FragmentRenderer=(unit:ReadingUnit,rect:Rect)=>Promise<RenderedView|null>;
+export type FragmentRenderer=((unit:ReadingUnit,rect:Rect)=>Promise<RenderedView|null>) & {
+    positionedLines?:(unit:ReadingUnit)=>Promise<PositionedLine[]>;
+};
 export const FRAGMENT_LIMIT=4;
 export const fragmentAddressKey=(a:FragmentAddress)=>a.kind==='line'?`line:${a.line}`:`table:${a.table}:row:${a.row}`;
 export function fragmentValuesEqual(a:FragmentValue,b:FragmentValue):boolean {

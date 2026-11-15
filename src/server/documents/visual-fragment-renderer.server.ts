@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import sharp from 'sharp';
 import {readingUnitInputHash} from '@/server/ai/visual-reading-cache.server';
 import {renderPdfView} from '@/utils/visual-pdf-renderer';
+import {readPositionedPdfLines} from './pdf-positioned-text.server';
 import {validReadingRect,type SourceManifest,type RenderedView} from '@/utils/visual-source-reading';
 import type {FragmentRenderer} from '@/utils/visual-fragment-contracts';
 import {readMsgContainer} from './msg-container.server';
@@ -15,7 +16,7 @@ const nearInteger=(n:number)=>Math.abs(n-Math.round(n))<1e-7?Math.round(n):n;
 export function createSourceFragmentRenderer(file:Buffer,_title:string,manifest:SourceManifest):FragmentRenderer {
     const sourceHash=manifest.sourceHash,inputs=new Map(manifest.units.map(unit=>{try{return [unit.id,readingUnitInputHash(unit)] as const;}catch{return [unit.id,null] as const;}}));
     let container:ReturnType<typeof readMsgContainer>|undefined;
-    return async(unit,rect):Promise<RenderedView|null>=>{
+    const render:FragmentRenderer=async(unit,rect):Promise<RenderedView|null>=>{
         try{
             if(hash(file)!==sourceHash||!validReadingRect(rect)||!inputs.get(unit.id)||inputs.get(unit.id)!==readingUnitInputHash(unit))return null;
             if(unit.kind==='PDF_PAGE'){
@@ -46,4 +47,12 @@ export function createSourceFragmentRenderer(file:Buffer,_title:string,manifest:
             return {id:`fragment:${unit.id}:${JSON.stringify(actual)}`,sha256:hash(bytes),bytes,width:outputWidth,height:outputHeight,rect:actual};
         }catch{return null;}
     };
+    render.positionedLines=async unit=>{
+        if(manifest.format!=='PDF'||unit.kind!=='PDF_PAGE'||hash(file)!==sourceHash||!inputs.get(unit.id)||inputs.get(unit.id)!==readingUnitInputHash(unit))return [];
+        const pages=new Set(unit.locations.map(location=>location.page));
+        const page=unit.locations[0]?.page;
+        if(pages.size!==1||!page)return [];
+        return readPositionedPdfLines(file,page).catch(()=>[]);
+    };
+    return render;
 }

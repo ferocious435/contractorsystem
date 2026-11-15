@@ -7,7 +7,7 @@ import {resolveReadingVersion} from '@/utils/document-reading-history';
 import {buildVisualSourceManifest} from '@/utils/visual-source-manifest';
 import {validReadingHash,type OwnedSourceDocument} from '@/utils/visual-source-reading';
 import {validUuid,record} from '@/server/ai/contracts';
-import {retainedFragmentComposition,verifyFragmentProof} from '@/server/ai/visual-fragment-proof.server';
+import {retainedFragmentComposition,verifyFragmentProof,verifyPositionedImage} from '@/server/ai/visual-fragment-proof.server';
 import {createSourceFragmentRenderer} from '@/server/documents/visual-fragment-renderer.server';
 
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
@@ -40,8 +40,11 @@ export async function GET(request:NextRequest) {
         const checked=source&&retainedFragmentComposition(saved,source,scope);
         if(!source||!checked)return failure(422,'Source fragment evidence is not verified');
         const proof=checked.composition!.proofs.find(value=>value.target.id===targetId)!;
-        const image=await createSourceFragmentRenderer(file,String(owned.document.title||''),manifest)(source,proof.rect);request.signal.throwIfAborted();
-        if(!image||!verifyFragmentProof(proof,scope,source,checked,proof.target,image)||hash(image.bytes)!==proof.image.sha256)return failure(422,'Source fragment pixels do not match the saved evidence');
-        return new NextResponse(new Uint8Array(image.bytes),{headers:{'Content-Type':'image/png','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Disposition':'inline; filename="source-fragment.png"'}});
+        const render=createSourceFragmentRenderer(file,String(owned.document.title||''),manifest);
+        const image=await render(source,proof.rect);request.signal.throwIfAborted();
+        if(!image||!verifyFragmentProof(proof,scope,source,checked,proof.target,image)||hash(image.bytes)!==proof.image.sha256||!await verifyPositionedImage(proof,source,render))return failure(422,'Source fragment pixels do not match the saved evidence');
+        const selected=proof.positioned?await render(source,proof.positioned.match.line.rect):image;
+        if(!selected||proof.positioned&&selected.sha256!==proof.positioned.image.sha256)return failure(422,'Source line changed');
+        return new NextResponse(new Uint8Array(selected.bytes),{headers:{'Content-Type':'image/png','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Disposition':'inline; filename="source-fragment.png"'}});
     }catch{return failure(500,'Unable to open the source fragment');}
 }
