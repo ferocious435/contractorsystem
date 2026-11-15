@@ -6,6 +6,7 @@ import {BusinessAiError,record,validUuid} from './contracts';
 import {VISUAL_READING_RULES,BRANDING_RECOGNITION_VERSION,validReadingHash,type ReadingScope,type ReadingUnit,type UnitReading,type VerifiedUnit} from '@/utils/visual-source-reading';
 import {validateUnitReading,compareNumericReadings,unresolvedReadingUncertainties} from '@/utils/visual-source-response';
 import {hasDocumentBodyText,hasRenderedEmptyPageProof} from '@/utils/document-source-readiness';
+import {retainedFragmentComposition} from './visual-fragment-proof.server';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const samePath=(a:string,b:string)=>process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
@@ -41,7 +42,8 @@ export function readingUnitInputHash(unit:ReadingUnit):string {
     return digest(JSON.stringify({rulesVersion:VISUAL_READING_RULES,id:unit.id,kind:unit.kind,locations:unit.locations,contextText:unit.contextText,localText:unit.localText,
         localMethod:unit.localMethod??null,emptyPageProof:unit.emptyPageProof??null,views:unit.views.map(v=>({id:v.id,sha256:v.sha256,width:v.width,height:v.height,rect:v.rect}))}));
 }
-export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
+export function verifiedReadingUnit(value:unknown,unit:ReadingUnit,scope?:ReadingScope):boolean {
+    if(record(value)&&value.composition!==undefined)return value.complete===true&&Boolean(retainedFragmentComposition(value,unit,scope));
     if(!record(value)||value.unitId!==unit.id||value.inputHash!==readingUnitInputHash(unit)||typeof value.text!=='string'||value.textHash!==digest(value.text)
         ||value.complete!==true||!Array.isArray(value.uncertainties)||value.uncertainties.length||!Array.isArray(value.views)||value.views.length!==unit.views.length
         ||typeof value.visualDescription!=='string'||!Array.isArray(value.tables))return false;
@@ -103,7 +105,8 @@ export function verifiedReadingUnit(value:unknown,unit:ReadingUnit):boolean {
     return Boolean(hasDocumentBodyText(value.text)||value.visualDescription.trim()||value.views.every(p=>record(p)&&p.method==='physical-empty'));
 }
 /** Retain a source-bound partial attempt during a verifier repair, without certifying it or caching it as complete. */
-export function retainedReadingUnit(value:unknown,unit:ReadingUnit):VerifiedUnit|null {
+export function retainedReadingUnit(value:unknown,unit:ReadingUnit,scope?:ReadingScope):VerifiedUnit|null {
+    if(record(value)&&value.composition!==undefined)return retainedFragmentComposition(value,unit,scope);
     if(!record(value)||!record(value.createdBy)||!validUuid(value.createdBy.jobId)||value.createdBy.rulesVersion!==VISUAL_READING_RULES
         ||!Number.isSafeInteger(value.createdBy.profileRevision)||(value.createdBy.profileRevision as number)<1)return null;
     if(value.complete===true)return verifiedReadingUnit(value,unit)?structuredClone(value) as unknown as VerifiedUnit:null;
@@ -134,6 +137,7 @@ export function retainedReadingUnit(value:unknown,unit:ReadingUnit):VerifiedUnit
 /** Recheck retained blind reads after a verifier correction. A model uncertainty
  * needs a retained clear pair for that exact region; unrelated issues stay open. */
 export function reverifySavedNumericUnit(value:unknown,unit:ReadingUnit):VerifiedUnit|null {
+    if(record(value)&&value.composition!==undefined)return null;
     if(!record(value)||value.complete!==false||!Array.isArray(value.uncertainties)||!value.uncertainties.length
         ||!value.uncertainties.every(reason=>typeof reason==='string')||!Array.isArray(value.views)
         ||!record(value.createdBy)||!validUuid(value.createdBy.jobId)||value.createdBy.rulesVersion!==VISUAL_READING_RULES
@@ -220,32 +224,37 @@ function checkedScope(scope:ReadingScope) {
 export function createVisualReadingCache(root:string) {
     if(!path.isAbsolute(root))throw new BusinessAiError('AI_POLICY_UNSAFE');
     const absolute=path.resolve(root),maxBytes=32*1024*1024;
-    function filename(scope:ReadingScope,unit:ReadingUnit){checkedScope(scope);return path.join(absolute,'reading-cache',scope.ownerId,scope.projectId,scope.documentId,scope.sourceHash,VISUAL_READING_RULES,readingUnitInputHash(unit)+'.json');}
-    return {
-        async read(scope:ReadingScope,unit:ReadingUnit):Promise<VerifiedUnit|null>{
-            const file=filename(scope,unit);if(!await checkedReadingDirectory(absolute,path.dirname(file)))return null;
+    function filename(scope:ReadingScope,unit:ReadingUnit,progress:boolean){checkedScope(scope);return path.join(absolute,'reading-cache',scope.ownerId,scope.projectId,scope.documentId,scope.sourceHash,VISUAL_READING_RULES,readingUnitInputHash(unit)+(progress?'.progress.json':'.json'));}
+    async function read(scope:ReadingScope,unit:ReadingUnit,progress:boolean):Promise<VerifiedUnit|null>{
+            const file=filename(scope,unit,progress);if(!await checkedReadingDirectory(absolute,path.dirname(file)))return null;
             try{
                 const info=await lstat(file);if(info.isSymbolicLink()||!info.isFile()||info.size>maxBytes||!samePath(await realpath(file),path.join(await realpath(path.dirname(file)),path.basename(file))))return null;
                 const payload:unknown=JSON.parse(await readFile(file,'utf8'));
                 if(!record(payload)||!record(payload.scope))return null;
                 const savedScope=payload.scope;
-                if(payload.version!=='visual-unit-cache-v2'||!['ownerId','projectId','documentId','sourceHash'].every(k=>savedScope[k]===scope[k as keyof ReadingScope])
-                    ||payload.inputHash!==readingUnitInputHash(unit)||payload.payloadHash!==digest(JSON.stringify(payload.unit))||!verifiedReadingUnit(payload.unit,unit))return null;
+                if(payload.version!==(progress?'visual-unit-progress-v1':'visual-unit-cache-v2')||!['ownerId','projectId','documentId','sourceHash'].every(k=>savedScope[k]===scope[k as keyof ReadingScope])
+                    ||payload.inputHash!==readingUnitInputHash(unit)||payload.payloadHash!==digest(JSON.stringify(payload.unit))
+                    ||!(progress?retainedReadingUnit(payload.unit,unit,scope):verifiedReadingUnit(payload.unit,unit,scope)))return null;
                 const origin=(payload.unit as VerifiedUnit).brandingOrigin;
                 if(origin&&(origin.ownerId!==scope.ownerId||origin.projectId!==scope.projectId))return null;
                 return payload.unit as VerifiedUnit;
             }catch(error){if(error instanceof BusinessAiError)throw error;return null;}
-        },
-        async write(scope:ReadingScope,unit:ReadingUnit,result:VerifiedUnit):Promise<void>{
-            const file=filename(scope,unit);
-            if(!verifiedReadingUnit(result,unit))throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+    }
+    async function write(scope:ReadingScope,unit:ReadingUnit,result:VerifiedUnit,progress:boolean):Promise<void>{
+            const file=filename(scope,unit,progress);
+            if(!(progress?retainedReadingUnit(result,unit,scope):verifiedReadingUnit(result,unit,scope)))throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
             if(result.brandingOrigin&&(result.brandingOrigin.ownerId!==scope.ownerId||result.brandingOrigin.projectId!==scope.projectId))throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
-            const payload=JSON.stringify({version:'visual-unit-cache-v2',scope:{ownerId:scope.ownerId,projectId:scope.projectId,documentId:scope.documentId,sourceHash:scope.sourceHash},inputHash:readingUnitInputHash(unit),unit:result,payloadHash:digest(JSON.stringify(result))});
+            const payload=JSON.stringify({version:progress?'visual-unit-progress-v1':'visual-unit-cache-v2',scope:{ownerId:scope.ownerId,projectId:scope.projectId,documentId:scope.documentId,sourceHash:scope.sourceHash},inputHash:readingUnitInputHash(unit),unit:result,payloadHash:digest(JSON.stringify(result))});
             if(Buffer.byteLength(payload)>maxBytes)throw new BusinessAiError('AI_RESPONSE_TOO_LARGE');
             await checkedReadingDirectory(absolute,path.dirname(file),true);
             const temporary=file+'.'+randomUUID()+'.tmp';
             try{await writeFile(temporary,payload,{flag:'wx',mode:0o600});await checkedReadingDirectory(absolute,path.dirname(file));await rename(temporary,file);}
             finally{await unlink(temporary).catch(error=>{if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;});}
-        },
+    }
+    return {
+        read:(scope:ReadingScope,unit:ReadingUnit)=>read(scope,unit,false),
+        write:(scope:ReadingScope,unit:ReadingUnit,result:VerifiedUnit)=>write(scope,unit,result,false),
+        readProgress:(scope:ReadingScope,unit:ReadingUnit)=>read(scope,unit,true),
+        writeProgress:(scope:ReadingScope,unit:ReadingUnit,result:VerifiedUnit)=>write(scope,unit,result,true),
     };
 }

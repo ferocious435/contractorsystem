@@ -33,8 +33,8 @@ export function primaryFragmentReading(unit:ReadingUnit,saved:VerifiedUnit):Unit
     const full=unit.views.filter(v=>v.rect.x===0&&v.rect.y===0&&v.rect.width===1&&v.rect.height===1).sort((a,b)=>b.width*b.height-a.width*a.height);
     return saved.views.find(v=>v.viewId===(full[0]?.id??unit.views[0]?.id))?.reading??null;
 }
-function sameShape(a:UnitReading,b:UnitReading) {
-    return a.text.split(/\r?\n/u).length===b.text.split(/\r?\n/u).length&&a.tables.length===b.tables.length
+function sameTables(a:UnitReading,b:UnitReading) {
+    return a.tables.length===b.tables.length
         &&a.tables.every((table,t)=>table.length===b.tables[t].length&&table.every((row,r)=>row.length===b.tables[t][r].length));
 }
 const sameSection=(a:FragmentAddress,b:FragmentAddress)=>a.kind===b.kind&&(a.kind==='line'||b.kind==='table-row'&&a.table===b.table);
@@ -51,15 +51,28 @@ export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):Fragmen
         if(proof.method!=='visual-double-pass'||!proof.confirmation){issues.push('Fragment base lacks an independent source pair: '+proof.viewId);continue;}
         readings.push(proof.reading,proof.confirmation);
     }
-    if(!readings.length||readings.some(r=>!sameShape(primary,r)))return {targets,issues:[...issues,'Fragment text or table structure differs']};
-    const blocks=fragmentBlocks(primary),others=readings.map(fragmentBlocks);
-    const disputed=blocks.map((b,i)=>others.some(all=>!fragmentValuesEqual(b.value,all[i].value)));
+    if(!readings.length)return {targets,issues:[...issues,'Fragment base lacks source readings']};
+    const tablesAligned=readings.every(r=>sameTables(primary,r));
+    if(!tablesAligned)issues.push('Fragment text or table structure differs');
+    // Line wrapping is harmless only when the entire ordered body is identical.
+    // This alignment is for comparison; the original responses stay untouched.
+    const aligned=readings.map(r=>normalizeReadingTypography(r.text)===normalizeReadingTypography(primary.text)?{...r,text:primary.text}:r);
+    const textAligned=aligned.every(r=>r.text.split(/\r?\n/u).length===primary.text.split(/\r?\n/u).length);
+    if(!textAligned)issues.push('Fragment text or table structure differs');
+    const blocks=fragmentBlocks(primary),others=aligned.map(r=>new Map(fragmentBlocks(r).map(b=>[b.id,b])));
+    const eligible=(b:FragmentAnchor)=>b.address.kind==='line'?textAligned:tablesAligned;
+    const disputed=blocks.map(b=>eligible(b)&&others.some(all=>!all.has(b.id)||!fragmentValuesEqual(b.value,all.get(b.id)!.value)));
+    const unique=(b:FragmentAnchor)=>blocks.filter(other=>fragmentValuesEqual(other.value,b.value)).length===1;
     for(let i=0;i<blocks.length;i++){
         if(!disputed[i])continue;
-        const block=blocks[i],neighbors=blocks.map((b,index)=>({b,index})).filter(v=>v.index!==i&&!disputed[v.index]&&sameSection(block.address,v.b.address)&&hasValue(v.b.value));
+        const block=blocks[i],agreed=blocks.map((b,index)=>({b,index})).filter(v=>v.index!==i&&eligible(v.b)&&!disputed[v.index]&&hasValue(v.b.value));
+        const neighbors=agreed.filter(v=>sameSection(block.address,v.b.address));
         const before=neighbors.filter(v=>v.index<i).reverse(),after=neighbors.filter(v=>v.index>i);
-        const chosen=before.length&&after.length?[before[0],after[0]]:before.length?before.slice(0,2):after.slice(0,2);
-        if(chosen.length!==2||chosen.some(v=>blocks.filter(b=>fragmentValuesEqual(b.value,v.b.value)).length!==1)){
+        let chosen=before.length&&after.length?[before[0],after[0]]:before.length?before.slice(0,2):after.slice(0,2);
+        if(chosen.length===1&&block.address.kind==='table-row'&&unique(chosen[0].b)){
+            const text=agreed.find(v=>v.b.address.kind==='line'&&unique(v.b));if(text)chosen=[chosen[0],text];
+        }
+        if(chosen.length!==2||chosen.some(v=>!unique(v.b))){
             issues.push('Fragment has ambiguous or insufficient context: '+block.id);continue;
         }
         targets.push({id:'fragment:'+block.id,unitId:unit.id,viewIds:unit.views.map(v=>v.id),address:block.address,
@@ -69,8 +82,8 @@ export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):Fragmen
         if(reading.visualDescription!==primary.visualDescription&&/\p{N}/u.test(reading.visualDescription+' '+primary.visualDescription))issues.push('Numeric visual description is not bound to a literal fragment');
         for(const note of reading.uncertainties){
             const normalized=normalizeReadingTypography(note),bound=targets.filter(t=>{
-                const index=blocks.findIndex(b=>fragmentAddressKey(b.address)===fragmentAddressKey(t.address));
-                return others.some(all=>{const v=all[index].value;return (typeof v==='string'?[v]:v).some(cell=>cell.trim().length>=3&&normalized.includes(normalizeReadingTypography(cell)));});
+                const key=fragmentAddressKey(t.address);
+                return others.some(all=>{const v=all.get(key)?.value;return v!==undefined&&(typeof v==='string'?[v]:v).some(cell=>cell.trim().length>=3&&normalized.includes(normalizeReadingTypography(cell)));});
             });
             if(bound.length!==1)issues.push('Unbound source uncertainty: '+note);
         }

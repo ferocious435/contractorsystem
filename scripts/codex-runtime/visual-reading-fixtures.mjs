@@ -7,7 +7,8 @@ export const literal='יש להשאיר את המעבר פתוח.';
 export async function fragmentReadingFixture({disputes=1,kind='PDF_PAGE'}={}){
  const sharp=(await import('sharp')).default,{readingUnitInputHash,unitReadingLiteral}=await import('../../src/server/ai/visual-reading-cache.server.ts');
  const bytes=await sharp({create:{width:900,height:600,channels:3,background:'#ffffff'}}).png().toBuffer();
- const unit=readingUnit({kind,localText:'',views:[{id:'source:full',sha256:digest(bytes),bytes,width:900,height:600,rect:{...fullRect}}]}),rows=[['שם','כמות','יחידה','הערה']];
+ const locations=kind==='IMAGE_FRAME'?[{part:'image',anchor:'image#frame1',mediaName:'source-image',frame:1}]:[{page:1}];
+ const unit=readingUnit({kind,locations,localText:'',views:[{id:'source:full',sha256:digest(bytes),bytes,width:900,height:600,rect:{...fullRect}}]}),rows=[['שם','כמות','יחידה','הערה']];
  for(let i=0;i<disputes;i++)rows.push(['לפני '+i,String(10+i),'מטר',''],['מקטע '+i,'כ570','מטר',''],['אחרי '+i,String(30+i),'מטר','']);
  const a=unitResponse(unit,{text:'הוראות ביצוע',tables:[rows]}),b=structuredClone(a);for(let i=0;i<disputes;i++)b.tables[0][2+i*3][1]='570';
  const image={sha256:unit.views[0].sha256,width:900,height:600,rect:{...fullRect}},base={unitId:unit.id,inputHash:readingUnitInputHash(unit),text:unitReadingLiteral(a),textHash:digest(unitReadingLiteral(a)),tables:structuredClone(a.tables),visualDescription:'',uncertainties:['Numeric or source verification failed: source:full'],complete:false,

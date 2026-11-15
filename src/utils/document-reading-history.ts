@@ -2,8 +2,9 @@ import 'server-only';
 import {createHash} from 'node:crypto';
 import {assessDocumentSourceReadiness,hasDocumentBodyText,type DocumentSourceInput} from './document-source-readiness';
 import {VISUAL_READING_VERSION,VISUAL_READING_RULES,validReadingHash,type SourceManifest,type VerifiedUnit,type ReadingAssembly,
-    type VisualDescription,type VisualReadingVerification,type OwnedSourceDocument,type DocumentReadingPatch,type ReadingTextVersion,type EffectiveDocumentReading} from './visual-source-reading';
+    type VisualDescription,type VisualReadingVerification,type OwnedSourceDocument,type DocumentReadingPatch,type ReadingTextVersion,type EffectiveDocumentReading,type ReadingScope} from './visual-source-reading';
 import type {MsgReadingPart} from './msg-source-types';
+import {verifiedReadingUnit,retainedReadingUnit} from '@/server/ai/visual-reading-cache.server';
 
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -24,7 +25,7 @@ export function readingAnalysisFingerprint(reading:unknown):string {
     return hash(JSON.stringify(canonical(reading)));
 }
 
-export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUnit[]):ReadingAssembly {
+export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUnit[],scope?:ReadingScope):ReadingAssembly {
     const expected=new Set(manifest.units.map(u=>u.id)),byId=new Map<string,VerifiedUnit>();
     for(const unit of units){if(!expected.has(unit.unitId)||byId.has(unit.unitId))throw Error('Unexpected or repeated source reading');byId.set(unit.unitId,unit);}
     const issues=[...manifest.issues],visualDescriptions:VisualDescription[]=[];
@@ -32,7 +33,8 @@ export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUn
         const verified=byId.get(unit.id);
         const complete=Boolean(verified?.complete&&validReadingHash(verified.inputHash)&&verified.textHash===hash(verified.text)
             &&verified.uncertainties.length===0&&verified.views.length===unit.views.length&&unit.views.length>0
-            &&unit.views.every(view=>verified.views.filter(proof=>proof.viewId===view.id&&proof.imageHash===view.sha256).length===1));
+            &&unit.views.every(view=>verified.views.filter(proof=>proof.viewId===view.id&&proof.imageHash===view.sha256).length===1)
+            &&(!verified.composition||verifiedReadingUnit(verified,unit,scope)));
         if(!complete)issues.push('Unverified unit: '+unit.id);
         if(complete&&verified?.contentRole!=='BRANDING_ONLY'&&verified?.visualDescription.trim())for(const location of unit.locations)visualDescriptions.push({unitId:unit.id,location,text:verified.visualDescription});
         return {id:unit.id,kind:unit.kind,locations:unit.locations,views:unit.views.map(viewWithoutBytes),status:complete?'READ' as const:'REQUIRES_REVIEW' as const,
@@ -40,6 +42,8 @@ export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUn
             verifiedViews:(verified?.views||[]).map(proof=>({viewId:proof.viewId,imageHash:proof.imageHash,textHash:proof.textHash,method:proof.method,confirmationHash:proof.confirmationHash,
                 ...(proof.readingImage?{readingImage:proof.readingImage}:{}),...(proof.confirmationImage?{confirmationImage:proof.confirmationImage}:{}),
                 ...(proof.emptyPageProof?{emptyPageProof:proof.emptyPageProof}:{}),...(proof.recognitionVersion?{recognitionVersion:proof.recognitionVersion}:{})})),uncertainties:verified?.uncertainties||['Unit not read'],
+            ...(verified?.composition&&scope?{composition:{version:verified.composition.version,baseEvidenceHash:verified.composition.baseEvidenceHash,evidenceHash:verified.composition.evidenceHash,scope:{...scope},
+                accepted:verified.composition.proofs.map(proof=>({targetId:proof.target.id,address:proof.target.address,rect:proof.rect,imageHash:proof.image.sha256})),pending:verified.composition.pending,issues:verified.composition.issues}}:{}),
             ...(verified?.contentRole?{contentRole:verified.contentRole}:{}),...(verified?.nonBlockingNotes?.length?{nonBlockingNotes:verified.nonBlockingNotes}:{})};
     });
     const msg=manifest.msg?structuredClone(manifest.msg):undefined;
@@ -51,7 +55,7 @@ export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUn
         const unit=manifest.units.find(u=>u.id===block.unitId);
         if(!unit){issues.push('Unknown assembly unit: '+block.unitId);return '';}
         const verified=byId.get(unit.id),entry=expectedUnits.find(u=>u.id===unit.id);
-        const literal=entry?.status==='READ'?verified!.text:unit.localText;
+        const literal=entry?.status==='READ'||verified?.composition&&retainedReadingUnit(verified,unit,scope)?verified!.text:unit.localText;
         return remember(manifest.format==='PDF'||manifest.format==='MSG'&&unit.kind==='PDF_PAGE'?`\n[PAGE ${unit.locations[0]?.page}]\n${literal}\n`:literal);
     }).join('');
     if(msg)for(const part of [...msg.parts].reverse())part.status=part.nativeComplete&&part.issues.length===0&&part.unitIds.every(id=>expectedUnits.some(u=>u.id===id&&u.status==='READ'))&&msg.parts.filter(p=>p.parentId===part.id).every(p=>p.status==='READ')?'READ':'REQUIRES_REVIEW';
@@ -69,7 +73,7 @@ function descriptions(value:unknown):VisualDescription[] {
 function currentVersion(saved:OwnedSourceDocument):ReadingTextVersion {
     const text=String(saved.extracted_text||''),parsed=json(saved);
     return {sourceHash:String(saved.content_hash||''),textHash:hash(text),text,reading:parsed.source_reading??null,
-        visualDescriptions:descriptions(parsed.source_reading_visual_descriptions)};
+        visualDescriptions:descriptions(parsed.source_reading_visual_descriptions),...(Array.isArray(parsed.source_reading_units)?{units:parsed.source_reading_units as VerifiedUnit[]}: {})};
 }
 function readingVersions(saved:OwnedSourceDocument):ReadingTextVersion[] {
     const current=currentVersion(saved),history=json(saved).source_reading_history;
@@ -98,7 +102,7 @@ export function createReadingPatch(saved:OwnedSourceDocument,reading:ReadingAsse
     if(retainPrevious&&reading.text&&reading.textHash!==textHash
         &&!history.some(value=>object(value)&&value.sourceHash===reading.verification.sourceHash&&value.textHash===reading.textHash)){
         history.push({sourceHash:reading.verification.sourceHash,textHash:reading.textHash,text:reading.text,
-            reading:reading.verification,visualDescriptions:reading.visualDescriptions});
+            reading:reading.verification,visualDescriptions:reading.visualDescriptions,units:reading.units});
     }
     const changed=before.textHash!==textHash;
     const previousUnits=Array.isArray(parsed.source_reading_units)?parsed.source_reading_units:[];

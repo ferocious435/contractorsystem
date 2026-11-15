@@ -5,7 +5,7 @@ import {readingUnitInputHash,retainedReadingUnit,unitReadingLiteral} from './vis
 import {validReadingRect,validReadingHash,type ReadingScope,type ReadingUnit,type RenderedView,type VerifiedUnit} from '@/utils/visual-source-reading';
 import {normalizeReadingTypography} from '@/utils/visual-source-response';
 import {fragmentAddressKey,fragmentBlocks,fragmentValuesEqual,planFragmentTargets,primaryFragmentReading,
-    type FragmentProof,type FragmentResponse,type FragmentTarget,type FragmentValue} from '@/utils/visual-fragment-contracts';
+    type FragmentProof,type FragmentResponse,type FragmentTarget,type FragmentValue,type FragmentRenderer} from '@/utils/visual-fragment-contracts';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 export function canonicalFragmentJson(value:unknown):string {
@@ -17,18 +17,22 @@ export const fragmentProofsHash=(proofs:FragmentProof[])=>digest(canonicalFragme
 function validBase(unit:ReadingUnit,base:VerifiedUnit) {
     const reading=primaryFragmentReading(unit,base);if(!reading)return false;
     const literal=unitReadingLiteral(reading);
-    return Boolean(retainedReadingUnit({...base,complete:false,text:literal,textHash:digest(literal),tables:reading.tables,
+    const original={...base};delete original.composition;
+    return Boolean(retainedReadingUnit({...original,complete:false,text:literal,textHash:digest(literal),tables:reading.tables,
         uncertainties:['Numeric or source verification failed: retained fragment base']},unit));
 }
 function response(value:unknown,target:FragmentTarget):FragmentResponse|null {
     if(!record(value)||Object.keys(value).some(k=>!['targetId','blocks','uncertainties'].includes(k))||value.targetId!==target.id
         ||!Array.isArray(value.blocks)||value.blocks.length!==target.anchors.length+1||!Array.isArray(value.uncertainties)||value.uncertainties.length)return null;
-    const order=[...target.anchors.map(a=>({id:a.id,address:a.address})),{id:target.id,address:target.address}].sort((a,b)=>{
-        const index=(v:typeof a)=>v.address.kind==='line'?v.address.line:v.address.row;return index(a)-index(b);
-    });
+    const expected=[...target.anchors,{id:target.id,address:target.address}];const seen=new Set<string>();
     for(let i=0;i<value.blocks.length;i++){
-        const b=value.blocks[i];if(!record(b)||Object.keys(b).some(k=>!['id','value'].includes(k))||b.id!==order[i].id)return null;
-        if(target.address.kind==='line'?typeof b.value!=='string':!Array.isArray(b.value)||!b.value.every(cell=>typeof cell==='string'))return null;
+        const b=value.blocks[i];if(!record(b)||Object.keys(b).some(k=>!['id','value'].includes(k))||typeof b.id!=='string'||seen.has(b.id))return null;
+        const block=expected.find(e=>e.id===b.id);if(!block)return null;seen.add(b.id);
+        if(block.address.kind==='line'?typeof b.value!=='string':!Array.isArray(b.value)||!b.value.every(cell=>typeof cell==='string'))return null;
+        for(const previous of value.blocks.slice(0,i)){
+            if(!record(previous))return null;const a=expected.find(e=>e.id===previous.id)!.address,c=block.address;
+            if(a.kind==='line'&&c.kind==='line'&&a.line>=c.line||a.kind==='table-row'&&c.kind==='table-row'&&a.table===c.table&&a.row>=c.row)return null;
+        }
         const anchor=target.anchors.find(a=>a.id===b.id);
         if(anchor&&!fragmentValuesEqual(b.value as FragmentValue,anchor.value))return null;
     }
@@ -67,7 +71,7 @@ export function verifyStoredFragmentProof(value:unknown,scope:ReadingScope,unit:
         if(!planned||canonicalFragmentJson(planned)!==canonicalFragmentJson(target))return null;
         const first=response(JSON.parse(value.raw[0]),target),second=response(JSON.parse(value.raw[1]),target);
         if(!first||!second||canonicalFragmentJson([first,second])!==canonicalFragmentJson(value.readings)
-            ||!first.blocks.every((b,i)=>fragmentValuesEqual(b.value,second.blocks[i].value)))return null;
+            ||!first.blocks.every((b,i)=>b.id===second.blocks[i].id&&fragmentValuesEqual(b.value,second.blocks[i].value)))return null;
         const chosen=first.blocks.find(b=>b.id===target.id)?.value,original=primaryFragmentReading(unit,base)!;
         const targetValue=fragmentBlocks(original).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value;
         if(chosen===undefined||targetValue===undefined||canonicalFragmentJson(chosen)!==canonicalFragmentJson(value.value)
@@ -97,4 +101,29 @@ export function composeFragmentReading(unit:ReadingUnit,base:VerifiedUnit,proofs
     const uncertainties=[...new Set([...issues,...pending.map(t=>'Fragment pending: '+t.id)])];
     return {...structuredClone(base),text,textHash:digest(text),tables:assembled.tables,complete:uncertainties.length===0,uncertainties,
         composition:{version:'visual-fragment-assembly-v1',baseEvidenceHash:fragmentBaseHash(base),evidenceHash:fragmentProofsHash(accepted),proofs:accepted,pending,issues:[...new Set(issues)]}};
+}
+
+/** Rebuild the authoritative transcript from the immutable source pair and witnesses. */
+export function retainedFragmentComposition(value:unknown,unit:ReadingUnit,scope?:ReadingScope):VerifiedUnit|null {
+    try{
+        if(!scope||!record(value)||!record(value.composition)||value.composition.version!=='visual-fragment-assembly-v1'
+            ||!Array.isArray(value.composition.proofs)||!Array.isArray(value.composition.issues)||!Array.isArray(value.composition.pending))return null;
+        const saved=value as unknown as VerifiedUnit,rebuilt=composeFragmentReading(unit,saved,saved.composition!.proofs,scope),composition=saved.composition!;
+        if(!validBase(unit,saved)||!rebuilt.composition||composition.baseEvidenceHash!==rebuilt.composition.baseEvidenceHash
+            ||composition.evidenceHash!==rebuilt.composition.evidenceHash||canonicalFragmentJson(composition.proofs)!==canonicalFragmentJson(rebuilt.composition.proofs)
+            ||canonicalFragmentJson(composition.pending)!==canonicalFragmentJson(rebuilt.composition.pending))return null;
+        const extra=composition.issues.filter(note=>!rebuilt.composition!.issues.includes(note));
+        if(extra.some(note=>typeof note!=='string'||!note.startsWith('Fragment check failed: '))||extra.length&&!composition.pending.length)return null;
+        const issues=[...new Set([...rebuilt.composition.issues,...extra])],uncertainties=[...new Set([...rebuilt.uncertainties,...extra])];
+        if(canonicalFragmentJson(composition.issues)!==canonicalFragmentJson(issues)||canonicalFragmentJson(saved.uncertainties)!==canonicalFragmentJson(uncertainties)
+            ||saved.text!==rebuilt.text||saved.textHash!==rebuilt.textHash||canonicalFragmentJson(saved.tables)!==canonicalFragmentJson(rebuilt.tables)
+            ||saved.complete!==(rebuilt.complete&&!extra.length))return null;
+        return structuredClone(saved);
+    }catch{return null;}
+}
+
+export async function verifyFragmentImages(value:VerifiedUnit,unit:ReadingUnit,scope:ReadingScope,render:FragmentRenderer):Promise<boolean> {
+    const saved=retainedFragmentComposition(value,unit,scope);if(!saved)return false;
+    for(const proof of saved.composition!.proofs){const image=await render(unit,proof.rect);if(!image||!verifyFragmentProof(proof,scope,unit,saved,proof.target,image))return false;}
+    return true;
 }

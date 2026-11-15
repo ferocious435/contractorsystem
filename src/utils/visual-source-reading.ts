@@ -55,7 +55,7 @@ export type OwnedSourceDocument = DocumentSourceInput & Record<string,unknown> &
     id:string;project_id:string;extracted_text_hash?:string|null;storage_bucket?:string|null;
     ai_status?:string|null;processed_at?:string|null;
 };
-export type ReadingTextVersion = {sourceHash:string;textHash:string;text:string;reading:unknown;visualDescriptions?:VisualDescription[]};
+export type ReadingTextVersion = {sourceHash:string;textHash:string;text:string;reading:unknown;visualDescriptions?:VisualDescription[];units?:VerifiedUnit[]};
 export type VisualDescription = {unitId:string;location:ReadingLocation;text:string};
 export type ReadingAssembly = {text:string;textHash:string;verification:VisualReadingVerification;units:VerifiedUnit[];visualDescriptions:VisualDescription[]};
 export type DocumentReadingPatch = {extracted_text:string;extracted_text_hash:string;ocr_status:'COMPLETED'|'REQUIRES_REVIEW';parsed_json:Record<string,unknown>;processed_at:string};
@@ -156,6 +156,21 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
             &&strings(raw.uncertainties)&&raw.uncertainties.length===0&&Array.isArray(raw.views)&&raw.views.length>0
             &&Array.isArray(raw.verifiedViews)&&raw.verifiedViews.length===raw.views.length;
         if(raw.contentRole!==undefined&&!['CONTENT','BRANDING_ONLY','UNKNOWN'].includes(String(raw.contentRole)))valid=false;
+        if(raw.composition!==undefined){
+            const c=raw.composition,owned=source as DocumentSourceInput&{id?:string;project_id?:string};
+            if(!object(c)||c.version!=='visual-fragment-assembly-v1'||!validReadingHash(c.baseEvidenceHash)||!validReadingHash(c.evidenceHash)
+                ||!object(c.scope)||!identifier(c.scope.ownerId)||!identifier(c.scope.projectId)||!identifier(c.scope.documentId)||c.scope.sourceHash!==registry.sourceHash
+                ||owned.id&&c.scope.documentId!==owned.id||owned.project_id&&c.scope.projectId!==owned.project_id
+                ||!Array.isArray(c.pending)||c.pending.length||!strings(c.issues)||c.issues.length||!Array.isArray(c.accepted))valid=false;
+            else {
+                const accepted=new Set<string>();
+                for(const a of c.accepted){
+                    if(!object(a)||!identifier(a.targetId)||accepted.has(a.targetId)||!validReadingRect(a.rect)||!validReadingHash(a.imageHash)||!object(a.address)
+                        ||!(a.address.kind==='line'?Number.isInteger(a.address.line)&&Number(a.address.line)>=0:a.address.kind==='table-row'&&Number.isInteger(a.address.table)&&Number(a.address.table)>=0&&Number.isInteger(a.address.row)&&Number(a.address.row)>=0))valid=false;
+                    else accepted.add(a.targetId);
+                }
+            }
+        }
         if(branding&&(kind==='PDF_PAGE'||raw.literalHasBody!==false||raw.visualHasContent!==true
             ||raw.textHash!=='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'))valid=false;
         const views=Array.isArray(raw.views)?raw.views:[],proofs=Array.isArray(raw.verifiedViews)?raw.verifiedViews:[];

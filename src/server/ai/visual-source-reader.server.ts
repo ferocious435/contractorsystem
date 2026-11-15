@@ -10,6 +10,9 @@ import {validateUnitReading,compareNumericReadings,unresolvedReadingUncertaintie
 import {extractImageTextLocally,getRenderedEmptyPageProof} from '@/utils/local-document-ocr';
 import {hasDocumentBodyText} from '@/utils/document-source-readiness';
 import {VISUAL_READING_RULES,BRANDING_RECOGNITION_VERSION,type SourceManifest,type ReadingScope,type ReadingUnit,type RenderedView,type UnitReading,type VerifiedUnit,type VerifiedView} from '@/utils/visual-source-reading';
+import type {FragmentRenderer} from '@/utils/visual-fragment-contracts';
+import {readTargetedFragments} from './visual-fragment-reader.server';
+import {fragmentBaseHash,verifyFragmentImages} from './visual-fragment-proof.server';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const sameRect=(a:RenderedView,b:RenderedView)=>JSON.stringify(a.rect)===JSON.stringify(b.rect);
@@ -53,7 +56,8 @@ export async function reverifySavedPhysicalUnit(value:unknown,unit:ReadingUnit,e
     return verifiedReadingUnit(checked,unit)?checked:null;
 }
 
-export async function readVisualSource(manifest:SourceManifest,scope:ReadingScope,execution:AiExecutionContext):Promise<{units:VerifiedUnit[];issues:string[]}> {
+export type VisualReadOptions={retainedUnits?:VerifiedUnit[];renderFragment?:FragmentRenderer};
+export async function readVisualSource(manifest:SourceManifest,scope:ReadingScope,execution:AiExecutionContext,options:VisualReadOptions={}):Promise<{units:VerifiedUnit[];issues:string[]}> {
     if(!validUuid(execution.jobId)||execution.ownerId!==scope.ownerId||execution.projectId!==scope.projectId||manifest.sourceHash!==scope.sourceHash)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
     if(manifest.units.length===0)return {units:[],issues:[...manifest.issues]};
     const root=path.resolve(getRuntimeDirectory()),job=path.join(root,'jobs',execution.jobId),directory=path.join(job,'visual-read-'+randomUUID());
@@ -63,7 +67,21 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
     try{
         for(const unit of manifest.units){
             await execution.checkActive();
-            const cached=await cache.read(scope,unit);if(cached){units.push(cached);await execution.reportProgress({phase:'reading',completedUnits:units.filter(u=>u.complete).length,totalUnits:manifest.units.length});continue;}
+            const cached=await cache.read(scope,unit);
+            if(cached&&(!cached.composition||options.renderFragment&&await verifyFragmentImages(cached,unit,scope,options.renderFragment))){units.push(cached);await execution.reportProgress({phase:'reading',completedUnits:units.filter(u=>u.complete).length,totalUnits:manifest.units.length});continue;}
+            const retained=options.retainedUnits?.find(value=>value.unitId===unit.id),saved=retainedReadingUnit(retained,unit,scope),progress=await cache.readProgress(scope,unit);
+            // Progress from a different original answer must not replace retained evidence.
+            const matching=progress&&(!saved||fragmentBaseHash(progress)===fragmentBaseHash(saved))?progress:null;
+            const resume=matching&&(!saved||(matching.composition?.proofs.length??0)>(saved.composition?.proofs.length??0))?matching:saved;
+            if(resume){
+                let next=resume;
+                if(options.renderFragment&&(!next.complete||next.composition))next=await readTargetedFragments({unit,saved:next,scope,execution,render:options.renderFragment,
+                    onCheckpoint:async value=>{await execution.checkActive();await cache.writeProgress(scope,unit,value);}});
+                if(next.complete&&next.composition&&!options.renderFragment)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+                await execution.checkActive();await cache.writeProgress(scope,unit,next);
+                if(next.complete)await cache.write(scope,unit,next);else issues.push(...next.uncertainties);
+                units.push(next);await execution.reportProgress({phase:'reading',completedUnits:units.filter(u=>u.complete).length,totalUnits:manifest.units.length});continue;
+            }
             const inputHash=readingUnitInputHash(unit),brandingKey=unit.kind==='DOCX_IMAGE'&&unit.views.every(whole)?digest(JSON.stringify({root,ownerId:scope.ownerId,projectId:scope.projectId,profileFingerprint,version:BRANDING_RECOGNITION_VERSION,
                 id:unit.id,views:unit.views.map(view=>({id:view.id,sha256:view.sha256,width:view.width,height:view.height,rect:view.rect}))})):null;
             const known=brandingKey?brandingRecognitions.get(brandingKey):undefined;
@@ -195,13 +213,18 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
             for(const view of unit.views.filter(v=>!whole(v))){const part=readings.get(view.id);if(part&&hasDocumentBodyText(unitReadingLiteral(part))&&!normalized(text).includes(normalized(unitReadingLiteral(part))))uncertainties.push('Crop text not reconciled: '+view.id);}
             const brandingOnly=proofs.length>0&&proofs.every(proof=>proof.method==='branding-recognition');
             const notes=[...new Set(proofs.flatMap(proof=>[...(proof.reading.nonBlockingNotes??[]),...(proof.confirmation?.nonBlockingNotes??[])]))];
-            const result:VerifiedUnit={unitId:unit.id,inputHash,text,textHash:digest(text),tables:selected?.tables||[],
+            let result:VerifiedUnit={unitId:unit.id,inputHash,text,textHash:digest(text),tables:selected?.tables||[],
                 visualDescription:brandingOnly?'סמליל או סימן מיתוג שזוהה חזותית; אינו הוראה, סכום או הוכחת זהות השולח.':[...new Set([...readings.values()].map(v=>v.visualDescription).filter(Boolean))].join('\n'),uncertainties:[...new Set(uncertainties)],views:proofs,
                 complete:uncertainties.length===0&&proofs.length===unit.views.length,
                 ...(formattingNotes.size?{formattingNotes:[...formattingNotes]}:{}),
                 ...(brandingOnly?{contentRole:'BRANDING_ONLY' as const}:selected?.contentRole?{contentRole:selected.contentRole}:{}),...(notes.length?{nonBlockingNotes:notes}:{}),
                 createdBy:{jobId:execution.jobId,rulesVersion:VISUAL_READING_RULES,profileRevision:execution.profile.revision}};
             if(result.complete&&!verifiedReadingUnit(result,unit)){result.complete=false;result.uncertainties.push('Source content is not verified');}
+            if(!result.complete&&options.renderFragment&&retainedReadingUnit(result,unit,scope)){
+                result=await readTargetedFragments({unit,saved:result,scope,execution,render:options.renderFragment,
+                    onCheckpoint:async value=>{await execution.checkActive();await cache.writeProgress(scope,unit,value);}});
+                await execution.checkActive();await cache.writeProgress(scope,unit,result);
+            }
             units.push(result);
             if(result.complete){await execution.checkActive();await cache.write(scope,unit,result);await execution.checkActive();
                 if(brandingKey&&result.contentRole==='BRANDING_ONLY'){brandingRecognitions.set(brandingKey,{scope:{...scope},unit:structuredClone(result)});if(brandingRecognitions.size>128)brandingRecognitions.delete(brandingRecognitions.keys().next().value!);}
