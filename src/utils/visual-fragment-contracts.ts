@@ -7,12 +7,15 @@ export type FragmentAnchor={id:string;address:FragmentAddress;value:FragmentValu
 export type FragmentTarget={id:string;unitId:string;viewIds:string[];address:FragmentAddress;anchors:FragmentAnchor[];reason:string};
 export type FragmentPlan={targets:FragmentTarget[];issues:string[]};
 export type FragmentResponse={targetId:string;blocks:Array<{id:string;value:FragmentValue}>;uncertainties:string[]};
+export type FragmentLocator={raw:string;viewId:string;imageHash:string};
 export type FragmentProof={
     version:'visual-fragment-proof-v1';scope:ReadingScope;unitId:string;inputHash:string;baseEvidenceHash:string;
     target:FragmentTarget;rect:Rect;image:Omit<RenderedView,'bytes'>;raw:[string,string];readings:[FragmentResponse,FragmentResponse];
     value:FragmentValue;createdBy:{jobId:string;profileRevision:number};
+    locator?:FragmentLocator;
 };
-export type FragmentComposition={version:'visual-fragment-assembly-v1';baseEvidenceHash:string;evidenceHash:string;proofs:FragmentProof[];pending:FragmentTarget[];issues:string[]};
+export type FragmentAttempt=Pick<FragmentProof,'scope'|'unitId'|'inputHash'|'target'|'rect'|'image'|'raw'|'createdBy'|'locator'>&{reason:string};
+export type FragmentComposition={version:'visual-fragment-assembly-v1';baseEvidenceHash:string;evidenceHash:string;proofs:FragmentProof[];pending:FragmentTarget[];issues:string[];locator?:FragmentLocator;attempts?:FragmentAttempt[]};
 export type FragmentSummary={version:'visual-fragment-assembly-v1';baseEvidenceHash:string;evidenceHash:string;scope:ReadingScope;
     accepted:Array<{targetId:string;address:FragmentAddress;rect:Rect;imageHash:string}>;pending:FragmentTarget[];issues:string[]};
 export type FragmentRenderer=(unit:ReadingUnit,rect:Rect)=>Promise<RenderedView|null>;
@@ -56,7 +59,7 @@ export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):Fragmen
         const block=blocks[i],neighbors=blocks.map((b,index)=>({b,index})).filter(v=>v.index!==i&&!disputed[v.index]&&sameSection(block.address,v.b.address)&&hasValue(v.b.value));
         const before=neighbors.filter(v=>v.index<i).reverse(),after=neighbors.filter(v=>v.index>i);
         const chosen=before.length&&after.length?[before[0],after[0]]:before.length?before.slice(0,2):after.slice(0,2);
-        if(chosen.length!==2||chosen.some(v=>blocks.filter(b=>sameSection(b.address,v.b.address)&&fragmentValuesEqual(b.value,v.b.value)).length!==1)){
+        if(chosen.length!==2||chosen.some(v=>blocks.filter(b=>fragmentValuesEqual(b.value,v.b.value)).length!==1)){
             issues.push('Fragment has ambiguous or insufficient context: '+block.id);continue;
         }
         targets.push({id:'fragment:'+block.id,unitId:unit.id,viewIds:unit.views.map(v=>v.id),address:block.address,

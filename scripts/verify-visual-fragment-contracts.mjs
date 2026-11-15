@@ -33,6 +33,11 @@ test('duplicate_anchor_stays_partial',()=>{
  const {unit,base}=fixture();for(const p of [base.views[0].reading,base.views[0].confirmation])for(const row of [1,2,4,5])p.tables[0][row]=['זהה','10','מטר',''];
  const plan=call(contracts,'planFragmentTargets',unit,base);assert.equal(plan.targets.length,0);assert.ok(plan.issues.length);
 });
+test('matching_context_in_another_table_cannot_confirm_the_requested_table',()=>{
+ const {unit,base}=fixture();
+ for(const r of [base.views[0].reading,base.views[0].confirmation])r.tables.push(structuredClone(base.views[0].reading.tables[0]));
+ const plan=call(contracts,'planFragmentTargets',unit,base);assert.equal(plan.targets.length,0);assert.ok(plan.issues.length);
+});
 test('shape_changes_and_unbound_uncertainties_stay_partial',()=>{
  for(const mutate of [b=>b.views[0].confirmation.tables[0][3].pop(),b=>b.views[0].confirmation.tables[0].splice(2,1),b=>b.views[0].reading.uncertainties.push('An unidentified diagram annotation is unclear')]){
   const {unit,base}=fixture();mutate(base);const plan=call(contracts,'planFragmentTargets',unit,base);assert.ok(plan.issues.length);

@@ -19,8 +19,8 @@ function userCrop(box:{x:number;y:number;width:number;height:number},angle:numbe
     return {x,y,width:Math.max(...points.map(p=>p.x))-x,height:Math.max(...points.map(p=>p.y))-y};
 }
 
-export async function renderPdfView(file:Buffer,page:number,rect:Rect|undefined):Promise<RenderedView> {
-    if(!Number.isInteger(page)||page<1||rect&&!validReadingRect(rect))throw Error('Invalid physical PDF view');
+export async function renderPdfView(file:Buffer,page:number,rect:Rect|undefined,options?:{detail:'fragment'}):Promise<RenderedView> {
+    if(!Number.isInteger(page)||page<1||rect&&!validReadingRect(rect)||options&&(options.detail!=='fragment'||!rect))throw Error('Invalid physical PDF view');
     let data=Buffer.from(file),renderPage=page;
     if(rect){
         const original=await PDFDocument.load(Uint8Array.from(file)),copy=await PDFDocument.create();
@@ -35,7 +35,7 @@ export async function renderPdfView(file:Buffer,page:number,rect:Rect|undefined)
         const info=await parser.getInfo({parsePageInfo:true,partial:[renderPage]});
         const dimensions=info.pages.find(p=>p.pageNumber===renderPage);
         if(!dimensions||dimensions.width<=0||dimensions.height<=0)throw Error('PDF page geometry is absent');
-        const scale=Math.min((rect?300:150)/72,Math.sqrt((MAX_PIXELS-16000)/(dimensions.width*dimensions.height)),32700/dimensions.width,32700/dimensions.height);
+        const scale=Math.min((options?.detail==='fragment'?600:rect?300:150)/72,Math.sqrt((MAX_PIXELS-16000)/(dimensions.width*dimensions.height)),32700/dimensions.width,32700/dimensions.height);
         const images=await parser.getScreenshot({partial:[renderPage],scale,imageBuffer:true,imageDataUrl:false});
         const image=images.pages.find(p=>p.pageNumber===renderPage);
         if(!image?.data.length||image.width*image.height>MAX_PIXELS)throw Error('PDF rendering exceeds the image limit');
@@ -43,7 +43,7 @@ export async function renderPdfView(file:Buffer,page:number,rect:Rect|undefined)
         // The parser reports viewport floats; PNG metadata reports the actual integer canvas extent.
         const pixelDimensions=await sharp(bytes,{limitInputPixels:MAX_PIXELS}).metadata();
         if(!pixelDimensions.width||!pixelDimensions.height||pixelDimensions.width*pixelDimensions.height>MAX_PIXELS)throw Error('Invalid rendered PDF extent');
-        return {id:`pdf:${page}:${rect?'crop:'+JSON.stringify(rect):'full'}`,sha256:createHash('sha256').update(bytes).digest('hex'),bytes,
+        return {id:`pdf:${page}:${rect?'crop:'+JSON.stringify(rect):'full'}${options?.detail==='fragment'?':detail:600':''}`,sha256:createHash('sha256').update(bytes).digest('hex'),bytes,
             width:pixelDimensions.width,height:pixelDimensions.height,rect:rect??{x:0,y:0,width:1,height:1}};
     }finally{await parser.destroy();}
 }
