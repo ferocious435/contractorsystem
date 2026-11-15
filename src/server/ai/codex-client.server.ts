@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {BusinessAiError,checkedModelChoice,record,validUuid,type AiTurnInput,type RuntimeProfile} from './contracts';
 import {accountFingerprint} from './owner.server';
+import {sameReadingRuntimePath} from './reading-runtime-path.server';
 
 interface Clock {now():number;setTimeout(callback:()=>void,ms:number):unknown;clearTimeout(handle:unknown):void;}
 interface ClientOptions {
@@ -188,7 +189,7 @@ export function createCodexClient(options:ClientOptions={}):CodexClient {
             const imageInputs:Array<{type:'localImage';path:string}>=[];
             for(const image of images){
                 if(typeof image!=='string'||!path.isAbsolute(image)||!inside(runtimeDir,path.resolve(image)))throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
-                const resolved=await realpath(image);if(!inside(await realpath(runtimeDir),resolved)||!(await stat(resolved)).isFile())throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
+                const resolved=await realpath(image);if(!inside(await realpath(runtimeDir),resolved)&&!sameReadingRuntimePath(runtimeDir,image,resolved,{localAppData:environment.LOCALAPPDATA})||!(await stat(resolved)).isFile())throw new BusinessAiError('AI_INPUT_INVALID',undefined,400);
                 imageInputs.push({type:'localImage',path:resolved});
             }
             const names=new Set<string>();

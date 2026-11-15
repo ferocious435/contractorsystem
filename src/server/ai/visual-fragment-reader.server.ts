@@ -5,6 +5,7 @@ import path from 'node:path';
 import {BusinessAiError,record,validUuid,type AiExecutionContext} from './contracts';
 import {getRuntimeDirectory} from './codex-client.server';
 import {checkedReadingDirectory,readingUnitInputHash} from './visual-reading-cache.server';
+import {sameReadingRuntimePath} from './reading-runtime-path.server';
 import {composeFragmentReading,fragmentBaseHash,verifyFragmentProof,verifyStoredFragmentProof} from './visual-fragment-proof.server';
 import {FRAGMENT_LIMIT,fragmentAddressKey,fragmentBlocks,fragmentResponseSchema,planFragmentTargets,
     type FragmentRenderer,type FragmentProof,type FragmentLocator,type FragmentAttempt} from '@/utils/visual-fragment-contracts';
@@ -95,7 +96,8 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
         return result;
     }finally{
         const actual=await realpath(directory),actualJob=await realpath(job);
-        if(actual!==path.join(actualJob,path.basename(directory))||!actual.startsWith(actualJob+path.sep)||(await lstat(directory)).isSymbolicLink())throw new BusinessAiError('AI_POLICY_UNSAFE');
+        if(!(actual===path.join(actualJob,path.basename(directory))&&actual.startsWith(actualJob+path.sep))
+            &&!(sameReadingRuntimePath(root,job,actualJob)&&sameReadingRuntimePath(root,directory,actual))||(await lstat(directory)).isSymbolicLink())throw new BusinessAiError('AI_POLICY_UNSAFE');
         await rm(actual,{recursive:true,force:false});
     }
 }

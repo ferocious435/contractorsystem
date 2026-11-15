@@ -13,6 +13,7 @@ import {VISUAL_READING_RULES,BRANDING_RECOGNITION_VERSION,type SourceManifest,ty
 import type {FragmentRenderer} from '@/utils/visual-fragment-contracts';
 import {readTargetedFragments} from './visual-fragment-reader.server';
 import {fragmentBaseHash,verifyFragmentImages} from './visual-fragment-proof.server';
+import {sameReadingRuntimePath} from './reading-runtime-path.server';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const sameRect=(a:RenderedView,b:RenderedView)=>JSON.stringify(a.rect)===JSON.stringify(b.rect);
@@ -234,7 +235,8 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
         return {units,issues};
     }finally{
         const actual=await realpath(directory),actualJob=await realpath(job);
-        if(actual!==path.join(actualJob,path.basename(directory))||!actual.startsWith(actualJob+path.sep)||(await lstat(directory)).isSymbolicLink())throw new BusinessAiError('AI_POLICY_UNSAFE');
+        if(!(actual===path.join(actualJob,path.basename(directory))&&actual.startsWith(actualJob+path.sep))
+            &&!(sameReadingRuntimePath(root,job,actualJob)&&sameReadingRuntimePath(root,directory,actual))||(await lstat(directory)).isSymbolicLink())throw new BusinessAiError('AI_POLICY_UNSAFE');
         await rm(actual,{recursive:true,force:false});
     }
 }

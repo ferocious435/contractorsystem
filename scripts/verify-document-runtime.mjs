@@ -22,6 +22,7 @@ const suites=[
     'scripts/verify-xlsx-image-reading.mjs',
     'scripts/verify-document-reading-history.mjs',
     'scripts/verify-visual-reading-cache.mjs',
+    'scripts/verify-reading-runtime-path.mjs',
     'scripts/verify-visual-source-reader.mjs',
     'scripts/verify-document-reading-job.mjs',
     'scripts/verify-document-reading-repair.mjs',

@@ -7,6 +7,7 @@ import {VISUAL_READING_RULES,BRANDING_RECOGNITION_VERSION,validReadingHash,type 
 import {validateUnitReading,compareNumericReadings,unresolvedReadingUncertainties} from '@/utils/visual-source-response';
 import {hasDocumentBodyText,hasRenderedEmptyPageProof} from '@/utils/document-source-readiness';
 import {retainedFragmentComposition} from './visual-fragment-proof.server';
+import {sameReadingRuntimePath} from './reading-runtime-path.server';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const samePath=(a:string,b:string)=>process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
@@ -28,7 +29,7 @@ export async function checkedReadingDirectory(root:string,directory:string,creat
         // Windows packaged apps redirect LocalAppData without a filesystem symlink.
         // Bind the real root once, then require every owned descendant to stay beneath it.
         if(samePath(cursor,base))canonicalBase=actual;
-        else if(canonicalBase&&!samePath(actual,path.join(canonicalBase,path.relative(base,cursor))))throw new BusinessAiError('AI_POLICY_UNSAFE');
+        else if(canonicalBase&&!samePath(actual,path.join(canonicalBase,path.relative(base,cursor)))&&!sameReadingRuntimePath(base,cursor,actual))throw new BusinessAiError('AI_POLICY_UNSAFE');
     }
     return true;
 }
@@ -228,7 +229,9 @@ export function createVisualReadingCache(root:string) {
     async function read(scope:ReadingScope,unit:ReadingUnit,progress:boolean):Promise<VerifiedUnit|null>{
             const file=filename(scope,unit,progress);if(!await checkedReadingDirectory(absolute,path.dirname(file)))return null;
             try{
-                const info=await lstat(file);if(info.isSymbolicLink()||!info.isFile()||info.size>maxBytes||!samePath(await realpath(file),path.join(await realpath(path.dirname(file)),path.basename(file))))return null;
+                const info=await lstat(file);if(info.isSymbolicLink()||!info.isFile()||info.size>maxBytes)return null;
+                const actual=await realpath(file);
+                if(!samePath(actual,path.join(await realpath(path.dirname(file)),path.basename(file)))&&!sameReadingRuntimePath(absolute,file,actual))return null;
                 const payload:unknown=JSON.parse(await readFile(file,'utf8'));
                 if(!record(payload)||!record(payload.scope))return null;
                 const savedScope=payload.scope;
