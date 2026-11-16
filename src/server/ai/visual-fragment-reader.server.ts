@@ -8,7 +8,7 @@ import {getRuntimeDirectory} from './codex-client.server';
 import {checkedReadingDirectory,readingUnitInputHash} from './visual-reading-cache.server';
 import {sameReadingRuntimePath} from './reading-runtime-path.server';
 import {attemptReadings,canonicalFragmentJson,composeFragmentReading,fragmentBaseHash,preservesAgreedContent,verifyFragmentProof,verifyStoredFragmentProof,verifyPositionedImage} from './visual-fragment-proof.server';
-import {findPositionedDifference,confirmPositionedReading} from '@/server/documents/pdf-positioned-text.server';
+import {findPositionedDifference,confirmPositionedReading,matchingPrintedWitnesses} from '@/server/documents/pdf-positioned-text.server';
 import {FRAGMENT_LIMIT,fragmentAddressKey,fragmentBlocks,fragmentResponseSchema,planFragmentTargets,
     type FragmentRenderer,type FragmentProof,type FragmentLocator,type FragmentAttempt,type FragmentTarget,type PositionedLine} from '@/utils/visual-fragment-contracts';
 import {validReadingRect,type ReadingScope,type ReadingUnit,type Rect,type RenderedView,type VerifiedUnit} from '@/utils/visual-source-reading';
@@ -60,11 +60,19 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
         const match=findPositionedDifference(...pair.values,await lines,attempt.rect);
         if(!match||!preservesAgreedContent(pair.values[match.choice],saved,target))return null;
         const crop=await render(unit,match.line.rect);if(!crop)return null;
+        const lineImage={id:crop.id,sha256:crop.sha256,rect:crop.rect,width:crop.width,height:crop.height};
+        for(const support of attempts){
+            if(support?.createdBy?.jobId===attempt.createdBy.jobId||support?.target?.id!==target.id)continue;
+            const both=attemptReadings(support.raw,target);
+            if(!both||!matchingPrintedWitnesses(match,pair.values[match.choice],both.values))continue;
+            const proof=verifyFragmentProof({...proposed,positioned:{match,image:lineImage,support},value:pair.values[match.choice]},scope,unit,saved,target,image);
+            if(proof&&await verifyPositionedImage(proof,unit,render))return proof;
+        }
         const schema={type:'object',additionalProperties:false,required:['text','uncertainties'],properties:{text:{type:'string'},uncertainties:{type:'array',items:{type:'string'}}}};
         await execution.checkActive();
         const raw=await execution.generate({text:[rules,mixedScriptTranscription,'Transcribe the single printed line in this crop exactly. If clipped or ambiguous, list the uncertainty.'].join('\n'),images:[await imageFile(crop)],outputSchema:schema});
         if(Buffer.byteLength(raw)>65536)throw new BusinessAiError('AI_RESPONSE_TOO_LARGE');
-        const positioned={match,image:{id:crop.id,sha256:crop.sha256,rect:crop.rect,width:crop.width,height:crop.height},raw,jobId:execution.jobId};
+        const positioned={match,image:lineImage,raw,jobId:execution.jobId};
         await writeFile(path.join(job,'fragment-line-'+randomUUID()+'.json'),JSON.stringify({scope,unitId:unit.id,target,positioned}),{flag:'wx',mode:0o600});
         await execution.checkActive();
         try{if(!confirmPositionedReading(match,JSON.parse(raw)))return null;}catch{return null;}

@@ -4,7 +4,7 @@ import {record,validUuid} from './contracts';
 import {readingUnitInputHash,retainedReadingUnit,unitReadingLiteral} from './visual-reading-cache.server';
 import {validReadingRect,validReadingHash,type ReadingScope,type ReadingUnit,type RenderedView,type VerifiedUnit} from '@/utils/visual-source-reading';
 import {normalizeReadingTypography} from '@/utils/visual-source-response';
-import {findPositionedDifference,confirmPositionedReading} from '@/server/documents/pdf-positioned-text.server';
+import {findPositionedDifference,confirmPositionedReading,matchingPrintedWitnesses} from '@/server/documents/pdf-positioned-text.server';
 import {fragmentAddressKey,fragmentBlocks,fragmentValuesEqual,planFragmentTargets,primaryFragmentReading,
     type FragmentProof,type FragmentResponse,type FragmentTarget,type FragmentValue,type FragmentRenderer} from '@/utils/visual-fragment-contracts';
 
@@ -92,10 +92,20 @@ export function verifyStoredFragmentProof(value:unknown,scope:ReadingScope,unit:
         if(value.positioned!==undefined){
             const witness=(value as unknown as FragmentProof).positioned!;
             if(!witness?.match?.line||!validReadingRect(witness.match.line.rect)||!validReadingHash(witness.image?.sha256)
-                ||typeof witness.raw!=='string'||Buffer.byteLength(witness.raw)>65536
                 ||canonicalFragmentJson(witness.image.rect)!==canonicalFragmentJson(witness.match.line.rect))return null;
             const match=findPositionedDifference(...pair.values,[witness.match.line],value.rect);
-            if(!match||canonicalFragmentJson(match)!==canonicalFragmentJson(witness.match)||!confirmPositionedReading(match,JSON.parse(witness.raw)))return null;
+            if(!match||canonicalFragmentJson(match)!==canonicalFragmentJson(witness.match))return null;
+            if(witness.support){
+                const s=witness.support,box=s.rect,r=match.line.rect;
+                if(witness.raw!==undefined||!validUuid(s.createdBy?.jobId)||s.createdBy.jobId===value.createdBy.jobId
+                    ||!Number.isSafeInteger(s.createdBy.profileRevision)||s.createdBy.profileRevision<1
+                    ||canonicalFragmentJson(s.scope)!==canonicalFragmentJson(scope)||s.inputHash!==value.inputHash||s.unitId!==unit.id||canonicalFragmentJson(s.target)!==canonicalFragmentJson(target)
+                    ||!validReadingRect(box)||canonicalFragmentJson(s.image?.rect)!==canonicalFragmentJson(box)||!validReadingHash(s.image.sha256)
+                    ||r.x<box.x||r.y<box.y||r.x+r.width>box.x+box.width||r.y+r.height>box.y+box.height
+                    ||!Array.isArray(s.raw)||s.raw.length!==2||!s.raw.every(raw=>typeof raw==='string'&&Buffer.byteLength(raw)<=4*1024*1024))return null;
+                const both=attemptReadings(s.raw,target);
+                if(!both||!matchingPrintedWitnesses(match,pair.values[match.choice],both.values))return null;
+            }else if(typeof witness.raw!=='string'||Buffer.byteLength(witness.raw)>65536||!confirmPositionedReading(match,JSON.parse(witness.raw)))return null;
             choice=match.choice;
         }else if(!sameWitnessText(...pair.values))return null;
         const chosen=pair.values[choice],original=primaryFragmentReading(unit,base)!;
@@ -160,6 +170,10 @@ export async function verifyPositionedImage(proof:FragmentProof,unit:ReadingUnit
     if(!pair||!lines)return false;
     const match=findPositionedDifference(...pair.values,lines,proof.rect);
     if(canonicalFragmentJson(match)!==canonicalFragmentJson(witness.match))return false;
+    if(witness.support){
+        const supporting=await render(unit,witness.support.rect);
+        if(!supporting||digest(supporting.bytes)!==supporting.sha256||canonicalFragmentJson({...supporting,bytes:undefined})!==canonicalFragmentJson(witness.support.image))return false;
+    }
     const image=await render(unit,witness.match.line.rect);
     return Boolean(image&&digest(image.bytes)===image.sha256&&canonicalFragmentJson({...image,bytes:undefined})===canonicalFragmentJson(witness.image));
 }

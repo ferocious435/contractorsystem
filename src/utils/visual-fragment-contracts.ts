@@ -3,14 +3,35 @@ import {normalizeReadingTypography} from './visual-source-response';
 
 export type FragmentAddress={kind:'line';line:number}|{kind:'table-row';table:number;row:number};
 export type FragmentValue=string|string[];
+/** Extract the observed tokens after the same typographic normalization used
+ * for verification. Repeated occurrences cannot identify a line. */
+export function observedPrintedLine(value:FragmentValue,cell:number,line:string):{offset:number;text:string}|null {
+    const content=Array.isArray(value)?value[cell]:cell===0?value:undefined;
+    if(typeof content!=='string')return null;
+    const tokens=/[\p{L}\p{M}\p{N}]+|[^\s]/gu;
+    const needle=normalizeReadingTypography(line).match(tokens)??[];
+    if(needle.length<3)return null;
+    const normalized=normalizeReadingTypography(content);
+    const words=Array.from(normalized.matchAll(tokens));
+    let match:{offset:number;text:string}|null=null;
+    for(let i=0;i<=words.length-needle.length;i++){
+        if(!needle.every((token,j)=>words[i+j][0]===token))continue;
+        if(match)return null;
+        const last=words[i+needle.length-1];
+        match={offset:i,text:normalized.slice(words[i].index,last.index+last[0].length)};
+    }
+    return match;
+}
 export type FragmentAnchor={id:string;address:FragmentAddress;value:FragmentValue};
 export type FragmentTarget={id:string;unitId:string;viewIds:string[];address:FragmentAddress;anchors:FragmentAnchor[];reason:string};
 export type FragmentPlan={targets:FragmentTarget[];issues:string[]};
 export type FragmentResponse={targetId:string;blocks:Array<{id:string;value:FragmentValue}>;uncertainties:string[]};
 export type FragmentLocator={raw:string;viewId:string;imageHash:string};
-export type PositionedLine={text:string;rect:Rect;objectIndex:number;rotation:number};
+export type PositionedLine={text:string;rect:Rect;objectIndex:number;rotation:number;terminalObjectIndex?:number};
 export type PositionedDifference={line:PositionedLine;choice:0|1;cell:number};
-export type PositionedWitness={match:PositionedDifference;image:Omit<RenderedView,'bytes'>;raw:string};
+export type PositionedWitness={match:PositionedDifference;image:Omit<RenderedView,'bytes'>} & (
+    {raw:string;support?:never}|{raw?:never;support:Omit<FragmentAttempt,'reason'>}
+);
 export type FragmentProof={
     version:'visual-fragment-proof-v1';scope:ReadingScope;unitId:string;inputHash:string;baseEvidenceHash:string;
     target:FragmentTarget;rect:Rect;image:Omit<RenderedView,'bytes'>;raw:[string,string];readings:[FragmentResponse,FragmentResponse];

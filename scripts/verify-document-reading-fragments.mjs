@@ -71,3 +71,15 @@ test('a_fragment_link_contains_only_the_saved_identity_and_no_coordinates',async
  assert.equal(typeof actions.documentFragmentUrl,'function');const f=await fixture(),row=document(f,await composed(f)),url=new URL(actions.documentFragmentUrl({projectId:f.scope.projectId,documentId:row.id,sourceHash:row.content_hash,textHash:row.extracted_text_hash,unitId:f.unit.id,targetId:'fragment:table:0:row:2'}),'http://localhost');
  assert.equal(url.pathname,'/api/documents/reading/fragment');assert.deepEqual([...url.searchParams.keys()].sort(),['documentId','projectId','sourceHash','targetId','textHash','unitId']);
 });
+
+test('positioned_row_shows_the_two_observed_excerpts_and_the_printed_original',async()=>{
+ const f=await fixture(),unit=await composed(f),proof=unit.composition.proofs[0];
+ const line='וכך נפתר נושא הניקוז.';
+ const observation=tail=>JSON.stringify({blocks:[{id:proof.target.id,value:['',line+' '+tail]}]});
+ proof.positioned={match:{cell:1,line:{text:line}},support:{raw:[observation('סיור'),observation('וסיור')]}};
+ const render=()=>renderToStaticMarkup(React.createElement(fragmentView.DocumentReadingFragments,{documentId:f.scope.documentId,projectId:f.scope.projectId,units:[unit]}));
+ const html=render(),list=html.match(/<ol[^>]*>(.*?)<\/ol>/su)?.[1];
+ assert.ok(list);assert.equal(list.split(line).length-1,2);assert.ok(!list.includes('סיור'));assert.ok(html.includes('השורה במקור'));
+ proof.positioned.support.raw[1]=observation('וסיור').replace('וכך','כך');
+ assert.ok(!render().includes('<ol'),'Never fill a missing observation with the original');
+});

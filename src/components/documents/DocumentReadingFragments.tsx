@@ -6,7 +6,7 @@ import {Feedback} from '@/components/ui/titanium/Feedback';
 import {documentFragmentUrl} from './documentAiApi';
 import {visualSourceLocationLabel} from '@/utils/visual-source-location';
 import type {VerifiedUnit,RegistryUnit} from '@/utils/visual-source-reading';
-import type {FragmentAddress,FragmentProof} from '@/utils/visual-fragment-contracts';
+import {observedPrintedLine,type FragmentAddress,type FragmentProof,type FragmentResponse} from '@/utils/visual-fragment-contracts';
 
 interface FragmentProps {documentId:string;projectId:string;sourceHash:string;textHash:string;units:VerifiedUnit[];sourceUnits?:Pick<RegistryUnit,'id'|'locations'>[]}
 const addressLabel=(a:FragmentAddress)=>a.kind==='line'?`שורת טקסט ${a.line+1}`:`טבלה ${a.table+1} · שורה ${a.row+1}`;
@@ -18,6 +18,19 @@ function problemLabel(reason:string):string {
 }
 function ConfirmedFragment({proof,url}:{proof:FragmentProof;url:string}) {
     const [open,setOpen]=useState(false),[failed,setFailed]=useState(false);
+    const positioned=proof.positioned;
+    const excerpt=(raw:string)=>{
+        try{
+            const observation:FragmentResponse=JSON.parse(raw);
+            const block=observation.blocks.find(b=>b.id===proof.target.id);
+            return positioned&&block&&observedPrintedLine(block.value,positioned.match.cell,positioned.match.line.text)?.text;
+        }catch{return undefined;}
+    };
+    const evidence=positioned?.support?.raw??(positioned?.raw?[proof.raw[positioned.match.choice],positioned.raw]:proof.raw);
+    let excerpts=positioned?.support?.raw.map(excerpt);
+    if(positioned?.raw){
+        try{excerpts=[excerpt(evidence[0]),JSON.parse(positioned.raw).text];}catch{excerpts=undefined;}
+    }
     return <li>
         <p>{addressLabel(proof.target.address)} — הקריאה אומתה</p>
         <pre className="ti-copy ti-preserve-lines" dir="auto">{Array.isArray(proof.value)?proof.value.join(' | '):proof.value}</pre>
@@ -26,7 +39,11 @@ function ConfirmedFragment({proof,url}:{proof:FragmentProof;url:string}) {
             // Private source pixels are served only after authorization and proof validation.
             // eslint-disable-next-line @next/next/no-img-element
             <img className="ti-source-image" src={url} alt={`אזור המקור: ${addressLabel(proof.target.address)}`} onError={()=>setFailed(true)}/>)}
-        <details><summary>שתי הקריאות של האזור המוגדל</summary>{proof.raw.map((raw,index)=><pre className="ti-copy ti-preserve-lines" dir="auto" key={index}>{raw}</pre>)}</details>
+        {positioned&&<p>השורה במקור <bdi>{positioned.match.line.text}</bdi></p>}
+        {excerpts?.length===2&&excerpts.every(Boolean)&&<ol aria-label="שתי קריאות של השורה במקור">
+            {excerpts.map((text,index)=><li key={index}>קריאה {index+1} · <bdi>{text}</bdi></li>)}
+        </ol>}
+        <details><summary>שתי הקריאות של האזור המוגדל</summary>{evidence.map((raw,index)=><pre className="ti-copy ti-preserve-lines" dir="auto" key={index}>{raw}</pre>)}</details>
     </li>;
 }
 

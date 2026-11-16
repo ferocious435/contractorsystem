@@ -37,3 +37,28 @@ test('physical page coordinates include crop and right-angle rotation', async()=
     assert.ok(line.rect.x>0.20&&line.rect.x<0.28);assert.ok(Math.abs(line.rect.y-0.25)<0.015);
     assert.ok(line.rect.height>line.rect.width);
 });
+
+test('a narrow line includes the full ink and a separately printed terminal mark',async()=>{
+    const {PDFDocument,StandardFonts}=await import('pdf-lib');
+    const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica),page=pdf.addPage([400,300]);
+    page.drawText('Gate on site',{font,size:14,x:50,y:100});
+    page.drawText('.',{font,size:14,x:50+font.widthOfTextAtSize('Gate on site',14),y:100});
+    const lines=await readPositionedPdfLines(Buffer.from(await pdf.save()),1);
+    const match=findPositionedDifference('Gate on site.','Gates on site.',lines,{x:0,y:0,width:1,height:1});
+    assert.ok(match);assert.equal(match.line.text,'Gate on site.');
+    assert.ok(match.line.rect.x<0.125,'Leave visible space before the first glyph');
+});
+
+test('both blind witnesses must read the whole printed line at the same place in the same cell',async()=>{
+    const {matchingPrintedWitnesses}=await import('../src/server/documents/pdf-positioned-text.server.ts');
+    const line=makeLine('עבודות באתר וכך הוחלט.');
+    const match={cell:0,choice:1,line};
+    const chosen=['פתיחה. עבודות באתר וכך הוחלט. סיום.',''];
+    assert.equal(matchingPrintedWitnesses(match,chosen,[chosen,chosen]),true);
+    for(const wrong of [
+        ['פתיחה. עבודות באתר כך הוחלט. סיום.',''],
+        ['פתיחה. סיום.','עבודות באתר וכך הוחלט.'],
+        ['פתיחה. סיום. עבודות באתר וכך הוחלט.',''],
+        ['פתיחה. עבודות באתר וכך הוחלט. עבודות באתר וכך הוחלט.',''],
+    ])assert.equal(matchingPrintedWitnesses(match,chosen,[chosen,wrong]),false);
+});
