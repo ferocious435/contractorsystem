@@ -14,6 +14,7 @@ import {makeTextInput} from '@/utils/document-text-extraction';
 import {assessVisualReading,VISUAL_READING_VERSION,VISUAL_READING_RULES,type OwnedSourceDocument,type ReadingAssembly,type VerifiedUnit,type SourceManifest} from '@/utils/visual-source-reading';
 import type {DocxReadingVerification} from '@/utils/document-source-readiness';
 import {isMsgSource} from '@/utils/msg-source-manifest';
+import {extractMsgSource} from '@/server/documents/msg-source.server';
 import {readMsgContainer} from '@/server/documents/msg-container.server';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -28,7 +29,13 @@ export async function stageDocumentReading({client,document,file,execution}:{cli
     const msgInput=isMsgSource(file,String(document.title||''));
     let cached=scopeMatches&&record(parsed.source_reading)&&parsed.source_reading.version===VISUAL_READING_VERSION
         &&(!msgInput||parsed.source_reading.format==='MSG')&&assessVisualReading(parsed.source_reading,{...document,extracted_text_hash:current.textHash}).complete;
-    if(cached&&msgInput){const physical=await readMsgContainer(file);await execution.checkActive();cached=physical.issues.length===0&&physical.inventoryHash===previousMsg?.inventoryHash;}
+    if(cached&&msgInput){
+        // Only rich text adds derived evidence to the physical container inventory.
+        const enriched=Array.isArray(previousMsg?.inventory)&&previousMsg.inventory.some(part=>record(part)&&part.representation==='RTF');
+        const physical=enriched?await extractMsgSource(file):await readMsgContainer(file);
+        await execution.checkActive();
+        cached=physical.issues.length===0&&physical.inventoryHash===previousMsg?.inventoryHash;
+    }
     let manifest:SourceManifest|undefined;
     const hasComposition=Array.isArray(parsed.source_reading_units)&&parsed.source_reading_units.some(unit=>record(unit)&&unit.composition!==undefined)
         ||previous&&Array.isArray(previous.expectedUnits)&&previous.expectedUnits.some(unit=>record(unit)&&unit.composition!==undefined);

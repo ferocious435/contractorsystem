@@ -7,6 +7,7 @@ import { DOCX_READING_VERSION, hasDocumentBodyText, type DocxReadingVerification
 type ZipFile = { path: string; content: Buffer };
 type ImageRecord = DocxReadingVerification['images'][number];
 export type DocxImageRecord = ImageRecord;
+export type WordLayoutShape={part:string;paragraph:number;name:string;issue:string};
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const VML_NS = 'urn:schemas-microsoft-com:vml';
@@ -62,21 +63,24 @@ function block(record: ImageRecord, text: string) {
 /** Extract DOCX text with a source inventory independent of the AST's image nodes. */
 export async function extractDocxWithImages(
     buffer: Buffer,
-    options: { recognizeImage?:(imageBuffer:Buffer)=>Promise<{text:string;confidence:number}>; onImage?:(value:{record:DocxImageRecord;bytes:Buffer|null})=>void } = {},
+    options: { onLayout?:(bytes:Buffer,shapes:WordLayoutShape[])=>void; recognizeImage?:(imageBuffer:Buffer)=>Promise<{text:string;confidence:number}>; onImage?:(value:{record:DocxImageRecord;bytes:Buffer|null})=>void } = {},
 ): Promise<{ text: string; imageContextText: string; requiresReview: boolean; readingVerification: DocxReadingVerification }> {
     const tools = await packageTools();
     const files = await tools.extractFiles(buffer, () => true, { maxUncompressedBytes: 512 * 1024 * 1024, maxZipEntries: 10000 });
     const byPath = new Map(files.map((file) => [file.path, file.content]));
     const sourceHash = sha256(buffer);
+    const layoutShapes:WordLayoutShape[]=[];
     const verification: DocxReadingVerification = {
         version: DOCX_READING_VERSION, sourceHash, complete: false,
         expectedImageReferences: 0, images: [], issues: [],
     };
     const recognize = options.recognizeImage || extractImageTextLocally;
     const cache = new Map<string, Promise<{ text: string; confidence: number }>>();
+    const legacyIssues:string[]=[];
     const replacements = new Map<string, { record: ImageRecord; text: string }>();
     const normalizedParts = new Map<string, Document>();
-    const issue = (message: string) => { if (!verification.issues.includes(message)) verification.issues.push(message); };
+    const legacyIssue=(message:string)=>{if(!legacyIssues.includes(message))legacyIssues.push(message);};
+    const issue = (message: string,legacy=true) => { if (!verification.issues.includes(message)) verification.issues.push(message);if(legacy)legacyIssue(message); };
     const wordParts = files.filter((file) => BODY_PART.test(file.path));
     if (!wordParts.some((file) => file.path === 'word/document.xml')) throw new Error('DOCX_MAIN_PART_MISSING');
 
@@ -87,6 +91,15 @@ export async function extractDocxWithImages(
         const relationships = relXml ? descendants(tools.parseXmlString(relXml.toString('utf8')), (el) => el.localName === 'Relationship') : [];
         const rels = new Map(relationships.map((el) => [el.getAttribute('Id'), { target: el.getAttribute('Target') || '', external: el.getAttribute('TargetMode') === 'External', type: el.getAttribute('Type') || '' }]));
         const imageId = (el: Element) => el.getAttributeNS(REL_NS, 'embed') || el.getAttributeNS(REL_NS, 'link') || el.getAttributeNS(REL_NS, 'id') || '';
+        const paragraphs=descendants(doc,el=>el.namespaceURI===WORD_NS&&el.localName==='p');
+        const alternatives=new WeakMap<Element,string[]>();
+        const parentParagraph=(node:Node)=>{
+            for(let at:Node|null=node;at;at=at.parentNode){
+                const idx=paragraphs.indexOf(at as Element);
+                if(idx>=0)return idx+1;
+            }
+            return 0;
+        };
         let occurrence = 0;
         const visit = async (node: Node): Promise<void> => {
             for (const child of elements(node)) {
@@ -95,7 +108,19 @@ export async function extractDocxWithImages(
                     const branch = branches.find((el) => el.localName === 'Choice' && descendants(el, (x) => ['blip', 'imagedata'].includes(x.localName)).length)
                         || branches.find((el) => el.localName === 'Fallback') || branches[0];
                     if (branch) {
-                        for (const nested of Array.from(branch.childNodes)) node.insertBefore(nested.cloneNode(true), child);
+                        const branchText=(value:Element)=>descendants(value,el=>el.namespaceURI===WORD_NS&&el.localName==='t').map(el=>el.textContent||'').join(' ').replace(/\s+/g,' ').trim();
+                        if(branches.some(value=>branchText(value)!==branchText(branch)))issue(`${file.path}:ALTERNATE_TEXT_CONTENT_UNVERIFIED`,false);
+                        const fallbackRefs=branches.filter(el=>el!==branch).flatMap(el=>descendants(el,n=>['blip','imagedata'].includes(n.localName)));
+                        for(const nested of Array.from(branch.childNodes)){
+                            const copy=nested.cloneNode(true);
+                            for(const ref of descendants(copy,n=>['blip','imagedata'].includes(n.localName))){
+                                const main=rels.get(imageId(ref));
+                                const ids=fallbackRefs.filter(f=>{const alt=rels.get(imageId(f));return main&&alt&&!main.external&&!alt.external&&main.type===alt.type&&(()=>{const resource=(target:string)=>path.posix.normalize(target.startsWith('/')?target.slice(1):path.posix.join(path.posix.dirname(file.path),target));const a=byPath.get(resource(main.target)),b=byPath.get(resource(alt.target));return !!a&&!!b&&sha256(a)===sha256(b);})();}).map(imageId);
+                                if(ids.length)alternatives.set(ref,[...new Set(ids)]);
+                                if(fallbackRefs.some(f=>!ids.includes(imageId(f))))issue(`${file.path}:ALTERNATE_IMAGE_CONTENT_UNVERIFIED`,false);
+                            }
+                            node.insertBefore(copy,child);
+                        }
                     } else issue(`${file.path}:EMPTY_ALTERNATE_CONTENT`);
                     node.removeChild(child);
                     // Restart this container after resolving one alternate branch.
@@ -103,11 +128,27 @@ export async function extractDocxWithImages(
                 }
                 if (['drawing', 'pict', 'object', 'altChunk'].includes(child.localName)) {
                     const refs = descendants(child, (el) => ['blip', 'imagedata'].includes(el.localName) || Boolean(rels.get(imageId(el))?.type.endsWith('/image')));
-                    const unsupported = ['object', 'altChunk'].includes(child.localName) || (!refs.length && !isStandardHorizontalRule(child));
-                    if (unsupported) issue(`${file.path}:UNSUPPORTED_${child.localName.toUpperCase()}`);
+                    const vmlShapes=descendants(child,el=>el.namespaceURI===VML_NS&&['shape','rect','roundrect','oval','line','polyline','curve','arc','group','image'].includes(el.localName));
+                    const hasUnrepresentedVML=child.localName==='pict'&&!isStandardHorizontalRule(child)&&vmlShapes.some(shape=>shape.localName==='group'||!descendants(shape,el=>el.namespaceURI===VML_NS&&el.localName==='imagedata').length);
+                    const legacyUnsupported=['object','altChunk'].includes(child.localName)||(!refs.length&&!isStandardHorizontalRule(child));
+                    const unsupported = ['object', 'altChunk'].includes(child.localName) || hasUnrepresentedVML || (!refs.length && !isStandardHorizontalRule(child));
+                    if (unsupported) issue(`${file.path}:UNSUPPORTED_${child.localName.toUpperCase()}`,legacyUnsupported);
                     const drawingText = descendants(child, (el) => el.namespaceURI === WORD_NS && el.localName === 't')
                         .map((el) => el.textContent || '');
-                    if (drawingText.some((value) => value.trim())) issue(`${file.path}:DRAWING_TEXT_LAYOUT_UNVERIFIED`);
+                    const boxes=descendants(child,el=>el.namespaceURI===WORD_NS&&el.localName==='txbxContent');
+                    const inlineCaption=child.localName==='pict'&&vmlShapes.length===1&&vmlShapes[0].localName==='shape'&&refs.length===1&&boxes.length===1&&drawingText.length>0
+                        &&descendants(boxes[0],el=>el.namespaceURI===WORD_NS&&el.localName==='t').length===drawingText.length
+                        &&!descendants(boxes[0],el=>el.namespaceURI===WORD_NS&&['tbl','instrText','drawing','pict','del','fldChar','object'].includes(el.localName)).length;
+                    const needsLayout=drawingText.some(value=>value.trim())&&!inlineCaption;
+                    if(needsLayout)issue(`${file.path}:DRAWING_TEXT_LAYOUT_UNVERIFIED`);
+                    if(child.localName!=='pict'&&needsLayout)layoutShapes.push({part:file.path,name:'',paragraph:parentParagraph(child),issue:`${file.path}:DRAWING_TEXT_LAYOUT_UNVERIFIED`});
+                    if(inlineCaption)legacyIssue(`${file.path}:DRAWING_TEXT_LAYOUT_UNVERIFIED`);
+                    if(child.localName==='pict'&&(unsupported||needsLayout)){
+                        const names=elements(child).filter(el=>el.namespaceURI===VML_NS&&el.localName!=='shapetype').map(el=>el.getAttribute('id')||'');
+                        for(const reason of [...(unsupported?['UNSUPPORTED_PICT']:[]),...(needsLayout?['DRAWING_TEXT_LAYOUT_UNVERIFIED']:[])]){
+                            for(const name of names.length?names:[''])layoutShapes.push({part:file.path,name,paragraph:parentParagraph(child),issue:file.path+':'+reason});
+                        }
+                    }
                     const tokens: string[] = [];
                     for (const ref of refs) {
                         const id = imageId(ref);
@@ -116,6 +157,7 @@ export async function extractDocxWithImages(
                         const bytes = byPath.get(resource);
                         const record: ImageRecord = {
                             anchor: `${file.path}#${id || 'missing'}:${++occurrence}`,
+                            paragraph:parentParagraph(child),relationshipId:id,alternateRelationships:alternatives.get(ref),
                             part: file.path, mediaName: resource || id || 'missing-resource', sha256: bytes ? sha256(bytes) : null,
                             status: 'UNREADABLE', confidence: null, numericReviewRequired: false, reason: null,
                         };
@@ -155,6 +197,34 @@ export async function extractDocxWithImages(
         byPath.set(file.path, Buffer.from(tools.serializeXml(doc), 'utf8'));
     }
     verification.expectedImageReferences = verification.images.length;
+    if(options.onLayout&&layoutShapes.length){
+        const passive=new Map(files.map(f=>[f.path,f.content]));
+        let allowed=true;
+        for(const f of files){
+            if(/(?:^|\/)(?:embeddings|activeX|externalLinks)\/|vbaProject|\.(?:bin|svg)$/i.test(f.path)){allowed=false;break;}
+            if(!/\.(?:xml|rels)$/i.test(f.path))continue;
+            const xml=f.content.toString('utf8');
+            if(/<!DOCTYPE|<!ENTITY|\b(?:DDEAUTO|DDE|INCLUDEPICTURE|INCLUDETEXT|LINK)\s+[\"']/i.test(xml)){allowed=false;break;}
+            const fieldDoc=tools.parseXmlString(xml);
+            const safePageField=(value:string)=>/^\s*(?:PAGE|NUMPAGES|SECTIONPAGES)\s*(?:\\\*\s*(?:MERGEFORMAT|Arabic|ROMAN|roman|ALPHABETIC|alphabetic))?\s*$/.test(value);
+            if(descendants(fieldDoc,el=>el.namespaceURI===WORD_NS&&['altChunk','object'].includes(el.localName)).length
+                ||descendants(fieldDoc,el=>el.namespaceURI===WORD_NS&&el.localName==='instrText').some(el=>!safePageField(el.textContent||''))
+                ||descendants(fieldDoc,el=>el.namespaceURI===WORD_NS&&el.localName==='fldSimple').some(el=>!safePageField(el.getAttributeNS(WORD_NS,'instr')||''))){allowed=false;break;}
+            if(!f.path.endsWith('.rels'))continue;
+            const document=tools.parseXmlString(xml);
+            for(const rel of descendants(document,el=>el.localName==='Relationship')){
+                const target=rel.getAttribute('Target')||'';
+                const type=rel.getAttribute('Type')?.split('/').at(-1);
+                if(type==='attachedTemplate'||type==='hyperlink'){rel.parentNode?.removeChild(rel);continue;}
+                if(rel.getAttribute('TargetMode')==='External'||/^(?:[a-z][a-z\d+.-]*:|\\\\|\/\/)/i.test(target)){allowed=false;break;}
+                let internal='';
+                try{const value=decodeURIComponent(target);internal=path.posix.normalize(value.startsWith('/')?value.slice(1):path.posix.join(path.posix.dirname(path.posix.dirname(f.path)),value));}catch{allowed=false;break;}
+                if(!byPath.has(internal)){allowed=false;break;}
+            }
+            passive.set(f.path,Buffer.from(tools.serializeXml(document),'utf8'));
+        }
+        if(allowed)options.onLayout(Buffer.from(tools.zipSync(Object.fromEntries(passive))),layoutShapes);
+    }
 
     // OfficeParser does not place Word review comments. Bind them to their
     // original ranges before rendering; a comment is an annotation, never an instruction.
@@ -172,9 +242,12 @@ export async function extractDocxWithImages(
             const references = matching.filter(a => a.element.localName === 'commentReference');
             const starts = matching.filter(a => a.element.localName === 'commentRangeStart');
             const ends = matching.filter(a => a.element.localName === 'commentRangeEnd');
+            const containingParagraph=(node:Node)=>{for(let at:Node|null=node;at;at=at.parentNode)if((at as Element).namespaceURI===WORD_NS&&(at as Element).localName==='p')return at;return null;};
             const duplicate = comments.filter(c => c.getAttributeNS(WORD_NS, 'id') === id).length !== 1;
             const validRange = starts.length === 0 && ends.length === 0 || starts.length === 1 && ends.length === 1
-                && starts[0].part === ends[0].part && matching.indexOf(starts[0]) < matching.indexOf(ends[0]);
+                && starts[0].part === ends[0].part && matching.indexOf(starts[0]) < matching.indexOf(ends[0])
+                && references.length===1&&matching.indexOf(ends[0])<matching.indexOf(references[0])
+                && containingParagraph(ends[0].element)===containingParagraph(references[0].element);
             if (!/^\d+$/.test(id) || ids.has(id) || duplicate || references.length !== 1 || !validRange
                 || matching.some(a => a.part !== references[0]?.part)
                 || matching.some(a => !['p','r'].includes((a.element.parentNode as Element)?.localName))) {
@@ -207,8 +280,8 @@ export async function extractDocxWithImages(
     }) as OfficeParserAST;
     let ast = await parseNative();
     for (const warning of ast.warnings || []) issue(`PARSER:${warning.code}`);
-    async function renderText(preserveNotes: boolean) {
-        const consumed = new Set<string>(), issues = [...verification.issues];
+    async function renderText(preserveNotes: boolean,legacyContext=false) {
+        const consumed = new Set<string>(), issues = [...(legacyContext?legacyIssues:verification.issues)];
         const replace = (value: string) => {
             let result = value;
             for (const [token, data] of replacements) {
@@ -250,11 +323,11 @@ export async function extractDocxWithImages(
         return { text: text.trim(), issues };
     }
     // Native annotations may improve without changing the image prompt or its verified cache key.
-    const legacy = await renderText(false);
+    const legacy = await renderText(false,true);
     if (commentPart) { placeComments(); ast = await parseNative(); for (const warning of ast.warnings || []) issue(`PARSER:${warning.code}`); }
     const hasNotes = [...normalizedParts.values()].some(doc => descendants(doc, el => el.namespaceURI === WORD_NS
         && ['footnoteReference', 'endnoteReference'].includes(el.localName)).length > 0);
-    const rendered = hasNotes || commentPart ? await renderText(hasNotes) : legacy;
+    const rendered = await renderText(hasNotes);
     verification.issues = rendered.issues;
     verification.complete = verification.images.every((image) => image.status === 'READ' && !image.numericReviewRequired)
         && verification.issues.length === 0;

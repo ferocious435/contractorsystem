@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import {readingUnitInputHash} from '@/server/ai/visual-reading-cache.server';
 import {renderPdfView} from '@/utils/visual-pdf-renderer';
 import {readPositionedPdfLines} from './pdf-positioned-text.server';
-import {validReadingRect,type SourceManifest,type RenderedView} from '@/utils/visual-source-reading';
+import {validReadingRect,type ReadingUnit,type SourceManifest,type RenderedView} from '@/utils/visual-source-reading';
 import type {FragmentRenderer} from '@/utils/visual-fragment-contracts';
 import {readMsgContainer} from './msg-container.server';
 
@@ -16,21 +16,33 @@ const nearInteger=(n:number)=>Math.abs(n-Math.round(n))<1e-7?Math.round(n):n;
 export function createSourceFragmentRenderer(file:Buffer,_title:string,manifest:SourceManifest):FragmentRenderer {
     const sourceHash=manifest.sourceHash,inputs=new Map(manifest.units.map(unit=>{try{return [unit.id,readingUnitInputHash(unit)] as const;}catch{return [unit.id,null] as const;}}));
     let container:ReturnType<typeof readMsgContainer>|undefined;
+    async function pdfSource(unit:ReadingUnit) {
+        const pages=new Set(unit.locations.map(l=>l.page)),page=unit.locations[0]?.page;
+        if(unit.kind!=='PDF_PAGE'||pages.size!==1||!page||!Number.isSafeInteger(page)||page<1)return null;
+        if(manifest.format==='PDF')return pdf(file)?{bytes:file,page}:null;
+        if(manifest.format!=='MSG'||!file.subarray(0,8).equals(Buffer.from('d0cf11e0a1b11ae1','hex')))return null;
+        const ids=new Set(unit.locations.map(l=>l.msgPartId)),id=unit.locations[0]?.msgPartId;
+        if(ids.size!==1||!id)return null;
+        container??=readMsgContainer(file);
+        const extracted=await container,declared=manifest.msg?.parts.find(p=>p.id===id),actual=extracted.parts.find(p=>p.id===id);
+        const bytes=extracted.payloads.get(id);
+        if(!bytes||!declared||!actual||actual.payloadHash!==hash(bytes)||declared.payloadHash!==actual.payloadHash||actual.byteLength!==bytes.length||!pdf(bytes))return null;
+        return {bytes,page};
+    }
     const render:FragmentRenderer=async(unit,rect):Promise<RenderedView|null>=>{
         try{
             if(hash(file)!==sourceHash||!validReadingRect(rect)||!inputs.get(unit.id)||inputs.get(unit.id)!==readingUnitInputHash(unit))return null;
             if(unit.kind==='PDF_PAGE'){
-                const pages=[...new Set(unit.locations.map(l=>l.page))];if(pages.length!==1||!Number.isInteger(pages[0]))return null;
-                let original=file;
-                if(manifest.format==='MSG'){
-                    const ids=[...new Set(unit.locations.map(l=>l.msgPartId))],id=ids[0];
-                    if(ids.length!==1||!id||!file.subarray(0,8).equals(Buffer.from('d0cf11e0a1b11ae1','hex')))return null;
-                    container??=readMsgContainer(file);const extracted=await container,declared=manifest.msg?.parts.find(p=>p.id===id),part=extracted.parts.find(p=>p.id===id),payload=extracted.payloads.get(id);
-                    if(!declared||!part||!payload||part.payloadHash!==hash(payload)||declared.payloadHash!==part.payloadHash||part.byteLength!==payload.length)return null;
-                    original=payload;
-                }else if(manifest.format!=='PDF')return null;
-                if(!pdf(original))return null;
-                return await renderPdfView(original,pages[0]!,rect,{detail:'fragment'});
+                const source=await pdfSource(unit);
+                return source?await renderPdfView(source.bytes,source.page,rect,{detail:'fragment'}):null;
+            }
+            if(manifest.format==='MSG'&&unit.locations.some(location=>location.cadSheetId!==undefined)){
+                container??=readMsgContainer(file);const extracted=await container;
+                for(const location of unit.locations){
+                    const declared=manifest.msg?.parts.find(part=>part.id===location.msgPartId),original=extracted.parts.find(part=>part.id===location.msgPartId),payload=location.msgPartId&&extracted.payloads.get(location.msgPartId);
+                    const sheets=declared?.cadSheets?.filter(sheet=>sheet.id===location.cadSheetId);
+                    if(!declared||!original||!payload||hash(payload)!==original.payloadHash||declared.payloadHash!==original.payloadHash||location.cadSourceHash!==original.payloadHash||sheets?.length!==1||sheets[0].sourceHash!==original.payloadHash||sheets[0].imageHash!==location.cadImageHash)return null;
+                }
             }
             const views=unit.views.filter(v=>v.rect.x<=rect.x+1e-9&&v.rect.y<=rect.y+1e-9
                 &&v.rect.x+v.rect.width>=rect.x+rect.width-1e-9&&v.rect.y+v.rect.height>=rect.y+rect.height-1e-9)
@@ -48,11 +60,9 @@ export function createSourceFragmentRenderer(file:Buffer,_title:string,manifest:
         }catch{return null;}
     };
     render.positionedLines=async unit=>{
-        if(manifest.format!=='PDF'||unit.kind!=='PDF_PAGE'||hash(file)!==sourceHash||!inputs.get(unit.id)||inputs.get(unit.id)!==readingUnitInputHash(unit))return [];
-        const pages=new Set(unit.locations.map(location=>location.page));
-        const page=unit.locations[0]?.page;
-        if(pages.size!==1||!page)return [];
-        return readPositionedPdfLines(file,page).catch(()=>[]);
+        if(hash(file)!==sourceHash||!inputs.get(unit.id)||inputs.get(unit.id)!==readingUnitInputHash(unit))return [];
+        const source=await pdfSource(unit);
+        return source?readPositionedPdfLines(source.bytes,source.page).catch(()=>[]):[];
     };
     return render;
 }

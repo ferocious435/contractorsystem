@@ -2,8 +2,8 @@ export type MsgHeaders = {subject:string;from:string[];to:string[];cc:string[];b
 export type MsgBody = {text:string;textHash:string;complete:boolean;issues:string[]};
 export type MsgPart = {
     id:string;parentId:string|null;kind:'MESSAGE'|'FILE'|'INLINE';name:string;mimeType:string|null;
-    containerPath:string[];payloadHash:string|null;byteLength:number|null;contentId?:string;
-    headers?:MsgHeaders;body?:MsgBody;issues:string[];
+    containerPath:string[];payloadHash:string|null;byteLength:number|null;contentId?:string;archive?:boolean;representation?:'HTML'|'PLAIN'|'RTF';encoding?:'utf8'|'utf16le';sourceStreamHash?:string;sourceStreamByteLength?:number;auxiliaryRole?:'CAD_PLOT_STYLE';bodyComparison?:{plainPartId:string;htmlPartId:string;textEquivalent:boolean;hasTableStructure:boolean;plainTextHash:string;htmlTextHash:string};
+    cadSheets?:Array<{id:string;name:string;sourceHash:string;imageHash:string|null;issues:string[]}>;headers?:MsgHeaders;body?:MsgBody;issues:string[];
 };
 export type MsgPartReading = Omit<MsgPart,'body'> & {
     bodyTextHash:string|null;nativeComplete:boolean;unitIds:string[];textRanges:Array<{start:number;end:number}>;

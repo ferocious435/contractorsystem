@@ -46,7 +46,15 @@ async function walk(storage,entry,part,depth,propertiesHeaderSize=32){
     let body=null;try{body=await text(storage,entry,'1000');}catch{part.issues.push('MSG_BODY_ENCODING');}
     part.body={text:body??'',textHash:hash(body??''),complete:body!==null,issues:body===null?['MSG_BODY_UNCONFIRMED']:[]};
     if(body===null)part.issues.push('MSG_BODY_UNCONFIRMED');
-    let expandedRtf='';const rtf=await stream(storage,entry,'__substg1.0_10090102');if(rtf){if(!rtfTextInSync(properties,propertiesHeaderSize))part.issues.push('MSG_RTF_TEXT_SYNC_UNCONFIRMED');try{expandedRtf=unpackRtf(rtf).toString('latin1');if(/\\(?:pict|object|objdata|shp)\b/.test(expandedRtf))part.issues.push('MSG_RTF_EMBEDDED_CONTENT_UNVERIFIED');}catch(error){part.issues.push(error.message);}}
+    let expandedRtf='',expandedRtfBytes=null;const rtf=await stream(storage,entry,'__substg1.0_10090102');if(rtf){if(!rtfTextInSync(properties,propertiesHeaderSize))part.issues.push('MSG_RTF_TEXT_SYNC_UNCONFIRMED');try{expandedRtfBytes=unpackRtf(rtf);expandedRtf=expandedRtfBytes.toString('latin1');if(/\\(?:pict|object|objdata|shp)\b/.test(expandedRtf))part.issues.push('MSG_RTF_EMBEDDED_CONTENT_UNVERIFIED');}catch(error){part.issues.push(error.message);}}
+    if(expandedRtfBytes){
+        const location=[...part.containerPath,'__substg1.0_10090102:decompressed'],data=expandedRtfBytes;
+        totalBytes+=data.length;if(totalBytes>limits.maxTotalPartBytes)part.issues.push('MSG_TOTAL_PART_BYTES_LIMIT');else{
+            const child=add({id:partId(location),parentId:part.id,kind:'FILE',name:'body.rtf',mimeType:'application/rtf',containerPath:location,payloadHash:hash(data),byteLength:data.length,representation:'RTF',sourceStreamHash:hash(rtf),sourceStreamByteLength:rtf.length,body:{text:body??'',textHash:hash(body??''),complete:rtfTextInSync(properties,propertiesHeaderSize)&&body!==null,issues:[]},issues:[]});
+            if(/\\(?:trowd|cell|row)\b/.test(expandedRtf))child.issues.push('MSG_RTF_TABLE_STRUCTURE_UNVERIFIED');
+            payloads[child.id]=data.toString('base64');
+        }
+    }
     const html=await stream(storage,entry,'__substg1.0_10130102')??await stream(storage,entry,'__substg1.0_1013001F');
     const attachmentNames=Object.keys(entry.storages).filter(name=>name.startsWith('__attach_version1.0_#')).sort(),childParts=[];
     if(!properties||properties.length<24||properties.readUInt32LE(20)!==attachmentNames.length)part.issues.push('MSG_ATTACHMENT_INVENTORY_UNCONFIRMED');
@@ -72,7 +80,14 @@ async function walk(storage,entry,part,depth,propertiesHeaderSize=32){
         }
         if(/<(?:svg|object|embed|canvas|iframe|video|audio)\b|\b(?:background(?:-image)?|list-style(?:-image)?)\s*:[^;}]*\burl\s*\(|<[^>]+\bbackground\s*=/i.test(expandedRtf))part.issues.push('MSG_RTF_EMBEDDED_CONTENT_UNVERIFIED');
     }
-    if(html){const raw=html.toString(entry.streams['__substg1.0_1013001F']?'utf16le':'utf8');for(const match of raw.matchAll(/\bcid:([^\s"'<>]+)/gi))if(!childParts.some(p=>p.contentId===match[1]))part.issues.push('MSG_CID_TARGET_UNAVAILABLE');part.issues.push('MSG_HTML_ALTERNATIVE_UNVERIFIED');}
+    if(html){
+        const unicodeHtml=!entry.streams['__substg1.0_10130102'];
+        for(const [representation,data,encoding,name,mimeType] of [['HTML',html,unicodeHtml?'utf16le':'utf8','body.html','text/html'],...(body!==null?[['PLAIN',await stream(storage,entry,'__substg1.0_1000001F'),'utf16le','body.txt','text/plain']]:[])]){
+            const location=[...part.containerPath,'__substg1.0_'+(representation==='HTML'?(unicodeHtml?'1013001F':'10130102'):'1000001F')];
+            totalBytes+=data.length;if(totalBytes>limits.maxTotalPartBytes){part.issues.push('MSG_TOTAL_PART_BYTES_LIMIT');continue;}
+            const child=add({id:partId(location),parentId:part.id,kind:'FILE',name,mimeType,containerPath:location,payloadHash:hash(data),byteLength:data.length,representation,encoding,issues:[]});payloads[child.id]=data.toString('base64');
+        }
+    }
     for(const name of Object.keys(entry.storages))if(!/^__(?:attach_version1\.0_#|recip_version1\.0_#|nameid_version1\.0$)/.test(name))part.issues.push('MSG_UNKNOWN_STORAGE');
 }
 const root=add({id:partId(['root']),parentId:null,kind:'MESSAGE',name:'message.msg',mimeType:'application/vnd.ms-outlook',containerPath:['root'],payloadHash:sourceHash,byteLength:file.length,issues:[]});
@@ -80,6 +95,6 @@ try{
     if(file.length>limits.maxSourceBytes||file.length<512||(file.length-512)%512||file.subarray(0,8).toString('hex')!=='d0cf11e0a1b11ae1')throw Error('MSG_CONTAINER_INVALID');
     const doc=await new Ole(new Reader(file)).read();await walk(doc,doc._directoryTree.root,root,0);
 }catch(error){issues.push(error.message||'MSG_CONTAINER_UNREADABLE');}
-issues.push(...parts.flatMap(p=>p.issues));const inventory=parts.map(p=>({id:p.id,parentId:p.parentId,kind:p.kind,name:p.name,mimeType:p.mimeType,containerPath:p.containerPath,payloadHash:p.payloadHash,byteLength:p.byteLength,bodyTextHash:p.body?.textHash??null}));
+issues.push(...parts.flatMap(p=>p.issues));const inventory=parts.map(p=>({id:p.id,parentId:p.parentId,kind:p.kind,name:p.name,mimeType:p.mimeType,containerPath:p.containerPath,payloadHash:p.payloadHash,byteLength:p.byteLength,bodyTextHash:p.body?.textHash??null,...(p.contentId?{contentId:p.contentId}:{}),...(p.representation?{representation:p.representation,...(p.encoding?{encoding:p.encoding}:{})}:{}),...(p.sourceStreamHash?{sourceStreamHash:p.sourceStreamHash,sourceStreamByteLength:p.sourceStreamByteLength}:{})}));
 const output=JSON.stringify({sourceHash,rootPartId:root.id,inventoryHash:hash(JSON.stringify(inventory)),parts,payloads,issues:[...new Set(issues)]});
 if(Buffer.byteLength(output)>limits.maxOutputBytes)throw Error('MSG_OUTPUT_LIMIT');process.stdout.write(output);

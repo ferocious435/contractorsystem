@@ -8,6 +8,8 @@ import {prepareDocumentAnalysisInput} from './document-text-extraction';
 import {buildRasterSourceManifest,isRasterSource} from './raster-source-manifest';
 import {buildXlsxSourceManifest,isXlsxSource} from './xlsx-source-manifest';
 import {buildMsgSourceManifest,isMsgSource} from './msg-source-manifest';
+import {renderWordShapes,type WordShape} from '@/server/documents/word-layout.server';
+import {renderCadSheets} from '@/server/documents/cad-source.server';
 import {extractMsgSource} from '@/server/documents/msg-source.server';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
@@ -15,9 +17,10 @@ function finish(value:Omit<SourceManifest,'manifestHash'>):SourceManifest {
     const units=value.units.map(u=>({...u,views:u.views.map(v=>({id:v.id,sha256:v.sha256,width:v.width,height:v.height,rect:v.rect}))}));
     return {...value,manifestHash:hash(JSON.stringify({...value,units}))};
 }
-async function word(file:Buffer):Promise<SourceManifest> {
+export async function buildWordSourceManifest(file:Buffer,options:{renderLayout?:typeof renderWordShapes}={}):Promise<SourceManifest> {
+    let layout:{bytes:Buffer;shapes:WordShape[]}|undefined;
     const captured:Array<{record:DocxImageRecord;bytes:Buffer|null}>=[];
-    const result=await extractDocxWithImages(file,{recognizeImage:async()=>({text:'',confidence:0}),onImage:value=>captured.push(value)});
+    const result=await extractDocxWithImages(file,{recognizeImage:async()=>({text:'',confidence:0}),onImage:value=>captured.push(value),onLayout:(bytes,shapes)=>{layout={bytes,shapes};}});
     const units:ReadingUnit[]=[],issues=[...result.readingVerification.issues],byAnchor=new Map<string,ReadingUnit>();
     for(const {record,bytes} of captured){
         if(!bytes||!record.sha256||!['OCR_NO_READABLE_BODY',null].includes(record.reason)){
@@ -56,7 +59,36 @@ async function word(file:Buffer):Promise<SourceManifest> {
     }
     if(start<result.text.length)assembly.push({kind:'native',text:result.text.slice(start)});
     for(const unit of units)if(!assembly.some(v=>v.kind==='unit'&&v.unitId===unit.id))issues.push(unit.id+':IMAGE_LOCATION_NOT_ASSEMBLED');
-    return finish({sourceHash:hash(file),format:'DOCX',nativeText:result.text,nativeVerification:result.readingVerification,units,issues,assembly});
+    // This is a passive, separate PDF. Existing image bytes, ids and prompt context stay unchanged.
+    const resolved=new Set<string>();
+    if(layout){
+        try{
+            const rendered=await (options.renderLayout??renderWordShapes)(layout.bytes,layout.shapes);
+            const placed=new Set<WordShape>();
+            for(const page of rendered.pages){
+                const unit:ReadingUnit={id:`docx-layout:${page.page}`,kind:'DOCX_IMAGE',locations:page.anchors.map(a=>({part:a.part,paragraph:a.paragraph,anchor:`${a.part}#${a.name}`,mediaName:'word-layout.pdf',page:page.page})),views:[],contextText:'Word original page with anchored drawing; annotation text remains an annotation.',localText:''};
+                try{
+                    const view=await renderPdfView(rendered.file,page.page,undefined);
+                    unit.views.push(view);
+                    for(const crop of planPageViews(view.width*2,view.height*2,16_000_000,32))unit.views.push(await renderPdfView(rendered.file,page.page,crop));
+                    units.push(unit);assembly.push({kind:'unit',unitId:unit.id});
+                    for(const a of page.anchors)placed.add(a);
+                }catch{issues.push(`WORD_LAYOUT_PAGE_RENDER_FAILED:${page.page}`);}
+            }
+            for(const reason of new Set(layout.shapes.map(a=>a.issue))){
+                if(layout.shapes.filter(a=>a.issue===reason).every(a=>placed.has(a)&&!rendered.unplaced.includes(a)))resolved.add(reason);
+            }
+            for(const shape of rendered.unplaced)issues.push(`${shape.part}#${shape.name||'unnamed'}:WORD_SHAPE_LOCATION_UNVERIFIED`);
+        }catch{issues.push('WORD_LAYOUT_UNAVAILABLE');}
+    }
+    const remainingIssues=issues.filter(issue=>!resolved.has(issue));
+    let nativeText=result.text;
+    for(const reason of resolved){
+        nativeText=nativeText.replaceAll(`[DOCX_ISSUE ${reason}]`,'');
+        for(const part of assembly)if(part.kind==='native')part.text=part.text.replaceAll(`[DOCX_ISSUE ${reason}]`,'');
+    }
+    const nativeVerification={...result.readingVerification,issues:result.readingVerification.issues.filter(reason=>!resolved.has(reason))};
+    return finish({sourceHash:hash(file),format:'DOCX',nativeText,nativeVerification,units,issues:[...new Set(remainingIssues)],assembly});
 }
 async function pdf(file:Buffer):Promise<SourceManifest> {
     const PDFParse=await loadPdfParse(),parser=new PDFParse({data:Uint8Array.from(file)});
@@ -82,8 +114,8 @@ async function pdf(file:Buffer):Promise<SourceManifest> {
 export async function buildVisualSourceManifest(file:Buffer,title:string):Promise<SourceManifest> {
     const before=hash(file);
     const result=file.subarray(0,1024).toString('latin1').includes('%PDF-')?await pdf(file)
-        :/\.docx(?:$|[?#])/iu.test(title)?await word(file):isRasterSource(file,title)?await buildRasterSourceManifest(file,title)
-        :isXlsxSource(file,title)?await buildXlsxSourceManifest(file):isMsgSource(file,title)?await buildMsgSourceManifest(file,title,{extract:extractMsgSource,buildPart:buildVisualSourceManifest}):await (async()=>{
+        :/\.docx(?:$|[?#])/iu.test(title)?await buildWordSourceManifest(file):isRasterSource(file,title)?await buildRasterSourceManifest(file,title)
+        :isXlsxSource(file,title)?await buildXlsxSourceManifest(file):isMsgSource(file,title)?await buildMsgSourceManifest(file,title,{extract:extractMsgSource,buildPart:buildVisualSourceManifest,renderCadSheets}):await (async()=>{
             const native=await prepareDocumentAnalysisInput(file,title);
             if(native.kind!=='text')throw Error('SOURCE_VISUAL_FORMAT_UNSUPPORTED');
             return finish({sourceHash:before,format:'TEXT',nativeText:native.extractedText,nativeVerification:native.readingVerification,

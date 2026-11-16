@@ -148,3 +148,10 @@ test('unsynchronized_body_is_described_as_a_version_gap_not_an_embedded_object',
  const html=renderToStaticMarkup(React.createElement(sourceView.DocumentSourceView,{document,fullText:assembled.text}));
  assert.match(html,/גרסאות/);assert.doesNotMatch(html,/אובייקט מוטמע/);
 });
+
+import {archiveFixture} from './fixtures/archive-fixtures.mjs';
+test('ordinary_attachment_endpoint_reopens_zip_children_by_opaque_id',async()=>{
+ const zip=archiveFixture([{name:'same.pdf',bytes:pdf},{name:'same.pdf',bytes:Buffer.from('%PDF-1.7 Second original')}]),source=msgFixture({html:'<p>Alternative text</p>',attachments:[{name:'parts.zip',data:zip}]}),container=await readMsgContainer(source),document={...doc,content_hash:digest(source)};
+ globalThis.__msgAccessDb=database(document,{bytes:source});const matches=container.parts.filter(p=>p.name==='same.pdf');assert.equal(matches.length,2);
+ for(const part of [...matches,...container.parts.filter(p=>p.representation)]){const response=await attachmentRoute.GET(attachmentRequest({sourceHash:document.content_hash,partId:part.id}));assert.equal(response.status,200);assert.deepEqual(Buffer.from(await response.arrayBuffer()),container.payloads.get(part.id));if(part.representation)assert.match(response.headers.get('content-disposition'),/^attachment;/);}
+});

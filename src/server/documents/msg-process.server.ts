@@ -10,12 +10,12 @@ export function msgLimits(options:MsgReadOptions={}):MsgLimits {
         return [key,typeof value==='number'&&Number.isSafeInteger(value)?Math.max(min,Math.min(max,value)):max];
     })) as MsgLimits;
 }
-export async function runMsgProcess(file:Buffer,command:{executable:string;args:(input:string,config:string)=>string[];config?:unknown},options:MsgReadOptions={}):Promise<string> {
+export async function runMsgProcess(file:Buffer,command:{inputName?:'source.msg'|'source.rtf';executable:string;args:(input:string,config:string)=>string[];config?:unknown},options:MsgReadOptions={}):Promise<string> {
     options.signal?.throwIfAborted();const limits=msgLimits(options);
     if(file.length>limits.maxSourceBytes)throw Error('MSG_SOURCE_LIMIT');
     const tempRoot=await realpath(os.tmpdir()),directory=await mkdtemp(path.join(tempRoot,'contractorsystem-msg-'));
     try {
-        const input=path.join(directory,'source.msg'),config=path.join(directory,'reader.json');
+        const input=path.join(directory,command.inputName??'source.msg'),config=path.join(directory,'reader.json');
         await writeFile(input,file,{flag:'wx'});await writeFile(config,JSON.stringify(command.config??{}),{flag:'wx'});options.signal?.throwIfAborted();
         return await new Promise<string>((resolve,reject)=>{
             const child=spawn(command.executable,command.args(input,config),{cwd:directory,windowsHide:true,stdio:['ignore','pipe','pipe']});

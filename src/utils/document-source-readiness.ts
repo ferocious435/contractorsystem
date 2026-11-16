@@ -22,6 +22,9 @@ export type DocxReadingVerification = {
         anchor: string;
         part: string;
         mediaName: string;
+        paragraph?:number;
+        relationshipId?:string;
+        alternateRelationships?:string[];
         sha256: string | null;
         status: 'READ' | 'REQUIRES_REVIEW' | 'UNREADABLE';
         confidence: number | null;

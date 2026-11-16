@@ -4,7 +4,7 @@ const object=(v:unknown):v is Record<string,unknown>=>Boolean(v)&&typeof v==='ob
 const hash=(v:unknown):v is string=>typeof v==='string'&&/^[a-f\d]{64}$/i.test(v);
 const strings=(v:unknown):v is string[]=>Array.isArray(v)&&v.every(s=>typeof s==='string');
 export function msgInventoryPart(part:Record<string,unknown>):MsgInventoryPart {
-    return {id:part.id,parentId:part.parentId,kind:part.kind,name:part.name,mimeType:part.mimeType,containerPath:Array.isArray(part.containerPath)?[...part.containerPath]:part.containerPath,payloadHash:part.payloadHash,byteLength:part.byteLength,bodyTextHash:object(part.body)?part.body.textHash:part.bodyTextHash??null} as MsgInventoryPart;
+    return {id:part.id,parentId:part.parentId,kind:part.kind,name:part.name,mimeType:part.mimeType,containerPath:Array.isArray(part.containerPath)?[...part.containerPath]:part.containerPath,payloadHash:part.payloadHash,byteLength:part.byteLength,bodyTextHash:object(part.body)?part.body.textHash:part.bodyTextHash??null,...(part.contentId?{contentId:part.contentId}:{}),...(part.representation?{representation:part.representation,...(part.encoding?{encoding:part.encoding}:{})}:{}),...(part.sourceStreamHash?{sourceStreamHash:part.sourceStreamHash,sourceStreamByteLength:part.sourceStreamByteLength}:{}),...(part.auxiliaryRole?{auxiliaryRole:part.auxiliaryRole}:{}),...(part.archive?{archive:true}:{})} as MsgInventoryPart;
 }
 export function assessMsgReadingProof(proof:unknown,source:{sourceHash:string;text:string;expectedUnits:RegistryUnit[]}):{complete:boolean;issues:string[]} {
     const issues:string[]=[],invalid=(reason:string)=>({complete:false,issues:[...issues,reason]});
@@ -41,11 +41,11 @@ export function assessMsgReadingProof(proof:unknown,source:{sourceHash:string;te
     for(const part of parts.values()){
         const visited=new Set<string>();let current=part;
         while(current.parentId!==null){
-            if(typeof current.parentId!=='string'||visited.has(current.parentId)||visited.size>=4)return invalid('MSG_PART_PARENT_INVALID');visited.add(current.parentId);
-            const parent=parts.get(current.parentId);if(!parent||parent.kind!=='MESSAGE')return invalid('MSG_PART_PARENT_INVALID');current=parent;
+            if(typeof current.parentId!=='string'||visited.has(current.parentId)||visited.size>=12)return invalid('MSG_PART_PARENT_INVALID');visited.add(current.parentId);
+            const parent=parts.get(current.parentId);if(!parent||parent.kind!=='MESSAGE'&&parent.archive!==true||!strings(parent.containerPath)||!strings(current.containerPath)||current.containerPath.length!==parent.containerPath.length+1||!parent.containerPath.every((value,index)=>value===(current.containerPath as string[])[index]))return invalid('MSG_PART_PARENT_INVALID');current=parent;
         }
         if(current.id!==root.id)return invalid('MSG_PART_OUTSIDE_MESSAGE');
-        if(part.kind==='MESSAGE'&&[...parts.values()].some(p=>p.parentId===part.id&&p.status!=='READ')&&part.status==='READ')return invalid('MSG_MESSAGE_STATUS_INVALID');
+        if((part.kind==='MESSAGE'||part.archive===true)&&[...parts.values()].some(p=>p.parentId===part.id&&p.status!=='READ')&&part.status==='READ')return invalid('MSG_MESSAGE_STATUS_INVALID');
     }
     if(source.expectedUnits.some(u=>!assignedUnits.has(u.id)))return invalid('MSG_UNIT_OUTSIDE_INVENTORY');
     issues.push(...proof.issues);return {complete:issues.length===0,issues:[...new Set(issues)]};

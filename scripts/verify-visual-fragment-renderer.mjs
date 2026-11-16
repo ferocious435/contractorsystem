@@ -50,3 +50,16 @@ test('the_pdf_factory_renders_its_own_page_and_rejects_another_source',async()=>
  const image=await draw(f.unit,{x:0.4,y:0.4,width:0.2,height:0.2});assert.ok(image);const {data}=await sharp(image.bytes).removeAlpha().raw().toBuffer({resolveWithObject:true});assert.ok(data[0]>240&&data[1]<20&&data[2]<20);
  assert.equal(await draw({...f.unit,locations:[{page:2}]},{x:0.4,y:0.4,width:0.2,height:0.2}),null);
 });
+test('a positioned line in a nested attachment is bound to the original PDF bytes',async()=>{
+ const {msgFixture}=await import('./fixtures/msg-fixtures.mjs');
+ const {readMsgContainer}=await import('../src/server/documents/msg-container.server.ts');
+ const pdf=await PDFDocument.create();pdf.addPage([300,300]).drawText('Valve above ground',{x:30,y:160,size:14});
+ const file=msgFixture({attachments:[{name:'detail.pdf',data:Buffer.from(await pdf.save())}]});
+ const parts=(await readMsgContainer(file)).parts,part=parts.find(x=>x.name==='detail.pdf'),f=await fragmentReadingFixture();
+ const unit={...f.unit,locations:[{page:1,msgPartId:part.id}]};
+ const manifest={...f.manifest,units:[unit],format:'MSG',sourceHash:digest(file),msg:{parts}};
+ const draw=renderer(file,'mail.msg',manifest);
+ assert.ok((await draw.positionedLines(unit)).some(line=>line.text==='Valve above ground'));
+ const swapped={...manifest,msg:{parts:parts.map(p=>p===part?{...p,payloadHash:'0'.repeat(64)}:p)}};
+ assert.deepEqual(await renderer(file,'mail.msg',swapped).positionedLines(unit),[]);
+});

@@ -186,3 +186,20 @@ test('additional_image_relationships_inside_a_drawing_cannot_be_silently_omitted
  assert.equal(r.readingVerification.expectedImageReferences,2);
  assert.equal(r.requiresReview,true);assert.ok(r.readingVerification.images.some(x=>x.reason==='IMAGE_FORMAT_UNSUPPORTED'));
 });
+
+
+test('a labelled VML image binds visible text and a comment to its source paragraph',async()=>{
+ const picture='<w:p><w:r><w:pict><v:shape><v:imagedata r:id="rId1"/><v:textbox><w:txbxContent>'+paragraph('Access from eastern gate')+'</w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>';
+ const body=paragraph('Before')+picture+'<w:p><w:commentRangeStart w:id="7"/><w:r><w:t>Site gate</w:t></w:r><w:commentRangeEnd w:id="7"/><w:r><w:commentReference w:id="7"/></w:r></w:p>';
+ const note='<w:comment w:id="7" w:author="Reviewer">'+paragraph('Confirm gate location')+'</w:comment>';
+ const r=await read(docx({body,parts:{'word/comments.xml':note}}));
+ assert.deepEqual(r.readingVerification.issues,[]);assert.match(r.text,/Access from eastern gate/);
+ assert.match(r.text,/Confirm gate location/);assert.equal(r.readingVerification.images[0].paragraph,2);
+ const orphan=await read(docx({body:body.replace('<w:commentRangeStart w:id="7"/>',''),parts:{'word/comments.xml':note}}));
+ assert.ok(orphan.readingVerification.issues.includes('word/comments.xml:COMMENT_ANCHOR_UNVERIFIED:7'));
+});
+test('alternate Word branches keep both relationship ids for equivalent image bytes',async()=>{
+ const fallback=alternate().replace('<v:imagedata r:id="rId1"','<v:imagedata r:id="alternateId"');
+ const r=await read(docx({body:fallback,rels:[['rId1','media/image1.png'],['alternateId','media/image1.png']]}));
+ assert.equal(r.readingVerification.images.length,1);assert.deepEqual(r.readingVerification.images[0].alternateRelationships,['alternateId']);
+});

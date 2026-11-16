@@ -1,5 +1,6 @@
 import 'server-only';import {createHash} from 'node:crypto';import path from 'node:path';
 import type {MsgExtraction,MsgPart,MsgReadOptions} from '@/utils/msg-source-types';
+import {expandMsgArchives} from './archive-parts.server';
 import {runMsgProcess,msgLimits} from './msg-process.server';
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 const record=(value:unknown):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
@@ -17,7 +18,7 @@ export async function readMsgContainer(file:Buffer,options:MsgReadOptions={}):Pr
             if(!/^[a-f\d]{64}$/.test(id)||typeof value!=='string')throw Error('MSG_PAYLOAD_INVALID');const bytes=Buffer.from(value,'base64'),part=raw.parts.find(p=>record(p)&&p.id===id);
             if(!part||part.payloadHash!==hash(bytes)||part.byteLength!==bytes.length)throw Error('MSG_PAYLOAD_CHANGED');payloads.set(id,bytes);
         }
-        payloads.set(raw.rootPartId,file);return {...raw,payloads} as MsgExtraction;
+        payloads.set(raw.rootPartId,file);return await expandMsgArchives({...raw,payloads} as MsgExtraction,msgLimits(options),options.signal);
     } catch(error) {
         if(error instanceof Error&&error.name==='AbortError')throw error;
         return failedMsgExtraction(file,error instanceof Error&&error.message.startsWith('MSG_')?error.message.split('\n')[0]:'MSG_CONTAINER_UNREADABLE');
