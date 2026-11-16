@@ -12,7 +12,7 @@ export type Rect = {x:number;y:number;width:number;height:number};
 export type Coverage = {complete:boolean;missingUnitIds:string[];verifiedUnitIds:string[];issues:string[]};
 export type NumericCheck = {matched:boolean;unresolved:string[]};
 export type ReadingScope = {ownerId:string;projectId:string;documentId:string;sourceHash:string};
-export type ReadingLocation = {paragraph?:number;page?:number;part?:string;anchor?:string;mediaName?:string;sheet?:string;cellRange?:string;frame?:number;msgPartId?:string;msgPartName?:string;cadSheetId?:string;cadSourceHash?:string;cadImageHash?:string};
+export type ReadingLocation = {paragraph?:number;sourceRect?:Rect;wordLayoutProof?:{version:string;sourceHash:string;visibleHash:string;page:number;rect:Rect;original:{sha256:string;width:number;height:number};removed:{sha256:string;width:number;height:number};shape:{widthPoints:number;heightPoints:number;rotationDegrees:number}};page?:number;part?:string;anchor?:string;mediaName?:string;sheet?:string;cellRange?:string;frame?:number;msgPartId?:string;msgPartName?:string;cadSheetId?:string;cadSourceHash?:string;cadImageHash?:string};
 export type RenderedView = {id:string;sha256:string;bytes:Uint8Array;width:number;height:number;rect:Rect};
 export type ReadingUnit = {
     id:string;kind:'PDF_PAGE'|'DOCX_IMAGE'|'IMAGE_FRAME'|'XLSX_IMAGE';locations:ReadingLocation[];views:RenderedView[];

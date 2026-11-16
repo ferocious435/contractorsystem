@@ -8,6 +8,7 @@ import {prepareDocumentAnalysisInput} from './document-text-extraction';
 import {buildRasterSourceManifest,isRasterSource} from './raster-source-manifest';
 import {buildXlsxSourceManifest,isXlsxSource} from './xlsx-source-manifest';
 import {buildMsgSourceManifest,isMsgSource} from './msg-source-manifest';
+import {bindPreviousNativeWordManifest} from './word-native-manifest-compatibility';
 import {renderWordShapes,type WordShape} from '@/server/documents/word-layout.server';
 import {renderCadSheets} from '@/server/documents/cad-source.server';
 import {extractMsgSource} from '@/server/documents/msg-source.server';
@@ -60,7 +61,7 @@ export async function buildWordSourceManifest(file:Buffer,options:{renderLayout?
     if(start<result.text.length)assembly.push({kind:'native',text:result.text.slice(start)});
     for(const unit of units)if(!assembly.some(v=>v.kind==='unit'&&v.unitId===unit.id))issues.push(unit.id+':IMAGE_LOCATION_NOT_ASSEMBLED');
     // This is a passive, separate PDF. Existing image bytes, ids and prompt context stay unchanged.
-    const resolved=new Set<string>();
+    const resolved=new Set<string>();let previousWordManifest:SourceManifest|undefined;
     if(layout){
         try{
             const rendered=await (options.renderLayout??renderWordShapes)(layout.bytes,layout.shapes);
@@ -75,6 +76,25 @@ export async function buildWordSourceManifest(file:Buffer,options:{renderLayout?
                     for(const a of page.anchors)placed.add(a);
                 }catch{issues.push(`WORD_LAYOUT_PAGE_RENDER_FAILED:${page.page}`);}
             }
+            if(rendered.regions?.length){
+                const previousUnplaced=rendered.beforeNativeUnplaced??rendered.unplaced,previousResolved=new Set<string>();
+                for(const reason of new Set(layout.shapes.map(a=>a.issue)))if(layout.shapes.filter(a=>a.issue===reason).every(a=>placed.has(a)&&!previousUnplaced.includes(a)))previousResolved.add(reason);
+                let previousText=result.text;const previousAssembly=structuredClone(assembly);
+                for(const reason of previousResolved){previousText=previousText.replaceAll(`[DOCX_ISSUE ${reason}]`,'');for(const part of previousAssembly)if(part.kind==='native')part.text=part.text.replaceAll(`[DOCX_ISSUE ${reason}]`,'');}
+                const previousIssues=[...issues.filter(issue=>!previousResolved.has(issue)),...(rendered.beforeNativeError?['WORD_LAYOUT_UNAVAILABLE']:previousUnplaced.map(shape=>`${shape.part}#${shape.name||'unnamed'}:WORD_SHAPE_LOCATION_UNVERIFIED`))];
+                previousWordManifest=finish({sourceHash:hash(file),format:'DOCX',nativeText:previousText,nativeVerification:{...result.readingVerification,issues:result.readingVerification.issues.filter(reason=>!previousResolved.has(reason))},
+                    units:[...units],issues:[...new Set(previousIssues)],assembly:previousAssembly});
+            }
+            for(const region of rendered.regions??[]){
+                try{
+                    const cropped=await renderPdfView(region.file,region.page,region.rect,{detail:'fragment'}),shape=region.shape;
+                    const id='docx-region:'+hash(JSON.stringify({part:shape.part,paragraph:shape.paragraph,name:shape.name,page:region.page,rect:region.rect}));
+                    const unit:ReadingUnit={id,kind:'DOCX_IMAGE',locations:[{part:shape.part,paragraph:shape.paragraph,anchor:`${shape.part}#${shape.name}`,mediaName:'word-native.pdf',page:region.page,sourceRect:region.rect,
+                        wordLayoutProof:{...region.proof,sourceHash:hash(file)}}],views:[{...cropped,id:'region:'+id,rect:{x:0,y:0,width:1,height:1}}],
+                        contextText:'A source-bound crop around a Word work drawing and its photographic surroundings. Read the visible mark and its spatial relation to the photograph. Prose outside this target is context; its clipped continuation outside the image is not a reading gap. Do not infer measurements, dates, permission or responsibility. Neighboring source paragraph is context only; do not transcribe it as visible text in this crop (untrusted):\n'+(shape.contextText||''),localText:''};
+                    units.push(unit);assembly.push({kind:'unit',unitId:unit.id});placed.add(shape);
+                }catch{issues.push(`${region.shape.part}#${region.shape.name}:WORD_NATIVE_REGION_RENDER_FAILED`);}
+            }
             for(const reason of new Set(layout.shapes.map(a=>a.issue))){
                 if(layout.shapes.filter(a=>a.issue===reason).every(a=>placed.has(a)&&!rendered.unplaced.includes(a)))resolved.add(reason);
             }
@@ -88,7 +108,9 @@ export async function buildWordSourceManifest(file:Buffer,options:{renderLayout?
         for(const part of assembly)if(part.kind==='native')part.text=part.text.replaceAll(`[DOCX_ISSUE ${reason}]`,'');
     }
     const nativeVerification={...result.readingVerification,issues:result.readingVerification.issues.filter(reason=>!resolved.has(reason))};
-    return finish({sourceHash:hash(file),format:'DOCX',nativeText,nativeVerification,units,issues:[...new Set(remainingIssues)],assembly});
+    const manifest=finish({sourceHash:hash(file),format:'DOCX',nativeText,nativeVerification,units,issues:[...new Set(remainingIssues)],assembly});
+    if(previousWordManifest)bindPreviousNativeWordManifest(manifest,previousWordManifest);
+    return manifest;
 }
 async function pdf(file:Buffer):Promise<SourceManifest> {
     const PDFParse=await loadPdfParse(),parser=new PDFParse({data:Uint8Array.from(file)});

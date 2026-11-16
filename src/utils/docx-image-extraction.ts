@@ -7,7 +7,7 @@ import { DOCX_READING_VERSION, hasDocumentBodyText, type DocxReadingVerification
 type ZipFile = { path: string; content: Buffer };
 type ImageRecord = DocxReadingVerification['images'][number];
 export type DocxImageRecord = ImageRecord;
-export type WordLayoutShape={part:string;paragraph:number;name:string;issue:string};
+export type WordLayoutShape={part:string;paragraph:number;name:string;issue:string;nativeEligible?:boolean;contextText?:string};
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const VML_NS = 'urn:schemas-microsoft-com:vml';
@@ -100,6 +100,16 @@ export async function extractDocxWithImages(
             }
             return 0;
         };
+        const nativeNames=new Set(descendants(doc,el=>el.localName==='AlternateContent').flatMap(ac=>{
+            const properties=descendants(ac,el=>el.namespaceURI==='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'&&el.localName==='docPr');
+            const pictures=descendants(ac,el=>el.namespaceURI===WORD_NS&&el.localName==='pict');
+            const shapes=pictures.length===1?elements(pictures[0]).filter(el=>el.namespaceURI===VML_NS&&el.localName!=='shapetype'):[];
+            const geometry=descendants(ac,el=>el.namespaceURI==='http://schemas.openxmlformats.org/drawingml/2006/main'&&el.localName==='prstGeom');
+            const anchors=descendants(ac,el=>el.namespaceURI==='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'&&el.localName==='anchor');
+            if(properties.length!==1||shapes.length!==1||geometry.length!==1||anchors.length!==1||!['roundRect','rightArrow'].includes(geometry[0].getAttribute('prst')||'')
+                ||!descendants(anchors[0],el=>el.localName==='wrapNone').length||descendants(ac,el=>['blip','imagedata','t','txbxContent'].includes(el.localName)).length)return [];
+            const name=shapes[0].getAttribute('id')||'';return name&&name===properties[0].getAttribute('name')?[name]:[];
+        }));
         let occurrence = 0;
         const visit = async (node: Node): Promise<void> => {
             for (const child of elements(node)) {
@@ -146,7 +156,15 @@ export async function extractDocxWithImages(
                     if(child.localName==='pict'&&(unsupported||needsLayout)){
                         const names=elements(child).filter(el=>el.namespaceURI===VML_NS&&el.localName!=='shapetype').map(el=>el.getAttribute('id')||'');
                         for(const reason of [...(unsupported?['UNSUPPORTED_PICT']:[]),...(needsLayout?['DRAWING_TEXT_LAYOUT_UNVERIFIED']:[])]){
-                            for(const name of names.length?names:[''])layoutShapes.push({part:file.path,name,paragraph:parentParagraph(child),issue:file.path+':'+reason});
+                            for(const name of names.length?names:['']){
+                                const shape=elements(child).find(el=>el.namespaceURI===VML_NS&&el.localName!=='shapetype');
+                                const top=elements(child).filter(el=>el.namespaceURI===VML_NS&&el.localName!=='shapetype');
+                                const nativeEligible=nativeNames.has(name)&&file.path==='word/document.xml'&&top.length===1&&Boolean(name)&&!refs.length&&!drawingText.some(t=>t.trim())
+                                    &&Boolean(shape&&(['roundrect'].includes(shape.localName)||shape.localName==='shape'&&shape.getAttribute('type')==='#_x0000_t13'));
+                                const paragraph=parentParagraph(child),previous=paragraphs[paragraph-2];
+                                const contextText=previous?descendants(previous,el=>el.namespaceURI===WORD_NS&&el.localName==='t').map(el=>el.textContent||'').join('').slice(0,4000):'';
+                                layoutShapes.push({part:file.path,name,paragraph,issue:file.path+':'+reason,nativeEligible,contextText});
+                            }
                         }
                     }
                     const tokens: string[] = [];
@@ -198,32 +216,8 @@ export async function extractDocxWithImages(
     }
     verification.expectedImageReferences = verification.images.length;
     if(options.onLayout&&layoutShapes.length){
-        const passive=new Map(files.map(f=>[f.path,f.content]));
-        let allowed=true;
-        for(const f of files){
-            if(/(?:^|\/)(?:embeddings|activeX|externalLinks)\/|vbaProject|\.(?:bin|svg)$/i.test(f.path)){allowed=false;break;}
-            if(!/\.(?:xml|rels)$/i.test(f.path))continue;
-            const xml=f.content.toString('utf8');
-            if(/<!DOCTYPE|<!ENTITY|\b(?:DDEAUTO|DDE|INCLUDEPICTURE|INCLUDETEXT|LINK)\s+[\"']/i.test(xml)){allowed=false;break;}
-            const fieldDoc=tools.parseXmlString(xml);
-            const safePageField=(value:string)=>/^\s*(?:PAGE|NUMPAGES|SECTIONPAGES)\s*(?:\\\*\s*(?:MERGEFORMAT|Arabic|ROMAN|roman|ALPHABETIC|alphabetic))?\s*$/.test(value);
-            if(descendants(fieldDoc,el=>el.namespaceURI===WORD_NS&&['altChunk','object'].includes(el.localName)).length
-                ||descendants(fieldDoc,el=>el.namespaceURI===WORD_NS&&el.localName==='instrText').some(el=>!safePageField(el.textContent||''))
-                ||descendants(fieldDoc,el=>el.namespaceURI===WORD_NS&&el.localName==='fldSimple').some(el=>!safePageField(el.getAttributeNS(WORD_NS,'instr')||''))){allowed=false;break;}
-            if(!f.path.endsWith('.rels'))continue;
-            const document=tools.parseXmlString(xml);
-            for(const rel of descendants(document,el=>el.localName==='Relationship')){
-                const target=rel.getAttribute('Target')||'';
-                const type=rel.getAttribute('Type')?.split('/').at(-1);
-                if(type==='attachedTemplate'||type==='hyperlink'){rel.parentNode?.removeChild(rel);continue;}
-                if(rel.getAttribute('TargetMode')==='External'||/^(?:[a-z][a-z\d+.-]*:|\\\\|\/\/)/i.test(target)){allowed=false;break;}
-                let internal='';
-                try{const value=decodeURIComponent(target);internal=path.posix.normalize(value.startsWith('/')?value.slice(1):path.posix.join(path.posix.dirname(path.posix.dirname(f.path)),value));}catch{allowed=false;break;}
-                if(!byPath.has(internal)){allowed=false;break;}
-            }
-            passive.set(f.path,Buffer.from(tools.serializeXml(document),'utf8'));
-        }
-        if(allowed)options.onLayout(Buffer.from(tools.zipSync(Object.fromEntries(passive))),layoutShapes);
+        const passive=await prepareWordLayoutCopy(buffer);
+        if(passive)options.onLayout(passive.bytes,layoutShapes);
     }
 
     // OfficeParser does not place Word review comments. Bind them to their
@@ -332,4 +326,69 @@ export async function extractDocxWithImages(
     verification.complete = verification.images.every((image) => image.status === 'READ' && !image.numericReviewRequired)
         && verification.issues.length === 0;
     return { text: rendered.text, imageContextText: legacy.text, requiresReview: !verification.complete, readingVerification: verification };
+}
+
+/** Disable package-triggered activity without changing visible Word content or geometry. */
+export async function prepareWordLayoutCopy(buffer:Buffer,options:{native?:boolean}={}):Promise<{bytes:Buffer;visibleHash:string}|null>{
+    const tools=await packageTools();
+    const files=await tools.extractFiles(buffer,()=>true,{maxUncompressedBytes:(options.native?64:512)*1024*1024,maxZipEntries:10000});
+    const original=new Map(files.map(f=>[f.path,f.content])),passive=new Map(original),removed=new Map<string,Set<string>>();
+    for(const f of files){
+        if(/(?:^|\/)(?:embeddings|activeX|externalLinks|customUI)\/|vbaProject|\.(?:bin|svg)$/i.test(f.path))return null;
+        if(options.native&&!/\.(?:xml|rels|png|jpe?g|gif|bmp|tiff?|webp|emf|wmf)$/i.test(f.path))return null;
+        if(!/\.(?:xml|rels)$/i.test(f.path))continue;
+        const xml=f.content.toString('utf8');
+        if(/<!DOCTYPE|<!ENTITY/i.test(xml))return null;
+        const document=tools.parseXmlString(xml);
+        const all=descendants(document,()=>true);
+        if(all.some(el=>['frameset','frame','sourceFileName','subDoc','control','movie'].includes(el.localName)
+            ||Array.from(el.attributes).some(a=>['src','href'].includes(a.localName)&&/^(?:[a-z][a-z\d+.-]*:|\\\\|\/\/)/i.test(a.value))))return null;
+        if(options.native)for(const el of all){const gfx=el.getAttributeNS(OFFICE_NS,'gfxdata');if(!gfx)continue;
+            try{const nested=await tools.extractFiles(Buffer.from(gfx.replace(/\s/g,''),'base64'),()=>true,{maxUncompressedBytes:5*1024*1024,maxZipEntries:100});
+                for(const part of nested){if(!/\.(?:xml|rels)$/i.test(part.path)||/<!DOCTYPE|<!ENTITY/i.test(part.content.toString('utf8')))return null;
+                    const inner=tools.parseXmlString(part.content.toString('utf8'));
+                    if(descendants(inner,node=>!!node.getAttributeNS(OFFICE_NS,'gfxdata')||['instrText','fldSimple','altChunk','object','frame','subDoc','control','movie'].includes(node.localName)
+                        ||node.localName==='Relationship'&&node.getAttribute('TargetMode')==='External'
+                        ||Array.from(node.attributes).some(a=>['src','href','Target'].includes(a.localName)&&/^(?:[a-z][a-z\d+.-]*:|\\\\|\/\/)/i.test(a.value))).length)return null;
+                }
+            }catch{return null;}
+        }
+        const safeField=(value:string)=>/^\s*(?:PAGE|NUMPAGES|SECTIONPAGES)\s*(?:\\\*\s*(?:MERGEFORMAT|Arabic|ROMAN|roman|ALPHABETIC|alphabetic))?\s*$/.test(value);
+        if(descendants(document,el=>el.namespaceURI===WORD_NS&&['altChunk','object'].includes(el.localName)).length
+            ||descendants(document,el=>el.namespaceURI===WORD_NS&&el.localName==='instrText').some(el=>!safeField(el.textContent||''))
+            ||descendants(document,el=>el.namespaceURI===WORD_NS&&el.localName==='fldSimple').some(el=>!safeField(el.getAttributeNS(WORD_NS,'instr')||'')))return null;
+        if(!f.path.endsWith('.rels'))continue;
+        for(const rel of descendants(document,el=>el.localName==='Relationship')){
+            const target=rel.getAttribute('Target')||'',type=rel.getAttribute('Type')?.split('/').at(-1);
+            if(type==='attachedTemplate'||type==='hyperlink'){
+                const owner=path.posix.join(path.posix.dirname(path.posix.dirname(f.path)),path.posix.basename(f.path,'.rels'));
+                const ids=removed.get(owner)??new Set<string>();ids.add(rel.getAttribute('Id')||'');removed.set(owner,ids);rel.parentNode?.removeChild(rel);continue;
+            }
+            if(rel.getAttribute('TargetMode')==='External'||/^(?:[a-z][a-z\d+.-]*:|\\\\|\/\/)/i.test(target))return null;
+            try{const value=decodeURIComponent(target),internal=path.posix.normalize(value.startsWith('/')?value.slice(1):path.posix.join(path.posix.dirname(path.posix.dirname(f.path)),value));if(!original.has(internal))return null;}catch{return null;}
+        }
+        passive.set(f.path,Buffer.from(tools.serializeXml(document),'utf8'));
+    }
+    for(const [part,ids] of removed){
+        const bytes=passive.get(part);if(!bytes)continue;
+        const document=tools.parseXmlString(bytes.toString('utf8'));
+        for(const el of descendants(document,el=>ids.has(el.getAttributeNS(REL_NS,'id')||''))){
+            if(el.namespaceURI===WORD_NS&&el.localName==='attachedTemplate')el.parentNode?.removeChild(el);
+            else if(el.namespaceURI===WORD_NS&&el.localName==='hyperlink')el.removeAttributeNS(REL_NS,'id');
+            else return null;
+        }
+        passive.set(part,Buffer.from(tools.serializeXml(document),'utf8'));
+    }
+    const canonical=(node:Node):unknown=>node.nodeType===1?(()=>{
+        const el=node as Element;
+        const attrs=Array.from(el.attributes).filter(a=>a.namespaceURI!=='http://www.w3.org/2000/xmlns/'&&a.name!=='xmlns'
+            &&!(el.namespaceURI===WORD_NS&&el.localName==='hyperlink'&&a.namespaceURI===REL_NS&&a.localName==='id'))
+            .map(a=>[a.namespaceURI||'',a.localName,a.namespaceURI===OFFICE_NS&&a.localName==='gfxdata'?a.value.replace(/\s/g,''):a.value]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        return [el.namespaceURI,el.localName,attrs,Array.from(node.childNodes).filter(n=>n.nodeType===1||n.nodeType===3).map(canonical)];
+    })():node.nodeValue;
+    const visible=(parts:Map<string,Buffer>)=>sha256(Buffer.from(JSON.stringify(files.filter(f=>BODY_PART.test(f.path)||f.path.startsWith('word/media/')).map(f=>{
+        const bytes=parts.get(f.path)!;return [f.path,BODY_PART.test(f.path)?canonical(tools.parseXmlString(bytes.toString('utf8')).documentElement):sha256(bytes)];
+    }))));
+    const visibleHash=visible(original);if(visibleHash!==visible(passive))return null;
+    return {bytes:Buffer.from(tools.zipSync(Object.fromEntries(passive))),visibleHash};
 }

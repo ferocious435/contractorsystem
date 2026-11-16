@@ -8,6 +8,7 @@ import {verifyFragmentImages,canonicalFragmentJson} from '../visual-fragment-pro
 import {createSourceFragmentRenderer} from '@/server/documents/visual-fragment-renderer.server';
 import {getRuntimeDirectory} from '../codex-client.server';
 import {buildVisualSourceManifest} from '@/utils/visual-source-manifest';
+import {matchesPreviousNativeWordManifestHash} from '@/utils/word-native-manifest-compatibility';
 import {matchesLegacyWordManifestHash} from '@/utils/word-manifest-compatibility';
 import {assembleDocumentReading,createReadingPatch,getCurrentDocumentReading,hasSavedVisualReading} from '@/utils/document-reading-history';
 import {preserveStableDocumentText} from '@/utils/stable-document-reading';
@@ -21,13 +22,14 @@ import {readMsgContainer} from '@/server/documents/msg-container.server';
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 export async function stageDocumentReading({client,document,file,execution}:{client:SupabaseClient;document:OwnedSourceDocument;file:Buffer;execution:AiExecutionContext}):Promise<{document:OwnedSourceDocument;reading:ReadingAssembly;cached:boolean}> {
     await execution.checkActive();
+    if(document.project_id!==execution.projectId)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
     const sourceHash=digest(file),current=getCurrentDocumentReading(document),parsed=record(document.parsed_json)?document.parsed_json:{};
     const scope={ownerId:execution.ownerId,projectId:execution.projectId,documentId:document.id,sourceHash};
     const previous=record(parsed.source_reading)?parsed.source_reading:null,previousMsg=previous&&record(previous.msg)?previous.msg:null;
     const previousScope=previousMsg&&record(previousMsg.scope)?previousMsg.scope:null;
     const scopeMatches=previous?.format!=='MSG'||Boolean(previousScope&&Object.entries(scope).every(([key,value])=>previousScope[key]===value));
     if(document.content_hash&&document.content_hash!==sourceHash)throw new BusinessAiError('AI_SOURCE_CHANGED',undefined,409);
-    const msgInput=isMsgSource(file,String(document.title||''));
+    const msgInput=isMsgSource(file,String(document.title||'')),wordInput=/\.docx(?:$|[?#])/iu.test(String(document.title||''));
     let cached=scopeMatches&&record(parsed.source_reading)&&parsed.source_reading.version===VISUAL_READING_VERSION
         &&(!msgInput||parsed.source_reading.format==='MSG')&&assessVisualReading(parsed.source_reading,{...document,extracted_text_hash:current.textHash}).complete;
     if(cached&&msgInput){
@@ -40,7 +42,7 @@ export async function stageDocumentReading({client,document,file,execution}:{cli
     let manifest:SourceManifest|undefined;
     const hasComposition=Array.isArray(parsed.source_reading_units)&&parsed.source_reading_units.some(unit=>record(unit)&&unit.composition!==undefined)
         ||previous&&Array.isArray(previous.expectedUnits)&&previous.expectedUnits.some(unit=>record(unit)&&unit.composition!==undefined);
-    if(cached&&hasComposition){
+    if(cached&&(hasComposition||wordInput)){
         manifest=await buildVisualSourceManifest(file,String(document.title||''));await execution.checkActive();
         const render=createSourceFragmentRenderer(file,String(document.title||''),manifest),savedUnits=Array.isArray(parsed.source_reading_units)?parsed.source_reading_units:[];
         cached=manifest.manifestHash===previous?.manifestHash&&savedUnits.length===manifest.units.length;
@@ -66,7 +68,7 @@ export async function stageDocumentReading({client,document,file,execution}:{cli
     await execution.reportProgress({phase:'reading',completedUnits:0,totalUnits:manifest.units.length});
     const retained:VerifiedUnit[]=[];
     if(scopeMatches&&document.project_id===scope.projectId&&hasSavedVisualReading(document,sourceHash)
-        &&(previous?.manifestHash===manifest.manifestHash||matchesLegacyWordManifestHash(manifest,previous?.manifestHash))&&Array.isArray(parsed.source_reading_units)){
+        &&(previous?.manifestHash===manifest.manifestHash||matchesLegacyWordManifestHash(manifest,previous?.manifestHash)||matchesPreviousNativeWordManifestHash(manifest,previous?.manifestHash))&&Array.isArray(parsed.source_reading_units)){
         for(const unit of manifest.units){
             const previous=parsed.source_reading_units.find(value=>record(value)&&value.unitId===unit.id),saved=retainedReadingUnit(previous,unit,scope);
             if(!saved)continue;

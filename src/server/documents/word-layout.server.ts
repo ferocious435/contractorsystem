@@ -5,12 +5,13 @@ import {mkdtemp,writeFile,readFile,stat,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {PDFDocument} from 'pdf-lib';
-import sharp from 'sharp';
-import {renderPdfView} from '@/utils/visual-pdf-renderer';
+import {renderNativeWordRegions,type NativeWordRegion} from './word-native-layout.server';
+import {verifyWordShapeDifference} from './word-shape-pixels.server';
+export {verifyWordShapeDifference} from './word-shape-pixels.server';
 
-export type WordShape={part:string;paragraph:number;name:string;issue:string};
+export type WordShape={part:string;paragraph:number;name:string;issue:string;nativeEligible?:boolean;contextText?:string};
 export type WordPage={page:number;anchors:WordShape[]};
-export async function renderWordShapes(file:Buffer,shapes:WordShape[]):Promise<{file:Buffer;pages:WordPage[];unplaced:WordShape[]}>{
+async function renderLibreOfficeShapes(file:Buffer,shapes:WordShape[]):Promise<{file:Buffer;pages:WordPage[];unplaced:WordShape[]}>{
     if(process.platform!=='win32'||file.length>64*1024*1024||!shapes.length||shapes.length>128)throw Error('WORD_LAYOUT_UNAVAILABLE');
     const python=path.join(process.env.ProgramFiles||'C:/Program Files','LibreOffice/program/python.exe');
     const parent=os.tmpdir(),folder=await mkdtemp(path.join(parent,'contractor-word-'));
@@ -61,32 +62,14 @@ export function bindWordShapePages(shapes:WordShape[],locations:unknown[],count:
         return {pages:[...pages].sort(([a],[b])=>a-b).map(([page,anchors])=>({page,anchors})),unplaced};
 }
 
-/** A removed object must change only its own bounded pixels, without page reflow. */
-export async function verifyWordShapeDifference(original:Buffer,without:Buffer,shape:{widthMm100?:number;heightMm100?:number},repeated=false):Promise<number[]>{
-    if(!shape.widthMm100||!shape.heightMm100||shape.widthMm100<=0||shape.heightMm100<=0)return [];
-    const a=await PDFDocument.load(original),b=await PDFDocument.load(without);
-    if(a.getPageCount()!==b.getPageCount()||a.getPageCount()>128)return [];
-    const changed:number[]=[];
-    for(let i=0;i<a.getPageCount();i++){
-        const geometry=a.getPage(i).getSize(),other=b.getPage(i).getSize();
-        if(geometry.width!==other.width||geometry.height!==other.height)return [];
-        const av=await renderPdfView(original,i+1,undefined),bv=await renderPdfView(without,i+1,undefined);
-        if(av.width!==bv.width||av.height!==bv.height)return [];
-        const raw=async(bytes:Uint8Array)=>sharp(Buffer.from(bytes),{limitInputPixels:16_000_000}).flatten({background:'#ffffff'}).removeAlpha().raw().toBuffer();
-        const first=await raw(av.bytes),second=await raw(bv.bytes);
-        if(first.length!==second.length||first.length!==av.width*av.height*3)return [];
-        let left=av.width,right=-1,top=av.height,bottom=-1;
-        for(let p=0;p<first.length;p+=3){
-            if(first[p]===second[p]&&first[p+1]===second[p+1]&&first[p+2]===second[p+2])continue;
-            const pixel=p/3,x=pixel%av.width,y=Math.floor(pixel/av.width);
-            left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);
-        }
-        if(right<left)continue;
-        // 2 mm allows anti-aliasing/stroke/shadow edges, not unrelated layout changes.
-        const maxWidth=(shape.widthMm100+200)*72/2540/geometry.width*av.width;
-        const maxHeight=(shape.heightMm100+200)*72/2540/geometry.height*av.height;
-        if(right-left+1>maxWidth||bottom-top+1>maxHeight)return [];
-        changed.push(i+1);
-    }
-    return changed.length&& (repeated||changed.length===1)?changed:[];
+
+/** Keep LibreOffice's confirmed pages and use native Word only for its remaining known shapes. */
+export async function renderWordShapes(file:Buffer,shapes:WordShape[],options:{libreOffice?:typeof renderLibreOfficeShapes;nativeWord?:typeof renderNativeWordRegions}={}):Promise<{file:Buffer;pages:WordPage[];unplaced:WordShape[];regions?:NativeWordRegion[];beforeNativeUnplaced?:WordShape[];beforeNativeError?:boolean}>{
+    let primary:{file:Buffer;pages:WordPage[];unplaced:WordShape[]};let beforeNativeError=false;
+    try{primary=await (options.libreOffice??renderLibreOfficeShapes)(file,shapes);}catch{beforeNativeError=true;primary={file:Buffer.alloc(0),pages:[],unplaced:[...shapes]};}
+    if(!primary.unplaced.length)return primary;
+    try{
+        const fallback=await (options.nativeWord??renderNativeWordRegions)(file,primary.unplaced);
+        return {...primary,unplaced:fallback.unplaced,regions:fallback.regions,beforeNativeUnplaced:primary.unplaced,beforeNativeError};
+    }catch{return primary;}
 }

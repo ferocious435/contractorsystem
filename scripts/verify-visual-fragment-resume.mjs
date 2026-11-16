@@ -5,6 +5,8 @@ import path from 'node:path';
 import os from 'node:os';
 import {registerHooks} from 'node:module';
 import {fragmentReadingFixture,sourceDocument,digest} from './codex-runtime/visual-reading-fixtures.mjs';
+import {BusinessAiError} from '../src/server/ai/contracts.ts';
+import {bindPreviousNativeWordManifest,wordManifestDigest} from '../src/utils/word-native-manifest-compatibility.ts';
 import {readVisualSource} from '../src/server/ai/visual-source-reader.server.ts';
 import {readTargetedFragments} from '../src/server/ai/visual-fragment-reader.server.ts';
 import {createSourceFragmentRenderer} from '../src/server/documents/visual-fragment-renderer.server.ts';
@@ -13,9 +15,9 @@ import {assembleDocumentReading,createReadingPatch,resolveReadingVersion} from '
 import {planFragmentTargets} from '../src/utils/visual-fragment-contracts.ts';
 import {verifyFragmentProof,fragmentBaseHash} from '../src/server/ai/visual-fragment-proof.server.ts';
 import {assessVisualReading} from '../src/utils/visual-source-reading.ts';
-const hook=registerHooks({resolve(specifier,context,next){if(specifier==='@/utils/visual-source-manifest')return {url:'data:text/javascript,export async function buildVisualSourceManifest(){return structuredClone(globalThis.__fragmentManifest);}',shortCircuit:true};return next(specifier,context);}});
+const hook=registerHooks({resolve(specifier,context,next){if(specifier==='@/utils/visual-source-manifest')return {url:'data:text/javascript,export async function buildVisualSourceManifest(){const manifest=structuredClone(globalThis.__fragmentManifest);globalThis.__fragmentBind?.(manifest);return manifest;}',shortCircuit:true};return next(specifier,context);}});
 const {stageDocumentReading}=await import('../src/server/ai/handlers/document-reading.ts');hook.deregister();
-async function temporary(action){const folder=await fs.mkdtemp(path.join(os.tmpdir(),'contractor-fragment-resume-')),previous=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=folder;try{return await action(path.join(folder,'ContractorSystem','ai-runtime'));}finally{delete globalThis.__fragmentManifest;if(previous===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=previous;assert.ok(path.resolve(folder).startsWith(path.resolve(os.tmpdir())+path.sep));await fs.rm(folder,{recursive:true,force:true});}}
+async function temporary(action){const folder=await fs.mkdtemp(path.join(os.tmpdir(),'contractor-fragment-resume-')),previous=process.env.LOCALAPPDATA;process.env.LOCALAPPDATA=folder;try{return await action(path.join(folder,'ContractorSystem','ai-runtime'));}finally{delete globalThis.__fragmentManifest;delete globalThis.__fragmentBind;if(previous===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=previous;assert.ok(path.resolve(folder).startsWith(path.resolve(os.tmpdir())+path.sep));await fs.rm(folder,{recursive:true,force:true});}}
 const cacheCall=(cache,name,...args)=>{assert.equal(typeof cache[name],'function','Missing scoped fragment progress: '+name);return cache[name](...args);};
 function execution(f,{jobId='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',value,unclearFull=false,failFragmentAt=Infinity}={}){
  const calls={full:0,locator:0,fragment:0},progress=[],inputs=[];
@@ -142,3 +144,34 @@ test('mixed_context_blocks_require_matching_physical_order_and_correct_value_typ
  assert.ok(verifyFragmentProof(proof,f.scope,f.unit,f.base,target,image));
  const bad=structuredClone(proof);bad.readings[1].blocks=[bad.readings[1].blocks[1],bad.readings[1].blocks[2],bad.readings[1].blocks[0]];bad.raw[1]=JSON.stringify(bad.readings[1]);assert.equal(verifyFragmentProof(bad,f.scope,f.unit,f.base,target,image),null);
 });
+
+
+for(const mode of ['exact-before','whole-cache-request','unrelated-manifest','changed-input','changed-source','wrong-project'])test('Word native compatibility '+mode+' uses only the exact pre-native gate',async()=>temporary(async root=>{
+ const f=await fixture(),sharp=(await import('sharp')).default,oldUnits=[],oldReadings=[];
+ for(let i=0;i<8;i++){
+  const bytes=await sharp({create:{width:80,height:50,channels:3,background:{r:20+i*20,g:50,b:70}}}).png().toBuffer(),imageHash=digest(bytes),id='docx:'+imageHash,viewId='image:'+imageHash;
+  const unit={id,kind:'DOCX_IMAGE',locations:[{part:'word/document.xml',anchor:'word/document.xml#rId'+(i+1)+':1',mediaName:'word/media/image'+(i+1)+'.png'}],contextText:'Original image context',localText:'',views:[{id:viewId,sha256:imageHash,bytes,width:80,height:50,rect:{x:0,y:0,width:1,height:1}}]};
+  const text='Earlier confirmed detail '+String.fromCharCode(65+i),response={unitId:id,viewId,text,tables:[],visualDescription:'',uncertainties:[],contentRole:'CONTENT'};
+  const verified={unitId:id,inputHash:readingUnitInputHash(unit),text,textHash:digest(text),tables:[],visualDescription:'',uncertainties:[],complete:true,contentRole:'CONTENT',createdBy:{jobId:f.base.createdBy.jobId,rulesVersion:'visual-reading-rules-v2',profileRevision:1},views:[{viewId,imageHash,textHash:digest(text),method:'no-numbers',confirmationHash:digest(text),reading:response,confirmation:null}]};
+  assert.equal(verifiedReadingUnit(verified,unit),true);oldUnits.push(unit);oldReadings.push(verified);
+ }
+ const oldManifest={sourceHash:f.scope.sourceHash,manifestHash:'2'.repeat(64),format:'DOCX',nativeText:'Original protocol.',nativeVerification:null,units:oldUnits,issues:['word/document.xml:UNSUPPORTED_PICT'],assembly:[{kind:'native',text:'Original protocol.'},...oldUnits.map(u=>({kind:'unit',unitId:u.id}))]};
+ oldManifest.nativeVerification={version:'docx-image-coverage-v1',sourceHash:f.scope.sourceHash,complete:false,expectedImageReferences:8,images:[],issues:['word/document.xml:UNSUPPORTED_PICT']};oldManifest.manifestHash=wordManifestDigest(oldManifest);
+ const before=assembleDocumentReading(oldManifest,oldReadings,f.scope);before.verification.createdBy={jobId:f.base.createdBy.jobId,rulesVersion:'visual-reading-rules-v2',profileRevision:1};
+ const row=sourceDocument({id:f.scope.documentId,project_id:f.scope.projectId,title:'protocol.docx',content_hash:f.scope.sourceHash,extracted_text:before.text,extracted_text_hash:before.textHash,ocr_status:'REQUIRES_REVIEW',parsed_json:{source_reading:before.verification,source_reading_units:structuredClone(oldReadings),owner_note:'Keep this note'}}),client=database(row);
+ const region={...oldUnits[0],id:'docx-region:new',locations:[{part:'word/document.xml',anchor:'word/document.xml#arrow',mediaName:'word-native.pdf',page:3,sourceRect:{x:0,y:0,width:1,height:1},wordLayoutProof:{version:'native-word-source-removal-v1',sourceHash:f.scope.sourceHash,visibleHash:'a'.repeat(64),page:3,rect:{x:0,y:0,width:1,height:1},original:{sha256:'b'.repeat(64),width:80,height:50},removed:{sha256:'c'.repeat(64),width:80,height:50},shape:{widthPoints:20,heightPoints:10,rotationDegrees:0}}}],contextText:'Read the target drawing; clipped surrounding prose is context, not a missing target.'};
+ globalThis.__fragmentManifest={...oldManifest,manifestHash:'4'.repeat(64),nativeVerification:{...oldManifest.nativeVerification,issues:[]},units:[...oldUnits,region],issues:[],assembly:[...oldManifest.assembly,{kind:'unit',unitId:region.id}]};globalThis.__fragmentManifest.manifestHash=wordManifestDigest(globalThis.__fragmentManifest);globalThis.__fragmentBind=manifest=>bindPreviousNativeWordManifest(manifest,oldManifest);
+ if(mode==='whole-cache-request'){row.parsed_json.source_reading.complete=true;row.parsed_json.source_reading.nativeComplete=true;row.parsed_json.source_reading.issues=[];row.ocr_status='COMPLETED';}
+ if(mode==='unrelated-manifest')row.parsed_json.source_reading.manifestHash='0'.repeat(64);
+ if(mode==='changed-input')globalThis.__fragmentManifest.units[0].views[0].bytes[0]^=1;
+ if(mode==='changed-source')row.content_hash='9'.repeat(64);
+ if(mode==='wrong-project')row.project_id='ffffffff-ffff-4fff-8fff-ffffffffffff';
+ let calls=0;const ex=execution(f);ex.api.generate=async input=>{calls++;const source=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);if(['unrelated-manifest','wrong-project'].includes(mode)){assert.notEqual(source.unitId,region.id);throw new BusinessAiError('AI_PROFILE_UNSUPPORTED');}assert.equal(source.unitId,region.id,'An older complete image must not be sent to the model again');return JSON.stringify({unitId:region.id,viewId:source.viewId,text:'',tables:[],visualDescription:'A blue arrow points to a gap between planted rows next to the road.',uncertainties:[],contentRole:'CONTENT'});};
+ assert.equal(await fs.stat(path.join(root,'reading-cache')).then(()=>true).catch(()=>false),false);
+ if(['changed-input','changed-source','unrelated-manifest','wrong-project'].includes(mode)){
+  await assert.rejects(stageDocumentReading({client,document:row,file:f.bytes,execution:ex.api}),error=>mode==='changed-input'?error.code==='AI_SOURCE_UNVERIFIED':mode==='changed-source'?error.code==='AI_SOURCE_CHANGED':mode==='wrong-project'?error.code==='AI_SOURCE_UNVERIFIED':error.code==='AI_PROFILE_UNSUPPORTED');assert.equal(client.updates.length,0);return;
+ }
+ const result=await stageDocumentReading({client,document:row,file:f.bytes,execution:ex.api});
+ assert.equal(result.cached,false,'The matching pre-native hash can only retain units, never the entire cached document');assert.equal(calls,1);assert.equal(result.reading.units.length,9);assert.deepEqual(result.reading.units.slice(0,8),oldReadings);assert.equal(result.document.parsed_json.owner_note,'Keep this note');
+ for(const old of oldReadings)assert.deepEqual(result.document.parsed_json.source_reading_units.find(next=>next.unitId===old.unitId),old);
+}));
