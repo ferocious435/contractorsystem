@@ -6,6 +6,7 @@ import {mkdtemp,readFile,writeFile,rm,mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
+import {renderCadModelPreview} from './cad-model-preview.server';
 
 const run=promisify(execFile), digest=(b:Uint8Array|string)=>createHash('sha256').update(b).digest('hex');
 export type ArchivePart={parentAddress:string;ordinal:number;name:string;size:number;sha256:string|null;bytes:Buffer|null;issues:string[]};
@@ -37,6 +38,9 @@ export async function buildCadResult(sourceHash:string,inventory:Inventory):Prom
  if(!sheets.length)issues.push('CAD_LAYOUT_INVENTORY_EMPTY');
  return {sourceHash,status:'REQUIRES_REVIEW',sheets,issues:[...new Set(issues)]};
 }
+export function attachCadModelPreview(result:CadResult,image:Buffer,issues:string[]):CadResult {
+ return {...result,issues:[...new Set([...result.issues,...issues])],sheets:result.sheets.map(sheet=>sheet.name==='Model'?{...sheet,image,issues:[...new Set([...sheet.issues,...issues])]}:sheet)};
+}
 export async function renderCadSheets(bytes:Buffer,_siblings:readonly ArchivePart[]):Promise<CadResult>{
  const inputBytes=Buffer.from(bytes),sourceHash=digest(inputBytes),fail=(issue:string):CadResult=>({sourceHash,status:'REQUIRES_REVIEW',sheets:[],issues:[issue]});
  if(process.platform!=='win32')return fail('CAD_WINDOWS_REQUIRED');
@@ -53,6 +57,10 @@ export async function renderCadSheets(bytes:Buffer,_siblings:readonly ArchivePar
   await run(exe,['/s',script,'/l','en-US','/isolate','r05'+digest(root).slice(0,8),profile],{cwd:root,env:{...process.env,CAD_PROBE_INPUT:dwg,CAD_PROBE_OUTPUT:output},timeout:90000,windowsHide:true,maxBuffer:4*1024*1024});
   const data=await readFile(output);if(data.length>64*1024*1024)return fail('CAD_INVENTORY_OUTPUT_LIMIT');
   const inventory=JSON.parse(data.toString('utf8')) as Inventory;if(inventory.status!=='INVENTORIED')return fail('CAD_INVENTORY_FAILED');
-  return await buildCadResult(sourceHash,inventory);
+  const result=await buildCadResult(sourceHash,inventory);
+  try{
+   const preview=await renderCadModelPreview({root,trusted,input:dwg,profile,exe,acad,csc,sourceHash});
+   return preview?attachCadModelPreview(result,preview.image,preview.issues):{...result,issues:[...result.issues,'CAD_MODEL_PLOT_FAILED']};
+  }catch{return {...result,issues:[...result.issues,'CAD_MODEL_PLOT_FAILED']};}
  }catch{return fail('CAD_INVENTORY_FAILED');}finally{await rm(root,{recursive:true,force:true}).catch(()=>{});}
 }

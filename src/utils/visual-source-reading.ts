@@ -31,6 +31,8 @@ export type VerifiedView = {
     recognitionVersion?:typeof BRANDING_RECOGNITION_VERSION;
     readingImage?:Omit<RenderedView,'id'|'bytes'>;confirmationImage?:Omit<RenderedView,'id'|'bytes'>;
 };
+export type ImagePurposeEvidence={version:'image-purpose-v1';recognitionVersion:typeof BRANDING_RECOGNITION_VERSION;unitId:string;inputHash:string;scope:ReadingScope;profileFingerprint:string;
+    image:Omit<RenderedView,'bytes'>;raw:string[];observations:Array<{jobId:string;profileRevision:number}>;createdBy:{jobId:string;rulesVersion:string;profileRevision:number}};
 export type VerifiedUnit = {
     unitId:string;inputHash:string;textHash:string;text:string;tables:string[][][];visualDescription:string;
     uncertainties:string[];views:VerifiedView[];complete:boolean;formattingNotes?:string[];
@@ -38,6 +40,7 @@ export type VerifiedUnit = {
     contentRole?:ContentRole;nonBlockingNotes?:string[];
     brandingOrigin?:ReadingScope&{unitId:string;jobId:string;inputHash:string;profileRevision:number;profileFingerprint:string};
     composition?:FragmentComposition;
+    imagePurpose?:ImagePurposeEvidence;
 };
 export type RegistryUnit = {
     id:string;kind:ReadingUnit['kind'];locations:ReadingLocation[];views:Array<Omit<RenderedView,'bytes'>>;

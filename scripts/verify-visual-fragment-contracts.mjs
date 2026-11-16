@@ -119,3 +119,86 @@ test('reflow_with_extra_text_at_page_edge_stays_partial',()=>{
  a.text='First unique heading\nContract amount 120 meters\nFinal unique approval';b.text='Unmatched extra obligation\nFirst unique\nheading\nContract amount 130 meters\nFinal unique approval';
  const plan=contracts.planFragmentTargets(unit,base);assert.ok(plan.issues.includes('Fragment text or table structure differs'));
 });
+function equalUncertainFixture(note='В слове «рельеф» буквы неразборчивы.'){
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;
+ a.tables[0][3]=['Работы','По проекту рельеф 120 м','м',''];b.tables=structuredClone(a.tables);a.uncertainties=[note];b.uncertainties=[];
+ base.text=unitReadingLiteral(a);base.textHash=digest(base.text);base.tables=structuredClone(a.tables);base.views[0].textHash=digest(unitReadingLiteral(a));base.views[0].confirmationHash=digest(unitReadingLiteral(b));return {unit,base};
+}
+test('short_unique_quote_in_agreed_row_requires_two_new_complete_blind_reads',()=>{
+ const {unit,base}=equalUncertainFixture(),plan=contracts.planFragmentTargets(unit,base);assert.deepEqual(plan.targets.map(t=>t.address),[{kind:'table-row',table:0,row:3}]);
+ assert.equal(proofs.composeFragmentReading(unit,base,[],scope).complete,false);
+ const {image,proof}=exampleProof(unit,base,plan.targets[0],['Работы','По проекту рельеф 120 м','м','']);
+ assert.ok(proofs.verifyFragmentProof(proof,scope,unit,base,plan.targets[0],image));
+ assert.equal(proofs.composeFragmentReading(unit,base,[proof],scope).complete,true);
+ const bad=structuredClone(proof);bad.raw[1]='{}';assert.equal(proofs.verifyFragmentProof(bad,scope,unit,base,plan.targets[0],image),null);
+});
+test('short_quote_remains_unbound_when_ambiguous_multiple_or_visual',()=>{
+ for(const mode of ['repeat_cell','repeat_elsewhere','two_quotes','extra_issue','diagram','numeric_description']){
+  const {unit,base}=equalUncertainFixture(),a=base.views[0].reading,b=base.views[0].confirmation;
+  if(mode==='repeat_cell')a.tables[0][3][1]=b.tables[0][3][1]='рельеф и рельеф 120 м';
+  if(mode==='repeat_elsewhere')a.tables[0][4][0]=b.tables[0][4][0]='рельеф';
+  if(mode==='two_quotes')a.uncertainties=['Слова «рельеф» и «120» неясны.'];
+  if(mode==='extra_issue')a.uncertainties=['Слово «рельеф» неясно, также неверен размер 120.'];
+  if(mode==='diagram')a.uncertainties=['На схеме подпись «рельеф» расположена неясно.'];
+  if(mode==='numeric_description'){a.visualDescription='схема 120';b.visualDescription='схема 130';}
+  const plan=contracts.planFragmentTargets(unit,base);assert.ok(plan.issues.length,mode);
+ }
+});
+test('diagram_or_description_occurrence_cannot_be_resolved_by_a_text_row',()=>{
+ const {unit,base}=equalUncertainFixture('Надпись «рельеф» неразборчива.');for(const r of [base.views[0].reading,base.views[0].confirmation])r.visualDescription='схема с надписью рельеф';
+ const p=contracts.planFragmentTargets(unit,base);assert.equal(p.targets.length,0);assert.ok(p.issues.some(x=>x.includes('Unbound source uncertainty')));
+});
+test('two_separate_problems_without_second_quote_remain_partial',()=>{
+ const {unit,base}=equalUncertainFixture('Слово «рельеф» неразборчиво. Автор указан неясно.');const p=contracts.planFragmentTargets(unit,base);
+ assert.equal(p.targets.length,0);assert.ok(p.issues.some(x=>x.includes('Unbound source uncertainty')));
+});
+test('short_numbers_in_diagram_do_not_become_text_evidence',()=>{
+ const {unit,base}=equalUncertainFixture('Число «120» неразборчиво.');for(const r of [base.views[0].reading,base.views[0].confirmation])r.visualDescription='схема: отметка 120';
+ const p=contracts.planFragmentTargets(unit,base);assert.equal(p.targets.length,0);assert.ok(p.issues.length);
+});
+test('unmapped_reflowed_duplicate_quote_cannot_bind',()=>{
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;a.tables=[];b.tables=[];
+ a.text='First unique heading\nExpected рельеф construction\nFinal unique approval';b.text='First unique\nheading\nExpected рельеф construction\nFinal unique approval\nextra рельеф';a.uncertainties=['Слово «рельеф» неразборчиво.'];
+ const p=contracts.planFragmentTargets(unit,base);assert.ok(p.issues.some(x=>x.includes('Unbound source uncertainty')));
+});
+test('previously_generated_unbound_note_is_not_a_second_unrelated_problem',()=>{
+ const {unit,base}=equalUncertainFixture(),note=base.views[0].reading.uncertainties[0];base.uncertainties.push('Unbound source uncertainty: '+note);
+ const p=contracts.planFragmentTargets(unit,base);assert.equal(p.targets.length,1);assert.ok(!p.issues.some(x=>x.includes('Unbound source uncertainty: Unbound source uncertainty:')));
+});
+test('one_unique_number_remains_pending_until_full_row_witnessed',()=>{
+ const {unit,base}=equalUncertainFixture('Число «120» неразборчиво.');const p=contracts.planFragmentTargets(unit,base);
+ assert.equal(p.targets.length,1);assert.equal(proofs.composeFragmentReading(unit,base,[],scope).complete,false);
+ const {image,proof}=exampleProof(unit,base,p.targets[0],['Работы','По проекту рельеф 120 м','м','']);assert.ok(proofs.verifyFragmentProof(proof,scope,unit,base,p.targets[0],image));
+ const bad=structuredClone(proof);for(const r of bad.readings)r.blocks.find(b=>b.id===p.targets[0].id).value=['Работы','По проекту рельеф 130 м','м',''];bad.value=['Работы','По проекту рельеф 130 м','м',''];bad.raw=bad.readings.map(JSON.stringify);assert.equal(proofs.verifyFragmentProof(bad,scope,unit,base,p.targets[0],image),null);
+});
+test('two_old_uncertain_reads_and_three_physical_witnesses_can_correct_only_quoted_word',()=>{
+ const {unit,base}=equalUncertainFixture();base.views[0].confirmation.uncertainties=structuredClone(base.views[0].reading.uncertainties);
+ const target=contracts.planFragmentTargets(unit,base).targets[0],value=['Работы','По проекту покрытие 120 м','м',''];
+ const {image,proof}=exampleProof(unit,base,target,value),line={text:'По проекту покрытие 120 м',rect:{x:0.1,y:0.3,width:0.3,height:0.02},objectIndex:22,rotation:0};
+ proof.correction={match:{line,choice:1,cell:1},image:{id:'line:1',sha256:digest('physical line pixels'),width:400,height:50,rect:line.rect},raw:JSON.stringify({text:line.text,uncertainties:[]})};
+ assert.ok(proofs.verifyFragmentProof(proof,scope,unit,base,target,image));
+ for(const mutate of [
+  p=>delete p.correction,
+  p=>p.correction.raw=JSON.stringify({text:'По проекту рельеф 120 м',uncertainties:[]}),
+  p=>p.correction.match.line.rect.y=0.95,
+  p=>{p.value[1]='По проекту покрытие 130 м';for(const r of p.readings)r.blocks.find(b=>b.id===target.id).value=p.value;p.raw=p.readings.map(JSON.stringify);},
+ ]){const bad=structuredClone(proof);mutate(bad);assert.equal(proofs.verifyFragmentProof(bad,scope,unit,base,target,image),null);}
+ const one=structuredClone(base);one.views[0].confirmation.uncertainties=[];assert.equal(proofs.verifyFragmentProof(proof,scope,unit,one,target,image),null);
+});
+test('correction_pixel_recheck_rejects_other_line_or_changed_source_crop',async()=>{
+ const {unit,base}=equalUncertainFixture();base.views[0].confirmation.uncertainties=structuredClone(base.views[0].reading.uncertainties);
+ const target=contracts.planFragmentTargets(unit,base).targets[0],value=['Работы','По проекту покрытие 120 м','м',''],{proof}=exampleProof(unit,base,target,value);
+ const line={text:'По проекту покрытие 120 м',rect:{x:0.1,y:0.3,width:0.3,height:0.02},objectIndex:22,rotation:0},bytes=Buffer.from('physical original line');
+ proof.correction={match:{line,choice:1,cell:1},image:{id:'physical',sha256:digest(bytes),width:400,height:50,rect:line.rect},raw:JSON.stringify({text:line.text,uncertainties:[]})};
+ let actual=bytes,lines=[line];const render=async()=>({...proof.correction.image,bytes:actual});render.positionedLines=async()=>lines;
+ assert.equal(await proofs.verifyPositionedImage(proof,unit,render,base),true);actual=Buffer.from('other pixels');assert.equal(await proofs.verifyPositionedImage(proof,unit,render,base),false);
+ actual=bytes;lines=[line,{...line,objectIndex:23,rect:{...line.rect,x:0.5}}];assert.equal(await proofs.verifyPositionedImage(proof,unit,render,base),false);
+ const one=structuredClone(base);one.views[0].confirmation.uncertainties=[];assert.equal(proofs.uncertainCorrection(one,unit,target,value),null);
+ const confident=structuredClone(base);confident.views[0].reading.uncertainties=[];confident.views[0].confirmation.uncertainties=[];assert.equal(proofs.uncertainCorrection(confident,unit,target,value),null);
+});
+test('uncertain_word_does_not_authorize_changing_an_embedded_substring',()=>{
+ const {unit,base}=equalUncertainFixture(),a=base.views[0].reading,b=base.views[0].confirmation;
+ a.tables[0][3][1]=b.tables[0][3][1]='По проекту внерельеф рельеф 120 м';b.uncertainties=[...a.uncertainties];
+ const target=contracts.planFragmentTargets(unit,base).targets[0];assert.ok(target);
+ assert.equal(proofs.uncertainCorrection(base,unit,target,['Работы','По проекту внепокрытие рельеф 120 м','м','']),null);
+});

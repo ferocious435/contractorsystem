@@ -7,12 +7,13 @@ import {BusinessAiError,record,validUuid,type AiExecutionContext} from './contra
 import {getRuntimeDirectory} from './codex-client.server';
 import {checkedReadingDirectory,readingUnitInputHash} from './visual-reading-cache.server';
 import {sameReadingRuntimePath} from './reading-runtime-path.server';
-import {attemptReadings,canonicalFragmentJson,composeFragmentReading,fragmentBaseHash,preservesAgreedContent,verifyFragmentProof,verifyStoredFragmentProof,verifyPositionedImage} from './visual-fragment-proof.server';
+import {attemptReadings,canonicalFragmentJson,composeFragmentReading,fragmentBaseHash,preservesAgreedContent,uncertainCorrection,verifyFragmentProof,verifyStoredFragmentProof,verifyPositionedImage} from './visual-fragment-proof.server';
 import {findPositionedDifference,confirmPositionedReading,matchingPrintedWitnesses} from '@/server/documents/pdf-positioned-text.server';
-import {FRAGMENT_LIMIT,fragmentAddressKey,fragmentBlocks,fragmentResponseSchema,planFragmentTargets,
+import {FRAGMENT_LIMIT,fragmentAddressKey,fragmentBlocks,fragmentResponseSchema,fragmentValuesEqual,planFragmentTargets,
     type FragmentRenderer,type FragmentProof,type FragmentLocator,type FragmentAttempt,type FragmentTarget,type PositionedLine} from '@/utils/visual-fragment-contracts';
 import {validReadingRect,type ReadingScope,type ReadingUnit,type Rect,type RenderedView,type VerifiedUnit} from '@/utils/visual-source-reading';
 
+const fragmentValuesEqualForCorrection=(values:[import('@/utils/visual-fragment-contracts').FragmentValue,import('@/utils/visual-fragment-contracts').FragmentValue])=>fragmentValuesEqual(...values);
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const rectSchema={type:'object',additionalProperties:false,required:['x','y','width','height'],properties:{x:{type:'number'},y:{type:'number'},width:{type:'number'},height:{type:'number'}}};
 const locatorSchema={
@@ -35,7 +36,7 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
     if(saved.composition)for(const proof of saved.composition.proofs){
         const target=plan.targets.find(t=>t.id===proof.target.id);if(!target)continue;
         const checked=verifyStoredFragmentProof(proof,scope,unit,saved,target);if(!checked)continue;
-        const image=await render(unit,proof.rect);await execution.checkActive();if(image&&verifyFragmentProof(proof,scope,unit,saved,target,image)&&await verifyPositionedImage(proof,unit,render))accepted.push(checked);
+        const image=await render(unit,proof.rect);await execution.checkActive();if(image&&verifyFragmentProof(proof,scope,unit,saved,target,image)&&await verifyPositionedImage(proof,unit,render,saved))accepted.push(checked);
     }
     let pending=plan.targets.filter(t=>!accepted.some(p=>p.target.id===t.id)).slice(0,FRAGMENT_LIMIT);
     let result=assemble();if(!pending.length)return result;
@@ -57,16 +58,18 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
         const direct=verifyFragmentProof(proposed,scope,unit,saved,target,image);
         if(direct||!narrow||!render.positionedLines)return direct;
         lines??=render.positionedLines(unit);
-        const match=findPositionedDifference(...pair.values,await lines,attempt.rect);
-        if(!match||!preservesAgreedContent(pair.values[match.choice],saved,target,unit))return null;
+        const old=fragmentValuesEqualForCorrection(pair.values)?uncertainCorrection(saved,unit,target,pair.values[0]):null;
+        const match=old?findPositionedDifference(old,pair.values[0],await lines,attempt.rect):findPositionedDifference(...pair.values,await lines,attempt.rect);
+        if(!match||old&&match.choice!==1||old&&!matchingPrintedWitnesses(match,pair.values[0],pair.values)
+            ||!old&&!preservesAgreedContent(pair.values[match.choice],saved,target,unit))return null;
         const crop=await render(unit,match.line.rect);if(!crop)return null;
         const lineImage={id:crop.id,sha256:crop.sha256,rect:crop.rect,width:crop.width,height:crop.height};
-        for(const support of attempts){
+        for(const support of old?[]:attempts){
             if(support?.createdBy?.jobId===attempt.createdBy.jobId||support?.target?.id!==target.id)continue;
             const both=attemptReadings(support.raw,target);
             if(!both||!matchingPrintedWitnesses(match,pair.values[match.choice],both.values))continue;
             const proof=verifyFragmentProof({...proposed,positioned:{match,image:lineImage,support},value:pair.values[match.choice]},scope,unit,saved,target,image);
-            if(proof&&await verifyPositionedImage(proof,unit,render))return proof;
+            if(proof&&await verifyPositionedImage(proof,unit,render,saved))return proof;
         }
         const schema={type:'object',additionalProperties:false,required:['text','uncertainties'],properties:{text:{type:'string'},uncertainties:{type:'array',items:{type:'string'}}}};
         await execution.checkActive();
@@ -76,6 +79,8 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
         await writeFile(path.join(job,'fragment-line-'+randomUUID()+'.json'),JSON.stringify({scope,unitId:unit.id,target,positioned}),{flag:'wx',mode:0o600});
         await execution.checkActive();
         try{if(!confirmPositionedReading(match,JSON.parse(raw)))return null;}catch{return null;}
+        if(old){const proof=verifyFragmentProof({...proposed,correction:{match,image:lineImage,raw},value:pair.values[0]},scope,unit,saved,target,image);
+            return proof&&await verifyPositionedImage(proof,unit,render,saved)?proof:null;}
         return verifyFragmentProof({...proposed,positioned,value:pair.values[match.choice]},scope,unit,saved,target,image);
     }
     try{

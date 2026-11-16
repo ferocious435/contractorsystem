@@ -38,6 +38,7 @@ export type FragmentProof={
     value:FragmentValue;createdBy:{jobId:string;profileRevision:number};
     locator?:FragmentLocator;
     positioned?:PositionedWitness;
+    correction?:{match:PositionedDifference;image:Omit<RenderedView,'bytes'>;raw:string};
 };
 export type FragmentAttempt=Pick<FragmentProof,'scope'|'unitId'|'inputHash'|'target'|'rect'|'image'|'raw'|'createdBy'|'locator'>&{reason:string};
 export type FragmentComposition={version:'visual-fragment-assembly-v1';baseEvidenceHash:string;evidenceHash:string;proofs:FragmentProof[];pending:FragmentTarget[];issues:string[];locator?:FragmentLocator;attempts?:FragmentAttempt[]};
@@ -95,6 +96,26 @@ export function alignFragmentLines(primary:string,other:string):{lines:Array<str
     return {lines:result,unresolved};
 }
 
+/** Only one literal quote about transcription can be promoted to a physical check.
+ * Spatial, diagrammatic and multi-part uncertainties remain blocking. */
+export function uncertaintyQuote(note:string):string|null {
+    const quotes=[...note.matchAll(/«([^«»\r\n]{3,200})»/gu)];if(quotes.length!==1)return null;
+    const q=normalizeReadingTypography(quotes[0][1]),outside=note.replace(quotes[0][0],' ');
+    if(!/[\p{L}\p{N}]/u.test(q)||q.split(/\s+/u).length>10||/[\p{N}]/u.test(outside)
+        ||/[.!?]\s*\S/u.test(outside)||!/(?:букв|слов|текст|надпис|фамили|имя|числ|номер|цифр|обознач|letters?|words?|text|number|digit|label)/iu.test(outside)
+        ||!/(?:неразборчив|неувер|неяс|сомнен|недостаточно\s+ч[её]тк|предполож|unclear|uncertain|unreadable|illegible)/iu.test(outside)
+        ||/[;:]/u.test(outside)||/(?:схем|чертеж|чертёж|стрелк|изображ|рисунк|логотип|эмблем|печать|штамп|подпис|располож|положени|направлен|порядок|размер|столб|ячейк|диаграм|diagram|drawing|arrow|image|logo|signature|stamp|layout|position|direction|dimension|column|cell)/iu.test(outside)
+        ||/(?:^|[^\p{L}])(?:и|или|либо|а также|также|отдельно|другой|другая|ещё|еще|and|or|also|another)(?:$|[^\p{L}])/iu.test(outside))return null;
+    return q;
+}
+export function quoteOccurrences(value:string,quote:string):number {
+    const text=normalizeReadingTypography(value);let count=0,start=0;
+    for(;;){const i=text.indexOf(quote,start);if(i<0)return count;const end=i+quote.length;
+        if((i===0||!/[\p{L}\p{M}\p{N}]/u.test(text[i-1]))&&(end===text.length||!/[\p{L}\p{M}\p{N}]/u.test(text[end])))count++;
+        start=i+Math.max(1,quote.length);
+    }
+}
+
 /** Addresses are structural positions, never a bag of matching words or numbers. */
 export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):FragmentPlan {
     const issues:string[]=[],targets:FragmentTarget[]=[],primary=primaryFragmentReading(unit,saved);
@@ -119,7 +140,18 @@ export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):Fragmen
         projected[index].lines.forEach((value,line)=>{if(value!==null)map.set(`line:${line}`,{id:`line:${line}`,address:{kind:'line',line},value});});return map;
     });
     const eligible=(b:FragmentAnchor)=>b.address.kind==='line'?others.every(all=>all.has(b.id)):tablesAligned;
-    const disputed=blocks.map(b=>eligible(b)&&others.some(all=>!all.has(b.id)||!fragmentValuesEqual(b.value,all.get(b.id)!.value)));
+    const sourceNotes=new Set(readings.flatMap(r=>r.uncertainties));
+    const savedNotes=saved.uncertainties.filter(note=>!sourceNotes.has(note)&&!(note.startsWith('Unbound source uncertainty: ')&&sourceNotes.has(note.slice('Unbound source uncertainty: '.length)))&&!/^Numeric or source verification failed: |^Fragment (?:pending|check failed): /u.test(note)&&note!=='Source content is not verified');
+    const notes=[...new Set([...sourceNotes,...savedNotes])],noteTargets=new Map<string,string>();
+    for(const note of notes){
+        const quote=uncertaintyQuote(note);if(!quote||readings.some(r=>quoteOccurrences(r.visualDescription,quote)>0
+            ||fragmentBlocks(r).reduce((count,b)=>count+(typeof b.value==='string'?[b.value]:b.value).reduce((n,v)=>n+quoteOccurrences(v,quote),0),0)!==1))continue;
+        const matches=others.map(all=>[...all.values()].flatMap(block=>(typeof block.value==='string'?[block.value]:block.value).flatMap((cell,index)=>
+            Array.from({length:quoteOccurrences(cell,quote)},()=>({id:block.id,cell:index})))));
+        if(matches.every(m=>m.length===1&&m[0].id===matches[0][0].id&&m[0].cell===matches[0][0].cell))noteTargets.set(note,matches[0][0].id);
+    }
+    const requested=new Set(noteTargets.values());
+    const disputed=blocks.map(b=>eligible(b)&&(requested.has(b.id)||others.some(all=>!all.has(b.id)||!fragmentValuesEqual(b.value,all.get(b.id)!.value))));
     const unique=(b:FragmentAnchor)=>blocks.filter(other=>fragmentValuesEqual(other.value,b.value)).length===1;
     for(let i=0;i<blocks.length;i++){
         if(!disputed[i])continue;
@@ -138,16 +170,11 @@ export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):Fragmen
     }
     for(const reading of readings){
         if(reading.visualDescription!==primary.visualDescription&&/\p{N}/u.test(reading.visualDescription+' '+primary.visualDescription))issues.push('Numeric visual description is not bound to a literal fragment');
-        for(const note of reading.uncertainties){
-            const normalized=normalizeReadingTypography(note),bound=targets.filter(t=>{
-                const key=fragmentAddressKey(t.address);
-                return others.some(all=>{const v=all.get(key)?.value;return v!==undefined&&(typeof v==='string'?[v]:v).some(cell=>cell.trim().length>=3&&normalized.includes(normalizeReadingTypography(cell)));});
-            });
-            if(bound.length!==1)issues.push('Unbound source uncertainty: '+note);
-        }
     }
-    const sourceNotes=new Set(readings.flatMap(r=>r.uncertainties));
-    for(const note of saved.uncertainties)if(!sourceNotes.has(note)&&!/^Numeric or source verification failed: |^Fragment (?:pending|check failed): /u.test(note)&&note!=='Source content is not verified')issues.push(note);
+    for(const note of notes){
+        const id=noteTargets.get(note);
+        if(!id||!targets.some(target=>fragmentAddressKey(target.address)===id))issues.push('Unbound source uncertainty: '+note);
+    }
     return {targets,issues:[...new Set(issues)]};
 }
 

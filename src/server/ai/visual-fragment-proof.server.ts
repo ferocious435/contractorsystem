@@ -5,7 +5,7 @@ import {readingUnitInputHash,retainedReadingUnit,unitReadingLiteral} from './vis
 import {validReadingRect,validReadingHash,type ReadingScope,type ReadingUnit,type RenderedView,type VerifiedUnit} from '@/utils/visual-source-reading';
 import {normalizeReadingTypography} from '@/utils/visual-source-response';
 import {findPositionedDifference,confirmPositionedReading,matchingPrintedWitnesses} from '@/server/documents/pdf-positioned-text.server';
-import {alignFragmentLines,fragmentAddressKey,fragmentBlocks,fragmentValuesEqual,planFragmentTargets,primaryFragmentReading,
+import {alignFragmentLines,fragmentAddressKey,fragmentBlocks,fragmentValuesEqual,planFragmentTargets,primaryFragmentReading,uncertaintyQuote,quoteOccurrences,
     type FragmentProof,type FragmentResponse,type FragmentTarget,type FragmentValue,type FragmentRenderer} from '@/utils/visual-fragment-contracts';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -59,6 +59,34 @@ export function preservesAgreedContent(chosen:FragmentValue,base:VerifiedUnit,ta
     if(typeof chosen==='string')return values.every(v=>typeof v==='string')&&preservesAgreedText(chosen,values as string[]);
     return values.every(v=>Array.isArray(v)&&v.length===chosen.length)&&chosen.every((cell,i)=>preservesAgreedText(cell,(values as string[][]).map(row=>row[i])));
 }
+/** Only a single explicitly uncertain word may change, with all other text and cells fixed. */
+export function uncertainCorrection(base:VerifiedUnit,unit:ReadingUnit,target:FragmentTarget,chosen:FragmentValue):FragmentValue|null {
+    const primary=primaryFragmentReading(unit,base);if(!primary)return null;
+    const original=fragmentBlocks(primary).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value;
+    if(original===undefined||typeof original!==typeof chosen)return null;
+    const oldCells=typeof original==='string'?[original]:original,newCells=typeof chosen==='string'?[chosen]:chosen;
+    if(oldCells.length!==newCells.length)return null;
+    const different=oldCells.flatMap((v,i)=>normalizeReadingTypography(v)===normalizeReadingTypography(newCells[i])?[]:[i]);if(different.length!==1)return null;
+    const cell=different[0],old=normalizeReadingTypography(oldCells[cell]),now=normalizeReadingTypography(newCells[cell]);
+    const readings=base.views.flatMap(p=>p.confirmation?[p.reading,p.confirmation]:[]);
+    if(readings.length!==base.views.length*2||readings.length<2)return null;
+    const possible=readings[0].uncertainties.map(uncertaintyQuote).filter((q):q is string=>Boolean(q)&&/^[\p{L}\p{M}]+$/u.test(q!)&&quoteOccurrences(old,q!)===1);
+    if(possible.length!==1)return null;const quote=possible[0];let offset=-1,start=0;
+    for(;;){const i=old.indexOf(quote,start);if(i<0)break;const end=i+quote.length;
+        if((i===0||!/[\p{L}\p{M}\p{N}]/u.test(old[i-1]))&&(end===old.length||!/[\p{L}\p{M}\p{N}]/u.test(old[end]))){offset=i;break;}start=i+quote.length;
+    }
+    if(offset<0)return null;const prefix=old.slice(0,offset),suffix=old.slice(offset+quote.length);
+    if(!now.startsWith(prefix)||!now.endsWith(suffix)||now.length<=prefix.length+suffix.length)return null;
+    const replacement=now.slice(prefix.length,now.length-suffix.length);if(!/^[\p{L}\p{M}]+$/u.test(replacement)||replacement===quote)return null;
+    for(const r of readings){
+        if(!r.uncertainties.some(note=>uncertaintyQuote(note)===quote)||quoteOccurrences(r.visualDescription,quote)>0)return null;
+        if(fragmentBlocks(r).reduce((n,b)=>n+(typeof b.value==='string'?[b.value]:b.value).reduce((c,v)=>c+quoteOccurrences(v,quote),0),0)!==1)return null;
+        const value=target.address.kind==='line'&&r.text.split(/\r?\n/u).length!==primary.text.split(/\r?\n/u).length
+            ?alignFragmentLines(primary.text,r.text).lines[target.address.line]:fragmentBlocks(r).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value;
+        if(value===null||value===undefined||!fragmentValuesEqual(value,original))return null;
+    }
+    return original;
+}
 function sameWitnessText(a:FragmentValue,b:FragmentValue):boolean {
     if(fragmentValuesEqual(a,b))return true;
     // A space touching a closing bracket before a comma does not move the
@@ -90,8 +118,17 @@ export function verifyStoredFragmentProof(value:unknown,scope:ReadingScope,unit:
         if(!planned||canonicalFragmentJson(planned)!==canonicalFragmentJson(target))return null;
         const pair=attemptReadings(value.raw as [string,string],target);
         if(!pair||canonicalFragmentJson(pair.readings)!==canonicalFragmentJson(value.readings))return null;
-        let choice=0;
-        if(value.positioned!==undefined){
+        let choice=0,correctionAccepted=false;
+        if(value.correction!==undefined){
+            if(value.positioned!==undefined||!sameWitnessText(...pair.values))return null;
+            const witness=(value as unknown as FragmentProof).correction!,old=uncertainCorrection(base,unit,target,pair.values[0]);
+            if(!old||!witness?.match?.line||!validReadingRect(witness.match.line.rect)||!validReadingHash(witness.image?.sha256)
+                ||canonicalFragmentJson(witness.image.rect)!==canonicalFragmentJson(witness.match.line.rect)||typeof witness.raw!=='string'||Buffer.byteLength(witness.raw)>65536)return null;
+            const match=findPositionedDifference(old,pair.values[0],[witness.match.line],value.rect);
+            if(!match||match.choice!==1||canonicalFragmentJson(match)!==canonicalFragmentJson(witness.match)
+                ||!matchingPrintedWitnesses(match,pair.values[0],pair.values)||!confirmPositionedReading(match,JSON.parse(witness.raw)))return null;
+            correctionAccepted=true;
+        }else if(value.positioned!==undefined){
             const witness=(value as unknown as FragmentProof).positioned!;
             if(!witness?.match?.line||!validReadingRect(witness.match.line.rect)||!validReadingHash(witness.image?.sha256)
                 ||canonicalFragmentJson(witness.image.rect)!==canonicalFragmentJson(witness.match.line.rect))return null;
@@ -114,7 +151,7 @@ export function verifyStoredFragmentProof(value:unknown,scope:ReadingScope,unit:
         const targetValue=fragmentBlocks(original).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value;
         if(chosen===undefined||targetValue===undefined||canonicalFragmentJson(chosen)!==canonicalFragmentJson(value.value)
             ||typeof chosen!==typeof targetValue||Array.isArray(chosen)&&(!Array.isArray(targetValue)||chosen.length!==targetValue.length)
-            ||!preservesAgreedContent(chosen,base,target,unit))return null;
+            ||!correctionAccepted&&!preservesAgreedContent(chosen,base,target,unit))return null;
         return structuredClone(value) as unknown as FragmentProof;
     }catch{return null;}
 }
@@ -162,10 +199,20 @@ export function retainedFragmentComposition(value:unknown,unit:ReadingUnit,scope
 
 export async function verifyFragmentImages(value:VerifiedUnit,unit:ReadingUnit,scope:ReadingScope,render:FragmentRenderer):Promise<boolean> {
     const saved=retainedFragmentComposition(value,unit,scope);if(!saved)return false;
-    for(const proof of saved.composition!.proofs){const image=await render(unit,proof.rect);if(!image||!verifyFragmentProof(proof,scope,unit,saved,proof.target,image)||!await verifyPositionedImage(proof,unit,render))return false;}
+    for(const proof of saved.composition!.proofs){const image=await render(unit,proof.rect);if(!image||!verifyFragmentProof(proof,scope,unit,saved,proof.target,image)||!await verifyPositionedImage(proof,unit,render,saved))return false;}
     return true;
 }
-export async function verifyPositionedImage(proof:FragmentProof,unit:ReadingUnit,render:FragmentRenderer):Promise<boolean>{
+export async function verifyPositionedImage(proof:FragmentProof,unit:ReadingUnit,render:FragmentRenderer,base?:VerifiedUnit):Promise<boolean>{
+    const correction=proof.correction;
+    if(correction){
+        const pair=attemptReadings(proof.raw,proof.target),lines=await render.positionedLines?.(unit);
+        const baseValue=base?uncertainCorrection(base,unit,proof.target,pair?.values[0] as FragmentValue):null;
+        if(!pair||!lines||!baseValue)return false;
+        const match=findPositionedDifference(baseValue,pair.values[0],lines,proof.rect);
+        if(canonicalFragmentJson(match)!==canonicalFragmentJson(correction.match))return false;
+        const image=await render(unit,correction.match.line.rect);
+        return Boolean(image&&digest(image.bytes)===image.sha256&&canonicalFragmentJson({...image,bytes:undefined})===canonicalFragmentJson(correction.image));
+    }
     const witness=proof.positioned;if(!witness)return true;
     const pair=attemptReadings(proof.raw,proof.target);
     const lines=await render.positionedLines?.(unit);

@@ -22,3 +22,9 @@ test('unsupported objects cannot become complete',async()=>{
  const {buildCadResult}=await m(),r=await buildCadResult(hash('a'),inv({types:{Line:1,ProxyEntity:1}}));
  assert.ok(r.issues.includes('CAD_UNSUPPORTED_ENTITY:ProxyEntity'));assert.equal(r.status,'REQUIRES_REVIEW');
 });
+test('generated_model_preview_never_replaces_sheet_completeness_or_issues',async()=>{
+ const {buildCadResult,attachCadModelPreview}=await m(),r=await buildCadResult(hash('a'),inv());
+ const next=attachCadModelPreview(r,Buffer.from('preview'),['CAD_TEXT_STYLE_UNCONFIRMED']);
+ assert.equal(next.status,'REQUIRES_REVIEW');assert.equal(next.sheets.find(s=>s.name==='Layout1').image,null);
+ assert.ok(next.sheets.find(s=>s.name==='Model').issues.includes('CAD_TEXT_STYLE_UNCONFIRMED'));assert.ok(next.issues.includes('CAD_TEXT_STYLE_UNCONFIRMED'));
+});

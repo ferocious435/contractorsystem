@@ -42,9 +42,10 @@ export async function GET(request:NextRequest) {
         const proof=checked.composition!.proofs.find(value=>value.target.id===targetId)!;
         const render=createSourceFragmentRenderer(file,String(owned.document.title||''),manifest);
         const image=await render(source,proof.rect);request.signal.throwIfAborted();
-        if(!image||!verifyFragmentProof(proof,scope,source,checked,proof.target,image)||hash(image.bytes)!==proof.image.sha256||!await verifyPositionedImage(proof,source,render))return failure(422,'Source fragment pixels do not match the saved evidence');
-        const selected=proof.positioned?await render(source,proof.positioned.match.line.rect):image;
-        if(!selected||proof.positioned&&selected.sha256!==proof.positioned.image.sha256)return failure(422,'Source line changed');
+        if(!image||!verifyFragmentProof(proof,scope,source,checked,proof.target,image)||hash(image.bytes)!==proof.image.sha256||!await verifyPositionedImage(proof,source,render,checked))return failure(422,'Source fragment pixels do not match the saved evidence');
+        const line=proof.correction??proof.positioned;
+        const selected=line?await render(source,line.match.line.rect):image;
+        if(!selected||line&&selected.sha256!==line.image.sha256)return failure(422,'Source line changed');
         return new NextResponse(new Uint8Array(selected.bytes),{headers:{'Content-Type':'image/png','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Disposition':'inline; filename="source-fragment.png"'}});
     }catch{return failure(500,'Unable to open the source fragment');}
 }

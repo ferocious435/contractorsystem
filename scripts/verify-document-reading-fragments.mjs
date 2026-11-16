@@ -82,4 +82,8 @@ test('positioned_row_shows_the_two_observed_excerpts_and_the_printed_original',a
  assert.ok(list);assert.equal(list.split(line).length-1,2);assert.ok(!list.includes('סיור'));assert.ok(html.includes('השורה במקור'));
  proof.positioned.support.raw[1]=observation('וסיור').replace('וכך','כך');
  assert.ok(!render().includes('<ol'),'Never fill a missing observation with the original');
+ const match=proof.positioned.match;delete proof.positioned;
+ proof.correction={match,raw:JSON.stringify({text:line,uncertainties:[]})};
+ proof.raw=[observation('סיור'),observation('סיור')];
+ assert.equal(render().match(/<ol[^>]*>(.*?)<\/ol>/su)?.[1].split(line).length-1,2);
 });

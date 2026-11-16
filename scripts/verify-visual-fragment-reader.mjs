@@ -76,3 +76,16 @@ test('an_unlocated_region_keeps_its_specific_reason_and_original_locator_respons
  const f=await fragmentReadingFixture(),h=harness(f,(v,{locating})=>{if(locating){v.regions=[];v.unlocated=[{targetId:'fragment:table:0:row:2',reason:'The row cannot be distinguished from its neighbor'}];}}),result=await read(h.args);
  assert.equal(result.complete,false);assert.equal(h.inputs.length,1);assert.ok(result.uncertainties.some(v=>v.includes('The row cannot be distinguished from its neighbor')));assert.equal(typeof result.composition.locator?.raw,'string');
 }));
+test('two_uncertain_old_reads_are_corrected_only_after_crop_and_independent_line',async()=>temporary(async()=>{
+ const {unitReadingLiteral}=await import('../src/server/ai/visual-reading-cache.server.ts');const f=await fragmentReadingFixture(),a=f.base.views[0].reading,b=f.base.views[0].confirmation;
+ a.tables[0][2][1]=b.tables[0][2][1]='По проекту рельеф 120 м';a.uncertainties=['В слове «рельеф» буквы неразборчивы.'];b.uncertainties=[...a.uncertainties];
+ f.base.tables=structuredClone(a.tables);f.base.text=unitReadingLiteral(a);f.base.textHash=digest(f.base.text);f.base.views[0].textHash=digest(unitReadingLiteral(a));f.base.views[0].confirmationHash=digest(unitReadingLiteral(b));
+ const h=harness(f),target=h.targets[0],line={text:'По проекту покрытие 120 м',rect:{x:0.1,y:0.3,width:0.3,height:0.02},objectIndex:22,rotation:0};assert.ok(target);
+ let calls=0;h.args.render.positionedLines=async()=>[line];
+ h.args.execution.generate=async input=>{
+  calls++;if(input.outputSchema.properties.regions)return JSON.stringify({regions:[{targetId:target.id,rect:{x:0,y:0.1,width:1,height:0.7}}],unlocated:[]});
+  if(input.outputSchema.properties.blocks){const v=response(f,target);v.blocks.find(x=>x.id===target.id).value=['מקטע 0','По проекту покрытие 120 м','מטר',''];return JSON.stringify(v);}
+  return JSON.stringify({text:line.text,uncertainties:[]});
+ };
+ const result=await read(h.args);assert.equal(calls,4);assert.equal(result.complete,true);assert.ok(result.composition.proofs[0].correction);assert.equal(result.tables[0][2][1],'По проекту покрытие 120 м');
+}));

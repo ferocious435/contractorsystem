@@ -19,15 +19,16 @@ function problemLabel(reason:string):string {
 function ConfirmedFragment({proof,url}:{proof:FragmentProof;url:string}) {
     const [open,setOpen]=useState(false),[failed,setFailed]=useState(false);
     const positioned=proof.positioned;
+    const line=proof.correction?.match??positioned?.match;
     const excerpt=(raw:string)=>{
         try{
             const observation:FragmentResponse=JSON.parse(raw);
             const block=observation.blocks.find(b=>b.id===proof.target.id);
-            return positioned&&block&&observedPrintedLine(block.value,positioned.match.cell,positioned.match.line.text)?.text;
+            return line&&block&&observedPrintedLine(block.value,line.cell,line.line.text)?.text;
         }catch{return undefined;}
     };
     const evidence=positioned?.support?.raw??(positioned?.raw?[proof.raw[positioned.match.choice],positioned.raw]:proof.raw);
-    let excerpts=positioned?.support?.raw.map(excerpt);
+    let excerpts=proof.correction?proof.raw.map(excerpt):positioned?.support?.raw.map(excerpt);
     if(positioned?.raw){
         try{excerpts=[excerpt(evidence[0]),JSON.parse(positioned.raw).text];}catch{excerpts=undefined;}
     }
@@ -39,7 +40,7 @@ function ConfirmedFragment({proof,url}:{proof:FragmentProof;url:string}) {
             // Private source pixels are served only after authorization and proof validation.
             // eslint-disable-next-line @next/next/no-img-element
             <img className="ti-source-image" src={url} alt={`אזור המקור: ${addressLabel(proof.target.address)}`} onError={()=>setFailed(true)}/>)}
-        {positioned&&<p>השורה במקור <bdi>{positioned.match.line.text}</bdi></p>}
+        {line&&<p>השורה במקור <bdi>{line.line.text}</bdi></p>}
         {excerpts?.length===2&&excerpts.every(Boolean)&&<ol aria-label="שתי קריאות של השורה במקור">
             {excerpts.map((text,index)=><li key={index}>קריאה {index+1} · <bdi>{text}</bdi></li>)}
         </ol>}
