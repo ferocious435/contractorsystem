@@ -5,7 +5,7 @@ import {readingUnitInputHash,retainedReadingUnit,unitReadingLiteral} from './vis
 import {validReadingRect,validReadingHash,type ReadingScope,type ReadingUnit,type RenderedView,type VerifiedUnit} from '@/utils/visual-source-reading';
 import {normalizeReadingTypography} from '@/utils/visual-source-response';
 import {findPositionedDifference,confirmPositionedReading,matchingPrintedWitnesses} from '@/server/documents/pdf-positioned-text.server';
-import {fragmentAddressKey,fragmentBlocks,fragmentValuesEqual,planFragmentTargets,primaryFragmentReading,
+import {alignFragmentLines,fragmentAddressKey,fragmentBlocks,fragmentValuesEqual,planFragmentTargets,primaryFragmentReading,
     type FragmentProof,type FragmentResponse,type FragmentTarget,type FragmentValue,type FragmentRenderer} from '@/utils/visual-fragment-contracts';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -49,11 +49,13 @@ function preservesAgreedText(chosen:string,source:string[]):boolean {
     if(words.every(w=>w.length===words[0].length)){
         if(result.length!==words[0].length)return false;
         if(words[0].some((word,i)=>words.every(w=>w[i]===word)&&result[i]!==word))return false;
-    }
+    }else if(!values.includes(value))return false;
     return true;
 }
-export function preservesAgreedContent(chosen:FragmentValue,base:VerifiedUnit,target:FragmentTarget):boolean {
-    const values=base.views.flatMap(p=>[p.reading,...(p.confirmation?[p.confirmation]:[])]).map(r=>fragmentBlocks(r).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value);
+export function preservesAgreedContent(chosen:FragmentValue,base:VerifiedUnit,target:FragmentTarget,unit:ReadingUnit):boolean {
+    const primary=primaryFragmentReading(unit,base);
+    const values=base.views.flatMap(p=>[p.reading,...(p.confirmation?[p.confirmation]:[])]).map(r=>target.address.kind==='line'&&primary&&r.text.split(/\r?\n/u).length!==primary.text.split(/\r?\n/u).length
+        ?alignFragmentLines(primary.text,r.text).lines[target.address.line]??undefined:fragmentBlocks(r).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value);
     if(typeof chosen==='string')return values.every(v=>typeof v==='string')&&preservesAgreedText(chosen,values as string[]);
     return values.every(v=>Array.isArray(v)&&v.length===chosen.length)&&chosen.every((cell,i)=>preservesAgreedText(cell,(values as string[][]).map(row=>row[i])));
 }
@@ -112,7 +114,7 @@ export function verifyStoredFragmentProof(value:unknown,scope:ReadingScope,unit:
         const targetValue=fragmentBlocks(original).find(b=>fragmentAddressKey(b.address)===fragmentAddressKey(target.address))?.value;
         if(chosen===undefined||targetValue===undefined||canonicalFragmentJson(chosen)!==canonicalFragmentJson(value.value)
             ||typeof chosen!==typeof targetValue||Array.isArray(chosen)&&(!Array.isArray(targetValue)||chosen.length!==targetValue.length)
-            ||!preservesAgreedContent(chosen,base,target))return null;
+            ||!preservesAgreedContent(chosen,base,target,unit))return null;
         return structuredClone(value) as unknown as FragmentProof;
     }catch{return null;}
 }

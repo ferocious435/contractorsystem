@@ -82,3 +82,40 @@ test('a_fragment_cannot_drop_one_endpoint_of_a_disputed_range',()=>{
  const {unit,base}=fixture('W74–W116','W116–W74'),target=call(contracts,'planFragmentTargets',unit,base).targets[0],{image,proof}=exampleProof(unit,base,target,['מקטע','W74','מטר','']);
  assert.equal(call(proofs,'verifyFragmentProof',proof,scope,unit,base,target,image),null);
 });
+test('reflowed_page_locates_disputed_line_between_unique_anchors',()=>{
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;
+ a.tables=[];b.tables=[];a.text='First unique heading\nContract amount 120 meters\nFinal unique approval';b.text='First unique\nheading\nContract amount 130 meters\nFinal unique approval';
+ const plan=call(contracts,'planFragmentTargets',unit,base);assert.deepEqual(plan.targets.map(t=>t.address),[{kind:'line',line:1}]);
+});
+test('reflow_does_not_guess_between_duplicate_anchors_or_drop_insertions',()=>{
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;
+ a.tables=[];b.tables=[];a.text='Repeated heading\nContract amount 120 meters\nRepeated heading';b.text='Repeated\nheading\nContract amount 130 meters\nRepeated heading\nextra obligation';
+ const plan=call(contracts,'planFragmentTargets',unit,base);assert.equal(plan.targets.length,0);assert.ok(plan.issues.length);
+});
+test('reflowed_fragment_must_preserve_agreed_words_and_numbers',()=>{
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;a.tables=[];b.tables=[];
+ a.text='First unique heading\nWork on road 7 is 120 meters\nFinal unique approval';b.text='First unique\nheading\nWork on road 7 is 130 meters\nFinal unique approval';
+ const target=contracts.planFragmentTargets(unit,base).targets[0];assert.ok(target);
+ assert.equal(proofs.preservesAgreedContent('Work on road 8 is 120 meters',base,target,unit),false);
+ assert.equal(proofs.preservesAgreedContent('Work on road 7 is 120 meters',base,target,unit),true);
+});
+test('reflowed_disagreement_cannot_erase_agreed_words_when_lengths_differ',()=>{
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;a.tables=[];b.tables=[];
+ a.text='First unique heading\nWork on road 7 totals 120 meters\nFinal unique approval';b.text='First unique\nheading\nWork on road 7 is totals 130 meters\nFinal unique approval';
+ const target=contracts.planFragmentTargets(unit,base).targets[0];assert.ok(target);
+ assert.equal(proofs.preservesAgreedContent('road 7 120 meters',base,target,unit),false);
+});
+test('reflowed_line_witness_is_bound_to_original_and_cannot_change_agreed_road',()=>{
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;a.tables=[];b.tables=[];
+ a.text='First unique heading\nWork on road 7 is 120 meters\nFinal unique approval';b.text='First unique\nheading\nWork on road 7 is 130 meters\nFinal unique approval';
+ base.text=unitReadingLiteral(a);base.textHash=digest(base.text);base.tables=[];base.views[0].textHash=digest(unitReadingLiteral(a));base.views[0].confirmationHash=digest(unitReadingLiteral(b));
+ const target=contracts.planFragmentTargets(unit,base).targets[0],{image,proof}=exampleProof(unit,base,target,'Work on road 7 is 120 meters');
+ assert.ok(proofs.verifyFragmentProof(proof,scope,unit,base,target,image));
+ for(const r of proof.readings)r.blocks.find(v=>v.id===target.id).value='Work on road 8 is 120 meters';proof.value='Work on road 8 is 120 meters';proof.raw=proof.readings.map(JSON.stringify);
+ assert.equal(proofs.verifyFragmentProof(proof,scope,unit,base,target,image),null);
+});
+test('reflow_with_extra_text_at_page_edge_stays_partial',()=>{
+ const {unit,base}=fixture();const a=base.views[0].reading,b=base.views[0].confirmation;a.tables=[];b.tables=[];
+ a.text='First unique heading\nContract amount 120 meters\nFinal unique approval';b.text='Unmatched extra obligation\nFirst unique\nheading\nContract amount 130 meters\nFinal unique approval';
+ const plan=contracts.planFragmentTargets(unit,base);assert.ok(plan.issues.includes('Fragment text or table structure differs'));
+});

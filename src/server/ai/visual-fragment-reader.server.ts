@@ -58,7 +58,7 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
         if(direct||!narrow||!render.positionedLines)return direct;
         lines??=render.positionedLines(unit);
         const match=findPositionedDifference(...pair.values,await lines,attempt.rect);
-        if(!match||!preservesAgreedContent(pair.values[match.choice],saved,target))return null;
+        if(!match||!preservesAgreedContent(pair.values[match.choice],saved,target,unit))return null;
         const crop=await render(unit,match.line.rect);if(!crop)return null;
         const lineImage={id:crop.id,sha256:crop.sha256,rect:crop.rect,width:crop.width,height:crop.height};
         for(const support of attempts){

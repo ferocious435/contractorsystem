@@ -67,6 +67,34 @@ function sameTables(a:UnitReading,b:UnitReading) {
 const sameSection=(a:FragmentAddress,b:FragmentAddress)=>a.kind===b.kind&&(a.kind==='line'||b.kind==='table-row'&&a.table===b.table);
 const hasValue=(value:FragmentValue)=>typeof value==='string'?Boolean(value.trim()):value.some(v=>Boolean(v.trim()));
 
+/** Project reflowed text onto original line addresses only between unique, ordered anchors.
+ * Unknown spans stay null; the raw responses are never modified. */
+export function alignFragmentLines(primary:string,other:string):{lines:Array<string|null>;unresolved:boolean} {
+    const lines=primary.split(/\r?\n/u),flat=normalizeReadingTypography(other),base=normalizeReadingTypography(primary);
+    if(normalizeReadingTypography(primary)===flat)return {lines,unresolved:false};
+    if(lines.length>2000||base.length>200000||flat.length>200000)return {lines:lines.map(()=>null),unresolved:true};
+    const uniqueAt=(haystack:string,needle:string)=>{const i=haystack.indexOf(needle);if(i<0||haystack.indexOf(needle,i+1)>=0)return -1;
+        if(i>0&&!/\s/u.test(haystack[i-1])||i+needle.length<haystack.length&&!/\s/u.test(haystack[i+needle.length]))return -1;return i;};
+    const result:Array<string|null>=lines.map(()=>null),anchors:Array<{line:number;start:number;end:number}>=[];
+    for(let i=0;i<lines.length;i++){
+        const value=normalizeReadingTypography(lines[i]);if(value.length<8||uniqueAt(base,value)<0)continue;
+        const start=uniqueAt(flat,value);if(start<0||anchors.length&&start<anchors[anchors.length-1].end)continue;
+        anchors.push({line:i,start,end:start+value.length});result[i]=lines[i];
+    }
+    let unresolved=false;
+    const boundaries=[{line:-1,start:0,end:0},...anchors,{line:lines.length,start:flat.length,end:flat.length}];
+    for(let i=1;i<boundaries.length;i++){
+        const prev=boundaries[i-1],next=boundaries[i],indices:number[]=[];
+        for(let k=prev.line+1;k<next.line;k++)if(lines[k].trim())indices.push(k);
+        const gap=flat.slice(prev.end,next.start).trim();
+        if(!indices.length&&!gap){for(let k=prev.line+1;k<next.line;k++)result[k]=lines[k];continue;}
+        if(indices.length===1&&prev.line>=0&&next.line<lines.length&&gap&&gap.length<=normalizeReadingTypography(lines[indices[0]]).length*3+80){
+            result[indices[0]]=gap;for(let k=prev.line+1;k<next.line;k++)if(!lines[k].trim())result[k]=lines[k];
+        }else unresolved=true;
+    }
+    return {lines:result,unresolved};
+}
+
 /** Addresses are structural positions, never a bag of matching words or numbers. */
 export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):FragmentPlan {
     const issues:string[]=[],targets:FragmentTarget[]=[],primary=primaryFragmentReading(unit,saved);
@@ -84,10 +112,13 @@ export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):Fragmen
     // Line wrapping is harmless only when the entire ordered body is identical.
     // This alignment is for comparison; the original responses stay untouched.
     const aligned=readings.map(r=>normalizeReadingTypography(r.text)===normalizeReadingTypography(primary.text)?{...r,text:primary.text}:r);
-    const textAligned=aligned.every(r=>r.text.split(/\r?\n/u).length===primary.text.split(/\r?\n/u).length);
-    if(!textAligned)issues.push('Fragment text or table structure differs');
-    const blocks=fragmentBlocks(primary),others=aligned.map(r=>new Map(fragmentBlocks(r).map(b=>[b.id,b])));
-    const eligible=(b:FragmentAnchor)=>b.address.kind==='line'?textAligned:tablesAligned;
+    const primaryLines=primary.text.split(/\r?\n/u),projected=aligned.map(r=>r.text.split(/\r?\n/u).length===primaryLines.length?{lines:r.text.split(/\r?\n/u),unresolved:false}:alignFragmentLines(primary.text,r.text));
+    if(projected.some(item=>item.unresolved||item.lines.some(value=>value===null)))issues.push('Fragment text or table structure differs');
+    const blocks=fragmentBlocks(primary),others=aligned.map((r,index)=>{
+        const map=new Map(fragmentBlocks(r).filter(b=>b.address.kind!=='line').map(b=>[b.id,b]));
+        projected[index].lines.forEach((value,line)=>{if(value!==null)map.set(`line:${line}`,{id:`line:${line}`,address:{kind:'line',line},value});});return map;
+    });
+    const eligible=(b:FragmentAnchor)=>b.address.kind==='line'?others.every(all=>all.has(b.id)):tablesAligned;
     const disputed=blocks.map(b=>eligible(b)&&others.some(all=>!all.has(b.id)||!fragmentValuesEqual(b.value,all.get(b.id)!.value)));
     const unique=(b:FragmentAnchor)=>blocks.filter(other=>fragmentValuesEqual(other.value,b.value)).length===1;
     for(let i=0;i<blocks.length;i++){
