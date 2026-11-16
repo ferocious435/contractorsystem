@@ -14,7 +14,7 @@ import {VISUAL_READING_RULES,BRANDING_RECOGNITION_VERSION,type SourceManifest,ty
 import type {FragmentRenderer} from '@/utils/visual-fragment-contracts';
 import {recheckSavedImagePurpose,eligibleImagePurpose} from './visual-image-purpose.server';
 import {readTargetedFragments} from './visual-fragment-reader.server';
-import {fragmentBaseHash,verifyFragmentImages} from './visual-fragment-proof.server';
+import {composeFragmentReading,fragmentBaseHash,verifyFragmentImages} from './visual-fragment-proof.server';
 import {sameReadingRuntimePath} from './reading-runtime-path.server';
 
 const digest=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -59,6 +59,45 @@ export async function reverifySavedPhysicalUnit(value:unknown,unit:ReadingUnit,e
     return verifiedReadingUnit(checked,unit)?checked:null;
 }
 
+/** Keep the independently validated source pair even if refinement cannot be retained. */
+export async function retainFragmentProgress(
+    unit: ReadingUnit,
+    scope: ReadingScope,
+    base: VerifiedUnit,
+    execution: AiExecutionContext,
+    cache: ReturnType<typeof createVisualReadingCache>,
+    refine: (checkpoint: (value: VerifiedUnit) => Promise<void>) => Promise<VerifiedUnit>,
+): Promise<{unit: VerifiedUnit; invalid: boolean}> {
+    if (execution.ownerId !== scope.ownerId || execution.projectId !== scope.projectId) throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+    const validated = retainedReadingUnit(base, unit, scope);
+    if (!validated) throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+    // Stored fragment pixels have not yet been re-rendered. Keep only the original
+    // pair until the fragment reader checkpoints its physically checked subset.
+    const sourcePair = validated.composition
+        ? retainedReadingUnit(composeFragmentReading(unit, validated, [], scope), unit, scope)
+        : validated;
+    if (!sourcePair || (validated.composition?.proofs.length && sourcePair.complete)) throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
+    let last = sourcePair;
+    let invalid = false;
+    await execution.checkActive();
+    // A cancelled re-render must leave the previous checkpoint available for rechecking.
+    if (!validated.composition || !await cache.readProgress(scope, unit)) await cache.writeProgress(scope, unit, last);
+    const checkpoint = async (value: VerifiedUnit) => {
+        await execution.checkActive();
+        const checked = retainedReadingUnit(value, unit, scope);
+        if (!checked) {
+            invalid = true;
+            return false;
+        }
+        await cache.writeProgress(scope, unit, checked);
+        last = checked;
+        return true;
+    };
+    const result = await refine(async value => { await checkpoint(value); });
+    if (!await checkpoint(result)) await cache.writeProgress(scope, unit, last);
+    return {unit: last, invalid};
+}
+
 export type VisualReadOptions={retainedUnits?:VerifiedUnit[];renderFragment?:FragmentRenderer};
 export async function readVisualSource(manifest:SourceManifest,scope:ReadingScope,execution:AiExecutionContext,options:VisualReadOptions={}):Promise<{units:VerifiedUnit[];issues:string[]}> {
     if(!validUuid(execution.jobId)||execution.ownerId!==scope.ownerId||execution.projectId!==scope.projectId||manifest.sourceHash!==scope.sourceHash)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
@@ -94,8 +133,10 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                 onCheckpoint:async value=>{await execution.checkActive();await cache.writeProgress(scope,unit,value);}});
             if(resume){
                 let next=resume;
-                if(options.renderFragment&&(!next.complete||next.composition))next=await readTargetedFragments({unit,saved:next,scope,execution,render:options.renderFragment,
-                    onCheckpoint:async value=>{await execution.checkActive();await cache.writeProgress(scope,unit,value);}});
+                if(options.renderFragment&&(!next.complete||next.composition)){
+                    const refined=await retainFragmentProgress(unit,scope,next,execution,cache,onCheckpoint=>readTargetedFragments({unit,saved:next,scope,execution,render:options.renderFragment!,onCheckpoint}));
+                    next=refined.unit;if(refined.invalid)issues.push('Fragment check failed: '+unit.id+' — partial composition could not be retained');
+                }
                 if(next.complete&&next.composition&&!options.renderFragment)throw new BusinessAiError('AI_SOURCE_UNVERIFIED');
                 await execution.checkActive();await cache.writeProgress(scope,unit,next);
                 if(next.complete){await cache.write(scope,unit,next);remember(next);}else issues.push(...next.uncertainties);
@@ -232,9 +273,8 @@ export async function readVisualSource(manifest:SourceManifest,scope:ReadingScop
                 createdBy:{jobId:execution.jobId,rulesVersion:VISUAL_READING_RULES,profileRevision:execution.profile.revision}};
             if(result.complete&&!verifiedReadingUnit(result,unit)){result.complete=false;result.uncertainties.push('Source content is not verified');}
             if(!result.complete&&options.renderFragment&&retainedReadingUnit(result,unit,scope)){
-                result=await readTargetedFragments({unit,saved:result,scope,execution,render:options.renderFragment,
-                    onCheckpoint:async value=>{await execution.checkActive();await cache.writeProgress(scope,unit,value);}});
-                await execution.checkActive();await cache.writeProgress(scope,unit,result);
+                const refined=await retainFragmentProgress(unit,scope,result,execution,cache,onCheckpoint=>readTargetedFragments({unit,saved:result,scope,execution,render:options.renderFragment!,onCheckpoint}));
+                result=refined.unit;if(refined.invalid)issues.push('Fragment check failed: '+unit.id+' — partial composition could not be retained');
             }
             units.push(result);
             if(result.complete){await execution.checkActive();await cache.write(scope,unit,result);await execution.checkActive();

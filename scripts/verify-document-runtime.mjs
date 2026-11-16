@@ -44,6 +44,7 @@ const suites=[
     'scripts/verify-reference-page-preview.mjs',
     'scripts/verify-docx-image-reading.mjs',
     'scripts/verify-word-layout.mjs',
+    'scripts/verify-word-manifest-compatibility.mjs',
     'scripts/verify-visual-image-purpose.mjs',
     'scripts/verify-spreadsheet-native-reading.mjs',
     'scripts/verify-docx-extraction-route.mjs',

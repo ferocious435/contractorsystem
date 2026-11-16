@@ -1,3 +1,8 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createVisualReadingCache,retainedReadingUnit} from '../src/server/ai/visual-reading-cache.server.ts';
+import {retainFragmentProgress} from '../src/server/ai/visual-source-reader.server.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readingUnit,unitResponse,digest} from './codex-runtime/visual-reading-fixtures.mjs';
@@ -201,4 +206,59 @@ test('uncertain_word_does_not_authorize_changing_an_embedded_substring',()=>{
  a.tables[0][3][1]=b.tables[0][3][1]='По проекту внерельеф рельеф 120 м';b.uncertainties=[...a.uncertainties];
  const target=contracts.planFragmentTargets(unit,base).targets[0];assert.ok(target);
  assert.equal(proofs.uncertainCorrection(base,unit,target,['Работы','По проекту внепокрытие рельеф 120 м','м','']),null);
+});
+
+test('partial_composition_with_derived_issues_round_trips_without_new_uncertainties',async()=>{
+ const {unit,base}=fixture();base.views[0].reading.visualDescription='diagram 100';base.views[0].confirmation.visualDescription='diagram 200';
+ const target=contracts.planFragmentTargets(unit,base).targets[0],{proof}=exampleProof(unit,base,target);
+ const result=proofs.composeFragmentReading(unit,base,[proof],scope);assert.equal(result.complete,false);assert.ok(result.composition.issues.length);
+ assert.ok(retainedReadingUnit(result,unit,scope));
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'visual-progress-'));try{const cache=createVisualReadingCache(dir);await cache.writeProgress(scope,unit,result);assert.ok(await cache.readProgress(scope,unit));}finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+test('base_is_saved_before_invalid_refinement_and_real_errors_propagate',async()=>{
+ const {unit,base}=fixture(),dir=await fs.mkdtemp(path.join(os.tmpdir(),'visual-progress-'));const cache=createVisualReadingCache(dir);
+ const execution={ownerId:scope.ownerId,projectId:scope.projectId,checkActive:async()=>{}};
+ try{
+  const result=await retainFragmentProgress(unit,scope,base,execution,cache,async checkpoint=>{
+   assert.deepEqual(await cache.readProgress(scope,unit),base);
+   const invalid=structuredClone(base);invalid.inputHash='2'.repeat(64);await checkpoint(invalid);return invalid;
+  });
+  assert.equal(result.invalid,true);assert.deepEqual(result.unit,base);assert.deepEqual(await cache.readProgress(scope,unit),base);
+  await assert.rejects(()=>retainFragmentProgress(unit,scope,base,{...execution,ownerId:'ffffffff-ffff-4fff-8fff-ffffffffffff'},cache,async()=>base));
+  await assert.rejects(()=>retainFragmentProgress(unit,scope,base,execution,cache,async()=>{throw new Error('original region error');}),/original region error/);
+  await assert.rejects(()=>retainFragmentProgress(unit,scope,base,{...execution,checkActive:async()=>{throw new Error('cancelled');}},cache,async()=>base),/cancelled/);
+  await assert.rejects(()=>retainFragmentProgress(unit,scope,base,execution,{...cache,writeProgress:async()=>{throw new Error('storage failed');}},async()=>base),/storage failed/);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('unverified_old_pixels_cannot_return_a_complete_fallback',async()=>{
+ const {unit,base}=fixture(),target=contracts.planFragmentTargets(unit,base).targets[0],{proof}=exampleProof(unit,base,target);
+ const previous=proofs.composeFragmentReading(unit,base,[proof],scope);assert.equal(previous.complete,true);
+ const wrongRender=async()=>({id:'changed',sha256:digest(Buffer.from('changed')),width:600,height:300,rect:proof.rect,bytes:Buffer.from('changed')});
+ assert.equal(await proofs.verifyFragmentImages(previous,unit,scope,wrongRender),false);
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'visual-progress-'));const cache=createVisualReadingCache(dir);
+ try {const execution={ownerId:scope.ownerId,projectId:scope.projectId,checkActive:async()=>{}};
+  const result=await retainFragmentProgress(unit,scope,previous,execution,cache,async checkpoint=>{
+   const fallback=await cache.readProgress(scope,unit);assert.equal(fallback.complete,false);assert.equal(fallback.composition.proofs.length,0);
+   const invalid=structuredClone(previous);invalid.inputHash='2'.repeat(64);await checkpoint(invalid);return invalid;
+  });
+  assert.equal(result.invalid,true);assert.equal(result.unit.complete,false);assert.equal(result.unit.composition.proofs.length,0);
+  assert.equal((await cache.readProgress(scope,unit)).complete,false);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('cancellation_during_pixel_recheck_keeps_previous_checkpoint_for_next_attempt',async()=>{
+ const {unit,base}=fixture(),target=contracts.planFragmentTargets(unit,base).targets[0];
+ const previous=proofs.composeFragmentReading(unit,base,[exampleProof(unit,base,target).proof],scope);
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'visual-checkpoint-')),cache=createVisualReadingCache(dir);
+ const execution={ownerId:scope.ownerId,projectId:scope.projectId,checkActive:async()=>{}};
+ try{
+  await cache.writeProgress(scope,unit,previous);
+  const stored=await cache.readProgress(scope,unit);
+  assert.equal(stored.composition.proofs.length,1);
+  await assert.rejects(()=>retainFragmentProgress(unit,scope,previous,execution,cache,async()=>{
+   throw new Error('cancelled before render');
+  }),/cancelled before render/);
+  assert.deepEqual(await cache.readProgress(scope,unit),stored);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
 });

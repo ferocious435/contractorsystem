@@ -39,7 +39,10 @@ export async function readTargetedFragments({unit,saved,scope,execution,render,o
         const image=await render(unit,proof.rect);await execution.checkActive();if(image&&verifyFragmentProof(proof,scope,unit,saved,target,image)&&await verifyPositionedImage(proof,unit,render,saved))accepted.push(checked);
     }
     let pending=plan.targets.filter(t=>!accepted.some(p=>p.target.id===t.id)).slice(0,FRAGMENT_LIMIT);
-    let result=assemble();if(!pending.length)return result;
+    let result=assemble();
+    // Publish only the subset whose source pixels were just re-rendered.
+    if(saved.composition)await onCheckpoint(result);
+    if(!pending.length)return result;
     const root=path.resolve(getRuntimeDirectory()),job=path.join(root,'jobs',execution.jobId),directory=path.join(job,'fragment-read-'+randomUUID());
     await checkedReadingDirectory(root,directory,true);
     async function imageFile(image:RenderedView){

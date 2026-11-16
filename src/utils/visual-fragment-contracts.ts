@@ -141,7 +141,10 @@ export function planFragmentTargets(unit:ReadingUnit,saved:VerifiedUnit):Fragmen
     });
     const eligible=(b:FragmentAnchor)=>b.address.kind==='line'?others.every(all=>all.has(b.id)):tablesAligned;
     const sourceNotes=new Set(readings.flatMap(r=>r.uncertainties));
-    const savedNotes=saved.uncertainties.filter(note=>!sourceNotes.has(note)&&!(note.startsWith('Unbound source uncertainty: ')&&sourceNotes.has(note.slice('Unbound source uncertainty: '.length)))&&!/^Numeric or source verification failed: |^Fragment (?:pending|check failed): /u.test(note)&&note!=='Source content is not verified');
+    // Assembly diagnostics are derived from the unchanged source pair. Do not feed
+    // them back as new source uncertainties when validating a saved composition.
+    const derived=new Set(saved.composition?planFragmentTargets(unit,{...saved,uncertainties:[],composition:undefined}).issues:[]);
+    const savedNotes=saved.uncertainties.filter(note=>!derived.has(note)).map(note=>note.startsWith('Unbound source uncertainty: ')?note.slice('Unbound source uncertainty: '.length):note).filter(note=>!sourceNotes.has(note)&&!/^Numeric or source verification failed: |^Fragment (?:pending|check failed): /u.test(note)&&note!=='Source content is not verified');
     const notes=[...new Set([...sourceNotes,...savedNotes])],noteTargets=new Map<string,string>();
     for(const note of notes){
         const quote=uncertaintyQuote(note);if(!quote||readings.some(r=>quoteOccurrences(r.visualDescription,quote)>0

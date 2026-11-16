@@ -8,6 +8,7 @@ import {verifyFragmentImages,canonicalFragmentJson} from '../visual-fragment-pro
 import {createSourceFragmentRenderer} from '@/server/documents/visual-fragment-renderer.server';
 import {getRuntimeDirectory} from '../codex-client.server';
 import {buildVisualSourceManifest} from '@/utils/visual-source-manifest';
+import {matchesLegacyWordManifestHash} from '@/utils/word-manifest-compatibility';
 import {assembleDocumentReading,createReadingPatch,getCurrentDocumentReading,hasSavedVisualReading} from '@/utils/document-reading-history';
 import {preserveStableDocumentText} from '@/utils/stable-document-reading';
 import {makeTextInput} from '@/utils/document-text-extraction';
@@ -64,7 +65,8 @@ export async function stageDocumentReading({client,document,file,execution}:{cli
     }
     await execution.reportProgress({phase:'reading',completedUnits:0,totalUnits:manifest.units.length});
     const retained:VerifiedUnit[]=[];
-    if(scopeMatches&&hasSavedVisualReading(document,sourceHash)&&previous?.manifestHash===manifest.manifestHash&&Array.isArray(parsed.source_reading_units)){
+    if(scopeMatches&&document.project_id===scope.projectId&&hasSavedVisualReading(document,sourceHash)
+        &&(previous?.manifestHash===manifest.manifestHash||matchesLegacyWordManifestHash(manifest,previous?.manifestHash))&&Array.isArray(parsed.source_reading_units)){
         for(const unit of manifest.units){
             const previous=parsed.source_reading_units.find(value=>record(value)&&value.unitId===unit.id),saved=retainedReadingUnit(previous,unit,scope);
             if(!saved)continue;
