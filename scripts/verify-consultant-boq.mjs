@@ -129,3 +129,99 @@ test('a concrete building cannot supply a concrete wall price through shared act
  const building=body.replaceAll(/דחיקת צינורות פיברגלס בשיטת Micro Tunneling|אספקה בלבד של צינורות GRP/g,'הקמת מבנה בטון');
  assert.deepEqual(selectConsultantBoqRows([doc('building',building)],'מה מחיר הקמת קיר בטון בקוטר 450 מ"מ?',[]),[]);
 });
+
+const editionsUrl=new URL('../src/utils/consultant-boq-editions.ts',import.meta.url);
+const {compareBoqEdition}=existsSync(editionsUrl)?await import(editionsUrl.href):{compareBoqEdition:()=>({status:'UNKNOWN',originalRow:null})};
+const edition=(id,version,price=100,options={})=>{
+ const {date='01.01.2024',replacement='',unit='מטר',scope='אספקת צינורות GRP בקוטר 450 מ"מ',page=3,...extra}=options;
+ return doc(id,`מספר כתב כמויות: BOQ-P; מהדורה: ${version}\n${date?`תאריך מהדורה: ${date}\n`:''}${replacement?replacement+'\n':''}כתב כמויות לביצוע\nסעיף תיאור יחידה כמות מחיר סה"כ\nהמחירים ללא מע"מ\n${scope} 57.91.0022\n${price*2} ${price} 2 ${unit}\n-- ${page} of 18 --`,extra);
+};
+const replaces=(from,to)=>`כתב כמויות BOQ-P מהדורה ${to} מחליף את כתב כמויות BOQ-P מהדורה ${from}.`;
+const savedFrom=d=>selectConsultantBoqRows([d],'אספקת צינורות GRP בקוטר 450 מ"מ',[])[0];
+test('explicit replacement preserves both grounded editions dates prices pages and literal basis',()=>{
+ const a=edition('old','A'),b=edition('new','B',140,{date:'02.02.2024',replacement:replaces('A','B'),page:7});
+ const saved=savedFrom(a),before=structuredClone(saved),out=compareBoqEdition(saved,[a,b]);
+ assert.equal(out.status,'REPLACED');assert.deepEqual(saved,before);assert.deepEqual(out.originalRow,before);
+ assert.equal(out.currentRow.unitPrice,140);assert.equal(out.currentRow.page,7);assert.equal(out.originalRow.page,3);
+ assert.equal(out.originalRow.revision.date,'01.01.2024');assert.equal(out.currentRow.revision.date,'02.02.2024');
+ assert.deepEqual(out.changes,['PRICE']);assert.equal(out.chain.length,1);
+ for(const anchor of [out.currentRow,...out.chain.map(h=>h.evidence)]){const d=[a,b].find(d=>d.id===anchor.documentId);assert.equal(d.extracted_text.slice(anchor.start,anchor.end),anchor.quote);}
+});
+test('no same-code date title or generic designation proves replacement',()=>{
+ const a=edition('a','A'),b=edition('b','B',150,{date:'04.04.2030'});
+ assert.equal(compareBoqEdition(savedFrom(a),[a,b]).status,'UNKNOWN');
+ assert.equal(compareBoqEdition(savedFrom(a),[a,edition('c','B',150,{replacement:'כתב כמויות לביצוע מחליף כתב כמויות חוזי'})]).status,'UNKNOWN');
+});
+test('same price unit and scope changes and missing date remain explicit',()=>{
+ const a=edition('a','A');
+ for(const [options,expected] of [[{},[]],[{unit:'יחידה'},['UNIT']],[{scope:'אספקת צינורות פלדה בקוטר 450 מ"מ'},['SCOPE']]]){
+  const b=edition('b','B',100,{date:null,replacement:replaces('A','B'),...options});const out=compareBoqEdition(savedFrom(a),[a,b]);
+  assert.equal(out.status,'REPLACED');assert.deepEqual(out.changes,expected);assert.equal(out.currentRow.revision.date,null);assert.ok(out.warnings.some(w=>w.includes('תאריך לא צוין')));
+  if(expected.length)assert.ok(out.description.includes(out.currentRow[expected[0]==='UNIT'?'unit':'scope']));
+ }
+});
+test('replacement chain reaches latest unambiguous edition and reports competing successors',()=>{
+ const a=edition('a','A'),b=edition('b','B',120,{replacement:replaces('A','B')}),c=edition('c','C',130,{replacement:replaces('B','C')});
+ const out=compareBoqEdition(savedFrom(a),[a,b,c]);assert.equal(out.currentRow.documentId,'c');assert.equal(out.chain.length,2);
+ const conflict=compareBoqEdition(savedFrom(a),[a,b,c,edition('d','D',160,{replacement:replaces('B','D')})]);
+ assert.equal(conflict.status,'CONFLICT');assert.equal(conflict.currentRow.documentId,'b');assert.equal(conflict.originalRow.documentId,'a');
+});
+test('separate active project letter may prove replacement while drafts foreign and unread sources cannot',()=>{
+ const a=edition('a','A'),b=edition('b','B',120),letter=doc('letter',replaces('A','B'),{title:'approval.txt',parsed_json:{}});
+ assert.equal(compareBoqEdition(savedFrom(a),[a,b,letter]).status,'REPLACED');
+ for(const extra of [{title:'approval טיוטה.txt'},{project_id:'foreign'},{ocr_status:'REQUIRES_REVIEW'},{deleted_at:'2024-01-01'}]){
+  assert.equal(compareBoqEdition(savedFrom(a),[a,b,{...letter,...extra}]).status,'UNKNOWN');
+ }
+});
+test('replacement is directional affirmative and only new edition or separate letter can establish it',()=>{
+ const a=edition('a','A',100,{replacement:replaces('A','B')}),b=edition('b','B',120);
+ assert.equal(compareBoqEdition(savedFrom(a),[a,b]).status,'UNKNOWN');
+ for(const phrase of [`לא ${replaces('A','B')}`,`האם ${replaces('A','B')}`,`טיוטה: ${replaces('A','B')}`]){
+  assert.equal(compareBoqEdition(savedFrom(a),[a,edition('b','B',120,{replacement:phrase})]).status,'UNKNOWN');
+ }
+});
+test('rereading same bytes with a new text hash is never a new edition',()=>{
+ const a=edition('a','A'),b=edition('b','B',190,{replacement:replaces('A','B'),content_hash:a.content_hash});
+ const out=compareBoqEdition(savedFrom(a),[a,b]);assert.equal(out.status,'UNKNOWN');assert.equal(out.currentRow.unitPrice,100);
+});
+test('absent ambiguous or changed section item cannot supply replacement price',()=>{
+ const a=edition('a','A'),b=edition('b','B',120,{replacement:replaces('A','B')});
+ for(const text of [b.extracted_text.replace('57.91.0022','58.91.0022'),b.extracted_text+'\n'+b.extracted_text]){
+  assert.equal(compareBoqEdition(savedFrom(a),[a,{...b,extracted_text:text,extracted_text_hash:hash(text)}]).status,'UNKNOWN');
+ }
+});
+test('cycles and multiple files claiming the same edition are conflicts',()=>{
+ const a=edition('a','A',100,{replacement:replaces('B','A')}),b=edition('b','B',120,{replacement:replaces('A','B')});
+ assert.equal(compareBoqEdition(savedFrom(a),[a,b]).status,'CONFLICT');
+ const a2=edition('baseline','A'),b2=edition('competing','B',140,{replacement:replaces('A','B')});
+ assert.equal(compareBoqEdition(savedFrom(a2),[a2,b,b2]).status,'CONFLICT');
+});
+test('identifiers and replacement quotes must both match exact BOQ identities',()=>{
+ const a=edition('a','A'),b=edition('b','B',120,{replacement:replaces('A','B')});
+ const text=b.extracted_text.replace('מספר כתב כמויות: BOQ-P','מספר כתב כמויות: BOQ-Q');
+ assert.equal(compareBoqEdition(savedFrom(a),[a,{...b,extracted_text:text,extracted_text_hash:hash(text)}]).status,'UNKNOWN');
+ const out=compareBoqEdition({...savedFrom(a),unitPrice:999},[a,b]);assert.equal(out.status,'UNKNOWN');
+});
+test('print upload and contradictory dates cannot silently become revision dates',()=>{
+ const a=edition('a','A'),b=edition('b','B',120,{date:null,replacement:replaces('A','B')});
+ const text='תאריך הדפסה: 03.03.2030\n'+b.extracted_text;
+ const out=compareBoqEdition(savedFrom(a),[a,{...b,extracted_text:text,extracted_text_hash:hash(text),created_at:'2031-01-01'}]);
+ assert.equal(out.status,'REPLACED');assert.equal(out.currentRow.revision.date,null);assert.equal(out.currentRow.revision.printedDate,'03.03.2030');
+ const conflicting='תאריך מהדורה: 06.06.2025\n'+edition('c','B',120,{replacement:replaces('A','B')}).extracted_text;
+ const result=compareBoqEdition(savedFrom(a),[a,doc('c',conflicting)]);
+ assert.equal(result.currentRow.revision.date,null);assert.ok(result.warnings.some(w=>w.includes('תאריכים סותרים')));
+});
+if(process.env.CONSULTANT_BOQ_FIXTURES){
+ test('real project BOQs retain all original rows without an invented replacement',async()=>{
+  const {readFile}=await import('node:fs/promises');const {join}=await import('node:path');
+  const root=process.env.CONSULTANT_BOQ_FIXTURES;const documents=JSON.parse(await readFile(join(root,'project-documents.json'),'utf8'));
+  const request=JSON.parse(await readFile(join(root,'request.json'),'utf8'));const rows=selectConsultantBoqRows(documents,request.question,[]);
+  assert.equal(rows.length,4);for(const row of rows){const out=compareBoqEdition(row,documents);assert.equal(out.status,'UNKNOWN');assert.deepEqual(out.currentRow,row);assert.deepEqual(out.originalRow,row);}
+ });
+}
+test('a contractor offer and an unrelated third BOQ cannot authoritatively replace two editions',()=>{
+ const a=edition('a','A'),b=edition('b','B',120);
+ const letter=doc('offer',replaces('A','B'),{title:'הצעת מחיר של הקבלן.txt',parsed_json:{}});
+ assert.equal(compareBoqEdition(savedFrom(a),[a,b,letter]).status,'UNKNOWN');
+ const c=edition('third','C',130,{replacement:replaces('A','B')});assert.equal(compareBoqEdition(savedFrom(a),[a,b,c]).status,'UNKNOWN');
+});

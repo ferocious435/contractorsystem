@@ -11,6 +11,8 @@ export type ConsultantBoqBinding = {
     status: 'VERIFIED' | 'UNVERIFIED'; warnings: string[]; evidence: EvidenceAnchor[];
 };
 export type ConsultantBoqRevision = {
+    identifier?: { boq: string; edition: string; evidence: EvidenceAnchor } | null;
+    conflictingDateEvidence?: EvidenceAnchor[];
     date: string | null; datePurpose: 'DOCUMENT' | 'PRINTED' | 'UNKNOWN'; printedDate: string | null;
     dateEvidence: EvidenceAnchor | null; printedDateEvidence: EvidenceAnchor | null;
     designation: 'EXECUTION_BOQ' | 'CONTRACT_BOQ'; designationEvidence: EvidenceAnchor;
@@ -100,7 +102,7 @@ function lineEvidence(document: ConsultantBoqDocument, predicate: (line: string)
     }
     return null;
 }
-function revision(document: ConsultantBoqDocument): ConsultantBoqRevision | null {
+export function readConsultantBoqRevision(document: ConsultantBoqDocument): ConsultantBoqRevision | null {
     const body = String(document.extracted_text || ''), head = body.slice(0, 2500);
     if (/הצעת\s*מחיר|הצעת\s*הקבלן|contractor\s+(?:offer|proposal)/iu.test(searchText(head + ' ' + document.title))) return null;
     const designationEvidence = lineEvidence(document, line => /כתב\s*כמויות/u.test(searchText(line)));
@@ -114,9 +116,20 @@ function revision(document: ConsultantBoqDocument): ConsultantBoqRevision | null
     if (!authorityEvidence) return null;
     const datePattern = /\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/u;
     const printed = lineEvidence(document, line => datePattern.test(line) && /תאריך\s*הדפסה|הודפס|printed/iu.test(searchText(line)));
-    const dated = lineEvidence(document, line => datePattern.test(line) && /תאריך\s*(?:המסמך|עדכון|מהדורה)|מהדורה|document\s*date|revision\s*date/iu.test(searchText(line))
-        && !/הדפסה|הודפס|printed/iu.test(searchText(line)));
-    return { date: dated?.quote.match(datePattern)?.[0] || null,
+    const dates = [...body.matchAll(/[^\r\n]+/gu)].filter(line => datePattern.test(line[0])
+        && /תאריך\s*(?:המסמך|עדכון|מהדורה)|document\s*date|revision\s*date/iu.test(searchText(line[0]))
+        && !/הדפסה|הודפס|printed/iu.test(searchText(line[0])))
+        .map(line => anchorSourceRange(document, line.index, line.index + line[0].length));
+    const conflictingDateEvidence = new Set(dates.map(anchor => anchor.quote.match(datePattern)?.[0])).size > 1 ? dates : [];
+    const dated = conflictingDateEvidence.length ? null : dates[0];
+    const identifierPattern = /^מספר כתב כמויות:\s*([\p{L}\d_-]+);\s*מהדורה:\s*([\p{L}\d_-]+)\s*$/u;
+    const identifiers = [...body.matchAll(/[^\r\n]+/gu)].filter(line => identifierPattern.test(line[0]));
+    const identifierEvidence = identifiers.length === 1 ? anchorSourceRange(document, identifiers[0].index,
+        identifiers[0].index + identifiers[0][0].length) : null;
+    const identifierMatch = identifierEvidence?.quote.match(identifierPattern);
+    return { conflictingDateEvidence,
+        identifier: identifierMatch && identifierEvidence ? { boq: identifierMatch[1], edition: identifierMatch[2], evidence: identifierEvidence } : null,
+        date: dated?.quote.match(datePattern)?.[0] || null,
         datePurpose: dated ? 'DOCUMENT' : printed ? 'PRINTED' : 'UNKNOWN',
         printedDate: printed?.quote.match(datePattern)?.[0] || null,
         dateEvidence: dated || printed, printedDateEvidence: printed,
@@ -142,7 +155,7 @@ export function selectConsultantBoqRows(documents: ConsultantBoqDocument[], ques
     const result: ConsultantBoqRow[] = [], originals = new Map<string, ConsultantBoqRow[]>();
     for (const document of active) {
         if (document.project_id !== projectId || !assessDocumentSourceReadiness(document).canCompare) continue;
-        const info = revision(document);
+        const info = readConsultantBoqRevision(document);
         if (!info) continue;
         const documentStreets = streets(String(document.extracted_text || ''));
         if (requestedStreets.length && documentStreets.length
