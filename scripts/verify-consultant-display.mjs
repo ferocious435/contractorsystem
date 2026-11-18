@@ -17,11 +17,50 @@ test('BOQ table renders distinct sources with readable Hebrew, LTR prices, dates
 test('only a proven replacement may render the current row as a new price',async()=>{
  const {renderToStaticMarkup}=await import('react-dom/server');const {createElement}=await import('react');const {ConsultantBoqRows}=await import('../src/components/features/consultant/ConsultantBoqRows.tsx');
  const {consultantBoqRowKey}=await import('../src/utils/consultant-result.ts');
- const comparison={status:'UNKNOWN',originalRow:row,currentRow:{...row,documentId:'new',unitPrice:9876},chain:[],editionHistory:[],warnings:[],reason:'החלפה לא הוכחה',description:'מחיר השתנה'};
+ const {createBoqBrowserFixture}=await import('./codex-runtime/boq-browser-fixture.mjs');const fixture=await createBoqBrowserFixture();const url=new URL('http://fixture/api/ai/jobs?kind=consultant&projectId=20000000-0000-4000-8000-000000000001');
+ const fixtureRows=(await (await fixture(url,new Request(url))).json()).jobs[0].result.boqRows;
+ const [original,replacement]=fixtureRows.filter(row=>row.itemCode==='57.91.0022');
+ const comparison={status:'UNKNOWN',originalRow:original,currentRow:replacement,chain:[],editionHistory:[],warnings:[],reason:'החלפה לא הוכחה',description:'מחיר השתנה'};
  for(const status of ['UNKNOWN','CONFLICT','REPLACED']){
-  const html=renderToStaticMarkup(createElement(ConsultantBoqRows,{projectId:'p',rows:[row],comparisons:{[consultantBoqRowKey(row)]:{...comparison,status}}}));
-  assert.equal(html.includes('9,876.00'),status==='REPLACED');assert.equal(html.includes('מהדורה מחליפה מאומתת'),status==='REPLACED');
+  const html=renderToStaticMarkup(createElement(ConsultantBoqRows,{projectId:'p',rows:[original],comparisons:{[consultantBoqRowKey(original)]:{...comparison,status}}}));
+  assert.equal(html.includes('150.00'),status==='REPLACED');assert.equal(html.includes('מהדורה מחליפה מאומתת'),status==='REPLACED');
  }
+});
+test('a saved A-only answer gains validated B through API comparisons without rewriting its result',async()=>{
+ const {createBoqBrowserFixture}=await import('./codex-runtime/boq-browser-fixture.mjs');const fixture=await createBoqBrowserFixture();
+ const {readBoqComparisons}=await import('../src/components/features/consultant/boqSources.ts');const {renderToStaticMarkup}=await import('react-dom/server');const {createElement}=await import('react');const {ConsultantBoqRows}=await import('../src/components/features/consultant/ConsultantBoqRows.tsx');
+ const projectId='20000000-0000-4000-8000-000000000001',url=path=>new URL(path,'http://fixture');
+ const configure=body=>fixture(url('/fixture/boq-config'),new Request(url('/fixture/boq-config'),{method:'POST',body:JSON.stringify(body)}));
+ await configure({scenario:'saved-a',includeB:false});
+ const jobsPath=`/api/ai/jobs?kind=consultant&projectId=${projectId}`;const readJob=async()=> (await (await fixture(url(jobsPath),new Request(url(jobsPath)))).json()).jobs[0];
+ const job=await readJob(),saved=structuredClone(job);assert.equal(job.result.boqRows.length,2);assert.equal(new Set(job.result.boqRows.map(row=>row.documentId)).size,1);
+ const previousFetch=globalThis.fetch;
+ try{
+  globalThis.fetch=(path,options)=>fixture(url(path),new Request(url(path),options));
+  const before=await readBoqComparisons(projectId,job.conversationId,new AbortController().signal);
+  assert.ok(Object.values(before.jobs[job.id]).every(comparison=>comparison.status==='UNKNOWN'));
+  await configure({scenario:'saved-a',includeB:true});
+  const after=await readBoqComparisons(projectId,job.conversationId,new AbortController().signal);
+  assert.ok(Object.values(after.jobs[job.id]).every(comparison=>comparison.status==='REPLACED'));
+  const html=renderToStaticMarkup(createElement(ConsultantBoqRows,{projectId,rows:job.result.boqRows,comparisons:after.jobs[job.id]}));
+  assert.equal((html.match(/data-boq-source=/g)||[]).length,4);assert.ok(html.includes('140.00'));assert.ok(html.includes('150.00'));assert.ok(html.includes('מהדורה מחליפה מאומתת'));
+  assert.deepEqual(await readJob(),saved);assert.deepEqual(job,saved);
+  await configure({scenario:'four-sources'});assert.equal((await readJob()).result.boqRows.length,4);
+ }finally{globalThis.fetch=previousFetch;}
+});
+test('standalone BOQ browser starts and serves saved sources with SQL modules forbidden',async()=>{
+ const {spawn}=await import('node:child_process');
+ const child=spawn(process.execPath,['--import','./scripts/codex-runtime/load-server.mjs','--import','./scripts/fixtures/boq-forbid-sql.mjs','scripts/codex-runtime/writing-browser.mjs','--boq','--port=0'],{cwd:process.cwd(),windowsHide:true,stdio:['ignore','pipe','pipe']});
+ let output='';child.stdout.on('data',chunk=>{output+=chunk;});child.stderr.on('data',chunk=>{output+=chunk;});
+ try{
+  const address=await new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>reject(Error('BOQ startup timeout: '+output)),30000);
+   const check=()=>{const match=output.match(/Synthetic writing browser (http:\/\/127\.0\.0\.1:\d+)/);if(match){clearTimeout(timer);resolve(match[1]);}};
+   child.stdout.on('data',check);child.once('exit',code=>{clearTimeout(timer);reject(Error(`BOQ startup exit ${code}: ${output}`));});check();
+  });
+  const state=await (await fetch(address+'/fixture/stats')).json();assert.equal(state.mode,'boq');assert.equal(state.legacySql,false);
+  const response=await fetch(address+'/api/ai/jobs?kind=consultant&projectId=20000000-0000-4000-8000-000000000001');assert.equal(response.status,200);assert.equal((await response.json()).jobs[0].result.boqRows.length,4);
+ }finally{child.kill();await new Promise(resolve=>{if(child.exitCode!==null)resolve();else child.once('exit',resolve);});}
 });
 test('file hash guard checks downloaded bytes and preserves calls without sourceHash',async()=>{
  const {verifyDocumentSourceHash}=await import('../src/utils/document-source-hash.server.ts');

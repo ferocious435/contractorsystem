@@ -20,19 +20,24 @@ export async function createBoqBrowserFixture(){
  const rows=selectConsultantBoqRows(documents,'דחיקת צינורות GRP בקוטר 450 מ"מ ברחוב יהלום',[]);
  if(rows.length!==4)throw Error('BOQ browser fixture must preserve two rows from two originals');
  const job={id:'90000000-0000-4000-8000-000000000001',projectId,kind:'consultant',state:'SUCCEEDED',revision:1,conversationId,clientContextId:conversationId,error:null,result:{displayVersion:'consultant-v2',question:'מה הבסיס לתשלום על דחיקת צינורות GRP ברחוב יהלום?',response:'דוגמה סינתטית בלבד: יש לפעול לפי ההנחיה הכתובה. תשלום ואישור שיטת העבודה טעונים בירור עם מנהל הפרויקט והמפקח. שני סעיפים מוצגים בשני מקורות; אין לחברם לתוספת תשלום.',details:'בדיקת מקורות בדויים בלבד.',answeredAt:'2026-11-18T10:00:00.000Z',boqRows:rows}};
- let config={missingOld:false,tamperedOld:false,delayMs:0,unavailable:false};
+ const jobSavedA={...job,id:'90000000-0000-4000-8000-000000000002',result:{...job.result,boqRows:rows.filter(row=>row.documentId===documents[0].id)}};
+ let config={scenario:'four-sources',includeB:true,missingOld:false,tamperedOld:false,delayMs:0,unavailable:false};
  return async(url,request)=>{
-  if(url.pathname==='/fixture/boq-config'){if(request.method==='POST'){const next=await request.json();config={missingOld:next.missingOld===true,tamperedOld:next.tamperedOld===true,delayMs:Math.min(10000,Math.max(0,Number(next.delayMs)||0)),unavailable:next.unavailable===true};}return Response.json({syntheticOnly:true,...config});}
-  if(url.pathname==='/api/ai/jobs'&&url.searchParams.get('kind')==='consultant')return Response.json({success:true,jobs:url.searchParams.get('projectId')===projectId&&(!url.searchParams.get('clientContextId')||url.searchParams.get('clientContextId')===conversationId)?[job]:[]});
+  if(url.pathname==='/fixture/boq-config'){if(request.method==='POST'){const next=await request.json();config={scenario:next.scenario==='saved-a'?'saved-a':next.scenario==='four-sources'?'four-sources':config.scenario,includeB:typeof next.includeB==='boolean'?next.includeB:next.scenario==='saved-a'?false:next.scenario==='four-sources'?true:config.includeB,missingOld:next.missingOld===true,tamperedOld:next.tamperedOld===true,delayMs:Math.min(10000,Math.max(0,Number(next.delayMs)||0)),unavailable:next.unavailable===true};}return Response.json({syntheticOnly:true,...config});}
+  if(url.pathname==='/api/system/ai-status')return Response.json({available:true,provider:'Codex',reason:null});
+  if(url.pathname==='/fixture/stats')return Response.json({syntheticOnly:true,mode:'boq',legacySql:false,...config});
+  const savedJob=config.scenario==='saved-a'?jobSavedA:job;
+  if(url.pathname==='/api/ai/jobs'&&url.searchParams.get('kind')==='consultant')return Response.json({success:true,jobs:url.searchParams.get('projectId')===projectId&&(!url.searchParams.get('clientContextId')||url.searchParams.get('clientContextId')===conversationId)?[savedJob]:[]});
   if(url.pathname==='/api/chat/boq-revisions'){
-   const snapshot={...config};if(snapshot.delayMs)await new Promise(resolve=>setTimeout(resolve,snapshot.delayMs));
-   return Response.json({success:true,availability:snapshot.unavailable?'UNAVAILABLE':'AVAILABLE',jobs:url.searchParams.get('projectId')===projectId&&url.searchParams.get('conversationId')===conversationId?[{jobId:job.id,rows:rows.map(originalRow=>({rowKey:consultantBoqRowKey(originalRow),originalRow,comparison:snapshot.unavailable?null:compareBoqEdition(originalRow,snapshot.missingOld?documents.slice(1):documents)}))}]:[]});
+   const snapshot={...config},catalog=documents.filter((document,index)=>(snapshot.includeB||index===0)&&(!snapshot.missingOld||index!==0));
+   if(snapshot.delayMs)await new Promise(resolve=>setTimeout(resolve,snapshot.delayMs));
+   return Response.json({success:true,availability:snapshot.unavailable?'UNAVAILABLE':'AVAILABLE',jobs:url.searchParams.get('projectId')===projectId&&url.searchParams.get('conversationId')===conversationId?[{jobId:savedJob.id,rows:savedJob.result.boqRows.map(originalRow=>({rowKey:consultantBoqRowKey(originalRow),originalRow,comparison:snapshot.unavailable?null:compareBoqEdition(originalRow,catalog)}))}]:[]});
   }
   if(url.pathname==='/api/documents/file'){
    const documentId=url.searchParams.get('documentId'),old=documentId===documents[0].id;
    if(config.delayMs)await new Promise(resolve=>setTimeout(resolve,config.delayMs));
    const bytes=config.tamperedOld&&old?files.get(documents[1].id):files.get(documentId);
-   if(url.searchParams.get('projectId')!==projectId||!bytes||(config.missingOld&&old))return Response.json({success:false},{status:404});
+   if(url.searchParams.get('projectId')!==projectId||!bytes||(config.missingOld&&old)||(!config.includeB&&!old))return Response.json({success:false},{status:404});
    if(!verifyDocumentSourceHash(bytes,url.searchParams.get('sourceHash')))return Response.json({success:false,code:'SOURCE_CHANGED'},{status:409});
    return new Response(bytes,{headers:{'Content-Type':'application/pdf','Cache-Control':'no-store'}});
   }
