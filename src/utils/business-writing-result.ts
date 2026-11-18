@@ -16,12 +16,14 @@ function maskConsultantPageReferences(text:string,facts:WritingFacts,selected:re
         const pages=new Set(facts.sources.filter(source=>selected.includes(source.sourceId)&&cited.has(source.sourceId)
             &&source.basis==='DOCUMENT'&&source.status==='VERIFIED'&&source.documentId&&source.quote)
             .map(source=>source.pageLabel).filter(page=>page&&/^[1-9]\d*$/u.test(page)));
-        return paragraph.replace(/(?<![\p{L}\p{N}_])ו?[בלמ]?(?:עמוד|עמ['׳’])\s+([1-9]\d*)(?![\p{L}\p{N}_/:\-–—]|\.\d)/gu,
+        // Match the whole numeric token: its punctuation follows numericRecords.
+        return paragraph.replace(/(?<![\p{L}\p{N}_])ו?[בלמ]?(?:עמוד|עמ['׳’])\s+([1-9]\d*)(?![\p{L}\p{N}_/:\-\u2010-\u2015]|[.,]\p{N})/gu,
             (reference,page:string,start:number)=>{
-                const before=paragraph.slice(Math.max(0,start-48),start),after=paragraph.slice(start+reference.length);
+                const before=paragraph.slice(Math.max(0,start-48),start),after=paragraph.slice(start+reference.length).normalize('NFKC');
                 if(!pages.has(page)||!isSourceMarker(paragraph,start)
-                    ||/(?:כמות|מגרש|quantity|count)\s*(?:היא|של|:)?\s*$/iu.test(before)
-                    ||/^\s*(?:מטר(?:ים)?|מ["״]?[רק]|יחידות?|צינורות|meters?|kg)(?!\p{L})/iu.test(after))return reference;
+                    ||/^(?:[.,/:]\p{N}|[-\u2010-\u2015][−-]?\p{N})/u.test(after)
+                    ||/(?:כמות|מגרש|קוטר|אורך|רוחב|גובה|עומק|quantity|count|diameter|length|width|height|depth)\s*(?:היא|הוא|של|:)?\s*$/iu.test(before)
+                    ||/^\s*(?:מטר(?:ים)?|[מס]["״']מ|מ["״]?[רק]|יחידות?|יח['׳]|צינורות|meters?|mm|cm|m|pcs|kg)(?!\p{L})/iu.test(after))return reference;
                 return ' [source page] ';
             });
     }).join('');

@@ -8,6 +8,22 @@ const facts={kind:'consultant',projectName:'פרויקט',userText:'בדוק א�
 const result=(body,extra={})=>({body,sourceIds:['S9','S11','S12'],unknowns:[],nextActions:[],...extra});
 const validate=(raw,context=facts)=>validateWritingResult(JSON.stringify(raw),context);
 
+for(const separator of [',','.','/',':','-','‐','‑','‒','–','—','―','，','．','／','：','－'])test(`a page cannot mask the prefix of a numeric token joined with ${separator}`,()=>{
+ const context={...facts,sources:[source('S9','137',{quote:'סעיף 5 עוסק בבדיקה.'})]};
+ const body=`ניתן לבדוק בעמוד 137${separator}5 [S9].`;
+ assert.throws(()=>validate(result(body,{sourceIds:['S9']}),context),error=>error.code==='AI_FACT_UNVERIFIED');
+ assert.deepEqual(validate(result('ניתן לבדוק בעמוד 137, לפי המקור [S9].',{sourceIds:['S9']}),context),
+  result('ניתן לבדוק בעמוד 137, לפי המקור [S9].',{sourceIds:['S9']}));
+});
+for(const unit of ['מ"מ','מ״מ','ס"מ','ס״מ','mm','cm','מטרים','m','m²','מ"ר','מ״ק','יחידות','יח׳','pcs','kg'])test(`a dimension or quantity in ${unit} cannot borrow a page number`,()=>{
+ for(const body of [`הקוטר הוא עמ׳ 137 ${unit} [S9].`,`נדרש עמ׳ 137 ${unit} [S9].`]){
+  assert.throws(()=>validate(result(body)),error=>error.code==='AI_FACT_UNVERIFIED',body);
+ }
+});
+test('an explicit dimension cannot be disguised as a page even with no following unit',()=>{
+ assert.throws(()=>validate(result('הקוטר הוא עמ׳ 137 [S9].')),error=>error.code==='AI_FACT_UNVERIFIED');
+});
+
 test('explicit Hebrew page references retain the exact consultant answer and source selection',()=>{
  const raw=result('ניתן לבדוק במסמך, עמ׳ 137, ובמסמך הנוסף, עמ׳ 17. [S9, S12]\n• באותם מסמכים, עמ׳ 138 ועמ׳ 17 בהתאמה. [S11, S12]',
   {unknowns:['יש לברר את המעמד בעמוד 137 [S9].'],nextActions:["מוצע לבדוק בעמ' 138 (S11)."]});
