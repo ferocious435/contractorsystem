@@ -1,5 +1,5 @@
 import type {SupabaseClient} from '@supabase/supabase-js';
-import {assessDocumentSourceReadiness,type DocumentSourceInput} from './document-source-readiness';
+import {assessDocumentSourceReadiness} from './document-source-readiness';
 import {selectContractContext,contractRetrievalWeights,meaningfulRetrievalTerms} from './contract-context-selection';
 import {getPreferredProjectAmount,isTrustedBaseContractRow,type LedgerLikeRow} from './project-financials';
 import {summarizeIndividualPricing,type IndividualPricingSummary} from './individual-pricing';
@@ -9,6 +9,7 @@ import {getCurrentDocumentReading} from './document-reading-history';
 import type {ReadingLocation} from './visual-source-reading';
 import {selectWritingTopicContext, type WritingTopicSelection} from './writing-topic-context';
 import {anchorSourceRange} from './radar-evidence-assessment';
+import {selectConsultantBoqRows,type ConsultantBoqDocument,type ConsultantBoqRow} from './consultant-boq';
 export class ProjectWritingError extends Error {constructor(readonly code:string,readonly status:number,message:string){super(message);}}
 export async function ownedWritingProject(client: SupabaseClient, projectId: string, userId: string) {
     const {data, error} = await client.from('projects').select('*').eq('id', projectId).eq('contractor_id', userId).maybeSingle();
@@ -22,15 +23,16 @@ export interface ProjectWritingContext {
     unverified: Array<{documentId: string; title?: string | null; reason: string}>;
     money: {scope: 'PROJECT'; baseNet: number | null; variations: IndividualPricingSummary};
     omittedCount: number;
+    boqRows?:ConsultantBoqRow[];
     visualContext?:Array<{documentId:string;title:string|null;textHash:string;description:string;location:ReadingLocation}>;
 }
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-type WritingDocument = DocumentSourceInput & {id:string;project_id:string;created_at?:string|null;deleted_at?:string|null};
-async function savedProjectDocuments(client: SupabaseClient, projectId: string): Promise<WritingDocument[]> {
+type WritingDocument = ConsultantBoqDocument;
+export async function savedProjectDocuments(client: SupabaseClient, projectId: string): Promise<WritingDocument[]> {
     const result: WritingDocument[] = []; let expected: number | null = null;
     for (let start = 0; ; start += 1000) {
         const {data, error, count} = await client.from('documents')
-            .select('id,project_id,title,extracted_text,extracted_text_hash,parsed_json,ocr_status,storage_path,file_url,content_hash,created_at,deleted_at', {count: 'exact'})
+            .select('id,project_id,title,category,doc_type,extracted_text,extracted_text_hash,parsed_json,ocr_status,storage_path,file_url,content_hash,created_at,deleted_at', {count: 'exact'})
             .eq('project_id', projectId).is('deleted_at', null).order('id').range(start, start + 999);
         if (error) throw error;
         if (!Array.isArray(data) || !Number.isSafeInteger(count) || count! < 0 || (expected !== null && expected !== count)
@@ -108,13 +110,20 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
     });
     const topicCandidates = topicCandidatesFor(topic), previousTopicCandidates = topicCandidatesFor(previousTopic);
     const allTopicCandidates = [...topicCandidates, ...previousTopicCandidates];
-    const candidates = topic ? [...topicCandidates, ...generalCandidates.filter(candidate => candidate.priority === 0),
-        ...previousTopicCandidates, ...generalCandidates.filter(candidate => candidate.priority > 0)] : generalCandidates;
+    const boqRows = options.includeTopicHistory ? selectConsultantBoqRows(documents.map(document=>({...document,
+        extracted_text:current.get(document.id)!.text,extracted_text_hash:current.get(document.id)!.textHash})),question,
+        topicCandidates.map(({anchor})=>anchor)) : [];
+    const boqCandidates = boqRows.flatMap(row=>[row,...[row.revision.dateEvidence,row.revision.designationEvidence,
+        row.revision.printedDateEvidence,row.revision.identifier?.evidence].filter(anchor=>!!anchor)]
+        .map(anchor=>({document:documents.find(document=>document.id===row.documentId)!,anchor})));
+    const candidates = topic ? [...topicCandidates.slice(0,8), ...boqCandidates, ...topicCandidates.slice(8), ...generalCandidates.filter(candidate => candidate.priority === 0),
+        ...previousTopicCandidates, ...generalCandidates.filter(candidate => candidate.priority > 0)] : [...boqCandidates,...generalCandidates];
     const sources: ProjectWritingContext['sources'] = []; const seen = new Set<string>(); let characters = 0;
     for (const {document, anchor} of candidates) {
         const key = JSON.stringify([document.id, anchor.start, anchor.end]);
         if (seen.has(key)) continue;
         if (sources.length >= 32 || characters + anchor.quote.length > 32000) {
+            if(boqCandidates.some(candidate=>candidate.anchor===anchor))unverified.push({documentId:document.id,title:document.title||null,reason:'לא כל אסמכתאות כתב הכמויות נכללו בתקציב ההקשר.'});
             if (allTopicCandidates.some(source => source.document.id === document.id && source.anchor.start === anchor.start && source.anchor.end === anchor.end)
                 && !unverified.some(source => source.documentId === document.id && source.reason.includes('לא כל הקטעים הקשורים'))) {
                 unverified.push({documentId: document.id, title: document.title || null, reason: (document.title ? document.title + ' — ' : '') + 'לא כל הקטעים הקשורים נכללו בהקשר; אין להסיק מכך שההיסטוריה נבדקה במלואה.'});
@@ -147,5 +156,6 @@ export async function loadProjectWritingContext(client: SupabaseClient, projectI
     }
     return {project: {id: projectId, name: typeof project.name === 'string' ? project.name : ''}, sources, unverified,
         money: {scope: 'PROJECT', baseNet, variations},visualContext,
+        ...(options.includeTopicHistory?{boqRows:boqRows.filter(row=>sources.some(source=>source.documentId===row.documentId&&source.quote?.includes(row.quote)))}:{}),
         omittedCount: Math.max(0, documents.length - new Set([...sources.map(source => source.documentId), ...visualContext.map(source=>source.documentId),...unverified.map(source => source.documentId)]).size)};
 }

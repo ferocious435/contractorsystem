@@ -270,3 +270,11 @@ test('conflicting dates of the latest edition stay visible after an intermediate
  assert.equal(out.warnings.filter(w=>w.includes('C.pdf')&&w.includes('תאריך לא צוין')).length,1);
  assert.equal(out.warnings.length,new Set(out.warnings).size);
 });
+
+test('explicit question constraints survive a broad grounded packet mentioning other materials sizes and codes',()=>{
+ const history=doc('history','הקמת קיר בטון בקוטר 600 מ"מ לפי סעיף 99.99.9999; אספקת צינורות פלדה לבדיקת חלופה.',{title:'history.txt',parsed_json:{}});
+ const rows=selectConsultantBoqRows([doc(),history],question,[{documentId:history.id,quote:history.extracted_text,start:0,end:history.extracted_text.length}]);
+ assert.deepEqual(rows.map(row=>row.itemCode),['57.91.0016','57.91.0022']);
+ // An actual conflicting question keeps its constraints, even when history agrees with the BOQ.
+ assert.deepEqual(selectConsultantBoqRows([doc(),history],question.replace('GRP','פלדה'),[{documentId:'boq',quote:body,start:0,end:body.length}]),[]);
+});

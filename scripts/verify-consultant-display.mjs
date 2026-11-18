@@ -7,3 +7,11 @@ test('a saved legacy answer opens concisely while every quote, limitation and fi
 test('structured replies and untagged text never interpret a user heading as a removable appendix',()=>{
  for(const value of [{displayVersion:'consultant-v2',response:'שאלה\n\nמקורות שמורים:\nניסוח מכוון',details:'מקור מלא'},{response:'שאלה\n\nמקורות שמורים:\nניסוח מכוון'}])assert.equal(consultantDisplay(value).content,value.response);
 });
+
+test('legacy or malformed optional BOQ data does not prevent the saved answer from opening',async()=>{
+ const {savedConsultantBoqRows}=await import('../src/utils/consultant-result.ts');
+ for(const appendix of [undefined,null,'broken',[null,{}, {documentId:'x',quote:'fake',unitPrice:NaN}]]){
+  const value={displayVersion:'consultant-v2',response:'תשובה שמורה מדויקת',details:'מקורות שמורים',boqRows:appendix};
+  assert.deepEqual(savedConsultantBoqRows(value),[]);assert.equal(consultantDisplay(value).content,value.response);
+ }
+});

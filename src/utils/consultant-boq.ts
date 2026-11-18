@@ -151,7 +151,13 @@ export function selectConsultantBoqRows(documents: ConsultantBoqDocument[], ques
     if (projects.size !== 1 || ![...projects][0]) return [];
     const projectId = [...projects][0];
     const topic = [question, ...grounded.map(source => source.evidence.quote)].join('\n');
-    const requestedCodes = codes(topic), requestedStreets = streets(topic);
+    // A broad historical packet can mention other materials, sizes and sections.
+    // Explicit question constraints retain priority; unrelated history cannot turn
+    // them into additional mandatory constraints on every payable row.
+    const questionHasObject = !!constructionObject(question);
+    const requestedCodes = codes(question).length ? codes(question) : questionHasObject ? [] : codes(topic);
+    const requestedStreets = streets(question).length ? streets(question) : streets(topic);
+    const scopeTopics = questionHasObject ? [question] : grounded.map(source=>question+'\n'+source.evidence.quote);
     const result: ConsultantBoqRow[] = [], originals = new Map<string, ConsultantBoqRow[]>();
     for (const document of active) {
         if (document.project_id !== projectId || !assessDocumentSourceReadiness(document).canCompare) continue;
@@ -166,7 +172,7 @@ export function selectConsultantBoqRows(documents: ConsultantBoqDocument[], ques
         const selected: ConsultantBoqRow[] = [];
         for (const row of parsePrintedBoqRows(String(document.extracted_text || ''))) {
             if (!row.arithmeticVerified || (requestedCodes.length && !requestedCodes.includes(row.itemCode))
-                || !matchesScope(row.quote, topic)) continue;
+                || !scopeTopics.some(scopeTopic=>matchesScope(row.quote, scopeTopic))) continue;
             const rowStreets = streets(row.quote);
             if (requestedStreets.length && rowStreets.length && !rowStreets.some(street => requestedStreets.includes(street))) continue;
             const evidence = anchorSourceRange(document, row.start, row.end);

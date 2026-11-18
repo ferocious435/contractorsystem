@@ -6,7 +6,7 @@ const proposal='קידוח אופקי ברחוב הרימון: 80 מטר. מחי
 const modelUrl='data:text/javascript,'+encodeURIComponent(`
  let options={};export const calls=[];
  export function reset(value={}){options=value;calls.length=0;}
- export function getComparisonAiIdentity(){if(options.external)throw Object.assign(Error('Unverified execution'),{status:503});return{kind:'codex',provider:'Codex',model:'fixture'};}
+ export function getComparisonAiIdentity(){if(options.external)throw Object.assign(Error('Unverified execution'),{status:503});return{kind:'ollama',provider:'Ollama',model:'fixture'};}
  export async function generateComparisonText(prompt){
   calls.push(prompt);if(options.unavailable)throw Error('Local offline');if(options.onGenerate)options.onGenerate(prompt);
   const line=prompt.match(/^WORK_CHANGE_INPUT (.+)$/m);if(line){const input=JSON.parse(line[1]);return JSON.stringify({facts:(options.facts?.[input.sourceId]||[]).map(fact=>{
@@ -16,7 +16,7 @@ const modelUrl='data:text/javascript,'+encodeURIComponent(`
   return JSON.stringify({comparisons:[{baselineId:'F1',proposalId:'F2',composition:'SAME'}]});
  }
 `);
-const hook=registerWorkChangeModules({'@/server/ai/comparison.server':modelUrl});
+const hook=registerWorkChangeModules({'@/lib/comparison-ai':modelUrl});
 const {reviewWorkChangeCase}=await import('../src/utils/work-change-review-server.ts');
 const model=await import(modelUrl);hook.deregister();
 const execution={projectId:'30000000-0000-4000-8000-000000000003',signal:new AbortController().signal,checkActive:async()=>{}};

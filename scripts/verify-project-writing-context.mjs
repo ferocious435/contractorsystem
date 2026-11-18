@@ -117,3 +117,63 @@ test('a precise current acronym is not displaced by a large previous topic',asyn
  const context=await loadProjectWritingContext(clientFor(docs),project,owner,'מה מצב מת״מ?','מה מצב תכנון התאורה ומיקומי המנורות? מוצגת ההיסטוריה.',{includeTopicHistory:true});
  assert.equal(context.sources[0].documentId,'method');
 });
+
+test('consultant saves source-backed supply and laying rows with the accepted answer',async()=>{
+ const body='כתב כמויות לביצוע\nסעיף תיאור יחידה כמות מחיר סה"כ\nהמחירים ללא מע"מ\nדחיקת צינורות פיברגלס בשיטת Micro Tunneling בקוטר 450 מ"מ 57.91.0016\nאספקת הצינורות נמדדת בנפרד\n496,551.00 3,310.34 150.00 מטר\nאספקה בלבד של צינורות GRP בקוטר 450 מ"מ 57.91.0022\n402,085.50 2,680.57 150.00 מטר';
+ const boq=doc('boq',body,'כתב כמויות לביצוע.txt');boq.category='CONTRACT';
+ const instruction='מכתב: ברחוב יהלום יש לבצע דחיקת צינורות GRP בקוטר 450 מ"מ.';
+ const documents=[boq,doc('instruction',instruction,'מכתב.txt')];
+ const handler=createConsultantHandler({history:async()=>[],load:async(e,q)=>loadProjectWritingContext(clientFor(documents),project,owner,q,'',{includeTopicHistory:true})});
+ const result=await handler.execute({question:'מה הבסיס לביצוע ברחוב יהלום?'},{projectId:project,ownerId:owner,generate:async()=>JSON.stringify({body:'המכתב מורה לבצע את העבודה. [S1]',sourceIds:['S1'],unknowns:[],nextActions:[]})});
+ assert.equal(result.result.boqRows?.length,2,'saved answer must carry both original BOQ rows');
+ assert.deepEqual(result.result.boqRows.map(row=>row.unitPrice),[3310.34,2680.57]);
+ assert.ok(result.result.details.includes('3310.34'));assert.ok(result.result.details.includes('2680.57'));
+ assert.ok(Number.isFinite(Date.parse(result.result.answeredAt)));assert.deepEqual(result.effects,[]);
+ const ordinary=await loadProjectWritingContext(clientFor(documents),project,owner,'מה הבסיס לביצוע ברחוב יהלום?');assert.equal(ordinary.boqRows,undefined);
+ await assert.rejects(()=>handler.execute({question:'מה הבסיס לביצוע ברחוב יהלום?'},{projectId:project,ownerId:owner,generate:async()=>JSON.stringify({body:'יש לשלם 999999 ₪.',sourceIds:[],unknowns:[],nextActions:[]})}));
+});
+
+test('conditional contractor reply is saved distinctly and remains immutable on catalogue reload',async()=>{
+ const {selectConsultantBoqRows}=await import('../src/utils/consultant-boq.ts');
+ const {createConsultantBoqRevisionReader}=await import('../src/server/ai/consultant-boq-revisions.server.ts');
+ const {savedConsultantBoqRows,consultantBoqRowKey}=await import('../src/utils/consultant-result.ts');
+ const text='כתב כמויות לביצוע\nמספר כתב כמויות: A; מהדורה: one\nסעיף תיאור יחידה כמות מחיר סה"כ\nהמחירים ללא מע"מ\nדחיקת צינורות GRP בקוטר 450 מ"מ 57.91.0016\n496,551.00 3,310.34 150.00 מטר\nאספקה בלבד של צינורות GRP בקוטר 450 מ"מ 57.91.0022\n402,085.50 2,680.57 150.00 מטר';
+ const a=doc('boq-a',text,'כתב כמויות.txt');a.content_hash='a';a.extracted_text_hash=digest(text);
+ const proposal='הקבלן מציע דחיקת צינורות GRP בקוטר 450 מ"מ. התשובה: מאושר עקרונית בכפוף לנספח חתום, ללא אישור לתוספת תשלום.';
+ const documents=[a,doc('proposal',proposal,'מכתב.txt')];let prompt;
+ const handler=createConsultantHandler({history:async()=>[],load:async(e,q)=>loadProjectWritingContext(clientFor(documents),project,owner,q,'',{includeTopicHistory:true})});
+ const prepared=await handler.execute({question:'מה הוסכם על הצעת הקבלן לדחיקת צינורות GRP בקוטר 450 מ"מ?'},{projectId:project,ownerId:owner,generate:async input=>{prompt=input.text;return JSON.stringify({body:'הקבלן הציע את השינוי. התשובה היא הסכמה עקרונית בכפוף לנספח חתום, ללא אישור לתוספת תשלום.',sourceIds:[],unknowns:[],nextActions:[]});}});
+ assert.ok(prompt.includes('מאושר עקרונית בכפוף לנספח חתום')); assert.match(prompt,/A direct instruction/);assert.match(prompt,/Preserve every source identifier/);
+ assert.match(prepared.result.response,/בכפוף לנספח חתום/);assert.equal(prepared.result.boqRows.length,2);
+ const saved=structuredClone(prepared.result),conversation='40000000-0000-4000-8000-000000000004';
+ const good={id:'50000000-0000-4000-8000-000000000005',projectId:project,kind:'consultant',conversationId:conversation,clientContextId:conversation,state:'SUCCEEDED',result:prepared.result};
+ const legacy={...good,id:'legacy',result:{response:'old exact answer'}};
+ const jobs=[good,legacy,{...good,id:'failed',state:'FAILED'},{...good,id:'other',projectId:'other'},{...good,id:'other-conversation',conversationId:'other'},{...good,id:'wrong-kind',kind:'pricing'}];
+ const newText=text.replace('מהדורה: one','מהדורה: two').replace('3,310.34','4,000.00').replace('496,551.00','600,000.00')+'\nכתב כמויות A מהדורה two מחליף את כתב כמויות A מהדורה one.';documents.push({...doc('new',newText,'מהדורה חדשה.txt'),content_hash:'new',extracted_text_hash:digest(newText)});
+ const reader=createConsultantBoqRevisionReader({authenticate:async()=>owner,client:()=>clientFor(documents),store:()=>({listOwned:async(o,p,k,c)=>{assert.deepEqual([o,p,k,c],[owner,project,'consultant',conversation]);return jobs;}})});
+ const request=()=>new Request(`http://localhost/api/chat/boq-revisions?projectId=${project}&conversationId=${conversation}`);
+ const response=await reader(request());assert.equal(response.status,200);assert.equal(response.headers.get('Cache-Control'),'no-store');const opened=await response.json();
+ assert.deepEqual(opened.jobs.map(job=>job.jobId),[good.id,'legacy']);assert.equal(opened.availability,'AVAILABLE');assert.deepEqual(opened.jobs[1].rows,[]);
+ assert.equal(opened.jobs[0].rows[0].rowKey,consultantBoqRowKey(saved.boqRows[0]));assert.equal(opened.jobs[0].rows[0].comparison.status,'REPLACED');assert.equal(opened.jobs[0].rows[0].comparison.currentRow.unitPrice,4000);assert.equal(opened.jobs[0].rows[0].comparison.editionHistory.length,1);
+ assert.deepEqual(prepared.result,saved);assert.deepEqual(legacy.result,{response:'old exact answer'});
+ const corrupt={boqRows:[null,{}, {...saved.boqRows[0],unitPrice:999},saved.boqRows[1]]};assert.equal(savedConsultantBoqRows(corrupt).length,1);
+ const failingClient=()=>({from(table){if(table==='documents')throw new Error('offline');return clientFor(documents).from(table);}});
+ const fallback=await createConsultantBoqRevisionReader({authenticate:async()=>owner,client:failingClient,store:()=>({listOwned:async()=>[good]})})(request());
+ const unavailable=await fallback.json();assert.equal(unavailable.availability,'UNAVAILABLE');assert.deepEqual(unavailable.jobs[0].rows[0].originalRow,saved.boqRows[0]);assert.equal(unavailable.jobs[0].rows[0].comparison,null);
+ const empty=await createConsultantBoqRevisionReader({authenticate:async()=>owner,client:()=>clientFor([]),store:()=>({listOwned:async()=>[]})})(request());assert.deepEqual((await empty.json()).jobs,[]);
+ const denied=await createConsultantBoqRevisionReader({authenticate:async()=> 'another-owner',client:()=>clientFor(documents),store:()=>{throw new Error('must not list');}})(request());assert.equal(denied.status,403);
+ assert.equal((await reader(new Request(`http://localhost/?projectId=${project}&conversationId=invalid`))).status,400);
+ const unsigned=await createConsultantBoqRevisionReader({authenticate:async()=>{const {BusinessAiError}=await import('../src/server/ai/contracts.ts');throw new BusinessAiError('AI_UNAUTHORIZED','login',401);}})(request());assert.equal(unsigned.status,401);
+});
+
+if(process.env.CONSULTANT_BOQ_FIXTURES){
+ test('saved real catalogue selects all four original BOQ rows within the shared evidence budget',async()=>{
+  const {readFile}=await import('node:fs/promises');const {join}=await import('node:path');
+  const documents=JSON.parse(await readFile(join(process.env.CONSULTANT_BOQ_FIXTURES,'project-documents.json'),'utf8'));
+  const request=JSON.parse(await readFile(join(process.env.CONSULTANT_BOQ_FIXTURES,'request.json'),'utf8'));
+  const mapped=documents.map(document=>({...document,project_id:project,deleted_at:null}));
+  const context=await loadProjectWritingContext(clientFor(mapped),project,owner,request.question,'',{includeTopicHistory:true});
+  assert.equal(context.boqRows.length,4);const {savedConsultantBoqRows}=await import('../src/utils/consultant-result.ts');assert.equal(savedConsultantBoqRows({boqRows:context.boqRows}).length,4);assert.ok(context.sources.length<=32);assert.ok(context.sources.reduce((sum,source)=>sum+source.quote.length,0)<=32000);
+  for(const row of context.boqRows)assert.ok(context.sources.some(source=>source.documentId===row.documentId&&source.quote.includes(row.quote)));
+ });
+}
