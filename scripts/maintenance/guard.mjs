@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { absolutePath, assertNarrowRoot, localHomes, pathKey, refusal, relativeWithin } from './policy.mjs';
-import { windowsInspectionScript } from './windows-inspection.mjs';
+import { windowsInspectionScript, windowsInspectionSource } from './windows-inspection.mjs';
 
 const windows = process.platform === 'win32';
 const execute = promisify(execFile);
@@ -401,7 +401,7 @@ const unchanged = (left, right) => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].
 
 async function inspectOnWindows(target) {
   const { child, done, lines } = startWindowsHelper(
-    windowsInspectionScript, { target }, AbortSignal.timeout(15 * 60 * 1000),
+    windowsInspectionScript, { target, nativeSource: windowsInspectionSource }, AbortSignal.timeout(15 * 60 * 1000),
   );
   child.stdin.end();
   const result = await lines.next();

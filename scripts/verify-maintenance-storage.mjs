@@ -1,0 +1,415 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { test } from 'node:test';
+import { withMaintenanceLock } from './maintenance/guard.mjs';
+import { createVerifiedArchive, extractVerifiedArchive, verifyArchive } from './maintenance/archive.mjs';
+import {
+  applyStorage, captureGeneratedBuild, importLegacyEvidence, planStorage, prepareStoragePlan, registerLifecycleEvidence,
+} from './maintenance/storage.mjs';
+
+const write = async (file, content) => {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, content);
+};
+const json = (file, value) => write(file, JSON.stringify(value));
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const windows = process.platform === 'win32';
+const filesystemTest = (name, run) => test(name, { skip: !windows }, run);
+const notFound = file => assert.rejects(fs.access(file), { code: 'ENOENT' });
+const lockfile = '{"name":"fixture","lockfileVersion":3}';
+
+async function directory(t) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'contractor-storage-')));
+  t.after(async () => {
+    const checked = await fs.realpath(root);
+    assert.equal(checked, root);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  return root;
+}
+
+async function releases(t, count = 4) {
+  const base = await directory(t);
+  const home = path.join(base, 'home');
+  const repo = path.join(base, 'repo');
+  await fs.mkdir(repo);
+  const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'core.autocrlf=false', ...args], { windowsHide: true });
+  git('init', '-q');
+  await write(path.join(repo, '.gitignore'), '.superpowers/\n.next*/\n');
+  git('add', '.gitignore');
+  git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture');
+  const nodeExe = path.join(home, 'runtime', 'node.exe');
+  const dependencyRoot = path.join(home, 'dependencies', 'baseline');
+  await write(nodeExe, 'node');
+  await write(path.join(dependencyRoot, 'node_modules', 'dependency.js'), 'dependency');
+  const index = { version: 1, releases: [], builds: [], evidence: [] };
+  const evidence = path.join(repo, '.superpowers', 'history');
+  const record = async (file, value) => {
+    await json(file, value);
+    const bytes = await fs.readFile(file);
+    index.evidence.push({ path: file, bytes: bytes.length, sha256: hash(bytes) });
+  };
+  const ids = Array.from({ length: count }, (_, i) => 'v' + (i + 1));
+  const roots = new Map();
+  for (const [i, id] of ids.entries()) {
+    const folder = path.join(home, 'releases', id);
+    const buildId = id + '-build';
+    const createdAt = new Date(Date.UTC(2025, 0, i + 1)).toISOString();
+    const root = path.join(folder, 'release.json');
+    const dist = '.next-test';
+    await write(path.join(folder, 'node_modules', 'dependency.js'), 'dependency');
+    await write(path.join(folder, dist, 'BUILD_ID'), buildId);
+    await write(path.join(folder, 'a-unique.bin'), 'unknown-' + id);
+    await json(root, { version: 1, id, root: folder, nodeExe, dependencyRoot, dist, buildId, createdAt,
+      dependencyLockSha256: hash(lockfile) });
+    roots.set(id, folder);
+    const at = new Date(Date.UTC(2025, 0, i + 1, 1)).toISOString();
+    const install = path.join(evidence, id + '-install.json');
+    const stdout = path.join(evidence, id + '-install.stdout.log');
+    const stderr = path.join(evidence, id + '-install.stderr.log');
+    const previousId = ids[i - 1] ?? null;
+    await record(stdout, { release: id, buildId, running: true });
+    await record(stderr, '');
+    await record(install, {
+      at, action: 'install', release: id, buildId, passed: true, profileUnchanged: true,
+      current: { releaseId: id, previousId }, stdout, stderr,
+    });
+    index.releases.push({ id, installationReceipts: [{ evidence: install }], verificationReceipts: [],
+      packageReceipts: [], buildReceipts: [] });
+  }
+  await json(path.join(home, 'current.json'), { releaseId: ids.at(-1), previousId: ids.at(-2) });
+  const repoRoots = [repo];
+  const readOptions = { home, repoRoots };
+  const importIndex = () => withMaintenanceLock(home, 'fixture-import', lease =>
+    importLegacyEvidence(index, { ...readOptions, lease }));
+  const apply = plan => withMaintenanceLock(home, 'fixture-apply', lease =>
+    applyStorage(plan, { ...readOptions, lease }));
+  return { home, repo, evidence, ids, roots, index, record, importIndex, apply,
+    plan: () => prepareStoragePlan(readOptions) };
+}
+
+filesystemTest('preservesThreeAcceptedReleases over twenty real tiny packages', async t => {
+  const f = await releases(t, 20);
+  await f.importIndex();
+  const plan = await f.plan();
+  const retained = plan.protected.filter(item => item.reasons.some(reason => ['current-release', 'previous-release'].includes(reason)));
+  assert.deepEqual(retained.filter(item => item.kind === 'release').map(item => item.id).sort(),
+    ['release:v18', 'release:v19', 'release:v20']);
+  assert.equal(plan.actions.length, 17);
+  // One real deletion already covers restoration. Keeping the other 16 examples tiny
+  // tests the planner without spending time compressing the same fixture repeatedly.
+  assert.equal(plan.actions[0].id, 'release:v1');
+});
+
+const gib = 1024 ** 3;
+const at = '2026-11-18T12:00:00.000Z';
+const tracked = (id, options) => ({
+  id, path: options.kind === 'build' ? path.resolve('fixtures/repo/.next-' + id) : path.resolve('fixtures/home/releases/' + id),
+  root: options.kind === 'build' ? path.resolve('fixtures/repo') : path.resolve('fixtures/home/releases'),
+  taskId: 'sample', bytes: 2 * gib, fingerprint: '0'.repeat(64), identity: 'fixture-' + id,
+  protectedBy: [], status: 'UNCLASSIFIED', ...options,
+});
+const inventoryFixture = artifacts => ({
+  at, current: null, acceptedReleases: [], tasks: [], artifacts, processes: [], uncertainties: [], freeBytes: 19 * gib,
+});
+
+test('pinsOverrideAgeAndBudget and the protected excess is shown', () => {
+  const oversized = tracked('old-pinned', {
+    kind: 'release', bytes: 8 * gib, protectedBy: ['pin:sample'], provenance: { acceptedAt: '2025-01-01T00:00:00Z' },
+  });
+  const plan = planStorage(inventoryFixture([oversized]));
+  assert.equal(plan.actions.length, 0);
+  assert.equal(plan.protected[0].id, 'old-pinned');
+  assert.equal(plan.budgets.releases.limitBytes, 6 * gib);
+  assert.equal(plan.budgets.releases.protectedOverageBytes, 2 * gib);
+  assert.equal(plan.budgets.builds.limitBytes, 4 * gib);
+});
+
+test('failedBuildsKeepTwoForSevenDays while an unresolved check remains protected', () => {
+  const repro = (id, date, unresolved = false) => tracked(id, {
+    kind: 'build', provenance: { outcome: 'failed', at: date, unresolved },
+  });
+  const plan = planStorage(inventoryFixture([
+    repro('newest', '2026-11-17T10:00:00Z'), repro('second', '2026-11-16T10:00:00Z'),
+    repro('third', '2026-11-15T10:00:00Z'), repro('expired', '2026-11-10T10:00:00Z'),
+    repro('unresolved', '2026-11-01T10:00:00Z', true),
+  ]));
+  assert.deepEqual(plan.protected.map(item => item.id).sort(), ['newest', 'second', 'unresolved']);
+  assert.deepEqual(plan.actions.map(item => item.id), ['expired', 'third']);
+  assert.equal(plan.budgets.builds.protectedOverageBytes, 2 * gib);
+});
+
+filesystemTest('changedPlanSkipsDeletion when the artifact content changes', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const plan = await f.plan();
+  assert.equal(plan.actions.length, 1);
+  await write(path.join(f.roots.get('v1'), 'a-unique.bin'), 'changed after plan');
+  const receipt = await f.apply(plan);
+  assert.equal(receipt.completed.length, 0);
+  assert.equal(receipt.skipped.length, 1);
+  assert.equal(await fs.readFile(path.join(f.roots.get('v1'), 'a-unique.bin'), 'utf8'), 'changed after plan');
+});
+
+filesystemTest('newCandidatePreventsDeletion after planning', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const plan = await f.plan();
+  assert.equal(plan.actions.length, 1);
+  const candidate = path.join(f.home, 'releases', 'new-candidate');
+  await write(path.join(candidate, 'keep.bin'), 'active candidate');
+  const result = await f.apply(plan);
+  assert.equal(result.completed.length, 0);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(await fs.readFile(path.join(candidate, 'keep.bin'), 'utf8'), 'active candidate');
+  await fs.access(f.roots.get('v1'));
+});
+
+filesystemTest('changedCurrent invalidates the old plan', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const plan = await f.plan();
+  assert.equal(plan.actions[0].id, 'release:v1');
+  await json(path.join(f.home, 'current.json'), { releaseId: 'v1', previousId: 'v4' });
+  const result = await f.apply(plan);
+  assert.equal(result.completed.length, 0);
+  assert.equal(result.skipped.length, 1);
+  await fs.access(f.roots.get('v1'));
+});
+
+filesystemTest('unknownFilesSurvive removal of the verified old package', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const plan = await f.plan();
+  assert.equal(plan.actions.length, 1);
+  const original = f.roots.get('v1');
+  const unknown = path.join(original, 'a-unique.bin');
+  const sourceHash = hash(await fs.readFile(unknown));
+  const result = await f.apply(plan);
+  assert.equal(result.failed.length, 0, JSON.stringify(result.failed));
+  assert.equal(result.completed.length, 1, JSON.stringify(result));
+  assert.ok(result.deletedBytes > 0);
+  await notFound(original);
+  const archive = result.completed[0].archive;
+  assert.equal(archive.references.length, 1);
+  assert.equal(archive.references[0].prefix, 'artifact/node_modules');
+  const restored = path.join(f.home, 'fixture-restore');
+  await extractVerifiedArchive(archive.path, restored);
+  assert.equal(hash(await fs.readFile(path.join(restored, 'artifact', 'a-unique.bin'))), sourceHash);
+  assert.equal(await fs.readFile(path.join(restored, 'artifact', 'node_modules', 'dependency.js'), 'utf8'), 'dependency');
+  const tombstone = JSON.parse(await fs.readFile(result.completed[0].tombstone, 'utf8'));
+  assert.equal(tombstone.originalPath, original);
+  assert.equal(tombstone.archive.sha256, archive.sha256);
+  const base = path.join(path.dirname(archive.path), archive.references[0].file);
+  await fs.truncate(base, 17);
+  await assert.rejects(verifyArchive(archive.path));
+  await assert.rejects(extractVerifiedArchive(archive.path, path.join(f.home, 'corrupt-base-restore')));
+  await notFound(path.join(f.home, 'corrupt-base-restore'));
+});
+
+filesystemTest('truncatedArchiveNeverAuthorizesDeletion during a retry', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const plan = await f.plan();
+  const readonly = path.join(f.roots.get('v1'), 'z-readonly.bin');
+  await write(readonly, 'read-only file');
+  const finalPlan = await f.plan();
+  assert.equal(plan.actions.length, finalPlan.actions.length);
+  await fs.chmod(readonly, 0o444);
+  try {
+    const interrupted = await f.apply(finalPlan);
+    assert.equal(interrupted.completed.length, 0);
+    assert.equal(interrupted.failed.length, 1, JSON.stringify(interrupted));
+    const archive = interrupted.failed[0].archive.path;
+    const reference = interrupted.failed[0].archive.references[0];
+    const base = path.join(path.dirname(archive), reference.file);
+    const originalBase = await fs.readFile(base);
+    await fs.unlink(base);
+    const missingBase = await f.apply(finalPlan);
+    assert.equal(missingBase.completed.length, 0);
+    assert.equal(missingBase.deletedBytes, 0);
+    await fs.access(readonly);
+    await fs.writeFile(base, originalBase);
+    await fs.truncate(archive, 31);
+    const retry = await f.apply(finalPlan);
+    assert.equal(retry.completed.length, 0);
+    assert.equal(retry.deletedBytes, 0);
+    await fs.access(readonly);
+    await assert.rejects(verifyArchive(archive));
+  } finally {
+    await fs.chmod(readonly, 0o666);
+  }
+});
+
+filesystemTest('partialDeleteCanResume using the same archive and recording both outcomes', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const original = f.roots.get('v1');
+  const marker = path.join(original, 'RELEASE.JSON');
+  const stagedMarker = path.join(original, 'manifest-rename.fixture');
+  await fs.rename(path.join(original, 'release.json'), stagedMarker);
+  await fs.rename(stagedMarker, marker);
+  const readonly = path.join(original, 'z-readonly.bin');
+  await write(readonly, 'read-only file');
+  await fs.chmod(readonly, 0o444);
+  try {
+    const plan = await f.plan();
+    const interrupted = await f.apply(plan);
+    assert.equal(interrupted.completed.length, 0);
+    assert.equal(interrupted.failed.length, 1, JSON.stringify(interrupted));
+    assert.ok(interrupted.deletedBytes > 0);
+    await notFound(path.join(original, 'a-unique.bin'));
+    await fs.access(marker);
+    await fs.access(path.join(original, '.next-test', 'BUILD_ID'));
+    await fs.chmod(readonly, 0o666);
+    const retry = await f.apply(await f.plan());
+    assert.equal(retry.completed.length, 1, JSON.stringify(retry));
+    assert.equal(retry.completed[0].archive.path, interrupted.failed[0].archive.path);
+    assert.equal(retry.completed[0].archive.sha256, interrupted.failed[0].archive.sha256);
+    const journal = JSON.parse(await fs.readFile(retry.completed[0].journal, 'utf8'));
+    assert.deepEqual(journal.outcomes.map(outcome => outcome.status), ['failed', 'completed']);
+    await notFound(original);
+  } finally {
+    await fs.chmod(readonly, 0o666).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
+});
+
+filesystemTest('secondRunIsIdempotent for the same dry run and a fresh dry run', async t => {
+  const f = await releases(t, 5);
+  await f.importIndex();
+  const plan = await f.plan();
+  const first = await f.apply(plan);
+  assert.equal(first.completed.length, 2, JSON.stringify(first));
+  assert.equal(first.completed[0].archive.references[0].file, first.completed[1].archive.references[0].file);
+  assert.equal((await f.apply(plan)).deletedBytes, 0);
+  const second = await f.apply(await f.plan());
+  assert.equal(second.deletedBytes, 0);
+  assert.equal(second.completed.length, 0);
+});
+
+filesystemTest('archive round trip retains ordinary and long names and requires a new folder', async t => {
+  const base = await directory(t);
+  const source = path.join(base, 'source');
+  const nested = ['a'.repeat(100), 'b'.repeat(100), 'c'.repeat(100), 'résumé-עברית.txt'].join('/');
+  const bytes = Buffer.from([0, 1, 254, 255]);
+  await write(path.join(source, nested), bytes);
+  await write(path.join(source, 'odd name $file.txt'), 'known bytes');
+  const zip = path.join(base, 'sample.zip');
+  const saved = await createVerifiedArchive({ source, files: [nested, 'odd name $file.txt'], destination: zip });
+  const destination = path.join(base, 'restored');
+  const restored = await extractVerifiedArchive(zip, destination);
+  assert.equal(restored.sha256, saved.sha256);
+  assert.equal(hash(await fs.readFile(path.join(destination, nested))), hash(bytes));
+  await assert.rejects(extractVerifiedArchive(zip, destination));
+});
+
+filesystemTest('archiveRejectsTraversalAndDuplicates in input and external ZIP entries', async t => {
+  const base = await directory(t);
+  const source = path.join(base, 'source');
+  await write(path.join(source, 'safe.txt'), 'ordinary');
+  const zip = path.join(base, 'unsafe.zip');
+  for (const files of [['../outside'], ['safe.txt', 'SAFE.TXT'], ['C:/outside'], ['safe.txt:stream']]) {
+    await assert.rejects(createVerifiedArchive({ source, files, destination: zip }));
+    await notFound(zip);
+  }
+  // Standard ZIP central-directory names can be edited without editing entry data.
+  await createVerifiedArchive({ source, files: ['safe.txt'], destination: zip });
+  const buffer = await fs.readFile(zip);
+  for (let offset = buffer.indexOf('safe.txt'); offset !== -1; offset = buffer.indexOf('safe.txt', offset + 8)) {
+    buffer.write('../x.txt', offset);
+  }
+  const manifestFile = zip + '.manifest.json';
+  const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8'));
+  await write(zip, buffer);
+  manifest.sha256 = hash(buffer);
+  await json(manifestFile, manifest);
+  const output = path.join(base, 'unsafe-restore');
+  await assert.rejects(extractVerifiedArchive(zip, output));
+  await notFound(output);
+  await notFound(path.join(base, 'x.txt'));
+
+  await write(path.join(source, 'next.txt'), 'another entry');
+  const duplicate = path.join(base, 'duplicate.zip');
+  await createVerifiedArchive({ source, files: ['safe.txt', 'next.txt'], destination: duplicate });
+  const bytes = await fs.readFile(duplicate);
+  for (let offset = bytes.indexOf('next.txt'); offset !== -1; offset = bytes.indexOf('next.txt', offset + 8)) {
+    bytes.write('SAFE.TXT', offset);
+  }
+  const duplicateManifest = duplicate + '.manifest.json';
+  const expected = JSON.parse(await fs.readFile(duplicateManifest, 'utf8'));
+  expected.sha256 = hash(bytes);
+  await write(duplicate, bytes);
+  await json(duplicateManifest, expected);
+  await assert.rejects(verifyArchive(duplicate));
+});
+
+filesystemTest('a standalone-verified build omits only unchanged generated cache and retains its unknown files', async t => {
+  const f = await releases(t, 3);
+  await f.importIndex();
+  const id = 'v3';
+  const source = path.join(f.evidence, 'build-123-task');
+  const target = path.join(source, '.next-test');
+  const sourceText = 'ordinary source bytes';
+  await write(path.join(source, 'src', 'app.ts'), sourceText);
+  await write(path.join(source, 'package-lock.json'), lockfile);
+  await fs.symlink(path.join(f.home, 'dependencies', 'baseline', 'node_modules'),
+    path.join(source, 'node_modules'), 'junction');
+  await write(path.join(target, 'BUILD_ID'), id + '-build');
+  await write(path.join(target, 'cache', 'known.bin'), 'generated cache');
+  await write(path.join(target, 'cache', 'changed.bin'), 'original cache');
+  const options = { home: f.home, repoRoots: [f.repo] };
+  const generated = await withMaintenanceLock(f.home, 'capture-fixture', lease =>
+    captureGeneratedBuild({ ...options, lease, source, dist: '.next-test' }));
+  await write(path.join(target, 'cache', 'changed.bin'), 'changed after capture');
+  await write(path.join(target, 'cache', 'unknown.bin'), 'unique addition');
+  const buildFile = path.join(f.evidence, 'verified-build.json');
+  const typecheck = path.join(f.evidence, 'typecheck.json');
+  const production = path.join(f.evidence, 'production.log');
+  await f.record(typecheck, { status: 0 });
+  await f.record(production, 'build ok');
+  await f.record(buildFile, {
+    at: '2025-01-03T00:01:00.000Z', source, dist: '.next-test', buildId: id + '-build', passed: true,
+    builtFiles: [{ path: 'src/app.ts', sha256: hash(sourceText) },
+      { path: 'package-lock.json', sha256: hash(lockfile) }], sourceUnchanged: true,
+    log: production, checks: [{ name: 'typecheck', status: 0, receipt: typecheck }, { name: 'production', status: 0 }],
+    generatedDist: generated,
+  });
+  const command = async (action, at, stdoutValue) => {
+    const file = path.join(f.evidence, action + '.json');
+    const stdout = path.join(f.evidence, action + '.stdout.log');
+    const stderr = path.join(f.evidence, action + '.stderr.log');
+    await f.record(stdout, { release: id, buildId: id + '-build', ...stdoutValue });
+    await f.record(stderr, '');
+    await f.record(file, {
+      action, at, release: id, buildId: id + '-build', passed: true, profileUnchanged: true, stdout, stderr,
+    });
+    return { evidence: file };
+  };
+  const packaged = await command('package', '2025-01-03T00:10:00.000Z', {});
+  const verified = await command('verify', '2025-01-03T00:20:00.000Z', { verified: true, stopped: true });
+  f.index.evidence.push({ path: generated.path, bytes: generated.bytes, sha256: generated.sha256 });
+  await withMaintenanceLock(f.home, 'register-fixture', lease => registerLifecycleEvidence({
+    version: 1, builds: [{ receipt: { evidence: buildFile } }], evidence: f.index.evidence,
+    releases: [{ id, installationReceipts: [], verificationReceipts: [verified], packageReceipts: [packaged],
+      buildReceipts: [buildFile] }],
+  }, { ...options, lease }));
+  const plan = await f.plan();
+  assert.deepEqual(plan.actions.map(action => action.path), [target]);
+  const result = await f.apply(plan);
+  assert.equal(result.completed.length, 1, JSON.stringify(result));
+  await notFound(target);
+  await fs.access(path.join(source, 'node_modules', 'dependency.js'));
+  const archive = result.completed[0].archive;
+  assert.deepEqual(archive.omittedJunctions, ['source/node_modules']);
+  assert.deepEqual(archive.generatedOmissions.map(item => item.path), ['artifact/cache/known.bin']);
+  const restored = path.join(f.home, 'verified-build-restored');
+  await extractVerifiedArchive(archive.path, restored);
+  assert.equal(await fs.readFile(path.join(restored, 'source', 'src', 'app.ts'), 'utf8'), sourceText);
+  assert.equal(await fs.readFile(path.join(restored, 'artifact', 'cache', 'changed.bin'), 'utf8'), 'changed after capture');
+  assert.equal(await fs.readFile(path.join(restored, 'artifact', 'cache', 'unknown.bin'), 'utf8'), 'unique addition');
+  await notFound(path.join(restored, 'artifact', 'cache', 'known.bin'));
+});

@@ -1,5 +1,7 @@
+import { readLegacyProvenance } from './legacy.mjs';
+import { readGuardedRecords } from './archive.mjs';
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -123,7 +125,7 @@ function needsOperationBinding(proc) {
   });
 }
 
-export async function readInventory({ home, repoRoots = [] } = {}) {
+export async function readInventory({ home, repoRoots = [], pinnedTarget = null } = {}) {
   const inventory = {
     at: new Date().toISOString(), current: null, acceptedReleases: [], tasks: [],
     artifacts: [], processes: [], uncertainties: [], freeBytes: null,
@@ -162,11 +164,25 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
       return [];
     }
   };
-  const jsonRecord = async (file, scope, state) => {
+  const recordBytes = async (paths, checks) => {
+    if (process.platform !== 'win32') return null;
+    try {
+      return await readGuardedRecords(paths.filter((_, index) => checks[index] === 'plain'), pinnedTarget);
+    } catch {
+      return new Map();
+    }
+  };
+  const decodeRecord = async (file, guarded) => {
+    if (!guarded) return readJson(file);
+    const bytes = guarded.get(file);
+    if (!bytes) throw refusal('Unverified record');
+    return JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
+  };
+  const jsonRecord = async (file, scope, state, guarded) => {
     if (state === 'missing') return null;
     try {
       if (state !== 'plain') throw refusal('Unverified record');
-      return await readJson(file);
+      return await decodeRecord(file, guarded);
     } catch {
       uncertain(scope, 'record-unavailable');
       return null;
@@ -190,9 +206,13 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
 
   const currentFile = path.join(home, 'current.json');
   const previousFile = path.join(home, 'previous.json');
-  const [currentState, previousState] = await statuses([currentFile, previousFile]);
-  const current = await jsonRecord(currentFile, 'current', currentState);
-  const previous = await jsonRecord(previousFile, 'previous', previousState);
+  const pointerFiles = [currentFile, previousFile];
+  const pointerChecks = await statuses(pointerFiles);
+  const [currentState, previousState] = pointerChecks;
+  const pointerBytes = await recordBytes(pointerFiles, pointerChecks);
+  const current = await jsonRecord(currentFile, 'current', currentState, pointerBytes);
+  const previous = await jsonRecord(previousFile, 'previous', previousState, pointerBytes);
+  inventory.pointerFingerprint = createHash('sha256').update(JSON.stringify([current, previous])).digest('hex');
   const currentId = isReleaseId(current?.releaseId) ? current.releaseId : null;
   const previousIds = [
     current?.previousId, previous?.releaseId, previous?.previousId,
@@ -210,6 +230,29 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
     uncertain('previous', 'previous-release-unverified');
   }
 
+  const worktrees = new Map();
+  for (const repo of repoRoots) {
+    try {
+      const root = assertNarrowRoot(repo);
+      await requirePlainPath(root);
+      const rows = (await git(root, 'worktree', 'list', '--porcelain', '-z')).split('\0');
+      let record;
+      for (const row of rows) {
+        if (row.startsWith('worktree ')) {
+          const file = assertNarrowRoot(row.slice(9));
+          record = { path: file, commit: null };
+          worktrees.set(pathKey(file), record);
+        } else if (row.startsWith('HEAD ') && record) {
+          record.commit = row.slice(5);
+        }
+      }
+      if (!worktrees.size) throw refusal('No worktrees returned by Git');
+    } catch {
+      uncertain('worktrees', 'worktree-list-unavailable');
+    }
+  }
+  const registered = [...worktrees.values()];
+  inventory.worktrees = registered;
   const manifests = new Map();
   for (const [directory, kind] of [['releases', 'release'], ['releases-rejected', 'rejected-release']]) {
     const parent = path.join(home, directory);
@@ -219,12 +262,13 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
     const readable = children.filter(entry => isReleaseId(entry.name) && entry.isDirectory());
     const manifestFiles = readable.map(entry => path.join(parent, entry.name, 'release.json'));
     const checked = await statuses(manifestFiles);
+    const guarded = await recordBytes(manifestFiles, checked);
     const checks = new Map(readable.map((entry, index) => [entry.name, checked[index]]));
     for (const [index, entry] of children.entries()) {
       const artifact = add(kind + ':' + entry.name, kind, candidates[index]);
       try {
         if (checks.get(entry.name) !== 'plain') throw refusal('Missing or unverified release manifest');
-        const release = await readJson(path.join(artifact.path, 'release.json'));
+        const release = await decodeRecord(path.join(artifact.path, 'release.json'), guarded);
         if (release?.id !== entry.name ||
             pathKey(pathInMaintenanceHome(home, release.root)) !== pathKey(artifact.path)) {
           throw refusal('The release manifest does not match its directory');
@@ -247,6 +291,7 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
           }
           manifests.set(entry.name, {
             id: entry.name, path: artifact.path, dependencyRoot, nodeExe, createdAt, acceptedAt,
+            dist: release.dist, buildId: release.buildId, dependencyLockSha256: release.dependencyLockSha256,
             runtimeVerified: false,
           });
         }
@@ -254,6 +299,29 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
         uncertain(artifact.id, 'manifest-unverified', artifact);
       }
     }
+  }
+
+  inventory.releaseManifests = [...manifests.values()];
+  let historical;
+  try {
+    historical = await readLegacyProvenance(home, registered, manifests, pinnedTarget);
+    inventory.legacyFingerprint = historical.hash;
+    for (const [id, provenance] of historical.releases) {
+      manifests.get(id).acceptedAt = provenance.acceptedAt;
+      items.get('release:' + id).provenance = provenance;
+    }
+    for (const entry of historical.builds.values()) {
+      const artifact = add('build:' + pathKey(entry.path), 'build', entry.path, { ...entry, historicalSnapshot: true });
+      if (registered.some(tree => relativeWithin(artifact.path, tree.path) !== null)) {
+        protection(artifact, 'contains-registered-worktree');
+      }
+    }
+    for (const entry of historical.unknownSnapshots) {
+      const item = add('snapshot:' + pathKey(entry.path), 'snapshot', entry.path, entry);
+      protection(item, 'legacy-provenance-not-proven');
+    }
+  } catch {
+    uncertain('history', 'legacy-provenance-unverified');
   }
 
   const receipts = [...manifests.values()].filter(release => release.acceptedAt).map(release => release.id);
@@ -326,9 +394,10 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
   const taskEntries = (await entries(taskDirectory, 'tasks')).filter(entry => entry.name.endsWith('.json'));
   const taskPaths = taskEntries.map(entry => path.join(taskDirectory, entry.name));
   const safeTaskPaths = await statuses(taskPaths);
+  const guardedTasks = await recordBytes(taskPaths, safeTaskPaths);
   for (const [index, entry] of taskEntries.entries()) {
     const id = entry.name.slice(0, -5);
-    const record = await jsonRecord(taskPaths[index], 'tasks', safeTaskPaths[index]);
+    const record = await jsonRecord(taskPaths[index], 'tasks', safeTaskPaths[index], guardedTasks);
     if (!isObject(record) || record.id !== id || !taskIdIsValid(id)) {
       uncertain('tasks', 'task-identity-unverified');
       continue;
@@ -341,28 +410,6 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
     inventory.tasks.push(record);
   }
 
-  const worktrees = new Map();
-  for (const repo of repoRoots) {
-    try {
-      const root = assertNarrowRoot(repo);
-      await requirePlainPath(root);
-      const rows = (await git(root, 'worktree', 'list', '--porcelain', '-z')).split('\0');
-      let record;
-      for (const row of rows) {
-        if (row.startsWith('worktree ')) {
-          const file = assertNarrowRoot(row.slice(9));
-          record = { path: file, commit: null };
-          worktrees.set(pathKey(file), record);
-        } else if (row.startsWith('HEAD ') && record) {
-          record.commit = row.slice(5);
-        }
-      }
-      if (!worktrees.size) throw refusal('No worktrees returned by Git');
-    } catch {
-      uncertain('worktrees', 'worktree-list-unavailable');
-    }
-  }
-  const registered = [...worktrees.values()];
   const worktreeChecks = await statuses(registered.map(worktree => worktree.path));
   for (const [index, tree] of registered.entries()) {
     const id = 'worktree:' + pathKey(tree.path);
@@ -453,14 +500,16 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
           uncertain(artifact.id, 'task-artifact-unverified', artifact);
         }
         artifact.taskId ??= task.id;
-        references.push(file);
+        references.push({ file, field });
       } catch {
         uncertain(reason, 'task-path-unverified');
       }
     }
     for (const artifact of items.values()) {
-      const matching = references.some(file => relativeWithin(artifact.path, file) !== null ||
-        relativeWithin(file, artifact.path) !== null);
+      const matching = references.some(({ file, field }) => {
+        if (field === 'worktree' && artifact.historicalSnapshot && artifact.taskId !== task.id) return false;
+        return relativeWithin(artifact.path, file) !== null || relativeWithin(file, artifact.path) !== null;
+      });
       if (matching && (protects || state === 'live' || state === 'unknown')) protection(artifact, reason);
       const pins = Array.isArray(task.pins) ? task.pins : [];
       for (const pin of pins) {
@@ -515,6 +564,12 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
     entry.scope === 'releases' || entry.reason === 'accepted-release-missing');
   for (const item of items.values()) {
     if (!processesKnown) protection(item, 'process-enumeration-unavailable');
+    if (inventory.uncertainties.some(entry => entry.scope === 'worktrees' || entry.scope === 'history')) {
+      protection(item, 'operation-roots-unverified');
+    }
+    if (item.historicalSnapshot && items.get('worktree:' + pathKey(item.worktree))?.dirty === null) {
+      protection(item, 'worktree-status-unavailable');
+    }
     if (incompleteTasks) protection(item, 'task-registry-unverified');
     if (incompleteReleases && ['release', 'rejected-release'].includes(item.kind)) protection(item, 'release-history-unverified');
     if (unboundOperation && ['build', 'release', 'rejected-release'].includes(item.kind)) protection(item, 'process-path-unverified');

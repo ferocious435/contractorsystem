@@ -157,7 +157,8 @@ if (process.argv[2] === '--inventory-worker') {
       const query = JSON.parse(options.env?.CODEX_MAINTENANCE_QUERY ?? 'null');
       if (query?.target !== target) return spawn(executable, args, options);
       const original = Buffer.from(args.at(-1), 'base64').toString('utf16le');
-      const compileEnd = original.indexOf("\n'@") + 3;
+      const compileEnd = original.indexOf('\n  $result =');
+      assert.ok(compileEnd > 0, 'the fault is injected after the actual native compilation');
       const fault = original.slice(0, compileEnd) + String.raw`
         $held = [ContractorInspection]::OpenPlain($query.owned, $true)
         [Console]::WriteLine('ready')

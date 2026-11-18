@@ -15,6 +15,8 @@ export const maintenancePolicy = Object.freeze({
 
 export const isReleaseId = id => typeof id === 'string' && /^[a-z0-9-]{1,90}$/.test(id);
 export const isBuildName = name => /^\.next(?:-[a-z0-9][a-z0-9-]*)?$/i.test(name);
+export const isHistoricalBuildSource = name =>
+  /^(?:build-[0-9]+-[a-z0-9][a-z0-9-]*|(?:test-|build-)?source(?:-v[0-9]+(?:-final)?)?)$/i.test(name ?? '');
 
 export function refusal(message) {
   return Object.assign(new Error(message), { code: 'REFUSED' });
@@ -91,6 +93,16 @@ export function artifactRoot({ home, repoRoots }, artifact) {
   const name = path.basename(target);
   if (artifact.kind === 'build' && isBuildName(name) && repoRoots.some(root => pathKey(root) === pathKey(parent))) {
     return assertNarrowRoot(parent);
+  }
+  if (artifact.kind === 'build' && artifact.historicalSnapshot && isBuildName(name) &&
+      artifact.provenance?.buildId && pathKey(parent) === pathKey(artifact.root)) {
+    for (const tree of repoRoots) {
+      const parts = relativeWithin(tree, parent)?.split(path.sep);
+      if (parts?.length === 3 && parts[0] === '.superpowers' &&
+          /^[a-z0-9][a-z0-9_-]{0,89}$/i.test(parts[1]) &&
+          isHistoricalBuildSource(parts[2]) &&
+          pathKey(tree) === pathKey(artifact.worktree)) return assertNarrowRoot(parent);
+    }
   }
   if (['release', 'rejected-release'].includes(artifact.kind) && isReleaseId(name)) {
     const directory = artifact.kind === 'release' ? 'releases' : 'releases-rejected';
