@@ -225,3 +225,23 @@ test('a contractor offer and an unrelated third BOQ cannot authoritatively repla
  assert.equal(compareBoqEdition(savedFrom(a),[a,b,letter]).status,'UNKNOWN');
  const c=edition('third','C',130,{replacement:replaces('A','B')});assert.equal(compareBoqEdition(savedFrom(a),[a,b,c]).status,'UNKNOWN');
 });
+test('a replacement phrase selects an edition not one of its competing source files',()=>{
+ const a=edition('baseline-conflict','A'),b=edition('replacement','B',120,{replacement:replaces('A','B')});
+ const alternate=edition('alternate-file','B',999);const saved=savedFrom(a);
+ const out=compareBoqEdition(saved,[a,b,alternate]);
+ assert.equal(out.status,'CONFLICT');assert.deepEqual(out.originalRow,saved);assert.equal(out.currentRow.documentId,a.id);assert.ok(out.reason);
+});
+test('a successor without the saved item invalidates the intermediate current price and keeps the proof history',()=>{
+ const a=edition('history-a','A'),b=edition('history-b','B',120,{replacement:replaces('A','B')});
+ const c=edition('history-c','C',180,{replacement:replaces('B','C')});
+ c.extracted_text=c.extracted_text.replace('57.91.0022','58.91.0022');c.extracted_text_hash=hash(c.extracted_text);
+ const saved=savedFrom(a),out=compareBoqEdition(saved,[a,b,c]);
+ assert.equal(out.status,'UNKNOWN');assert.ok(out.reason);assert.deepEqual(out.originalRow,saved);
+ assert.equal(out.chain.length,1);assert.equal(out.chain[0].to.documentId,b.id);
+ assert.deepEqual(out.editionHistory.map(h=>h.toDocumentId),[b.id,c.id]);
+ for(const hop of out.editionHistory){const source=[a,b,c].find(d=>d.id===hop.evidence.documentId);assert.equal(source.extracted_text.slice(hop.evidence.start,hop.evidence.end),hop.evidence.quote);}
+ const d=edition('history-d','D',190,{replacement:replaces('C','D')});
+ const extended=compareBoqEdition(saved,[a,b,c,d]);assert.equal(extended.status,'REPLACED');assert.equal(extended.currentRow.documentId,d.id);
+ assert.deepEqual(extended.editionHistory.map(h=>h.toDocumentId),[b.id,c.id,d.id]);
+ assert.equal(extended.chain.length,1); // No fabricated B→D row hop: C has no corresponding row.
+});
