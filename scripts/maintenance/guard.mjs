@@ -11,6 +11,7 @@ const windows = process.platform === 'win32';
 const execute = promisify(execFile);
 const heldLeases = new WeakSet();
 const failedAcquisitions = new Map();
+const recoveringLeases = new WeakSet();
 const busy = () => Object.assign(new Error('The maintenance lock is held or cannot be verified'), { code: 'BUSY' });
 
 function windowsCommand(script, input) {
@@ -328,9 +329,15 @@ async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo 
 async function unwindAcquisition(file, gate, lease) {
   // This lease never reached the callback. Newer owners of either file are
   // left alone. An interrupted recovery stays pending only in this Node.
-  await releaseLease(file, lease);
-  await withAcquisitionGate(gate, lease, () => {}, { recoverOwn: true });
-  if (failedAcquisitions.get(gate) === lease) failedAcquisitions.delete(gate);
+  if (recoveringLeases.has(lease)) throw busy();
+  recoveringLeases.add(lease);
+  try {
+    await releaseLease(file, lease);
+    await withAcquisitionGate(gate, lease, () => {}, { recoverOwn: true });
+    if (failedAcquisitions.get(gate) === lease) failedAcquisitions.delete(gate);
+  } finally {
+    recoveringLeases.delete(lease);
+  }
 }
 
 async function acquireLease(file, gate, lease, operation) {
@@ -392,25 +399,21 @@ export async function requireHeldLease(home, lease) {
 
 const unchanged = (left, right) => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => left[key] === right[key]);
 
-async function withWindowsInspection(target, run) {
-  const abort = new AbortController();
-  const { child, done, lines, send } = startWindowsHelper(windowsInspectionScript, { target }, abort.signal);
-  const ready = async file => {
-    const timer = setTimeout(() => abort.abort(), 30000);
-    try {
-      if (file !== undefined) await send(JSON.stringify(absolutePath(file)));
-      if ((await lines.next()).value !== 'ready') throw refusal('The Windows inspection handle is unavailable');
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-  try {
-    await ready();
-    return await run(ready);
-  } finally {
-    child.stdin.end();
-    if (await done !== 0) throw refusal('The Windows inspection helper failed');
+async function inspectOnWindows(target) {
+  const { child, done, lines } = startWindowsHelper(
+    windowsInspectionScript, { target }, AbortSignal.timeout(15 * 60 * 1000),
+  );
+  child.stdin.end();
+  const result = await lines.next();
+  const trailer = await lines.next();
+  if (await done !== 0 || result.done || !trailer.done) throw refusal('The Windows inspection helper failed');
+  const { path: actual, files, bytes, fingerprint } = JSON.parse(result.value);
+  if (pathKey(actual) !== pathKey(target) ||
+      !Number.isSafeInteger(files) || files < 0 || !Number.isSafeInteger(bytes) || bytes < 0 ||
+      typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) {
+    throw refusal('The Windows inspection returned an invalid snapshot');
   }
+  return { path: actual, files, bytes, fingerprint };
 }
 
 async function capturePath(file) {
@@ -446,7 +449,7 @@ export async function inspectTarget(root, target) {
     root = assertNarrowRoot(root);
     target = assertNarrowRoot(target);
     if (!relativeWithin(root, target)) throw refusal('The target must be strictly inside the operation root');
-    if (windows) return await withWindowsInspection(target, pin => inspectSnapshot(target, pin));
+    if (windows) return await inspectOnWindows(target);
     return await inspectSnapshot(target);
   } catch (error) {
     if (error.code === 'REFUSED') throw error;
@@ -454,7 +457,7 @@ export async function inspectTarget(root, target) {
   }
 }
 
-async function inspectSnapshot(target, pin) {
+async function inspectSnapshot(target) {
   const checked = await capturePath(target);
   const actual = await fs.realpath(target);
   if (pathKey(actual) !== pathKey(target)) throw refusal('The target resolves to a different path');
@@ -463,7 +466,6 @@ async function inspectSnapshot(target, pin) {
   let files = 0;
   let bytes = 0;
   async function inspect(file, ancestors) {
-    await pin?.(file);
     await verifyPath(ancestors);
     const before = await fs.lstat(file, { bigint: true });
     const relative = path.relative(actual, file).split(path.sep).join('/');

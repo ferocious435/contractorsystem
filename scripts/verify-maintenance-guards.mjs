@@ -47,6 +47,14 @@ function child(home, localAppData, hold = false, wait = false) {
   return { worker, result, done };
 }
 
+function faultGateAfterClaim(spawn, executable, args, options) {
+  const command = Buffer.from(args.at(-1), 'base64').toString('utf16le') + '\nexit 23\n';
+  const helper = spawn(executable, [...args.slice(0, -1), Buffer.from(command, 'utf16le').toString('base64')], options);
+  const end = helper.stdin.end.bind(helper.stdin);
+  helper.stdin.end = () => end();
+  return helper;
+}
+
 async function releaseFixture(home, { id, createdAt = '2026-11-10T12:00:00Z', acceptedAt = null, broken = false }) {
   const root = await mkdir(home, 'releases/' + id);
   const dependencyRoot = await mkdir(home, 'dependencies/shared');
@@ -133,46 +141,8 @@ if (process.argv[2] === '--inventory-worker') {
     await assert.rejects(inspectTarget(path.dirname(actual), actual), { code: 'REFUSED' });
   });
 
-  // Fails if the first identity checks become detached from the subsequent file reads.
-  test('refusesAncestorSwappedAfterRealpath', async t => {
-    const { inspectTarget } = await guardModule();
-    const base = await sandbox(t);
-    const root = await mkdir(base, 'owned/releases');
-    const target = await mkdir(root, 'candidate');
-    const other = await mkdir(base, 'other/releases/candidate');
-    await fs.writeFile(path.join(target, 'original.txt'), 'original');
-    await fs.writeFile(path.join(other, 'outside.txt'), 'outside');
-    const realpath = fs.realpath;
-    const open = fs.open;
-    let swapped = false;
-    let outsideRead = false;
-    const swap = t.mock.method(fs, 'realpath', async file => {
-      const answer = await realpath(file);
-      if (file === target && !swapped) {
-        swapped = true;
-        await fs.rename(path.join(base, 'owned'), path.join(base, 'prior'));
-        await fs.symlink(path.join(base, 'other'), path.join(base, 'owned'), windows ? 'junction' : 'dir');
-      }
-      return answer;
-    });
-    t.mock.method(fs, 'open', async (file, ...args) => {
-      if (path.basename(file) === 'outside.txt') outsideRead = true;
-      return open(file, ...args);
-    });
-    syncBuiltinESMExports();
-    try {
-      await assert.rejects(inspectTarget(root, target), { code: 'REFUSED' });
-      assert.equal(swapped, true);
-      assert.equal(outsideRead, false);
-      assert.equal(swap.mock.callCount() > 0, true);
-    } finally {
-      t.mock.restoreAll();
-      syncBuiltinESMExports();
-    }
-  });
-
-  // Fails if the ancestor can become a junction between the last check and the readdir call.
-  test('holdsAncestorThroughDirectoryEnumeration', { skip: !windows, timeout: 30000 }, async t => {
+  // Fails if successful pin messages let Node read a tree after the helper's handles are gone.
+  test('helperDeathCannotLeaveAnUnpinnedReader', { skip: !windows, timeout: 30000 }, async t => {
     const { inspectTarget } = await guardModule();
     const base = await sandbox(t);
     const owned = await mkdir(base, 'owned');
@@ -181,18 +151,39 @@ if (process.argv[2] === '--inventory-worker') {
     const outsider = await mkdir(base, 'other/releases/candidate');
     await fs.writeFile(path.join(target, 'inside'), 'inside');
     await fs.writeFile(path.join(outsider, 'outside'), 'outside');
+    const spawn = childProcess.spawn;
+    let closed;
+    t.mock.method(childProcess, 'spawn', (executable, args, options) => {
+      const query = JSON.parse(options.env?.CODEX_MAINTENANCE_QUERY ?? 'null');
+      if (query?.target !== target) return spawn(executable, args, options);
+      const original = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+      const compileEnd = original.indexOf("\n'@") + 3;
+      const fault = original.slice(0, compileEnd) + String.raw`
+        $held = [ContractorInspection]::OpenPlain($query.owned, $true)
+        [Console]::WriteLine('ready')
+        $null = [Console]::ReadLine()
+        [Console]::WriteLine('ready')
+        exit 25
+      `;
+      const command = Buffer.from(fault, 'utf16le').toString('base64');
+      const env = { ...options.env, CODEX_MAINTENANCE_QUERY: JSON.stringify({ ...query, owned }) };
+      const helper = spawn(executable, [...args.slice(0, -1), command], { ...options, env });
+      closed = once(helper, 'close');
+      return helper;
+    });
+    let changed;
+    const replaceAncestor = () => changed ??= (async () => {
+      assert.deepEqual(await closed, [25, null]);
+      await fs.rename(owned, path.join(base, 'before-swap'));
+      await fs.symlink(path.join(base, 'other'), owned, 'junction');
+    })();
     const readdir = fs.readdir;
-    let attempted = false;
     let outsideListed = false;
+    let nodeEnumerated = false;
     t.mock.method(fs, 'readdir', async (file, ...args) => {
-      if (file === target && !attempted) {
-        attempted = true;
-        try {
-          await fs.rename(owned, path.join(base, 'before-swap'));
-          await fs.symlink(path.join(base, 'other'), owned, 'junction');
-        } catch (error) {
-          assert.ok(['EACCES', 'EBUSY', 'EPERM'].includes(error.code), error.code);
-        }
+      if (file === target) {
+        nodeEnumerated = true;
+        await replaceAncestor();
       }
       const entries = await readdir(file, ...args);
       if (file === target && entries.includes('outside')) outsideListed = true;
@@ -200,10 +191,12 @@ if (process.argv[2] === '--inventory-worker') {
     });
     syncBuiltinESMExports();
     try {
-      const snapshot = await inspectTarget(root, target).catch(error => error);
-      assert.equal(attempted, true);
-      assert.equal(outsideListed, false, 'Windows allowed enumeration through the replacement junction');
-      assert.equal(snapshot.bytes, 6);
+      await assert.rejects(inspectTarget(root, target), { code: 'REFUSED' });
+      assert.ok(closed, 'a real helper was started');
+      await replaceAncestor();
+      assert.equal((await fs.lstat(owned)).isSymbolicLink(), true);
+      assert.equal(outsideListed, false, 'Node read a replacement junction after the helper died');
+      assert.equal(nodeEnumerated, false);
     } finally {
       t.mock.restoreAll();
       syncBuiltinESMExports();
@@ -381,11 +374,7 @@ if (process.argv[2] === '--inventory-worker') {
       }
       if (!faultInjected && query?.file === gateFile(home)) {
         faultInjected = true;
-        const command = Buffer.from(args.at(-1), 'base64').toString('utf16le') + '\nexit 23\n';
-        const helper = spawn(executable, [...args.slice(0, -1), Buffer.from(command, 'utf16le').toString('base64')], options);
-        const end = helper.stdin.end.bind(helper.stdin);
-        helper.stdin.end = () => end();
-        return helper;
+        return faultGateAfterClaim(spawn, executable, args, options);
       }
       return spawn(executable, args, options);
     });
@@ -402,6 +391,66 @@ if (process.argv[2] === '--inventory-worker') {
         assert.equal(await withMaintenanceLock(home, 'retry', lease => lease.pid), process.pid);
       }
     } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+
+  // Fails if two cleanups both validate an old record and the delayed unlink removes the next owner.
+  test('overlappingUnwindCannotRemoveNewPrimaryLease', { skip: !windows, timeout: 60000 }, async t => {
+    const { withMaintenanceLock } = await guardModule();
+    const home = await sandbox(t);
+    const spawn = childProcess.spawn;
+    const unlink = fs.unlink;
+    const firstUnlink = Promise.withResolvers();
+    const secondUnlink = Promise.withResolvers();
+    const resumeFirst = Promise.withResolvers();
+    const resumeSecond = Promise.withResolvers();
+    let unlinkCount = 0;
+    let faultInjected = false;
+    t.mock.method(childProcess, 'spawn', (executable, args, options) => {
+      const query = JSON.parse(options.env?.CODEX_MAINTENANCE_QUERY ?? 'null');
+      if (!faultInjected && query?.file === gateFile(home)) {
+        faultInjected = true;
+        return faultGateAfterClaim(spawn, executable, args, options);
+      }
+      return spawn(executable, args, options);
+    });
+    t.mock.method(fs, 'unlink', async file => {
+      if (file === lockFile(home)) {
+        unlinkCount++;
+        if (unlinkCount === 1) {
+          firstUnlink.resolve();
+          await resumeFirst.promise;
+        } else if (unlinkCount === 2) {
+          secondUnlink.resolve();
+          await resumeSecond.promise;
+        }
+      }
+      return unlink(file);
+    });
+    syncBuiltinESMExports();
+    let newer;
+    try {
+      const first = withMaintenanceLock(home, 'failed', () => 'entered').catch(error => error.code);
+      assert.equal(await Promise.race([first, firstUnlink.promise]), undefined);
+      const retry = withMaintenanceLock(home, 'retry', () => 'entered').catch(error => error.code);
+      const overlap = await Promise.race([retry, secondUnlink.promise.then(() => 'SECOND_UNLINK')]);
+      resumeFirst.resolve();
+      assert.equal(await first, 'BUSY');
+      newer = child(home, undefined, true);
+      const started = await newer.result;
+      assert.equal(started.code, 'ACQUIRED');
+      resumeSecond.resolve();
+      await retry;
+      const saved = await fs.readFile(lockFile(home), 'utf8').then(JSON.parse, () => null);
+      assert.equal(saved?.token, started.lease.token, 'the old cleanup removed the new owner');
+      assert.equal(overlap, 'BUSY');
+    } finally {
+      resumeFirst.resolve();
+      resumeSecond.resolve();
+      if (newer?.worker.connected) newer.worker.send('finish', () => {});
+      if (newer) await newer.done;
       t.mock.restoreAll();
       syncBuiltinESMExports();
     }
