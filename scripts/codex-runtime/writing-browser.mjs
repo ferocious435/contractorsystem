@@ -5,7 +5,8 @@ import {readFileSync,mkdirSync,writeFileSync} from 'node:fs';
 import path from 'node:path';
 import {createBoqBrowserFixture} from './boq-browser-fixture.mjs';
 const boqMode=process.argv.includes('--boq');
-const require=createRequire(import.meta.url),root=process.cwd(),out=path.resolve('.superpowers/codex-program-runtime-2026-10-30/writing-browser');mkdirSync(out,{recursive:true});
+const require=createRequire(import.meta.url),root=process.cwd(),baseOut=path.resolve('.superpowers/codex-program-runtime-2026-10-30/writing-browser');
+const out=boqMode?path.join(baseOut,'boq'):baseOut;mkdirSync(out,{recursive:true});
 const bundle=require('next/dist/compiled/webpack/webpack');bundle.init();
 await new Promise((resolve,reject)=>{const compiler=bundle.webpack({mode:'development',devtool:false,entry:path.resolve('scripts/codex-runtime/browser/writing.tsx'),output:{path:out,filename:'app.js'},resolve:{extensions:['.tsx','.ts','.mjs','.js'],alias:{'@/utils/supabase/client$':path.resolve('scripts/codex-runtime/browser/client.mjs'),'@':path.resolve('src')}},module:{rules:[{test:/\.tsx?$/,use:path.resolve('scripts/codex-runtime/browser/typescript-loader.cjs')}]},optimization:{minimize:false}});compiler.run((error,stats)=>compiler.close(()=>{if(error||stats.hasErrors())reject(error??Error(stats.toString({all:false,errors:true})));else resolve();}));});
 if(process.argv.includes('--build-only')){console.log('Synthetic writing bundle compiled; no server or SQL started.');process.exit(0);}

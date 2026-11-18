@@ -14,6 +14,53 @@ const body='כתב כמויות לביצוע\nסעיף תיאור יחידה כ�
 const doc=(id='boq',text=body,extra={})=>({id,project_id:'p',title:'כתב כמויות לביצוע.pdf',extracted_text:text,
  content_hash:hash('bytes-'+id),extracted_text_hash:hash(text),ocr_status:'COMPLETED',category:'CONTRACT',
  parsed_json:{source_reading:{version:'page-coverage-v1',complete:true,totalPages:18,readPages:Array.from({length:18},(_,i)=>i+1),unreadablePages:[]}},...extra});
+
+for(const [action,label] of [['תיקון','repair'],['פירוק','dismantling']]){
+ test(`${label} cannot inherit jacking or supply prices for the same pipe`,()=>{
+  assert.deepEqual(selectConsultantBoqRows([doc()],`מה המחיר ל${action} צינורות GRP בקוטר 450 מ"מ?`,[]),[]);
+ });
+ test(`${label} selects its own work while jacking retains separate supply`,()=>{
+  const text=body.replace('דחיקת צינורות פיברגלס בשיטת Micro Tunneling',`${action} צינורות GRP`);
+  const rows=selectConsultantBoqRows([doc('action',text)],`מה המחיר ל${action} צינורות GRP בקוטר 450 מ"מ?`,[]);
+  assert.equal(rows.length,1);assert.equal(rows[0].unitPrice,3310.34);
+  assert.equal(selectConsultantBoqRows([doc()],question,[]).length,2);
+ });
+}
+test('dismantling a pipe cannot inherit dismantling a shaft through the letters in the action',()=>{
+ const text=body.replace('דחיקת צינורות פיברגלס בשיטת Micro Tunneling','פירוק פיר GRP');
+ assert.deepEqual(selectConsultantBoqRows([doc('shaft',text)],'מה המחיר לפירוק צינורות GRP בקוטר 450 מ"מ?',[]),[]);
+});
+for(const location of ['body','title'])test(`explicit non-execution designation in ${location} blocks contractual prices`,()=>{
+ const candidate=doc('not-execution',location==='body'?body.replace('כתב כמויות לביצוע','כתב כמויות לא לביצוע'):body,
+  location==='title'?{title:'כתב כמויות לא לביצוע.pdf'}:{});
+ assert.deepEqual(selectConsultantBoqRows([candidate],question,[]),[]);
+});
+test('a reference to another non-execution edition does not revoke the current execution BOQ',()=>{
+ for(const note of ['המהדורה הקודמת סומנה "כתב כמויות לא לביצוע"; מסמך זה הוא המהדורה לביצוע.',
+  'הקבלן צירף מסמך אחר שכותרתו "לא לביצוע".',
+  'כתב כמויות לביצוע; המהדורה הקודמת לא לביצוע']){
+  assert.equal(selectConsultantBoqRows([doc('other-edition',body+'\n'+note)],question,[]).length,2);
+ }
+});
+test('a standalone non-execution stamp on the current BOQ blocks its execution heading',()=>{
+ assert.deepEqual(selectConsultantBoqRows([doc('stamp',body+'\nלא לביצוע')],question,[]),[]);
+});
+test('revision and printed dates on one line retain separate exact fields in either order',()=>{
+ for(const header of ['תאריך מהדורה: 01.01.2024; תאריך הדפסה: 02.02.2024','תאריך הדפסה: 02.02.2024; תאריך מהדורה: 01.01.2024']){
+  const text=header+'\n'+body,revision=selectConsultantBoqRows([doc('dates',text)],question,[])[0].revision;
+  assert.equal(revision.date,'01.01.2024');assert.equal(revision.printedDate,'02.02.2024');assert.equal(revision.datePurpose,'DOCUMENT');
+  assert.equal(revision.dateEvidence.quote,'תאריך מהדורה: 01.01.2024');
+  assert.equal(revision.printedDateEvidence.quote,'תאריך הדפסה: 02.02.2024');
+  for(const evidence of [revision.dateEvidence,revision.printedDateEvidence])assert.equal(text.slice(evidence.start,evidence.end),evidence.quote);
+ }
+});
+test('conflicting revision dates on one line stay unknown with both literal ranges',()=>{
+ const text='תאריך מהדורה: 01.01.2024; תאריך מהדורה: 02.02.2024\n'+body;
+ const revision=selectConsultantBoqRows([doc('conflict',text)],question,[])[0].revision;
+ assert.equal(revision.date,null);assert.equal(revision.datePurpose,'UNKNOWN');assert.equal(revision.conflictingDateEvidence.length,2);
+ assert.deepEqual(revision.conflictingDateEvidence.map(e=>e.quote),['תאריך מהדורה: 01.01.2024','תאריך מהדורה: 02.02.2024']);
+ for(const evidence of revision.conflictingDateEvidence)assert.equal(text.slice(evidence.start,evidence.end),evidence.quote);
+});
 test('ordinary contractor question finds separate laying and supply rows without item codes',()=>{
  const rows=selectConsultantBoqRows([doc()],question,[]);
  assert.deepEqual(rows.map(r=>[r.itemCode,r.page,r.unitPrice]),[['57.91.0016',17,3310.34],['57.91.0022',18,2680.57]]);

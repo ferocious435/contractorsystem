@@ -53,7 +53,7 @@ const constructionObjects = [
     ['PIPE', /צינור(?:ות)?|צנר(?:ת)?|pipes?/u],
     ['WALL', /קירות|קיר|walls?/u],
     ['BUILDING', /מבנים|מבנה|בניין|בנין|buildings?/u],
-    ['SHAFT', /פירים|פיר|shafts?/u],
+    ['SHAFT', /פירים|פיר(?!וק)|shafts?/u],
     ['MANHOLE', /שוחות|שוחה|manholes?/u],
     ['ROAD', /כבישים|כביש|roads?/u],
     ['SIDEWALK', /מדרכות|מדרכה|sidewalks?/u],
@@ -80,6 +80,14 @@ function explicitMaterials(value: string) {
 function dimensions(value: string) {
     return [...searchText(value).matchAll(/(\d+(?:\.\d+)?)\s*מ["״]מ/gu)].map(m => Number(m[1]));
 }
+const workActions = [
+    ['JACKING', /דחיק|tunneling|mtm/u],
+    ['SUPPLY', /אספק|supply/u],
+    ['REPAIR', /תיקו[ןנ]|לתקן|repair/u],
+    ['DISMANTLING', /פירוק|פרוק|הריס|dismantl|demolit/u],
+    ['INSTALLATION', /הנח|התקנ|install|laying/u],
+    ['CONSTRUCTION', /הקמ|בניית|בניה|construct/u],
+] as const;
 function matchesScope(scope: string, topic: string) {
     const row = compact(scope), query = compact(topic);
     // The first printed description establishes the payable object. A later note about
@@ -89,10 +97,13 @@ function matchesScope(scope: string, topic: string) {
     if (!queryObject || queryObject !== rowObject) return false;
     const queryMaterials = explicitMaterials(topic), rowMaterials = explicitMaterials(scope);
     if (queryMaterials.length && !queryMaterials.every(material => rowMaterials.includes(material))) return false;
-    if (queryObject === 'PIPE') {
-        // Jacking and supply remain separate payable objects under the same pipe topic.
-        if (/דחיק|tunneling|mtm/u.test(query) && !/דחיק|tunneling|אספק/u.test(row)) return false;
-    }
+    const requestedActions = workActions.filter(([, pattern]) => pattern.test(query)).map(([action]) => action);
+    // The first action describes the payable work. A later supply/exclusion note
+    // cannot turn repair, demolition or installation into a supply price.
+    const rowAction = workActions.map(([action, pattern]) => ({ action, index: row.search(pattern) }))
+        .filter(match => match.index >= 0).sort((a, b) => a.index - b.index)[0]?.action;
+    if (requestedActions.length && (!rowAction || !requestedActions.some(action => action === rowAction
+        || (queryObject === 'PIPE' && action === 'JACKING' && rowAction === 'SUPPLY')))) return false;
     const sizes = dimensions(topic);
     return !sizes.length || dimensions(scope).some(size => sizes.includes(size));
 }
@@ -105,6 +116,12 @@ function lineEvidence(document: ConsultantBoqDocument, predicate: (line: string)
 export function readConsultantBoqRevision(document: ConsultantBoqDocument): ConsultantBoqRevision | null {
     const body = String(document.extracted_text || ''), head = body.slice(0, 2500);
     if (/הצעת\s*מחיר|הצעת\s*הקבלן|contractor\s+(?:offer|proposal)/iu.test(searchText(head + ' ' + document.title))) return null;
+    // Only a designation/stamp of this source revokes its authority. Quoting a
+    // different edition's designation in ordinary prose does not revoke this one.
+    const nonExecution = /לא\s*לביצוע|אינו\s*לביצוע|not\s+for\s+(?:execution|construction)/iu;
+    const nonExecutionStamp = /^(?:הערה\s*:\s*)?(?:(?:כתב\s*כמויות|מסמך\s*זה|מהדורה\s*זו)\s*[:\-]?\s*)?(?:לא\s*לביצוע|אינו\s*לביצוע|not\s+for\s+(?:execution|construction))(?:\s|[.;:,]|$)/iu;
+    if (nonExecution.test(searchText(document.title || ''))
+        || lineEvidence(document, line => nonExecutionStamp.test(searchText(line).trim()))) return null;
     const designationEvidence = lineEvidence(document, line => /כתב\s*כמויות/u.test(searchText(line)));
     if (!designationEvidence || !/כמות/u.test(compact(head)) || !/מחיר/u.test(compact(head))) return null;
     const execution = /לביצוע/u.test(compact(head + ' ' + document.title));
@@ -115,11 +132,12 @@ export function readConsultantBoqRevision(document: ConsultantBoqDocument): Cons
     // The title is a hint, not a substitute for a quoted designation in the saved body.
     if (!authorityEvidence) return null;
     const datePattern = /\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/u;
-    const printed = lineEvidence(document, line => datePattern.test(line) && /תאריך\s*הדפסה|הודפס|printed/iu.test(searchText(line)));
-    const dates = [...body.matchAll(/[^\r\n]+/gu)].filter(line => datePattern.test(line[0])
-        && /תאריך\s*(?:המסמך|עדכון|מהדורה)|document\s*date|revision\s*date/iu.test(searchText(line[0]))
-        && !/הדפסה|הודפס|printed/iu.test(searchText(line[0])))
-        .map(line => anchorSourceRange(document, line.index, line.index + line[0].length));
+    // Anchor each label/value pair, including adjacent columns extracted as one line.
+    const dateFields = [...body.matchAll(/(תאריך\s*(?:המסמך|עדכון|מהדורה|הדפסה)|הודפס|document\s*date|revision\s*date|printed(?:\s*date)?)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\b/giu)]
+        .map(match => ({ printed: /הדפסה|הודפס|printed/iu.test(match[1]),
+            evidence: anchorSourceRange(document, match.index, match.index + match[0].length) }));
+    const printed = dateFields.find(field => field.printed)?.evidence || null;
+    const dates = dateFields.filter(field => !field.printed).map(field => field.evidence);
     const conflictingDateEvidence = new Set(dates.map(anchor => anchor.quote.match(datePattern)?.[0])).size > 1 ? dates : [];
     const dated = conflictingDateEvidence.length ? null : dates[0];
     const identifierPattern = /^מספר כתב כמויות:\s*([\p{L}\d_-]+);\s*מהדורה:\s*([\p{L}\d_-]+)\s*$/u;
