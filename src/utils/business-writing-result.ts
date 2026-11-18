@@ -9,14 +9,35 @@ const SOURCE_MARKER=/(?<![\p{L}\p{N}_])S\d+(?![\p{L}\p{N}_])/gu;
 const isSourceMarker=(text:string,start:number)=>!/(?:סעיף|סעיפים|תת[ -]?סעיף|פרק|קוד|מק["״']?ט|clause|section|code|item)\s*(?:מס[.'״]?\s*)?$/iu.test(text.slice(Math.max(0,start-48),start));
 // A source ID has the same role in [S1], (S1, S2), or prose; a document code keeps its factual digits.
 const sourceMarkers=(text:string)=>[...text.matchAll(SOURCE_MARKER)].filter(match=>isSourceMarker(text,match.index)).map(match=>match[0]);
-function checkedBody(value:unknown,facts:WritingFacts):string {
+function maskConsultantPageReferences(text:string,facts:WritingFacts,selected:readonly string[]):string {
+    if(facts.kind!=='consultant')return text;
+    return text.split(/(\n\s*\n)/u).map(paragraph=>{
+        const cited=new Set(sourceMarkers(paragraph));
+        const pages=new Set(facts.sources.filter(source=>selected.includes(source.sourceId)&&cited.has(source.sourceId)
+            &&source.basis==='DOCUMENT'&&source.status==='VERIFIED'&&source.documentId&&source.quote)
+            .map(source=>source.pageLabel).filter(page=>page&&/^[1-9]\d*$/u.test(page)));
+        return paragraph.replace(/(?<![\p{L}\p{N}_])ו?[בלמ]?(?:עמוד|עמ['׳’])\s+([1-9]\d*)(?![\p{L}\p{N}_/:\-–—]|\.\d)/gu,
+            (reference,page:string,start:number)=>{
+                const before=paragraph.slice(Math.max(0,start-48),start),after=paragraph.slice(start+reference.length);
+                if(!pages.has(page)||!isSourceMarker(paragraph,start)
+                    ||/(?:כמות|מגרש|quantity|count)\s*(?:היא|של|:)?\s*$/iu.test(before)
+                    ||/^\s*(?:מטר(?:ים)?|מ["״]?[רק]|יחידות?|צינורות|meters?|kg)(?!\p{L})/iu.test(after))return reference;
+                return ' [source page] ';
+            });
+    }).join('');
+}
+function checkedBody(value:unknown,facts:WritingFacts,selected:readonly string[]):string {
     if(typeof value!=='string'||!value.trim()||value.length>30000)throw invalid();
     const evidence=[facts.userText,facts.projectName,...facts.sources.map(source=>source.quote??'')].join('\n');
     // An unread filename may identify a reading gap; it supplies no quote or financial evidence.
     const labels=facts.kind==='consultant'?facts.unverifiedSourceLabels??[]:[];
     if(sourceMarkers(value).some(id=>!facts.sources.some(source=>source.sourceId===id)))throw invalid('AI_SOURCE_UNVERIFIED');
     const factualText=value.replace(SOURCE_MARKER,(id,start:number)=>isSourceMarker(value,start)?' [source] ':id).replace(/^\s*\d{1,3}[.)]\s+/gm,'');
-    if(unverifiedWritingNumbers(factualText,[evidence,...labels].join('\n')).length)throw invalid('AI_FACT_UNVERIFIED');
+    // Page metadata only validates explicit references to selected, locally cited sources.
+    // Money and literal quotations below still inspect the original page-bearing text.
+    const referencedText=maskConsultantPageReferences(value,facts,selected);
+    const numericText=referencedText.replace(SOURCE_MARKER,(id,start:number)=>isSourceMarker(referencedText,start)?' [source] ':id).replace(/^\s*\d{1,3}[.)]\s+/gm,'');
+    if(unverifiedWritingNumbers(numericText,[evidence,...labels].join('\n')).length)throw invalid('AI_FACT_UNVERIFIED');
     // Dates/codes from the input are allowed. Financial figures are rendered from the server snapshot.
     const withoutDates=maskKnownWritingDates(factualText,evidence);
     if(/\p{N}[\p{N}\s.,]*\s*(?:₪|ש[״"']?ח|שקלים?|%|ILS|NIS|USD|EUR)|(?:₪|\$|€|£)\s*\p{N}|(?:סכום|מחיר|עלות|לתשלום|לשלם)[^\n.!?]{0,30}\p{N}/iu.test(withoutDates))throw invalid('AI_AMOUNT_UNVERIFIED');
@@ -31,8 +52,8 @@ export function validateWritingResult(raw:string,facts:WritingFacts,snapshot?:Le
     if(snapshot&&!isLetterDraftSnapshot(snapshot))throw invalid();
     const allowed=new Set(facts.sources.map(source=>source.sourceId));
     if(!Array.isArray(value.sourceIds)||value.sourceIds.some(id=>typeof id!=='string'||!allowed.has(id))||new Set(value.sourceIds).size!==value.sourceIds.length)throw invalid('AI_SOURCE_UNVERIFIED');
-    const result:WritingResult={body:checkedBody(value.body,facts),sourceIds:value.sourceIds};
-    if(facts.kind==='consultant')for(const key of ['unknowns','nextActions'] as const){if(!Array.isArray(value[key])||value[key].length>20)throw invalid();result[key]=value[key].map(text=>checkedBody(text,facts));}
+    const result:WritingResult={body:checkedBody(value.body,facts,value.sourceIds),sourceIds:value.sourceIds};
+    if(facts.kind==='consultant')for(const key of ['unknowns','nextActions'] as const){if(!Array.isArray(value[key])||value[key].length>20)throw invalid();result[key]=value[key].map(text=>checkedBody(text,facts,result.sourceIds));}
     if([result.body,...result.unknowns||[],...result.nextActions||[]].some(text=>sourceMarkers(text).some(id=>!result.sourceIds.includes(id))))throw invalid('AI_SOURCE_UNVERIFIED');
     return result as unknown as JsonValue;
 }
