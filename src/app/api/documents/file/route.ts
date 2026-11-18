@@ -4,6 +4,7 @@ import { requireOwnedDocument, requireOwnedProject } from "@/app/api/_utils/auth
 import { downloadDocumentBuffer, getDocumentContentType, getDocumentFileName } from "@/utils/document-storage";
 import { createClient } from "@/utils/supabase/server";
 import { verifyDocumentSourceHash } from "@/utils/document-source-hash.server";
+import { validDocumentPageRequest,documentPdfPageResponse } from "@/utils/document-pdf-page.server";
 
 type FileDocument = {
     id: string;
@@ -24,6 +25,9 @@ export async function GET(req: NextRequest) {
         const projectId = searchParams.get("projectId");
         const documentId = searchParams.get("documentId");
         const sourceHash = searchParams.get("sourceHash");
+        if (!validDocumentPageRequest(searchParams)) {
+            return NextResponse.json({success:false,error:'Invalid renderPage'}, {status:400});
+        }
         if (searchParams.getAll('sourceHash').length > 1 || (sourceHash !== null && !/^[a-f\d]{64}$/iu.test(sourceHash))) {
             return NextResponse.json({success:false,error:'Invalid sourceHash'}, {status:400});
         }
@@ -57,6 +61,8 @@ export async function GET(req: NextRequest) {
         }
 
         const fileBuffer = await downloadDocumentBuffer(supabase, ownership.document);
+        const renderPage=searchParams.get('renderPage');
+        if(renderPage!==null)return documentPdfPageResponse(fileBuffer,sourceHash,Number(renderPage),req.signal);
         if (!verifyDocumentSourceHash(fileBuffer, sourceHash)) {
             return NextResponse.json({success:false,code:'SOURCE_CHANGED',error:'Original file bytes changed'}, {status:409,headers:{'Cache-Control':'no-store'}});
         }

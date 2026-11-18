@@ -83,10 +83,14 @@ test('file route rejects changed downloaded bytes despite unchanged metadata and
  const hash=createHash('sha256').update('original').digest('hex');const request=(extra='')=>new Request(`http://fixture/api/documents/file?projectId=p&documentId=doc${extra}`);
  let response=await GET(request(`&sourceHash=${hash}`));assert.equal(response.status,200);assert.equal(await response.text(),'original');assert.ok(response.headers.get('cache-control').includes('no-store'));
  state.bytes='replacement';response=await GET(request(`&sourceHash=${hash}`));assert.equal(response.status,409);assert.equal((await response.json()).code,'SOURCE_CHANGED');
+ assert.equal((await GET(request(`&sourceHash=${hash}&renderPage=3`))).status,409,'mismatched bytes must fail before any PDF rendering');
  response=await GET(request());assert.equal(response.status,200);assert.equal(await response.text(),'replacement');
  const before=state.downloads;state.project='other';assert.equal((await GET(request())).status,403);assert.equal(state.downloads,before);
  state.project='p';state.allow=false;assert.equal((await GET(request())).status,403);assert.equal(state.downloads,before);
  assert.equal((await GET(request('&sourceHash=bad'))).status,400);assert.equal((await GET(request(`&sourceHash=${hash}&sourceHash=${hash}`))).status,400);
+ state.allow=true;const {PDFDocument,StandardFonts}=await import('pdf-lib');const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica);pdf.addPage().drawText('ACTUAL ROUTE PAGE ONE',{font});state.bytes=Buffer.from(await pdf.save());
+ const pdfHash=createHash('sha256').update(state.bytes).digest('hex');response=await GET(request(`&sourceHash=${pdfHash}&renderPage=1`));assert.equal(response.status,200);assert.equal(response.headers.get('content-type'),'image/png');assert.equal(response.headers.get('x-document-page'),'1');assert.ok((await response.arrayBuffer()).byteLength>1000);
+ assert.equal((await GET(request(`&sourceHash=${pdfHash}&renderPage=0`))).status,400);assert.equal((await GET(request(`&sourceHash=${pdfHash}&renderPage=1&renderPage=2`))).status,400);assert.equal((await GET(request('&renderPage=1'))).status,400);assert.equal((await GET(request(`&sourceHash=${pdfHash}&renderPage=2`))).status,422);
 });
 test('comparison fetch and PDF read pass cancellation, preserve source hashes and reject mismatched source identities',async()=>{
  const {readBoqComparisons,readBoqPdf,boqSourceUrl}=await import('../src/components/features/consultant/boqSources.ts');

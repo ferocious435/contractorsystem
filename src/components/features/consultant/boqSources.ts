@@ -44,7 +44,7 @@ export function boqSourceUrl(projectId:string,row:ConsultantBoqRow):string|null 
 export async function readBoqPdf(projectId:string,row:ConsultantBoqRow,signal:AbortSignal):Promise<Blob> {
     const url=boqSourceUrl(projectId,row);
     if(!url)throw new Error('Saved source unavailable');
-    const response=await fetch(url,{signal,cache:'no-store'});
-    if(!response.ok||!response.headers.get('content-type')?.toLowerCase().startsWith('application/pdf'))throw new Error('Original PDF unavailable');
+    const response=await fetch(`${url}&renderPage=${row.page}`,{signal,cache:'no-store'});
+    if(!response.ok||!response.headers.get('content-type')?.toLowerCase().startsWith('image/png'))throw new Error('Original PDF page unavailable');
     return response.blob();
 }

@@ -11,6 +11,19 @@ import {readBoqPdf,type BoqComparisons} from './boqSources';
 interface ConsultantBoqRowsProps {projectId:string;rows:ConsultantBoqRow[];comparisons?:BoqComparisons;comparisonUnavailable?:boolean}
 const price=new Intl.NumberFormat('he-IL',{minimumFractionDigits:2,maximumFractionDigits:2});
 
+/** Native image rendering also works in browsers without an embedded PDF viewer. */
+export function ConsultantSourcePage({url,title,onError}:{url:string;title:string;onError():void}):React.JSX.Element {
+    const [zoom,setZoom]=useState(100);
+    return <section aria-label={title}>
+        <div className="ti-actions"><Button onClick={()=>setZoom(100)}>התאמה לרוחב</Button><Button disabled={zoom>=300} onClick={()=>setZoom(value=>Math.min(300,value+50))}>הגדלה</Button><Button disabled={zoom<=100} onClick={()=>setZoom(value=>Math.max(100,value-50))}>הקטנה</Button><span aria-live="polite"><bdi dir="ltr">{zoom}%</bdi></span></div>
+        <div tabIndex={0} role="region" aria-label="עמוד המקור — גלילה" style={{overflow:'auto',maxHeight:'55vh',background:'#fff',direction:'ltr'}}>
+            {/* The verified Blob is local and must bypass the remote image optimizer. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={url} alt={title} onError={onError} style={{display:'block',width:`${zoom}%`,maxWidth:'none',height:'auto'}}/>
+        </div>
+    </section>;
+}
+
 export function ConsultantBoqRows({projectId,rows,comparisons={},comparisonUnavailable=false}:ConsultantBoqRowsProps):React.JSX.Element {
     const [source,setSource]=useState<ConsultantBoqRow|null>(null),[pdf,setPdf]=useState<string|null>(null),[sourceState,setSourceState]=useState<'READING'|'PDF'|'QUOTE'>('READING');
     const titleId=useId(),request=useRef<AbortController|null>(null);
@@ -62,7 +75,7 @@ export function ConsultantBoqRows({projectId,rows,comparisons={},comparisonUnava
             <h2 id={titleId}>{source?.title} — {source?.page===null?'ציטוט שמור':<>עמוד <bdi dir="ltr">{source?.page}</bdi></>}</h2><Button onClick={close}>חזרה לשיחה</Button>
             {sourceState==='READING'&&<p role="status">בודק את קובץ המקור… הציטוט השמור זמין למטה.</p>}
             {sourceState==='QUOTE'&&<p role="status">לא ניתן לאמת ולפתוח את קובץ המקור. מוצג הציטוט המדויק שנשמר עם התשובה.</p>}
-            {pdf&&sourceState==='PDF'&&<iframe title={`${source?.title} — עמוד ${source?.page}`} src={`${pdf}#page=${source?.page}`} style={{width:'100%',height:'50vh',minHeight:190,border:0}}/>}
+            {pdf&&sourceState==='PDF'&&<ConsultantSourcePage key={pdf} url={pdf} title={`${source?.title} — עמוד ${source?.page}`} onError={()=>{setPdf(null);setSourceState('QUOTE');}}/>}
             <details open={sourceState!=='PDF'}><summary>הציטוט השמור ללא שינוי</summary><pre dir="auto" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{source?.quote}</pre></details>
         </Dialog>
     </section>;

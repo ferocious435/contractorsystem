@@ -5,6 +5,7 @@ import {selectConsultantBoqRows} from '../../src/utils/consultant-boq.ts';
 import {compareBoqEdition} from '../../src/utils/consultant-boq-editions.ts';
 import {consultantBoqRowKey} from '../../src/utils/consultant-result.ts';
 import {verifyDocumentSourceHash} from '../../src/utils/document-source-hash.server.ts';
+import {validDocumentPageRequest,documentPdfPageResponse} from '../../src/utils/document-pdf-page.server.ts';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 export async function createBoqBrowserFixture(){
  const projectId='20000000-0000-4000-8000-000000000001',conversationId='70000000-0000-4000-8000-000000000001';
@@ -34,11 +35,13 @@ export async function createBoqBrowserFixture(){
    return Response.json({success:true,availability:snapshot.unavailable?'UNAVAILABLE':'AVAILABLE',jobs:url.searchParams.get('projectId')===projectId&&url.searchParams.get('conversationId')===conversationId?[{jobId:savedJob.id,rows:savedJob.result.boqRows.map(originalRow=>({rowKey:consultantBoqRowKey(originalRow),originalRow,comparison:snapshot.unavailable?null:compareBoqEdition(originalRow,catalog)}))}]:[]});
   }
   if(url.pathname==='/api/documents/file'){
+   if(!validDocumentPageRequest(url.searchParams))return Response.json({success:false,error:'Invalid renderPage'},{status:400});
    const documentId=url.searchParams.get('documentId'),old=documentId===documents[0].id;
    if(config.delayMs)await new Promise(resolve=>setTimeout(resolve,config.delayMs));
    const bytes=config.tamperedOld&&old?files.get(documents[1].id):files.get(documentId);
    if(url.searchParams.get('projectId')!==projectId||!bytes||(config.missingOld&&old)||(!config.includeB&&!old))return Response.json({success:false},{status:404});
    if(!verifyDocumentSourceHash(bytes,url.searchParams.get('sourceHash')))return Response.json({success:false,code:'SOURCE_CHANGED'},{status:409});
+   if(url.searchParams.has('renderPage'))return documentPdfPageResponse(bytes,url.searchParams.get('sourceHash'),Number(url.searchParams.get('renderPage')),request.signal);
    return new Response(bytes,{headers:{'Content-Type':'application/pdf','Cache-Control':'no-store'}});
   }
   return null;
