@@ -84,6 +84,9 @@ export function assertNarrowRoot(value) {
 // Use only with the exact home and worktrees returned by readInventory.
 export function artifactRoot({ home, repoRoots }, artifact) {
   const target = assertNarrowRoot(artifact.path);
+  if (repoRoots.some(root => relativeWithin(target, root) !== null)) {
+    throw refusal('The target is or contains a registered worktree');
+  }
   const parent = path.dirname(target);
   const name = path.basename(target);
   if (artifact.kind === 'build' && isBuildName(name) && repoRoots.some(root => pathKey(root) === pathKey(parent))) {

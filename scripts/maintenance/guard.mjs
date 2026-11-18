@@ -1,7 +1,8 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { absolutePath, assertNarrowRoot, localHomes, pathKey, refusal, relativeWithin } from './policy.mjs';
 
@@ -10,17 +11,20 @@ const execute = promisify(execFile);
 const heldLeases = new WeakSet();
 const busy = () => Object.assign(new Error('The maintenance lock is held or cannot be verified'), { code: 'BUSY' });
 
-async function windowsQuery(script, input, timeout = 20000) {
+function windowsCommand(script, input) {
   if (!windows) throw new Error('Windows metadata is unavailable');
   const system = absolutePath(process.env.SystemRoot || 'C:\\Windows');
   const executable = path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const source = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false);\n" + script;
-  const { stdout } = await execute(executable, [
+  const args = [
     '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64'),
-  ], {
-    env: { ...process.env, CODEX_MAINTENANCE_QUERY: JSON.stringify(input) },
-    windowsHide: true, timeout, maxBuffer: 16 * 1024 * 1024,
-  });
+  ];
+  return [executable, args, { env: { ...process.env, CODEX_MAINTENANCE_QUERY: JSON.stringify(input) }, windowsHide: true }];
+}
+
+async function windowsQuery(script, input, timeout = 20000) {
+  const [executable, args, options] = windowsCommand(script, input);
+  const { stdout } = await execute(executable, args, { ...options, timeout, maxBuffer: 16 * 1024 * 1024 });
   return JSON.parse(stdout);
 }
 
@@ -196,15 +200,26 @@ function sameLease(left, right) {
     typeof left.home === 'string' && pathKey(left.home) === pathKey(right.home);
 }
 
-async function readLease(file, home) {
-  const metadata = await fs.lstat(file);
-  if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 16384) throw busy();
-  await requirePlainPath(file);
-  const lease = JSON.parse(await fs.readFile(file, 'utf8'));
+function parseLease(json, home) {
+  const lease = JSON.parse(json);
   if (!lease || typeof lease.token !== 'string' || !lease.token || typeof lease.home !== 'string' ||
       pathKey(lease.home) !== pathKey(home) || !Number.isInteger(lease.pid) || lease.pid < 1 ||
       typeof lease.processStartedAt !== 'string' || !Number.isFinite(Date.parse(lease.processStartedAt))) throw busy();
   return lease;
+}
+
+async function readLease(file, home) {
+  const metadata = await fs.lstat(file);
+  if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 16384) throw busy();
+  await requirePlainPath(file);
+  return parseLease(await fs.readFile(file, 'utf8'), home);
+}
+
+async function requireObsoleteLease(lease) {
+  const [actual] = await processSnapshot(lease.pid);
+  if (actual && (!actual.processStartedAt || !(Date.parse(actual.processStartedAt) > Date.parse(lease.processStartedAt)))) {
+    throw busy();
+  }
 }
 
 async function createLease(file, lease, operation) {
@@ -225,26 +240,90 @@ async function releaseLease(file, lease) {
   }
 }
 
-async function acquireLease(file, gate, lease, operation) {
-  // Every acquirer takes the gate before touching the main lock. An interrupted
-  // gate deliberately stays BUSY until it can be investigated.
-  await createLease(gate, lease, operation);
+const idleGate = '{"version":1,"state":"idle"}';
+
+async function withAcquisitionGate(file, lease, run) {
+  const info = await fs.lstat(file).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (info && (!info.isFile() || info.nlink !== 1)) throw busy();
+  // FileShare.None holds the same gate path exclusively until the helper closes
+  // its handle, even after a process crash. The record remains for PID validation.
+  const [executable, args, options] = windowsCommand(String.raw`
+    $query = ConvertFrom-Json -InputObject $env:CODEX_MAINTENANCE_QUERY
+    $encoding = [Text.UTF8Encoding]::new($false, $true)
+    [Console]::InputEncoding = $encoding
+    $file = $query.file
+    $created = $false
+    try {
+      $stream = [IO.File]::Open($file, 'CreateNew', 'ReadWrite', 'None')
+      $created = $true
+    } catch {
+      if ($_.Exception.GetBaseException() -isnot [IO.IOException]) { throw }
+      if ([IO.File]::GetAttributes($file) -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point' }
+      $stream = [IO.File]::Open($file, 'Open', 'ReadWrite', 'None')
+    }
+    try {
+      function Write-Gate([string]$value) {
+        $bytes = $encoding.GetBytes($value)
+        $stream.Position = 0
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.SetLength($bytes.Length)
+        $stream.Flush($true)
+      }
+      $saved = $null
+      if (!$created) {
+        if ($stream.Length -gt 16384) { throw 'Gate record too large' }
+        $reader = [IO.StreamReader]::new($stream, $encoding, $false, 1024, $true)
+        try { $saved = $reader.ReadToEnd() } finally { $reader.Dispose() }
+      }
+      [Console]::WriteLine((ConvertTo-Json -InputObject @{saved = $saved} -Compress))
+      $owner = [Console]::ReadLine()
+      if ($null -ne $owner) {
+        Write-Gate $owner
+        [Console]::WriteLine('claimed')
+        if ([Console]::ReadLine() -eq 'idle') { Write-Gate $query.idle }
+      }
+    } finally {
+      $stream.Dispose()
+    }
+  `, { file, idle: idleGate });
+  const child = spawn(executable, args, {
+    ...options, stdio: ['pipe', 'pipe', 'ignore'], signal: AbortSignal.timeout(45000),
+  });
+  const done = new Promise(resolve => child.once('close', resolve));
+  child.on('error', () => {});
+  child.stdin.on('error', () => {});
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  let claimed = false;
   try {
+    const { saved } = JSON.parse((await lines.next()).value);
+    if (saved !== null && saved !== idleGate) await requireObsoleteLease(parseLease(saved, lease.home));
+    await new Promise((resolve, reject) => child.stdin.write(JSON.stringify(lease) + '\n', error => error ? reject(error) : resolve()));
+    if ((await lines.next()).value !== 'claimed') throw busy();
+    claimed = true;
+    return await run();
+  } finally {
+    child.stdin.end(claimed ? 'idle\n' : undefined);
+    if (await done !== 0 && claimed) throw busy();
+  }
+}
+
+async function acquireLease(file, gate, lease, operation) {
+  await withAcquisitionGate(gate, lease, async () => {
     try {
       await createLease(file, lease, operation);
+      return;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      const previous = await readLease(file, lease.home);
-      const [actual] = await processSnapshot(previous.pid);
-      if (actual && (!actual.processStartedAt || actual.processStartedAt === previous.processStartedAt ||
-          Date.parse(actual.processStartedAt) <= Date.parse(previous.processStartedAt))) throw busy();
-      if (!sameLease(await readLease(file, lease.home), previous)) throw busy();
-      await fs.unlink(file);
-      await createLease(file, lease, operation);
     }
-  } finally {
-    await releaseLease(gate, lease);
-  }
+    const previous = await readLease(file, lease.home);
+    await requireObsoleteLease(previous);
+    if (!sameLease(await readLease(file, lease.home), previous)) throw busy();
+    await fs.unlink(file);
+    await createLease(file, lease, operation);
+  });
 }
 
 export async function withMaintenanceLock(home, operation, run) {
@@ -283,29 +362,63 @@ export async function requireHeldLease(home, lease) {
 
 const unchanged = (left, right) => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => left[key] === right[key]);
 
+async function capturePath(file) {
+  let cursor = path.parse(file).root;
+  const components = [cursor];
+  for (const name of path.relative(cursor, file).split(path.sep)) {
+    cursor = path.join(cursor, name);
+    components.push(cursor);
+  }
+  const chain = [];
+  for (const [index, component] of components.entries()) {
+    const stats = await fs.lstat(component, { bigint: true });
+    if (!(stats.isDirectory() || (index === components.length - 1 && stats.isFile()))) {
+      throw refusal('The path changed or contains a link');
+    }
+    chain.push({ path: component, stats });
+  }
+  return chain;
+}
+
+async function verifyPath(chain) {
+  for (const { path: component, stats } of chain) {
+    const actual = await fs.lstat(component, { bigint: true });
+    if (actual.dev !== stats.dev || actual.ino !== stats.ino ||
+        actual.isDirectory() !== stats.isDirectory() || actual.isFile() !== stats.isFile()) {
+      throw refusal('The inspected path was replaced');
+    }
+  }
+}
+
 export async function inspectTarget(root, target) {
   try {
     root = assertNarrowRoot(root);
     target = assertNarrowRoot(target);
     if (!relativeWithin(root, target)) throw refusal('The target must be strictly inside the operation root');
+    const checked = await capturePath(target);
     await requirePlainPath(target, { tree: true });
     const actual = await fs.realpath(target);
     if (pathKey(actual) !== pathKey(target)) throw refusal('The target resolves to a different path');
+    await verifyPath(checked);
     const fingerprint = createHash('sha256');
     let files = 0;
     let bytes = 0;
-    async function inspect(file) {
+    async function inspect(file, ancestors) {
+      await verifyPath(ancestors);
       const before = await fs.lstat(file, { bigint: true });
       const relative = path.relative(actual, file).split(path.sep).join('/');
       if (before.isDirectory()) {
+        const chain = [...ancestors, { path: file, stats: before }];
         fingerprint.update(JSON.stringify(['directory', relative]) + '\n');
-        for (const name of (await fs.readdir(file)).sort()) await inspect(path.join(file, name));
+        await verifyPath(chain);
+        for (const name of (await fs.readdir(file)).sort()) await inspect(path.join(file, name), chain);
       } else if (before.isFile()) {
         if (before.nlink !== 1n || before.size > BigInt(Number.MAX_SAFE_INTEGER - bytes)) throw refusal('The file cannot be measured safely');
         const handle = await fs.open(file, 'r');
         const hash = createHash('sha256');
         let count = 0;
         try {
+          await verifyPath(ancestors);
           if (!unchanged(before, await handle.stat({ bigint: true }))) throw refusal('The file changed during inspection');
           for await (const chunk of handle.createReadStream({ autoClose: false })) {
             count += chunk.length;
@@ -323,9 +436,11 @@ export async function inspectTarget(root, target) {
       } else {
         throw refusal('The tree contains a link or special file');
       }
+      await verifyPath(ancestors);
       if (!unchanged(before, await fs.lstat(file, { bigint: true }))) throw refusal('The tree changed during inspection');
     }
-    await inspect(actual);
+    await inspect(actual, checked);
+    await verifyPath(checked);
     return { path: actual, files, bytes, fingerprint: fingerprint.digest('hex') };
   } catch (error) {
     if (error.code === 'REFUSED') throw error;

@@ -108,6 +108,19 @@ function savedProcess(row, pid, start) {
   return Date.parse(row.processStartedAt) > Date.parse(start) ? 'reused' : 'unknown';
 }
 
+function needsOperationBinding(proc) {
+  if (!/^node(?:-[a-f0-9]+)?(?:\.exe)?$/i.test(proc.name ?? '')) return false;
+  if (!proc.commandLine) return true;
+  const args = proc.commandLine.match(/"[^"]*"|[^\s"]+/g)?.slice(1).map(arg => arg.replace(/^"|"$/g, '')) ?? [];
+  if (args.some(arg => /^(?:-e|-p|--eval|--print)(?:=|$)/.test(arg))) return false;
+  return args.some((arg, index) => {
+    const script = path.basename(arg);
+    if (/^next(?:\.cmd)?$/i.test(script)) return !path.isAbsolute(arg) && /^(?:build|start|dev)$/.test(args[index + 1]);
+    if (/^local-system-(?:package|launch|backup|restore)\.mjs$/i.test(script)) return !path.isAbsolute(arg);
+    return /^npm(?:-cli\.js|\.cmd)?$/i.test(script) && args.slice(index + 1).includes('build');
+  });
+}
+
 export async function readInventory({ home, repoRoots = [] } = {}) {
   const inventory = {
     at: new Date().toISOString(), current: null, acceptedReleases: [], tasks: [],
@@ -221,10 +234,18 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
           throw refusal('The release runtime is outside the managed directories');
         }
         if (kind === 'release') {
+          const createdAt = isDate(release.createdAt) ? release.createdAt : null;
+          let acceptedAt = null;
+          if (release.acceptedAt != null) {
+            if (createdAt && isDate(release.acceptedAt) && Date.parse(release.acceptedAt) >= Date.parse(createdAt)) {
+              acceptedAt = release.acceptedAt;
+            } else {
+              uncertain(artifact.id, 'acceptance-evidence-unverified', artifact);
+            }
+          }
           manifests.set(entry.name, {
-            id: entry.name, path: artifact.path, dependencyRoot, nodeExe,
-            createdAt: isDate(release.createdAt) ? release.createdAt : null,
-            acceptedAt: isDate(release.acceptedAt) ? release.acceptedAt : null,
+            id: entry.name, path: artifact.path, dependencyRoot, nodeExe, createdAt, acceptedAt,
+            runtimeVerified: false,
           });
         }
       } catch {
@@ -233,35 +254,66 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
     }
   }
 
-  const receipts = [...manifests.values()].filter(release => release.acceptedAt)
-    .sort((a, b) => Date.parse(b.acceptedAt) - Date.parse(a.acceptedAt) || a.id.localeCompare(b.id));
-  const prior = [...new Set([...previousIds, ...receipts.map(release => release.id)])].filter(id => id !== currentId);
-  const accepted = [...(currentId ? [currentId] : []), ...prior];
-  inventory.acceptedReleases = accepted.flatMap(id => manifests.has(id) ? [manifests.get(id)] : []);
+  const receipts = [...manifests.values()].filter(release => release.acceptedAt).map(release => release.id);
+  const accepted = new Set([...(currentId ? [currentId] : []), ...previousIds, ...receipts]);
+  const acceptedRecords = [...accepted].flatMap(id => manifests.has(id) ? [manifests.get(id)] : []);
   for (const id of accepted) if (!manifests.has(id)) uncertain('release:' + id, 'accepted-release-missing');
+  const requirements = release => [
+    release.nodeExe, release.dependencyRoot, path.join(release.dependencyRoot, 'node_modules'), path.join(release.path, 'node_modules'),
+  ];
+  const files = [...new Map(acceptedRecords.flatMap(requirements).map(file => [pathKey(file), file])).values()];
+  const states = await statuses(files);
+  const runtimeMetadata = new Map();
+  for (const [index, file] of files.entries()) {
+    if (states[index] === 'plain') {
+      try {
+        runtimeMetadata.set(pathKey(file), await fs.lstat(file));
+      } catch { /* An unreadable runtime cannot fill a retention slot. */ }
+    }
+  }
+  for (const release of acceptedRecords) {
+    const [node, ...directories] = requirements(release).map(file => runtimeMetadata.get(pathKey(file)));
+    release.runtimeVerified = Boolean(node?.isFile() && node.size > 0 && directories.every(stats => stats?.isDirectory()));
+    if (!release.runtimeVerified) {
+      const id = 'release:' + release.id;
+      uncertain(id, 'runtime-unverified', items.get(id));
+    }
+  }
+  const byAcceptance = (a, b) => {
+    if (!a.acceptedAt) return b.acceptedAt ? 1 : 0;
+    if (!b.acceptedAt) return -1;
+    return Date.parse(b.acceptedAt) - Date.parse(a.acceptedAt);
+  };
+  const prior = acceptedRecords.filter(release => release.id !== currentId).sort(byAcceptance);
+  const workingPrior = prior.filter(release => release.runtimeVerified);
+  const retained = workingPrior.slice(0, maintenancePolicy.protectedPreviousReleases);
+  const cutoff = retained.at(-1)?.acceptedAt;
+  const ties = cutoff ? workingPrior.slice(retained.length).filter(release => Date.parse(release.acceptedAt) === Date.parse(cutoff)) : [];
+  inventory.acceptedReleases = [
+    ...acceptedRecords.filter(release => release.id === currentId), ...workingPrior,
+    ...prior.filter(release => !release.runtimeVerified),
+  ];
   if (manifests.size && (!currentId ||
-      (prior.length < maintenancePolicy.protectedPreviousReleases && manifests.size > accepted.length))) {
+      (workingPrior.length < maintenancePolicy.protectedPreviousReleases &&
+        [...manifests.keys()].some(id => id !== currentId && !workingPrior.some(release => release.id === id))))) {
     uncertain('previous', 'accepted-history-incomplete');
   }
 
-  const activeReleaseIds = [...(currentId ? [currentId] : []), ...prior.slice(0, maintenancePolicy.protectedPreviousReleases)];
+  const activeReleaseIds = new Set([...(currentId ? [currentId] : []), ...previousIds, ...[...retained, ...ties].map(release => release.id)]);
   for (const id of activeReleaseIds) {
     const release = manifests.get(id);
     const artifact = items.get('release:' + id);
     protection(artifact, id === currentId ? 'current-release' : 'previous-release');
     if (!release) continue;
     const related = [['dependency', release.dependencyRoot], ['runtime', release.nodeExe]];
-    const states = await statuses(related.map(([, file]) => file));
-    for (const [index, [kind, file]] of related.entries()) {
+    for (const [kind, file] of related) {
       const key = kind + ':' + path.basename(file);
       const item = items.get(key) ?? add(key, kind, file);
       protection(item, 'release:' + id);
-      try {
-        if (states[index] !== 'plain') throw refusal('Unverified runtime path');
-        const metadata = await fs.lstat(file);
-        if (kind === 'runtime' ? !metadata.isFile() : !metadata.isDirectory()) throw refusal('Unexpected runtime path type');
+      const metadata = runtimeMetadata.get(pathKey(file));
+      if (kind === 'runtime' ? metadata?.isFile() : metadata?.isDirectory()) {
         if (metadata.isFile()) item.bytes = metadata.size;
-      } catch {
+      } else {
         uncertain(item.id, 'runtime-unverified', item);
         protection(artifact, 'runtime-unverified');
       }
@@ -349,11 +401,32 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
   }
   const processByPid = new Map(live.map(row => [row.pid, row]));
   const savedPids = new Set();
+  const boundPids = new Set();
+  const targetedPids = new Map();
+  const confirmSavedProcess = async (pid, start) => {
+    if (!processesKnown || !pidIsValid(pid) || !isDate(start)) return 'unknown';
+    let row = processByPid.get(pid);
+    if (!row) {
+      if (!targetedPids.has(pid)) targetedPids.set(pid, processSnapshot(pid));
+      try {
+        [row] = await targetedPids.get(pid);
+      } catch {
+        return 'unknown';
+      }
+      if (row && !processByPid.has(pid)) {
+        processByPid.set(pid, row);
+        live.push(row);
+      }
+    }
+    return savedProcess(row, pid, start);
+  };
   if (inventory.current?.pid) {
     savedPids.add(inventory.current.pid);
-    if (!processesKnown || savedProcess(processByPid.get(inventory.current.pid), inventory.current.pid,
-      windowsSavedStart(current.process?.CreationDate ?? current.processStartedAt)) === 'unknown') {
+    const state = await confirmSavedProcess(inventory.current.pid, windowsSavedStart(current.process?.CreationDate ?? current.processStartedAt));
+    if (state === 'unknown') {
       uncertain('current', 'current-process-unverified', items.get('release:' + currentId));
+    } else if (state === 'live') {
+      boundPids.add(inventory.current.pid);
     }
   }
   for (const task of inventory.tasks) {
@@ -363,7 +436,7 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
     let state = 'exited';
     if (pid !== null) {
       if (pidIsValid(pid)) savedPids.add(pid);
-      state = processesKnown ? savedProcess(processByPid.get(pid), pid, task.processStartedAt) : 'unknown';
+      state = await confirmSavedProcess(pid, task.processStartedAt);
       if (state === 'unknown') uncertain(reason, 'task-process-unverified');
     }
     const references = [];
@@ -404,10 +477,12 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
         }
       }
     }
+    if (state === 'live' && references.length) boundPids.add(pid);
   }
 
   const { logical, physical } = localHomes();
   const useAlias = pathKey(home) === pathKey(physical) && pathKey(logical) !== pathKey(physical);
+  let unboundOperation = false;
   for (const proc of live) {
     const matches = [];
     for (const artifact of items.values()) {
@@ -415,7 +490,13 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
       const aliases = relative?.startsWith('..') || relative === null ? [artifact.path] : [artifact.path, path.join(logical, relative)];
       if (aliases.some(file => referencedByProcess(proc, file))) matches.push(artifact);
     }
-    if (!matches.length && !savedPids.has(proc.pid)) continue;
+    const bound = boundPids.has(proc.pid) || matches.some(item => ['build', 'release', 'rejected-release', 'worktree'].includes(item.kind));
+    if (!bound && needsOperationBinding(proc)) {
+      uncertain('process:' + proc.pid, 'process-path-unverified');
+      unboundOperation = true;
+    } else if (!matches.length && !savedPids.has(proc.pid)) {
+      continue;
+    }
     const related = new Set(matches.map(item => item.id));
     for (const tree of matches.filter(item => item.kind === 'worktree')) {
       for (const artifact of items.values()) {
@@ -434,6 +515,10 @@ export async function readInventory({ home, repoRoots = [] } = {}) {
     if (!processesKnown) protection(item, 'process-enumeration-unavailable');
     if (incompleteTasks) protection(item, 'task-registry-unverified');
     if (incompleteReleases && ['release', 'rejected-release'].includes(item.kind)) protection(item, 'release-history-unverified');
+    if (unboundOperation && ['build', 'release', 'rejected-release'].includes(item.kind)) protection(item, 'process-path-unverified');
+    if (item.kind !== 'worktree' && registered.some(tree => relativeWithin(item.path, tree.path) !== null)) {
+      protection(item, 'contains-registered-worktree');
+    }
   }
   inventory.artifacts = [...items.values()];
   return inventory;

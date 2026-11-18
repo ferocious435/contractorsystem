@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import { execFileSync, fork } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import * as fs from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const script = fileURLToPath(import.meta.url);
 const windows = process.platform === 'win32';
 const lockFile = home => path.join(home, 'maintenance-state', 'maintenance.lock');
+const gateFile = home => lockFile(home) + '-acquire';
 const guardModule = () => import('./maintenance/guard.mjs');
 const inventoryModule = () => import('./maintenance/inventory.mjs');
 
@@ -31,7 +36,8 @@ async function mkdir(base, name) {
 }
 
 function child(home, localAppData, hold = false, wait = false) {
-  const worker = fork(script, ['--worker', home, hold ? 'hold' : 'check', wait ? 'wait' : 'go'], {
+  const mode = typeof hold === 'string' ? hold : hold ? 'hold' : 'check';
+  const worker = fork(script, ['--worker', home, mode, wait ? 'wait' : 'go'], {
     env: { ...process.env, LOCALAPPDATA: localAppData ?? process.env.LOCALAPPDATA },
     execArgv: [],
     stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
@@ -41,11 +47,62 @@ function child(home, localAppData, hold = false, wait = false) {
   return { worker, result, done };
 }
 
-if (process.argv[2] === '--worker') {
+async function releaseFixture(home, { id, createdAt = '2026-11-10T12:00:00Z', acceptedAt = null, broken = false }) {
+  const root = await mkdir(home, 'releases/' + id);
+  const dependencyRoot = await mkdir(home, 'dependencies/shared');
+  const nodeExe = path.join(await mkdir(home, 'runtime'), broken ? 'missing.exe' : 'node.exe');
+  await mkdir(root, 'node_modules');
+  await mkdir(dependencyRoot, 'node_modules');
+  if (!broken) await fs.writeFile(nodeExe, 'node fixture');
+  await fs.writeFile(path.join(root, 'release.json'), JSON.stringify({ id, root, dependencyRoot, nodeExe, createdAt, acceptedAt }));
+}
+
+if (process.argv[2] === '--inventory-worker') {
+  const [home, scenario, rawPid] = process.argv.slice(3);
+  const pid = Number(rawPid);
+  const exec = childProcess.execFile;
+  const wrap = (...args) => exec(...args);
+  // Simulate a WMI result which omits one live process and refuses a direct lookup.
+  // All filesystem and inventory logic, and every other Windows query, stay real.
+  wrap[promisify.custom] = async (file, args, options) => {
+    const query = options.env.CODEX_MAINTENANCE_QUERY;
+    if (scenario === 'no-details' && Number(query) === pid) throw Error('PID query unavailable');
+    const response = await exec[promisify.custom](file, args, options);
+    if (query !== 'null') return response;
+    const rows = JSON.parse(response.stdout);
+    if (scenario === 'no-details') {
+      return { ...response, stdout: JSON.stringify(rows.filter(row => row.pid !== pid)) };
+    }
+    const relative = rows.find(row => row.pid === pid);
+    relative.commandLine = 'node .\\node_modules\\next\\dist\\bin\\next build';
+    return { ...response, stdout: JSON.stringify(rows) };
+  };
+  childProcess.execFile = wrap;
+  syncBuiltinESMExports();
+  try {
+    const { readInventory } = await inventoryModule();
+    process.send(await readInventory({ home, repoRoots: [] }));
+  } finally {
+    process.disconnect();
+  }
+} else if (process.argv[2] === '--worker') {
   try {
     if (process.argv[5] === 'wait') await once(process, 'message');
+    const home = process.argv[3];
+    if (process.argv[4] === 'exit-during-acquire') {
+      const open = fs.open;
+      const file = lockFile(await fs.realpath(home));
+      fs.open = async (target, flags, ...args) => {
+        if (target === file && flags === 'wx') {
+          process.send({ code: 'EXITING' }, () => process.exit(0));
+          return new Promise(() => {});
+        }
+        return open(target, flags, ...args);
+      };
+      syncBuiltinESMExports();
+    }
     const { withMaintenanceLock } = await guardModule();
-    await withMaintenanceLock(process.argv[3], 'test', async lease => {
+    await withMaintenanceLock(home, 'test', async lease => {
       process.send({ code: 'ACQUIRED', lease });
       if (process.argv[4] === 'hold') await once(process, 'message');
     });
@@ -74,6 +131,44 @@ if (process.argv[2] === '--worker') {
     await assert.rejects(inspectTarget(path.join(junction, 'releases'), path.join(junction, 'releases/candidate')), { code: 'REFUSED' });
     await fs.symlink(base, path.join(actual, 'nested-alias'), windows ? 'junction' : 'dir');
     await assert.rejects(inspectTarget(path.dirname(actual), actual), { code: 'REFUSED' });
+  });
+
+  // Fails if the first identity checks become detached from the subsequent file reads.
+  test('refusesAncestorSwappedAfterRealpath', async t => {
+    const { inspectTarget } = await guardModule();
+    const base = await sandbox(t);
+    const root = await mkdir(base, 'owned/releases');
+    const target = await mkdir(root, 'candidate');
+    const other = await mkdir(base, 'other/releases/candidate');
+    await fs.writeFile(path.join(target, 'original.txt'), 'original');
+    await fs.writeFile(path.join(other, 'outside.txt'), 'outside');
+    const realpath = fs.realpath;
+    const open = fs.open;
+    let swapped = false;
+    let outsideRead = false;
+    const swap = t.mock.method(fs, 'realpath', async file => {
+      const answer = await realpath(file);
+      if (file === target && !swapped) {
+        swapped = true;
+        await fs.rename(path.join(base, 'owned'), path.join(base, 'prior'));
+        await fs.symlink(path.join(base, 'other'), path.join(base, 'owned'), windows ? 'junction' : 'dir');
+      }
+      return answer;
+    });
+    t.mock.method(fs, 'open', async (file, ...args) => {
+      if (path.basename(file) === 'outside.txt') outsideRead = true;
+      return open(file, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(inspectTarget(root, target), { code: 'REFUSED' });
+      assert.equal(swapped, true);
+      assert.equal(outsideRead, false);
+      assert.equal(swap.mock.callCount() > 0, true);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
   });
 
   // Fails when same-size byte changes or renamed files leave the fingerprint unchanged.
@@ -190,9 +285,43 @@ if (process.argv[2] === '--worker') {
       const saved = JSON.parse(await fs.readFile(lockFile(home), 'utf8'));
       assert.equal(saved.token, results.find(result => result.lease).lease.token);
     } finally {
-      for (const { worker } of workers) if (worker.connected) worker.send('finish');
+      for (const { worker } of workers) if (worker.connected) worker.send('finish', () => {});
       await Promise.all(workers.map(worker => worker.done));
     }
+  });
+
+  // Fails if a dead acquisition owner cannot be recovered, or both contenders acquire the main lock.
+  test('deadAcquireOwnerAllowsOnlyOneReplacement', { timeout: 45000 }, async t => {
+    const { withMaintenanceLock } = await guardModule();
+    const home = await sandbox(t);
+    const departed = child(home, undefined, 'exit-during-acquire');
+    assert.equal((await departed.result).code, 'EXITING');
+    assert.deepEqual(await departed.done, [0, null]);
+    let savedGate;
+    for (let attempt = 0; attempt < 40 && savedGate === undefined; attempt++) {
+      try {
+        savedGate = JSON.parse(await fs.readFile(gateFile(home), 'utf8'));
+      } catch (error) {
+        if (!['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
+        await delay(50);
+      }
+    }
+    assert.equal(savedGate?.pid, departed.worker.pid);
+    assert.match(savedGate?.processStartedAt, /^\d{4}-/);
+    const workers = [child(home, undefined, true, true), child(home, undefined, true, true)];
+    try {
+      for (const { worker } of workers) worker.send('start');
+      const results = await Promise.all(workers.map(worker => worker.result));
+      assert.deepEqual(results.map(result => result.code).sort(), ['ACQUIRED', 'BUSY']);
+      const saved = JSON.parse(await fs.readFile(lockFile(home), 'utf8'));
+      assert.equal(saved.token, results.find(result => result.lease).lease.token);
+    } finally {
+      for (const { worker } of workers) if (worker.connected) worker.send('finish', () => {});
+      await Promise.all(workers.map(worker => worker.done));
+    }
+    await withMaintenanceLock(home, 'again', () => 'reusable');
+    await fs.writeFile(gateFile(home), '{"token":');
+    await assert.rejects(withMaintenanceLock(home, 'check', () => assert.fail('Partial gate owner was ignored')), { code: 'BUSY' });
   });
 
   // Fails if lock cleanup blindly unlinks a file after its lease has been replaced.
@@ -228,6 +357,32 @@ if (process.argv[2] === '--worker') {
     assert.equal(item.fingerprint, null);
   });
 
+  // Fails if a build alias to a registered worktree, or a build containing one, can pass policy.
+  test('overlappingRegisteredWorktreesAreProtected', { timeout: 45000 }, async t => {
+    const { readInventory } = await inventoryModule();
+    const { artifactRoot } = await import('./maintenance/policy.mjs');
+    const base = await sandbox(t);
+    const home = await mkdir(base, 'home');
+    const repo = await mkdir(base, 'repo');
+    const same = path.join(repo, '.next-overlap');
+    const ancestor = await mkdir(repo, '.next-wrapper');
+    const nested = path.join(ancestor, 'linked');
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
+    git('init', '--quiet');
+    await fs.writeFile(path.join(repo, '.gitignore'), '/.next-*/\n');
+    git('add', '.gitignore');
+    git('-c', 'user.name=Test', '-c', 'user.email=maintenance@example.invalid', 'commit', '--quiet', '-m', 'fixture');
+    for (const dir of [same, nested]) git('worktree', 'add', '--quiet', '--detach', dir);
+    const inventory = await readInventory({ home, repoRoots: [repo] });
+    const scope = { home, repoRoots: inventory.artifacts.filter(item => item.kind === 'worktree').map(item => item.path) };
+    assert.equal(inventory.artifacts.find(item => item.kind === 'worktree' && item.path === repo).dirty, false);
+    for (const file of [same, ancestor]) {
+      const build = inventory.artifacts.find(item => item.kind === 'build' && item.path === file);
+      assert.equal(build?.status, 'PROTECTED');
+      assert.throws(() => artifactRoot(scope, build), { code: 'REFUSED' });
+    }
+  });
+
   // Fails if writes accept a foreign lease, escape the registry, or lose task fields when closing.
   test('updateTaskRequiresTheHeldLeaseAndPersistsExplicitState', { timeout: 30000 }, async t => {
     const { withMaintenanceLock } = await guardModule();
@@ -252,19 +407,15 @@ if (process.argv[2] === '--worker') {
   test('inventoryProtectsAcceptedReleasesWithoutHashingThem', { timeout: 30000 }, async t => {
     const { readInventory } = await inventoryModule();
     const home = await sandbox(t);
-    const dependencyRoot = await mkdir(home, 'dependencies/private-copy');
-    const nodeExe = path.join(await mkdir(home, 'runtime'), 'node.exe');
-    await fs.writeFile(nodeExe, 'node fixture');
     for (const [id, acceptedAt] of [['current', null], ['previous', null], ['accepted', '2026-11-17T08:00:00.000Z'], ['unverified', null]]) {
-      const root = await mkdir(home, 'releases/' + id);
-      await fs.writeFile(path.join(root, 'release.json'), JSON.stringify({ id, root, dependencyRoot, nodeExe, createdAt: '2026-11-17T10:00:00.000Z', acceptedAt }));
+      await releaseFixture(home, { id, acceptedAt });
     }
     await fs.writeFile(path.join(home, 'current.json'), JSON.stringify({ releaseId: 'current', previousId: 'previous' }));
     const inventory = await readInventory({ home, repoRoots: [] });
     assert.deepEqual(inventory.acceptedReleases.map(release => release.id).sort(), ['accepted', 'current', 'previous']);
     for (const item of inventory.artifacts) assert.equal(item.fingerprint, null);
-    assert.ok(inventory.artifacts.find(item => item.path === dependencyRoot)?.protectedBy.includes('release:current'));
-    assert.ok(inventory.artifacts.find(item => item.path === nodeExe)?.protectedBy.includes('release:current'));
+    assert.ok(inventory.artifacts.find(item => item.id === 'dependency:shared')?.protectedBy.includes('release:current'));
+    assert.ok(inventory.artifacts.find(item => item.id === 'runtime:node.exe')?.protectedBy.includes('release:current'));
     assert.equal(inventory.artifacts.find(item => item.id === 'release:unverified')?.status, 'UNCLASSIFIED');
   });
 
@@ -272,16 +423,64 @@ if (process.argv[2] === '--worker') {
   test('incompleteAcceptanceHistoryProtectsOtherReleases', { timeout: 30000 }, async t => {
     const { readInventory } = await inventoryModule();
     const home = await sandbox(t);
-    const dependencyRoot = await mkdir(home, 'dependencies/private');
-    const nodeExe = path.join(await mkdir(home, 'runtime'), 'node.exe');
-    await fs.writeFile(nodeExe, 'fixture');
     for (const id of ['current', 'previous', 'unknown']) {
-      const root = await mkdir(home, 'releases/' + id);
-      await fs.writeFile(path.join(root, 'release.json'), JSON.stringify({ id, root, dependencyRoot, nodeExe }));
+      await releaseFixture(home, { id });
     }
     await fs.writeFile(path.join(home, 'current.json'), JSON.stringify({ releaseId: 'current', previousId: 'previous' }));
     const inventory = await readInventory({ home, repoRoots: [] });
     assert.ok(inventory.uncertainties.some(item => item.reason === 'accepted-history-incomplete'));
     assert.equal(inventory.artifacts.find(item => item.id === 'release:unknown')?.status, 'PROTECTED');
+  });
+
+  // Fails if pointer position, a broken runtime, or a date predating creation can take either retention slot.
+  test('releaseRetentionUsesWorkingReleasesAndAcceptanceDates', { timeout: 45000 }, async t => {
+    const { readInventory } = await inventoryModule();
+    const home = await sandbox(t);
+    for (const [id, day, broken] of [['current', null], ['old-link', 12], ['newest', 17], ['second', 16],
+      ['older', 15], ['broken', 18, true], ['bad-time', 9]]) {
+      await releaseFixture(home, { id, acceptedAt: day ? '2026-11-' + String(day).padStart(2, '0') + 'T15:00:00Z' : null, broken });
+    }
+    await fs.writeFile(path.join(home, 'current.json'), JSON.stringify({ releaseId: 'current', previousId: 'old-link' }));
+    const inventory = await readInventory({ home, repoRoots: [] });
+    const find = id => inventory.artifacts.find(item => item.id === 'release:' + id);
+    assert.deepEqual(inventory.acceptedReleases.slice(1, 3).map(item => item.id), ['newest', 'second']);
+    for (const id of ['current', 'old-link', 'newest', 'second', 'broken', 'bad-time']) assert.equal(find(id)?.status, 'PROTECTED', id);
+    assert.equal(find('older')?.status, 'UNCLASSIFIED');
+    assert.ok(inventory.uncertainties.some(item => item.scope === 'release:bad-time'));
+    assert.ok(inventory.uncertainties.some(item => item.scope === 'release:broken'));
+  });
+
+  // Fails if an omitted PID automatically unpins a closed task or an unbound relative Next launch is ignored.
+  test('unavailablePidAndRelativeLaunchKeepTheirProtection', { skip: !windows, timeout: 60000 }, async t => {
+    const home = await sandbox(t);
+    const { processSnapshot } = await guardModule();
+    const [proc] = await processSnapshot(process.pid);
+    const registry = await mkdir(home, 'maintenance-state/tasks');
+    for (const id of ['current', 'previous', 'older', 'closed-candidate', 'unbound-candidate']) {
+      await releaseFixture(home, { id, acceptedAt: ['previous', 'older'].includes(id) ? '2026-11-15T12:00:00Z' : null });
+    }
+    await fs.writeFile(path.join(home, 'current.json'), JSON.stringify({ releaseId: 'current', previousId: 'previous' }));
+    const candidate = path.join(home, 'releases', 'closed-candidate');
+    await fs.writeFile(path.join(registry, 'closed.json'), JSON.stringify({
+      id: 'closed', status: 'closed', worktree: path.join(home, 'repo'), commit: 'a'.repeat(40),
+      dirty: false, build: null, candidate, pid: proc.pid, processStartedAt: proc.processStartedAt, result: 'finished', pins: [],
+    }));
+    async function run(scenario) {
+      const worker = fork(script, ['--inventory-worker', home, scenario, String(proc.pid)], {
+        execArgv: [], stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+      });
+      const done = once(worker, 'exit');
+      const [inventory] = await once(worker, 'message');
+      assert.deepEqual(await done, [0, null]);
+      return inventory;
+    }
+    const unknown = await run('no-details');
+    assert.ok(unknown.artifacts.find(item => item.path === candidate)?.protectedBy.includes('task:closed'));
+    assert.ok(unknown.uncertainties.some(item => item.scope === 'task:closed' && item.reason === 'task-process-unverified'));
+    // Simulate a relative launch after the registered task intentionally leaves the scene.
+    await fs.unlink(path.join(registry, 'closed.json'));
+    const relative = await run('relative');
+    assert.equal(relative.artifacts.find(item => item.id === 'release:unbound-candidate')?.status, 'PROTECTED');
+    assert.ok(relative.uncertainties.some(item => item.reason === 'process-path-unverified'));
   });
 }
