@@ -1,3 +1,5 @@
+import { printedNumber, explicitVatBasis, normalizeWorkChangeUnit, parsePrintedBoqRows } from './printed-boq-rows.ts';
+export { normalizeWorkChangeUnit } from './printed-boq-rows.ts';
 import { anchorSourceRange, findEvidenceAnchor, normalizeEvidenceSource, type EvidenceAnchor } from './radar-evidence-assessment.ts';
 import { hasDocumentBodyText } from './document-source-readiness.ts';
 import type { WorkChangePacket } from './work-change-sources.ts';
@@ -35,37 +37,11 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 
-function printedNumber(raw: string): number | null {
-    const compact = raw.replace(/[ \u00a0]/g, '');
-    const separators = [...compact.matchAll(/[.,]/g)];
-    if (!separators.length) return Number(compact);
-    const last = separators.at(-1)!, tail = compact.slice(last.index + 1);
-    const decimal = tail.length <= 2 || (separators.length === 1 && compact.startsWith('0'));
-    const integer = (decimal ? compact.slice(0, last.index) : compact).split(/[.,]/);
-    if (integer.length > 1 && (integer[0].length > 3 || integer.slice(1).some(part => part.length !== 3))) return null;
-    const value = Number(integer.join('') + (decimal ? `.${tail}` : ''));
-    return Number.isFinite(value) ? value : null;
-}
 function numberInQuote(quote: string, value: unknown): value is number {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
     return [...quote.matchAll(/(?<![\p{L}\d./])(?:\d{1,3}(?:[ ,.\u00a0]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,6})?)(?![\p{L}\d./])/gu)]
         .some(match => !/^\s*%/u.test(quote.slice(match.index + match[0].length)) && printedNumber(match[0]) === value);
 }
-function explicitVatBasis(value: string): 'EXCL' | 'INCL' | null {
-    const excluded = /ללא\s*מע["״'׳]{0,2}מ|לפני\s*מע["״'׳]{0,2}מ|לא\s+כולל(?:ים|ות)?\s*מע["״'׳]{0,2}מ|\+\s*מע["״'׳]{0,2}מ|exclud(?:es?|ing)\s+VAT|without\s+VAT/iu.test(value);
-    const included = /(?:^|[^\p{L}])(?<!לא\s)כולל\s*מע["״'׳]{0,2}מ|includ(?:es?|ing)\s+VAT/iu.test(value);
-    return excluded && !included ? 'EXCL' : included && !excluded ? 'INCL' : null;
-}
-export function normalizeWorkChangeUnit(value: string) {
-    const unit = normalizeEvidenceSource(value).toLowerCase().replace(/["״'׳.]/g, '').trim();
-    if (/^(?:מ|מטר|מטרים|m|meter|meters|metre|metres)$/u.test(unit)) return 'm';
-    if (/^(?:מק|מטר מעוקב|m3|m³)$/u.test(unit)) return 'm3';
-    if (/^(?:מר|מטר מרובע|m2|m²)$/u.test(unit)) return 'm2';
-    if (/^(?:יח|יחידה|יחידות|pcs|piece|pieces)$/u.test(unit)) return 'pcs';
-    if (/^(?:קומפ|קומפלט|lump sum|ls)$/u.test(unit)) return 'lot';
-    return null;
-}
-
 function quantityInQuote(quote: string, value: unknown, unit: string) {
     if (!normalizeWorkChangeUnit(unit) || !numberInQuote(quote, value)) return false;
     const body = normalizeEvidenceSource(quote);
@@ -85,35 +61,18 @@ function quantityInQuote(quote: string, value: unknown, unit: string) {
 /** Only explicit numeric table columns are decoded; prose numbers never become rows. */
 function tableRows(packet: WorkChangePacket): WorkChangeTableRow[] {
     const rows: WorkChangeTableRow[] = [];
-    const numeric = '(\\d[\\d,.]*)', unit = '(מטר(?:ים)?|מ["״׳\']?[קר]?|יח[.׳\']?|יחידה|יחידות|m[23³²]?|pcs|lot)';
-    const forward = new RegExp(`^${unit}\\s+${numeric}\\s+${numeric}\\s+${numeric}$`, 'iu');
-    const reverse = new RegExp(`^${numeric}\\s+${numeric}\\s+${numeric}\\s+${unit}(?:\\s|$)`, 'iu');
     for (const source of packet.sources) {
         const body = String(source.extracted_text || '');
-        let item: { code: string; start: number } | null = null;
-        for (const line of body.matchAll(/[^\n]+/gu)) {
-            const code = line[0].match(/(?<![\d.])\d{1,3}(?:\.\d{1,4}){2,4}(?!\d|\.\d)/u);
-            if (code) item = { code: code[0], start: line.index };
-            if (!item || line.index - item.start > 8_000) continue;
+        for (const row of parsePrintedBoqRows(body)) {
             if (source.role === 'CONTRACT' && source.referencedItemCodes?.length
-                && !source.referencedItemCodes.includes(item.code.split('.').map(part => String(Number(part))).join('.'))) continue;
-            const normalized = normalizeEvidenceSource(line[0]), f = normalized.match(forward), r = normalized.match(reverse);
-            if (!f && !r) continue;
-            const values = f ? [f[2], f[3], f[4], f[1]] : [r![3], r![2], r![1], r![4]];
-            const quantity = printedNumber(values[0]), unitPrice = printedNumber(values[1]), total = printedNumber(values[2]);
-            const canonicalUnit = normalizeWorkChangeUnit(values[3]);
-            if (quantity === null || quantity <= 0 || unitPrice === null || total === null || !canonicalUnit) continue;
-            if (Math.abs(quantity * unitPrice - total) > 0.5) continue;
-            const end = line.index + line[0].length;
+                && !source.referencedItemCodes.includes(row.itemCode.split('.').map(part => String(Number(part))).join('.'))) continue;
             const full = source.role === 'PRIMARY' || (source.role === 'RELATED' && body.length <= 16_000);
-            if (!full && !source.selection.source_anchors.some(anchor => item!.start >= anchor.start && end <= anchor.end)) continue;
-            const arithmeticVerified = Math.abs(Math.round(quantity * unitPrice * 100) - Math.round(total * 100)) <= 1;
-            const evidence = anchorSourceRange(source, item.start, end);
-            rows.push({ id: `T${rows.length + 1}`, sourceId: source.id, itemCode: item.code, quantity, unit: canonicalUnit,
-                unitPrice, total, evidence, arithmeticVerified,
-                requiresReview: !source.readiness.canCompare || !arithmeticVerified,
-                vatBasis: explicitVatBasis(evidence.quote) || explicitVatBasis(body) });
-            item = null;
+            if (!full && !source.selection.source_anchors.some(anchor => row.start >= anchor.start && row.end <= anchor.end)) continue;
+            const evidence = anchorSourceRange(source, row.start, row.end);
+            rows.push({ id: `T${rows.length + 1}`, sourceId: source.id, itemCode: row.itemCode,
+                quantity: row.quantity, unit: row.unit, unitPrice: row.unitPrice, total: row.total,
+                evidence, arithmeticVerified: row.arithmeticVerified,
+                requiresReview: !source.readiness.canCompare || !row.arithmeticVerified, vatBasis: row.vatBasis });
         }
     }
     for (const row of rows) if (rows.some(other => other !== row && other.sourceId === row.sourceId && other.itemCode === row.itemCode)) {
