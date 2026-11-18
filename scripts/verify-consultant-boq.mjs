@@ -105,3 +105,27 @@ if(process.env.CONSULTANT_BOQ_FIXTURES){
   }
  });
 }
+test('multiword streets with a common first word never verify a different street',()=>{
+ const other=body.replaceAll('בקוטר','ברחוב בן גוריון בקוטר');
+ const query=question.replace('יהלום','בן יהודה');
+ assert.deepEqual(selectConsultantBoqRows([doc('other-ben',other)],query,[]),[]);
+ const same=body.replaceAll('בקוטר','ברחוב בן יהודה בקוטר');
+ const rows=selectConsultantBoqRows([doc('same-ben',same)],query,[]);
+ assert.equal(rows.length,2);assert.ok(rows.every(row=>row.binding.status==='VERIFIED'));
+ for(const mention of ['בן יהודה ובסמוך למתחם העבודה','בן יהודה...']){
+  const uncertain=body.replaceAll('בקוטר',`ברחוב ${mention} בקוטר`);
+  const uncertainRows=selectConsultantBoqRows([doc('uncertain-ben',uncertain)],query,[]);
+  assert.equal(uncertainRows.length,2);assert.ok(uncertainRows.every(row=>row.binding.status==='UNVERIFIED'));
+ }
+});
+test('explicit pipe materials reject conflicting GRP and steel in either direction',()=>{
+ const steelQuestion=question.replace('GRP','פלדה');
+ assert.deepEqual(selectConsultantBoqRows([doc()],steelQuestion,[]),[]);
+ const steel=body.replaceAll('פיברגלס','פלדה').replaceAll('GRP','פלדה');
+ assert.deepEqual(selectConsultantBoqRows([doc('steel',steel)],question,[]),[]);
+ assert.equal(selectConsultantBoqRows([doc('steel',steel)],steelQuestion,[]).length,2);
+});
+test('a concrete building cannot supply a concrete wall price through shared action or material',()=>{
+ const building=body.replaceAll(/דחיקת צינורות פיברגלס בשיטת Micro Tunneling|אספקה בלבד של צינורות GRP/g,'הקמת מבנה בטון');
+ assert.deepEqual(selectConsultantBoqRows([doc('building',building)],'מה מחיר הקמת קיר בטון בקוטר 450 מ"מ?',[]),[]);
+});

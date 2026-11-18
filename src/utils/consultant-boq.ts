@@ -28,24 +28,68 @@ function searchText(value: string) {
 }
 const compact = (value: string) => searchText(value).replace(/\s+/gu, '');
 const codes = (value: string) => [...value.matchAll(/(?<![\d.])\d{1,3}(?:\.\d{1,4}){2,4}(?!\d|\.\d)/gu)].map(m => m[0]);
-const streets = (value: string) => [...searchText(value).matchAll(/(?:רחוב|רח')\s+([\p{L}\d]+)/gu)].map(m => m[1]);
+/** Only return a complete name bounded by punctuation, end-of-line or a known clause.
+ * An unparsed continuation stays unknown and can never verify a site. */
+function streets(value: string): string[] {
+    const names: string[] = [];
+    const clause = /\s+(?=(?:ב?קוטר|בעיר|בקרית|בקריית|יש|לפי|בהתאם|דחיקת|אספקת|הנחת|הקמת|לבצע|מה|האם)(?:\s|$))/u;
+    for (const line of value.split(/\r?\n/u).map(searchText)) {
+        for (const match of line.matchAll(/(?:^|[^\p{L}\d])(?:ב|ל|מ)?(?:רחוב|רח['׳])\s+/gu)) {
+            const tail = line.slice(match.index + match[0].length);
+            const quoted = tail.match(/^["״]([^"״]+)["״]/u);
+            if (!quoted && /\.{2,}|…/u.test(tail.split(clause)[0])) continue;
+            const name = (quoted?.[1] || tail.split(/[?!,;:()[\]]|\.(?!\d)/u)[0].split(clause)[0]).trim();
+            const words = name.split(/\s+/u);
+            if (!name || words.length > 4 || !/^[\p{L}\d]+(?:[ \-־][\p{L}\d]+)*$/u.test(name)) continue;
+            names.push(name);
+        }
+    }
+    return names;
+}
+
+const constructionObjects = [
+    ['PIPE', /צינור(?:ות)?|צנר(?:ת)?|pipes?/u],
+    ['WALL', /קירות|קיר|walls?/u],
+    ['BUILDING', /מבנים|מבנה|בניין|בנין|buildings?/u],
+    ['SHAFT', /פירים|פיר|shafts?/u],
+    ['MANHOLE', /שוחות|שוחה|manholes?/u],
+    ['ROAD', /כבישים|כביש|roads?/u],
+    ['SIDEWALK', /מדרכות|מדרכה|sidewalks?/u],
+    ['FLOOR', /רצפות|רצפה|floors?/u],
+    ['COLUMN', /עמודים|עמוד|columns?/u],
+] as const;
+function constructionObject(value: string) {
+    const normalized = compact(value);
+    return constructionObjects.map(([kind, pattern]) => ({ kind, index: normalized.search(pattern) }))
+        .filter(match => match.index >= 0).sort((left, right) => left.index - right.index)[0]?.kind || null;
+}
+const materials = [
+    ['GRP', /פיברגלס|grp|prg|fiberglass|fibreglass/u],
+    ['STEEL', /פלדה|steel/u],
+    ['CONCRETE', /בטון|concrete/u],
+    ['PVC', /pvc/u],
+    ['PE', /פוליאתילן|polyethylene|hdpe/u],
+    ['DUCTILE_IRON', /ברזלדוקטילי|יציקהדוקטילית|ductileiron/u],
+] as const;
+function explicitMaterials(value: string) {
+    const normalized = compact(value);
+    return materials.filter(([, pattern]) => pattern.test(normalized)).map(([material]) => material);
+}
 function dimensions(value: string) {
     return [...searchText(value).matchAll(/(\d+(?:\.\d+)?)\s*מ["״]מ/gu)].map(m => Number(m[1]));
 }
 function matchesScope(scope: string, topic: string) {
     const row = compact(scope), query = compact(topic);
-    const pipe = /צינור|צנר|pipes?/u;
-    if (pipe.test(query)) {
-        if (!pipe.test(row)) return false;
-        // Jacking and supply are separate payable objects. Shafts and accessories do not become pipe rows.
-        if (/פיר|שוחה|אביזר/u.test(row.slice(0, 35)) && !/^(?:דחיק|אספק|הנח|צינור)/u.test(row)) return false;
-        if (/פיברגלס|grp|prg/u.test(query) && !/פיברגלס|grp|prg/u.test(row)) return false;
+    // The first printed description establishes the payable object. A later note about
+    // pipes, for example, cannot turn a building or a shaft into a pipe-supply row.
+    const rowObject = constructionObject(scope.split(/\r?\n/u)[0]);
+    const queryObject = constructionObject(topic);
+    if (!queryObject || queryObject !== rowObject) return false;
+    const queryMaterials = explicitMaterials(topic), rowMaterials = explicitMaterials(scope);
+    if (queryMaterials.length && !queryMaterials.every(material => rowMaterials.includes(material))) return false;
+    if (queryObject === 'PIPE') {
+        // Jacking and supply remain separate payable objects under the same pipe topic.
         if (/דחיק|tunneling|mtm/u.test(query) && !/דחיק|tunneling|אספק/u.test(row)) return false;
-    } else {
-        // For other objects require meaningful literal topic words, never item-code equality alone.
-        const words = searchText(topic).match(/[\p{L}]{4,}/gu) || [];
-        const meaningful = words.filter(word => !/^(?:מה|נאמר|הוחלט|תשלום|עבודות|בכתב|כמויות|במחיר|ברחוב|לגבי)$/u.test(word));
-        if (!meaningful.some(word => row.includes(word))) return false;
     }
     const sizes = dimensions(topic);
     return !sizes.length || dimensions(scope).some(size => sizes.includes(size));
