@@ -10,6 +10,21 @@ const facts={kind:'consultant',projectName:'פרויקט',userText:'בדוק א�
 const raw=(body,extra={})=>({body,sourceIds:['S9','S11','S14','S27'],unknowns:[],nextActions:[],...extra});
 const validate=(value,context=facts)=>validateWritingResult(JSON.stringify(value),context);
 
+test('NFKC separators with spaces cannot split a page list before a separately known number',()=>{
+ for(const separator of [',','，','．','／','：','－']){
+  assert.throws(()=>validate(raw(`ניתן לבדוק בעמודים 138${separator} 5 [S11].`)),error=>/^AI_/.test(error.code),separator);
+ }
+ const value=raw('ניתן לבדוק בעמודים 138， 18 [S11, S14].');
+ assert.deepEqual(validate(value),value);
+});
+for(const currency of ['₪','ש״ח','NIS','ILS','USD','EUR','$','€','%'])test(`an exact filename cannot stand for an amount next to ${currency}`,()=>{
+ for(const gap of ['',' ','\u200f \u200e','\u2067 \u2069']){
+  for(const body of [`677365.pdf${gap}${currency} [S27].`,`נדרש 677365.pdf${gap}${currency} [S27].`,`${currency}${gap}677365.pdf [S27].`]){
+   assert.throws(()=>validate(raw(body)),error=>/^AI_/.test(error.code),body);
+  }
+ }
+});
+
 for(const pages of ['138 ו־18','138 ו-18','138 ו18','138, 18','138, ו־18','137, 138 ו־18'])test(`plural page enumeration ${pages} preserves the original response`,()=>{
  const value=raw(`הוא מופיע בעמודים ${pages}, בהתאמה. [S9, S11, S14]`,{
   unknowns:[`מה מעמד המסמך בעמודים ${pages}? [S9, S11, S14]`],

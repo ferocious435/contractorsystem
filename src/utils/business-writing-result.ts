@@ -9,9 +9,13 @@ const SOURCE_MARKER=/(?<![\p{L}\p{N}_])S\d+(?![\p{L}\p{N}_])/gu;
 const isSourceMarker=(text:string,start:number)=>!/(?:סעיף|סעיפים|תת[ -]?סעיף|פרק|קוד|מק["״']?ט|clause|section|code|item)\s*(?:מס[.'״]?\s*)?$/iu.test(text.slice(Math.max(0,start-48),start));
 // A source ID has the same role in [S1], (S1, S2), or prose; a document code keeps its factual digits.
 const sourceMarkers=(text:string)=>[...text.matchAll(SOURCE_MARKER)].filter(match=>isSourceMarker(text,match.index)).map(match=>match[0]);
+const maskSourceMarkers=(text:string)=>text.replace(SOURCE_MARKER,(id,start:number)=>isSourceMarker(text,start)?' [source] ':id);
+const referenceContext=(text:string)=>text.normalize('NFKC').replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,'');
 function hasFactualReferenceContext(text:string,start:number,end:number):boolean {
-    const before=text.slice(Math.max(0,start-48),start),after=text.slice(end).normalize('NFKC');
+    const before=referenceContext(text.slice(Math.max(0,start-48),start)),after=referenceContext(text.slice(end));
     return !isSourceMarker(text,start)
+        ||/(?:\p{Sc}|%)\s*$|(?:^|[^\p{L}])(?:ש[״"']?ח|שקלים?|ILS|NIS|USD|EUR|סכום|מחיר|עלות|לתשלום|לשלם)\s*(?:של|הוא|היא|:)?\s*$/iu.test(before)
+        ||/^\s*(?:\p{Sc}|%|(?:ש[״"']?ח|שקלים?|ILS|NIS|USD|EUR)(?!\p{L}))/iu.test(after)
         ||/(?:כמות|מגרש|קוטר|אורך|רוחב|גובה|עומק|quantity|count|diameter|length|width|height|depth)\s*(?:היא|הוא|של|:)?\s*$/iu.test(before)
         ||/^\s*(?:מטר(?:ים)?|[מס]["״']מ|מ["״]?[רק]|יחידות?|יח['׳]|צינורות|meters?|mm|cm|m|pcs|kg)(?!\p{L})/iu.test(after);
 }
@@ -22,17 +26,7 @@ function maskConsultantSourceReferences(text:string,facts:WritingFacts,selected:
         const sources=facts.sources.filter(source=>selected.includes(source.sourceId)&&cited.has(source.sourceId)
             &&source.basis==='DOCUMENT'&&source.status==='VERIFIED'&&source.documentId&&source.quote);
         const pages=new Set(sources.map(source=>source.pageLabel).filter(page=>page&&/^[1-9]\d*$/u.test(page)));
-        // Consume the complete enumeration before checking its boundary. Never backtrack
-        // from an invalid final numeric token into an apparently valid shorter list.
-        let masked=paragraph.replace(/(?<![\p{L}\p{N}_])ו?[בלמ]?ה?(?:עמודים|עמוד|עמ['׳’])\s+([1-9]\d*(?:(?:,\s+(?:ו[־-]?\s*)?|\s+ו[־-]?\s*)[1-9]\d*)*)/gu,
-            (reference,list:string,start:number)=>{
-                const after=paragraph.slice(start+reference.length).normalize('NFKC');
-                if([...list.matchAll(/[1-9]\d*/gu)].some(match=>!pages.has(match[0]))
-                    ||/^[\p{L}\p{N}_/:\-\u2010-\u2015]|^[.,]\p{N}/u.test(after)
-                    ||/^\s*(?:ו?עד|to|through)\s*[−-]?\p{N}/iu.test(after)
-                    ||hasFactualReferenceContext(paragraph,start,start+reference.length))return reference;
-                return ' [source page] ';
-            });
+        let masked=paragraph;
         for(const title of new Set(sources.map(source=>source.title).filter((title):title is string=>!!title&&/\.[a-z][a-z\d]{0,9}$/iu.test(title)))){
             const literal=new RegExp(title.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&'),'gu');
             const current=masked;
@@ -45,7 +39,18 @@ function maskConsultantSourceReferences(text:string,facts:WritingFacts,selected:
                 return ' [source filename] ';
             });
         }
-        return masked;
+        // Consume the complete enumeration before checking its boundary. Never backtrack
+        // from an invalid final numeric token into an apparently valid shorter list.
+        const pageText=maskSourceMarkers(masked).normalize('NFKC');
+        return pageText.replace(/(?<![\p{L}\p{N}_])ו?[בלמ]?ה?(?:עמודים|עמוד|עמ['׳’])\s+([1-9]\d*(?:(?:,\s+(?:ו[־-]?\s*)?|\s+ו[־-]?\s*)[1-9]\d*)*)/gu,
+            (reference,list:string,start:number)=>{
+                const after=pageText.slice(start+reference.length).normalize('NFKC');
+                if([...list.matchAll(/[1-9]\d*/gu)].some(match=>!pages.has(match[0]))
+                    ||/^[\p{L}\p{N}_/:\-\u2010-\u2015]|^[.,]\s*\p{N}/u.test(after)
+                    ||/^\s*(?:ו?עד|to|through)\s*[−-]?\p{N}/iu.test(after)
+                    ||hasFactualReferenceContext(pageText,start,start+reference.length))return reference;
+                return ' [source page] ';
+            });
     }).join('');
 }
 function checkedBody(value:unknown,facts:WritingFacts,selected:readonly string[]):string {
@@ -54,11 +59,11 @@ function checkedBody(value:unknown,facts:WritingFacts,selected:readonly string[]
     // An unread filename may identify a reading gap; it supplies no quote or financial evidence.
     const labels=facts.kind==='consultant'?facts.unverifiedSourceLabels??[]:[];
     if(sourceMarkers(value).some(id=>!facts.sources.some(source=>source.sourceId===id)))throw invalid('AI_SOURCE_UNVERIFIED');
-    const factualText=value.replace(SOURCE_MARKER,(id,start:number)=>isSourceMarker(value,start)?' [source] ':id).replace(/^\s*\d{1,3}[.)]\s+/gm,'');
+    const factualText=maskSourceMarkers(value).replace(/^\s*\d{1,3}[.)]\s+/gm,'');
     // Source metadata only validates explicit references to selected, locally cited sources.
     // Money and literal quotations below still inspect the original page-bearing text.
     const referencedText=maskConsultantSourceReferences(value,facts,selected);
-    const numericText=referencedText.replace(SOURCE_MARKER,(id,start:number)=>isSourceMarker(referencedText,start)?' [source] ':id).replace(/^\s*\d{1,3}[.)]\s+/gm,'');
+    const numericText=(facts.kind==='consultant'?referencedText:factualText).replace(/^\s*\d{1,3}[.)]\s+/gm,'');
     if(unverifiedWritingNumbers(numericText,[evidence,...labels].join('\n')).length)throw invalid('AI_FACT_UNVERIFIED');
     // Dates/codes from the input are allowed. Financial figures are rendered from the server snapshot.
     const withoutDates=maskKnownWritingDates(factualText,evidence);
