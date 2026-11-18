@@ -2,9 +2,12 @@ import {record} from '@/server/ai/contracts';
 import {parsePrintedBoqRows} from './printed-boq-rows';
 /** Stored business replies remain intact. Only program-added evidence is folded
  * away for reading; an older reply can be reopened without another model turn. */
-export function consultantDisplay(value:unknown):{content:string;details?:string}{
+export function consultantDisplay(value:unknown):{content:string;details?:string;boqRows?:import('./consultant-boq').ConsultantBoqRow[]}{
     if(!record(value)||typeof value.response!=='string')return {content:''};
-    if(value.displayVersion==='consultant-v2')return {content:value.response,...(typeof value.details==='string'&&value.details?{details:value.details}:{})};
+    if(value.displayVersion==='consultant-v2'){
+        const boqRows=savedConsultantBoqRows(value);
+        return {content:value.response,...(typeof value.details==='string'&&value.details?{details:value.details}:{}),...(boqRows.length?{boqRows}:{})};
+    }
     if(!Array.isArray(value.sourceIds))return {content:value.response};
     const response=value.response;
     const positions=['\n\nמקורות שמורים:\n','\n\nלא נמצא מקור מאומת לציטוט עבור השאלה הזו.'].map(marker=>response.indexOf(marker)).filter(index=>index>=0);

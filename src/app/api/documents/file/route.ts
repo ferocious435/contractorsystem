@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireOwnedDocument, requireOwnedProject } from "@/app/api/_utils/auth";
 import { downloadDocumentBuffer, getDocumentContentType, getDocumentFileName } from "@/utils/document-storage";
 import { createClient } from "@/utils/supabase/server";
+import { verifyDocumentSourceHash } from "@/utils/document-source-hash.server";
 
 type FileDocument = {
     id: string;
@@ -22,6 +23,10 @@ export async function GET(req: NextRequest) {
         const { searchParams } = new URL(req.url);
         const projectId = searchParams.get("projectId");
         const documentId = searchParams.get("documentId");
+        const sourceHash = searchParams.get("sourceHash");
+        if (searchParams.getAll('sourceHash').length > 1 || (sourceHash !== null && !/^[a-f\d]{64}$/iu.test(sourceHash))) {
+            return NextResponse.json({success:false,error:'Invalid sourceHash'}, {status:400});
+        }
 
         if (!projectId) {
             return NextResponse.json({ success: false, error: "projectId is required" }, { status: 400 });
@@ -52,6 +57,9 @@ export async function GET(req: NextRequest) {
         }
 
         const fileBuffer = await downloadDocumentBuffer(supabase, ownership.document);
+        if (!verifyDocumentSourceHash(fileBuffer, sourceHash)) {
+            return NextResponse.json({success:false,code:'SOURCE_CHANGED',error:'Original file bytes changed'}, {status:409,headers:{'Cache-Control':'no-store'}});
+        }
         const contentType = getDocumentContentType(ownership.document, fileBuffer);
         const fileName = getDocumentFileName(ownership.document);
 
@@ -59,7 +67,7 @@ export async function GET(req: NextRequest) {
             headers: {
                 "Content-Type": contentType,
                 "Content-Disposition": `inline; filename="${asciiFileName(fileName)}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-                "Cache-Control": "private, max-age=300",
+                "Cache-Control": sourceHash === null ? "private, max-age=300" : "private, no-store",
                 "X-Content-Type-Options": "nosniff",
             },
         });

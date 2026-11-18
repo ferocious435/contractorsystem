@@ -6,8 +6,12 @@ import {Button} from '@/components/ui/titanium/Button';
 import {Feedback} from '@/components/ui/titanium/Feedback';
 import {Panel} from '@/components/ui/titanium/Panel';
 import type {Message} from '../AIConsultant';
+import {ConsultantBoqRows} from './ConsultantBoqRows';
+import type {ConversationBoqComparisons} from './boqSources';
 
 interface ConsultantViewProps {
+    projectId?:string;
+    comparisons?:ConversationBoqComparisons;
     messages: Message[];
     input: string;
     isLoading: boolean;
@@ -21,15 +25,16 @@ interface ConsultantViewProps {
     onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void;
 }
 
-export function ConsultantView({messages,input,isLoading,canSend=true,suggestedQuestions,errorIndexes=[],inputRef,messagesEndRef,onInput,onSend,onKeyDown}: ConsultantViewProps): React.JSX.Element {
+export function ConsultantView({projectId,comparisons,messages,input,isLoading,canSend=true,suggestedQuestions,errorIndexes=[],inputRef,messagesEndRef,onInput,onSend,onKeyDown}: ConsultantViewProps): React.JSX.Element {
     const inputId=useId(),helpId=useId();
     return <section className="ti-page ti-consultant" dir="rtl">
         <header className="ti-page-heading"><div><p className="ti-eyebrow">שאלות על הפרויקט</p><h1 className="ti-title">יועץ הפרויקט</h1><p className="ti-subtitle">התשובות מבוססות על הנתונים הזמינים ודורשות בדיקת מקורות.</p></div></header>
         <Panel className="ti-consultant-frame">
             <div className="ti-consultant-thread" role="log" aria-label="שיחה עם היועץ" aria-busy={isLoading} aria-live="polite">
                 {messages.length===0 ? <div className="ti-consultant-empty"><Bot size={32} aria-hidden="true"/><h2 className="ti-section-title">במה אפשר לעזור?</h2><p className="ti-copy">אפשר לשאול על המסמכים, הממצאים והתמחור. תשובה אינה מחליפה אסמכתה או הנחיה מאושרת.</p><div className="ti-consultant-suggestions">{suggestedQuestions.map(question=><Button key={question} onClick={()=>{onInput(question);inputRef?.current?.focus();}}>{question}</Button>)}</div></div> : messages.map((message,index)=><article className={`ti-consultant-message ti-consultant-message--${message.role}`} key={index}>
-                    <header className="ti-consultant-message__meta"><span>{message.role==='user'?<User size={16} aria-hidden="true"/>:<Bot size={16} aria-hidden="true"/>}{message.role==='user'?'אני':'העוזר'}</span><time dateTime={message.timestamp.toISOString()}><bdi dir="ltr">{message.timestamp.toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'})}</bdi></time></header>
+                    <header className="ti-consultant-message__meta"><span>{message.role==='user'?<User size={16} aria-hidden="true"/>:<Bot size={16} aria-hidden="true"/>}{message.role==='user'?'אני':'העוזר'}</span><time dateTime={message.timestamp.toISOString()}>{message.role==='assistant'?'תאריך תשובה: ':''}<bdi dir="ltr">{message.timestamp.toLocaleDateString('he-IL')} {message.timestamp.toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'})}</bdi></time></header>
                     {errorIndexes.includes(index)?<Feedback tone="danger"><p className="ti-consultant-message__content" dir="auto">{message.content}</p></Feedback>:<p className="ti-consultant-message__content" dir="auto">{message.content}</p>}
+                    {projectId&&message.role==='assistant'&&!!message.boqRows?.length&&<ConsultantBoqRows projectId={projectId} rows={message.boqRows} comparisons={message.jobId?comparisons?.jobs[message.jobId]:undefined} comparisonUnavailable={comparisons?.available===false}/>}
                     {message.details&&<details className="ti-source-text"><summary>מקורות ומגבלות הקריאה</summary><pre style={{whiteSpace:'pre-wrap'}} dir="auto">{message.details}</pre></details>}
                 </article>)}
                 {isLoading&&<Feedback aria-live="polite"><span className="ti-spinner" aria-hidden="true"/>ממתין לתשובת העוזר…</Feedback>}

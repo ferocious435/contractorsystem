@@ -8,12 +8,15 @@ import {startAiAction,observeAiJob,restoreAiJobs,cancelAiJob} from '@/utils/ai-j
 import {BusinessAiError,record,validUuid,type JobDto} from '@/server/ai/contracts';
 import {readWritingBuffer,writeWritingBuffer} from '@/utils/writing-work-buffer';
 import {savedConversation,latestSavedConversation} from './consultant/savedConversation';
+import type {ConsultantBoqRow} from '@/utils/consultant-boq';
+import {readBoqComparisons,type ConversationBoqComparisons} from './consultant/boqSources';
 
-export interface Message {role: 'user' | 'assistant'; content: string; timestamp: Date;details?:string;}
+export interface Message {role: 'user' | 'assistant'; content: string; timestamp: Date;details?:string;jobId?:string;boqRows?:ConsultantBoqRow[];}
 export default function AIConsultant({projectId}: {projectId: string}) {
     const [jobs,setJobs]=useState<JobDto[]>([]),[input,setInput]=useState(''),[conversationId,setConversationId]=useState<string|null>(null);
     const [isLoading,setIsLoading]=useState(false),[restoring,setRestoring]=useState(true),[job,setJob]=useState<JobDto|null>(null);
     const [pendingQuestion,setPendingQuestion]=useState<string|null>(null);
+    const [boqComparison,setBoqComparison]=useState<{context:string;value:ConversationBoqComparisons}|null>(null);
     const [error,setError]=useState<string|null>(null),[bufferUnavailable,setBufferUnavailable]=useState(false),readiness=useAiReadiness('consultant');
     const observer=useRef<AbortController|null>(null),epoch=useRef(0),busy=useRef(false),pending=useRef<{question:string;requestKey:string;jobId:string|null}|null>(null);
     const latest=useRef({projectId,input,conversationId,readiness});latest.current={projectId,input,conversationId,readiness};
@@ -50,6 +53,15 @@ export default function AIConsultant({projectId}: {projectId: string}) {
     useEffect(()=>{let active=true;void Promise.resolve().then(()=>{if(active)void restore();});return()=>{active=false;invalidate();};},[restore,invalidate]);
     useEffect(()=>{if(conversationId&&!restoring)persist();},[conversationId,input,restoring,persist]);
     const messages=useMemo(()=>[...(conversationId?savedConversation(jobs,projectId,conversationId):[]),...(pendingQuestion?[{role:'user' as const,content:pendingQuestion,timestamp:new Date()}]:[])],[jobs,projectId,conversationId,pendingQuestion]);
+    const comparisonJobs=messages.filter(message=>'boqRows' in message&&message.boqRows?.length).map(message=>'jobId' in message?message.jobId:'').join(',');
+    const comparisonContext=JSON.stringify([projectId,conversationId,comparisonJobs]);
+    useEffect(()=>{
+        if(!conversationId||!comparisonJobs||restoring)return;
+        const controller=new AbortController();
+        void readBoqComparisons(projectId,conversationId,controller.signal).then(value=>{if(!controller.signal.aborted)setBoqComparison({context:comparisonContext,value});})
+            .catch(()=>{if(!controller.signal.aborted)setBoqComparison({context:comparisonContext,value:{available:false,jobs:{}}});});
+        return ()=>controller.abort();
+    },[projectId,conversationId,comparisonJobs,comparisonContext,restoring]);
     useEffect(() => {messagesEndRef.current?.scrollIntoView({behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});}, [messages]);
     const handleSend = async () => {
         const current = latest.current, text = current.input.trim();
@@ -74,7 +86,7 @@ export default function AIConsultant({projectId}: {projectId: string}) {
         {bufferUnavailable&&<Feedback tone="warning">הדפדפן אינו מאפשר לשמור את השאלה שטרם נשלחה. יש להעתיק אותה לפני רענון העמוד.</Feedback>}
         {error && <Feedback tone="danger"><span>{error}</span><Button disabled={isLoading||restoring} onClick={() => void restore()}>קריאה חוזרת של השיחה</Button><Button disabled={isLoading||restoring||readiness?.available!==true||!input.trim()} onClick={()=>void handleSend()}>ניסיון חוזר</Button></Feedback>}
         {isLoading&&<Feedback>{job?.state==='QUEUED'?'השאלה שמורה וממתינה לעוזר.':'העוזר מכין תשובה.'}<Button disabled={!job||!['QUEUED','RUNNING'].includes(job.state)} onClick={()=>void cancel()}>ביטול ההכנה</Button></Feedback>}
-        <ConsultantView messages={messages} input={input} isLoading={isLoading} canSend={!restoring&&readiness?.available === true}
+        <ConsultantView key={`${projectId}:${conversationId}`} projectId={projectId} comparisons={boqComparison?.context===comparisonContext?boqComparison.value:undefined} messages={messages} input={input} isLoading={isLoading} canSend={!restoring&&readiness?.available === true}
             suggestedQuestions={['מהם הסיכונים העיקריים בפרויקט?', 'סכם את הסתירות שנמצאו', 'מה ההמלצה שלך לגבי התקציב?', 'איך לנהל חריגים בפרויקט זה?']}
             inputRef={inputRef} messagesEndRef={messagesEndRef} onInput={setInput} onSend={handleSend}
             onKeyDown={event => {if (event.key === 'Enter' && !event.shiftKey) {event.preventDefault(); void handleSend();}}}/>

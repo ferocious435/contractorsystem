@@ -13,6 +13,6 @@ export function savedConversation(jobs:JobDto[],projectId:string,conversationId:
         .reverse().flatMap(job=>{
             if(seen.has(job.id)||!record(job.result)||typeof job.result.question!=='string'||typeof job.result.response!=='string'||typeof job.result.answeredAt!=='string'||!Number.isFinite(Date.parse(job.result.answeredAt)))return [];
             seen.add(job.id);const timestamp=new Date(job.result.answeredAt);
-            return [{role:'user' as const,content:job.result.question,timestamp},{role:'assistant' as const,...consultantDisplay(job.result),timestamp}];
+            return [{role:'user' as const,content:job.result.question,timestamp},{role:'assistant' as const,...consultantDisplay(job.result),jobId:job.id,timestamp}];
         });
 }
