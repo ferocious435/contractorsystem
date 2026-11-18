@@ -175,5 +175,9 @@ if(process.env.CONSULTANT_BOQ_FIXTURES){
   const context=await loadProjectWritingContext(clientFor(mapped),project,owner,request.question,'',{includeTopicHistory:true});
   assert.equal(context.boqRows.length,4);const {savedConsultantBoqRows}=await import('../src/utils/consultant-result.ts');assert.equal(savedConsultantBoqRows({boqRows:context.boqRows}).length,4);assert.ok(context.sources.length<=32);assert.ok(context.sources.reduce((sum,source)=>sum+source.quote.length,0)<=32000);
   for(const row of context.boqRows)assert.ok(context.sources.some(source=>source.documentId===row.documentId&&source.quote.includes(row.quote)));
+  if(process.env.CONSULTANT_BOQ_PAYMENT_DOCUMENT){
+   const appendix=mapped.find(document=>document.id===process.env.CONSULTANT_BOQ_PAYMENT_DOCUMENT);assert.ok(appendix);
+   for(const pattern of [/לא\s+תשולם[^\n]*תוספת/u,/(?:קבלן|הקבלן)[^\n]*בקשה/u,/המזמינה[^\n]*בכפוף/u])assert.ok(context.sources.some(source=>source.documentId===appendix.id&&pattern.test(source.quote)),'the current question must retain the payment condition, initiative and conditional reply without establishing signature');
+  }
  });
 }

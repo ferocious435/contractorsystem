@@ -63,7 +63,8 @@ function blocks(document: WritingTopicDocument): Range[] {
         // A complete calendar date is never a contract section number here.
         if (/^\d{1,2}[/.]\d{1,2}[/.](?:\d{2}|\d{4})(?:\s|$)/u.test(clean)) continue;
         const heading = /^#{1,6}\s+\S/u.test(clean) || clean.length <= 100 && !/^[•*-]/u.test(clean) && /[\p{L}][\s]*:$/u.test(clean)
-            || /^\d{1,3}(?:\.\d{1,3})*[.)]?\s+\p{L}/u.test(clean) && clean.length <= 140;
+            // A numbered clause can occupy a long physical line after extraction.
+            || /^\d{1,3}(?:\.\d{1,3})*[.)]?\s+\p{L}/u.test(clean);
         if (!heading) continue;
         const prior = lines[index - 1];
         starts.add(prior && /^\s*\d{1,3}\s*[.)]\s*$/u.test(prior[0]) ? prior.index : line.index);
@@ -106,7 +107,8 @@ export function selectWritingTopicContext(documents: readonly WritingTopicDocume
             (1 + corpusTerms.filter(found => [...aliases].some(term => found.has(term))).length))}));
         if (!query.length) continue;
         const groups = documents.flatMap(document => {
-            const ranked = blocks(document).map(range => ({...range, document, score: relevance(document.text.slice(range.start, range.end), query)}))
+            const documentBlocks = blocks(document);
+            const ranked = documentBlocks.map(range => ({...range, document, score: relevance(document.text.slice(range.start, range.end), query)}))
                 .filter(block => block.score > 0).sort((a,b) => b.score - a.score || a.start - b.start);
             if (!ranked.length) return [];
             const date = headerDate(document.text);
@@ -117,9 +119,16 @@ export function selectWritingTopicContext(documents: readonly WritingTopicDocume
             const uncertain = !date || !!conflict;
             if (!date) warn(document.id, 'לא נמצא תאריך מפורש בכותרת התוכן; שם הקובץ וזמן ההעלאה אינם קובעים את סדר ההנחיות.');
             if (conflict) warn(document.id, `התאריך בשם הקובץ ${conflict.raw} אינו תואם לתאריך בכותרת ${date!.raw}; מועד המקור דורש בדיקה ואין להסיק שהוא ההנחיה האחרונה.`);
-            const ranges = ranked.slice(0, 2).flatMap(block => {
+            const ranges = ranked.slice(0, 2).flatMap((block, index) => {
                 if (block.end - block.start > LIMIT) warn(document.id, 'הקטע הקשור ארוך מההקשר הזמין; נבחר רק חלק ואין בכך בדיקה מלאה של ההנחיה.');
-                return boundedBlock(block, query);
+                // In a short contractual opening, preserve who proposed the change
+                // and the conditional reply together with the selected clause.
+                // Only an explicit recital in the opening block qualifies; a later
+                // quotation of a recital cannot pull unrelated opening text in.
+                const opening = documentBlocks[0];
+                const keepOpening = index === 0 && block.start > 0 && block.end <= LIMIT
+                    && /(?:^|\n)\s*(?:ו)?הואיל\s*:/u.test(document.text.slice(0, opening.end));
+                return boundedBlock(keepOpening ? {...block, start: 0} : block, query);
             });
             return ranges.length ? [{document, date, uncertain, ranges, score: ranked[0].score}] : [];
         }).sort((a,b) => b.score - a.score || a.document.id.localeCompare(b.document.id));

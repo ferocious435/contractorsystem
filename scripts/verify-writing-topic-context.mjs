@@ -11,6 +11,29 @@ function select(documents,current=question,previous=''){
  for(const source of result.sources){const original=documents.find(document=>document.id===source.documentId);assert.equal(original.text.slice(source.anchor.start,source.anchor.end),source.anchor.quote);assert.equal(source.anchor.documentId,original.id);}
  return result;
 }
+
+test('long numbered payment clauses retain the opening proposal and conditional response',()=>{
+ const preamble='נספח\nתאריך: ______\n'+('פרטי הצדדים וכתובותיהם למסירת הודעות.\n'.repeat(18))+'הואיל: הקבלן ביקש שינוי שיטת קידוח צינורות ברחוב ספיר באמצעות מכונת MTM.\nוהואיל: המזמינה מוכנה לקבל את הבקשה בכפוף לתנאים הבאים.\n';
+ const method='2. מוסכם שינוי שיטת קידוח צינורות ברחוב ספיר באמצעות מכונת MTM בתנאי הנספח.\n';
+ const payment='5. התמורה בגין קידוח צינורות באמצעות מכונת MTM תישאר כפי שנקבע בחוזה. '+('הקבלן יישא בעלויות התכנון וההתאמות. '.repeat(6))+'\nלא תשולם תוספת בעבור שינוי השיטה.\n';
+ const text=preamble+'1. יתר התנאים עומדים בעינם.\n'+method+'3. בטיחות:\n'+('יש לשמור על הגדרות והציוד באתר.\n'.repeat(70))+'4. תיאום:\n'+payment+'6. יש לעמוד בלוח הזמנים.\n';
+ const current='מה התבקש הקבלן לבצע בנוגע לקידוח צינורות ברחוב ספיר? האם המעבר למכונת MTM משנה את התמורה?';
+ const result=select([document('appendix',text)],current);
+ assert.ok(result.sources.some(source=>source.anchor.quote.includes(payment)));
+ assert.ok(result.sources.some(source=>source.anchor.quote.includes(preamble)&&source.anchor.quote.includes(method)));
+ assert.ok(result.sources.every(source=>source.anchor.quote.length<=2400));
+ assert.ok(result.warnings.some(warning=>warning.documentId==='appendix'&&warning.reason.includes('לא נמצא תאריך')));
+});
+
+test('a recital quoted in a late clause does not attach unrelated opening text',()=>{
+ const opening='מבוא שאינו קשור לשאיבה.\n1. תיאום תאורה.\n';
+ const clause='2. משאבות בתחנת ספיר: החלפת המשאבות ממתינה למסמך אחריות חתום.\nציטוט: הואיל: הוחלף הציוד.\n';
+ const result=select([document('late-quote',opening+clause)],'מה הוסכם על החלפת המשאבות בתחנת ספיר ואחריות חתומה?');
+ assert.ok(result.sources.some(source=>source.anchor.quote.includes(clause)));
+ assert.ok(!result.sources.some(source=>source.anchor.quote.includes(opening)));
+ const table=document('table','57.91.0016\t100\tתשלום תאורה וריצוף\t900\n');
+ assert.equal(select([table],'מה הוסכם על החלפת המשאבות בתחנת ספיר ואחריות חתומה?').sources.length,0);
+});
 test('late topic status survives long contract background',()=>{
  const early='מפעל נגב:\nנדרשת מדידת סחף קרקע ליד קיר כלונסאות.\nאחראי: הקבלן\t21.05.25';
  const late='מפעל נגב:\nמדידה ליד קיר כלונסאות טרם הועברה. הקבלן הבטיח למסור בימים הקרובים.\nאחראי: הקבלן\t13.08.25';
