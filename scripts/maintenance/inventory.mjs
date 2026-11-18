@@ -112,10 +112,12 @@ function needsOperationBinding(proc) {
   if (!/^node(?:-[a-f0-9]+)?(?:\.exe)?$/i.test(proc.name ?? '')) return false;
   if (!proc.commandLine) return true;
   const args = proc.commandLine.match(/"[^"]*"|[^\s"]+/g)?.slice(1).map(arg => arg.replace(/^"|"$/g, '')) ?? [];
-  if (args.some(arg => /^(?:-e|-p|--eval|--print)(?:=|$)/.test(arg))) return false;
+  const evaluate = args.findIndex(arg => /^(?:-e|-p|--eval|--print)(?:=|$)/.test(arg));
   return args.some((arg, index) => {
+    if (evaluate !== -1 && evaluate < index) return false;
     const script = path.basename(arg);
     if (/^next(?:\.cmd)?$/i.test(script)) return !path.isAbsolute(arg) && /^(?:build|start|dev)$/.test(args[index + 1]);
+    if (/^server\.js$/i.test(script)) return !path.isAbsolute(arg);
     if (/^local-system-(?:package|launch|backup|restore)\.mjs$/i.test(script)) return !path.isAbsolute(arg);
     return /^npm(?:-cli\.js|\.cmd)?$/i.test(script) && args.slice(index + 1).includes('build');
   });

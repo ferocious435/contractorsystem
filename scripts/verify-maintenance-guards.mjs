@@ -171,6 +171,45 @@ if (process.argv[2] === '--inventory-worker') {
     }
   });
 
+  // Fails if the ancestor can become a junction between the last check and the readdir call.
+  test('holdsAncestorThroughDirectoryEnumeration', { skip: !windows, timeout: 30000 }, async t => {
+    const { inspectTarget } = await guardModule();
+    const base = await sandbox(t);
+    const owned = await mkdir(base, 'owned');
+    const root = await mkdir(owned, 'releases');
+    const target = await mkdir(root, 'candidate');
+    const outsider = await mkdir(base, 'other/releases/candidate');
+    await fs.writeFile(path.join(target, 'inside'), 'inside');
+    await fs.writeFile(path.join(outsider, 'outside'), 'outside');
+    const readdir = fs.readdir;
+    let attempted = false;
+    let outsideListed = false;
+    t.mock.method(fs, 'readdir', async (file, ...args) => {
+      if (file === target && !attempted) {
+        attempted = true;
+        try {
+          await fs.rename(owned, path.join(base, 'before-swap'));
+          await fs.symlink(path.join(base, 'other'), owned, 'junction');
+        } catch (error) {
+          assert.ok(['EACCES', 'EBUSY', 'EPERM'].includes(error.code), error.code);
+        }
+      }
+      const entries = await readdir(file, ...args);
+      if (file === target && entries.includes('outside')) outsideListed = true;
+      return entries;
+    });
+    syncBuiltinESMExports();
+    try {
+      const snapshot = await inspectTarget(root, target).catch(error => error);
+      assert.equal(attempted, true);
+      assert.equal(outsideListed, false, 'Windows allowed enumeration through the replacement junction');
+      assert.equal(snapshot.bytes, 6);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+
   // Fails when same-size byte changes or renamed files leave the fingerprint unchanged.
   test('fingerprintIncludesFilesBytesAndPaths', async t => {
     const { inspectTarget } = await guardModule();
@@ -322,6 +361,50 @@ if (process.argv[2] === '--inventory-worker') {
     await withMaintenanceLock(home, 'again', () => 'reusable');
     await fs.writeFile(gateFile(home), '{"token":');
     await assert.rejects(withMaintenanceLock(home, 'check', () => assert.fail('Partial gate owner was ignored')), { code: 'BUSY' });
+  });
+
+  // Fails if a helper failure after the primary write leaks either owned record until Node exits,
+  // including when the initial attempt to clean up that gate also fails.
+  test('failedGateHelperReleasesOwnedRecordsInSameProcess', { skip: !windows, timeout: 60000 }, async t => {
+    const { withMaintenanceLock } = await guardModule();
+    const base = await sandbox(t);
+    const spawn = childProcess.spawn;
+    let home;
+    let failRecovery = false;
+    let faultInjected = false;
+    t.mock.method(childProcess, 'spawn', (executable, args, options) => {
+      const query = JSON.parse(options.env?.CODEX_MAINTENANCE_QUERY ?? 'null');
+      if (failRecovery && query?.file === gateFile(home) && query.recoverOwn) {
+        failRecovery = false;
+        const command = Buffer.from('exit 24', 'utf16le').toString('base64');
+        return spawn(executable, [...args.slice(0, -1), command], options);
+      }
+      if (!faultInjected && query?.file === gateFile(home)) {
+        faultInjected = true;
+        const command = Buffer.from(args.at(-1), 'base64').toString('utf16le') + '\nexit 23\n';
+        const helper = spawn(executable, [...args.slice(0, -1), Buffer.from(command, 'utf16le').toString('base64')], options);
+        const end = helper.stdin.end.bind(helper.stdin);
+        helper.stdin.end = () => end();
+        return helper;
+      }
+      return spawn(executable, args, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      for (const recoveryFails of [false, true]) {
+        home = await mkdir(base, recoveryFails ? 'fails-twice' : 'fails-once');
+        failRecovery = recoveryFails;
+        faultInjected = false;
+        await assert.rejects(withMaintenanceLock(home, 'test', () => assert.fail('A failed acquire entered its callback')), { code: 'BUSY' });
+        assert.equal(faultInjected, true);
+        assert.equal(failRecovery, false);
+        await assert.rejects(fs.lstat(lockFile(home)), { code: 'ENOENT' });
+        assert.equal(await withMaintenanceLock(home, 'retry', lease => lease.pid), process.pid);
+      }
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
   });
 
   // Fails if lock cleanup blindly unlinks a file after its lease has been replaced.
@@ -482,5 +565,39 @@ if (process.argv[2] === '--inventory-worker') {
     const relative = await run('relative');
     assert.equal(relative.artifacts.find(item => item.id === 'release:unbound-candidate')?.status, 'PROTECTED');
     assert.ok(relative.uncertainties.some(item => item.reason === 'process-path-unverified'));
+  });
+
+  // Fails if a port argument hides Next start, or a standalone server with an unknown working directory is ignored.
+  test('liveRelativeNextAndStandaloneCommandsProtectCandidates', { skip: !windows, timeout: 60000 }, async t => {
+    const { readInventory } = await inventoryModule();
+    const base = await sandbox(t);
+    const home = await mkdir(base, 'home');
+    const cwd = await mkdir(base, 'example-project');
+    for (const id of ['current', 'one', 'two', 'candidate']) {
+      await releaseFixture(home, { id, acceptedAt: ['one', 'two'].includes(id) ? '2026-11-16T12:00:00Z' : null });
+    }
+    await fs.writeFile(path.join(home, 'current.json'), JSON.stringify({ releaseId: 'current', previousId: 'one' }));
+    const commands = [
+      ['.\\node_modules\\next\\dist\\bin\\next', 'start', '-p', '3000'],
+      ['.next/standalone/server.js'],
+      ['server.js'],
+    ];
+    for (const command of commands) {
+      const file = path.join(cwd, command[0]);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, "process.stdin.resume(); console.log('ready');");
+      const proc = childProcess.spawn(process.execPath, command, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] });
+      const done = once(proc, 'exit');
+      try {
+        await once(proc.stdout, 'data');
+        const inventory = await readInventory({ home, repoRoots: [] });
+        assert.ok(inventory.uncertainties.some(item => item.scope === 'process:' + proc.pid &&
+          item.reason === 'process-path-unverified'), command.join(' '));
+        assert.ok(inventory.artifacts.find(item => item.id === 'release:candidate')?.protectedBy.includes('process-path-unverified'));
+      } finally {
+        proc.stdin.end();
+        assert.deepEqual(await done, [0, null]);
+      }
+    }
   });
 }

@@ -5,10 +5,12 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { absolutePath, assertNarrowRoot, localHomes, pathKey, refusal, relativeWithin } from './policy.mjs';
+import { windowsInspectionScript } from './windows-inspection.mjs';
 
 const windows = process.platform === 'win32';
 const execute = promisify(execFile);
 const heldLeases = new WeakSet();
+const failedAcquisitions = new Map();
 const busy = () => Object.assign(new Error('The maintenance lock is held or cannot be verified'), { code: 'BUSY' });
 
 function windowsCommand(script, input) {
@@ -26,6 +28,19 @@ async function windowsQuery(script, input, timeout = 20000) {
   const [executable, args, options] = windowsCommand(script, input);
   const { stdout } = await execute(executable, args, { ...options, timeout, maxBuffer: 16 * 1024 * 1024 });
   return JSON.parse(stdout);
+}
+
+function startWindowsHelper(script, input, signal) {
+  const [executable, args, options] = windowsCommand(script, input);
+  const child = spawn(executable, args, { ...options, stdio: ['pipe', 'pipe', 'ignore'], signal });
+  const done = new Promise(resolve => child.once('close', resolve));
+  child.on('error', () => {});
+  child.stdin.on('error', () => {});
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const send = line => new Promise((resolve, reject) => {
+    child.stdin.write(line + '\n', error => error ? reject(error) : resolve());
+  });
+  return { child, done, lines, send };
 }
 
 export async function processSnapshot(pid = null) {
@@ -62,7 +77,7 @@ export async function processSnapshot(pid = null) {
 }
 
 // Unknown Windows reparse tags need not appear as symbolic links in Node's lstat.
-export async function probePaths(values, { tree = false } = {}) {
+export async function probePaths(values) {
   const paths = values.map(absolutePath);
   if (paths.length === 0) return [];
   if (windows) {
@@ -77,25 +92,14 @@ export async function probePaths(values, { tree = false } = {}) {
         try {
           $root = [IO.Path]::GetPathRoot($file)
           $cursor = $root
-          $flags = Assert-Plain $cursor
+          $null = Assert-Plain $cursor
           foreach ($part in $file.Substring($root.Length).Split('\')) {
-            if ($part) { $cursor = [IO.Path]::Combine($cursor, $part); $flags = Assert-Plain $cursor }
-          }
-          if ($query.tree -and ($flags -band [IO.FileAttributes]::Directory)) {
-            $pending = [Collections.Generic.Stack[string]]::new()
-            $pending.Push($file)
-            while ($pending.Count) {
-              $directory = $pending.Pop()
-              $null = Assert-Plain $directory
-              foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
-                if ((Assert-Plain $entry) -band [IO.FileAttributes]::Directory) { $pending.Push($entry) }
-              }
-            }
+            if ($part) { $cursor = [IO.Path]::Combine($cursor, $part); $null = Assert-Plain $cursor }
           }
           'plain'
         } catch {
           $reason = $_.Exception.GetBaseException()
-          if (!$query.tree -and ($reason -is [IO.FileNotFoundException] -or $reason -is [IO.DirectoryNotFoundException])) {
+          if ($reason -is [IO.FileNotFoundException] -or $reason -is [IO.DirectoryNotFoundException]) {
             'missing'
           } else {
             'unverified'
@@ -110,14 +114,14 @@ export async function probePaths(values, { tree = false } = {}) {
     let length = 0;
     for (const file of paths) {
       if (length + file.length > 12000 && batch.length) {
-        results.push(...await windowsQuery(script, { paths: batch, tree }, 60000));
+        results.push(...await windowsQuery(script, { paths: batch }, 60000));
         batch = [];
         length = 0;
       }
       batch.push(file);
       length += file.length;
     }
-    results.push(...await windowsQuery(script, { paths: batch, tree }, 60000));
+    results.push(...await windowsQuery(script, { paths: batch }, 60000));
     if (results.length !== paths.length || results.some(value => !['plain', 'missing', 'unverified'].includes(value))) {
       throw refusal('Incomplete Windows path verification');
     }
@@ -137,8 +141,8 @@ export async function probePaths(values, { tree = false } = {}) {
   }));
 }
 
-export async function requirePlainPath(file, options) {
-  if ((await probePaths([file], options))[0] !== 'plain') throw refusal('The path cannot be verified');
+export async function requirePlainPath(file) {
+  if ((await probePaths([file]))[0] !== 'plain') throw refusal('The path cannot be verified');
 }
 
 export async function resolveMaintenanceHome({ explicitHome } = {}) {
@@ -242,25 +246,30 @@ async function releaseLease(file, lease) {
 
 const idleGate = '{"version":1,"state":"idle"}';
 
-async function withAcquisitionGate(file, lease, run) {
+async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo } = {}) {
   const info = await fs.lstat(file).catch(error => {
     if (error.code === 'ENOENT') return null;
     throw error;
   });
+  if (recoverOwn && !info) return;
   if (info && (!info.isFile() || info.nlink !== 1)) throw busy();
   // FileShare.None holds the same gate path exclusively until the helper closes
   // its handle, even after a process crash. The record remains for PID validation.
-  const [executable, args, options] = windowsCommand(String.raw`
+  const { child, done, lines, send } = startWindowsHelper(String.raw`
     $query = ConvertFrom-Json -InputObject $env:CODEX_MAINTENANCE_QUERY
     $encoding = [Text.UTF8Encoding]::new($false, $true)
     [Console]::InputEncoding = $encoding
     $file = $query.file
     $created = $false
-    try {
-      $stream = [IO.File]::Open($file, 'CreateNew', 'ReadWrite', 'None')
-      $created = $true
-    } catch {
-      if ($_.Exception.GetBaseException() -isnot [IO.IOException]) { throw }
+    if (!$query.recoverOwn) {
+      try {
+        $stream = [IO.File]::Open($file, 'CreateNew', 'ReadWrite', 'None')
+        $created = $true
+      } catch {
+        if ($_.Exception.GetBaseException() -isnot [IO.IOException]) { throw }
+      }
+    }
+    if (!$created) {
       if ([IO.File]::GetAttributes($file) -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point' }
       $stream = [IO.File]::Open($file, 'Open', 'ReadWrite', 'None')
     }
@@ -283,34 +292,50 @@ async function withAcquisitionGate(file, lease, run) {
       if ($null -ne $owner) {
         Write-Gate $owner
         [Console]::WriteLine('claimed')
-        if ([Console]::ReadLine() -eq 'idle') { Write-Gate $query.idle }
+        if ([Console]::ReadLine() -eq 'idle') {
+          Write-Gate $query.idle
+          [Console]::WriteLine('idle')
+        }
       }
     } finally {
       $stream.Dispose()
     }
-  `, { file, idle: idleGate });
-  const child = spawn(executable, args, {
-    ...options, stdio: ['pipe', 'pipe', 'ignore'], signal: AbortSignal.timeout(45000),
-  });
-  const done = new Promise(resolve => child.once('close', resolve));
-  child.on('error', () => {});
-  child.stdin.on('error', () => {});
-  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  `, { file, idle: idleGate, recoverOwn }, AbortSignal.timeout(45000));
   let claimed = false;
+  let sent = false;
   try {
     const { saved } = JSON.parse((await lines.next()).value);
-    if (saved !== null && saved !== idleGate) await requireObsoleteLease(parseLease(saved, lease.home));
-    await new Promise((resolve, reject) => child.stdin.write(JSON.stringify(lease) + '\n', error => error ? reject(error) : resolve()));
+    if (recoverOwn) {
+      if (saved === idleGate || !sameLease(parseLease(saved, lease.home), lease)) return;
+    } else if (saved !== null && saved !== idleGate) {
+      await requireObsoleteLease(parseLease(saved, lease.home));
+    }
+    sent = true;
+    await send(JSON.stringify(lease));
     if ((await lines.next()).value !== 'claimed') throw busy();
     claimed = true;
     return await run();
   } finally {
     child.stdin.end(claimed ? 'idle\n' : undefined);
-    if (await done !== 0 && claimed) throw busy();
+    const idle = claimed && (await lines.next()).value === 'idle';
+    if (await done !== 0 || (sent && !idle)) {
+      if (sent) await undo?.();
+      throw busy();
+    }
   }
 }
 
+async function unwindAcquisition(file, gate, lease) {
+  // This lease never reached the callback. Newer owners of either file are
+  // left alone. An interrupted recovery stays pending only in this Node.
+  await releaseLease(file, lease);
+  await withAcquisitionGate(gate, lease, () => {}, { recoverOwn: true });
+  if (failedAcquisitions.get(gate) === lease) failedAcquisitions.delete(gate);
+}
+
 async function acquireLease(file, gate, lease, operation) {
+  const pending = failedAcquisitions.get(gate);
+  if (pending) await unwindAcquisition(file, gate, pending);
   await withAcquisitionGate(gate, lease, async () => {
     try {
       await createLease(file, lease, operation);
@@ -323,6 +348,11 @@ async function acquireLease(file, gate, lease, operation) {
     if (!sameLease(await readLease(file, lease.home), previous)) throw busy();
     await fs.unlink(file);
     await createLease(file, lease, operation);
+  }, {
+    undo: async () => {
+      failedAcquisitions.set(gate, lease);
+      await unwindAcquisition(file, gate, lease).catch(() => {});
+    },
   });
 }
 
@@ -362,6 +392,27 @@ export async function requireHeldLease(home, lease) {
 
 const unchanged = (left, right) => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => left[key] === right[key]);
 
+async function withWindowsInspection(target, run) {
+  const abort = new AbortController();
+  const { child, done, lines, send } = startWindowsHelper(windowsInspectionScript, { target }, abort.signal);
+  const ready = async file => {
+    const timer = setTimeout(() => abort.abort(), 30000);
+    try {
+      if (file !== undefined) await send(JSON.stringify(absolutePath(file)));
+      if ((await lines.next()).value !== 'ready') throw refusal('The Windows inspection handle is unavailable');
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  try {
+    await ready();
+    return await run(ready);
+  } finally {
+    child.stdin.end();
+    if (await done !== 0) throw refusal('The Windows inspection helper failed');
+  }
+}
+
 async function capturePath(file) {
   let cursor = path.parse(file).root;
   const components = [cursor];
@@ -395,55 +446,60 @@ export async function inspectTarget(root, target) {
     root = assertNarrowRoot(root);
     target = assertNarrowRoot(target);
     if (!relativeWithin(root, target)) throw refusal('The target must be strictly inside the operation root');
-    const checked = await capturePath(target);
-    await requirePlainPath(target, { tree: true });
-    const actual = await fs.realpath(target);
-    if (pathKey(actual) !== pathKey(target)) throw refusal('The target resolves to a different path');
-    await verifyPath(checked);
-    const fingerprint = createHash('sha256');
-    let files = 0;
-    let bytes = 0;
-    async function inspect(file, ancestors) {
-      await verifyPath(ancestors);
-      const before = await fs.lstat(file, { bigint: true });
-      const relative = path.relative(actual, file).split(path.sep).join('/');
-      if (before.isDirectory()) {
-        const chain = [...ancestors, { path: file, stats: before }];
-        fingerprint.update(JSON.stringify(['directory', relative]) + '\n');
-        await verifyPath(chain);
-        for (const name of (await fs.readdir(file)).sort()) await inspect(path.join(file, name), chain);
-      } else if (before.isFile()) {
-        if (before.nlink !== 1n || before.size > BigInt(Number.MAX_SAFE_INTEGER - bytes)) throw refusal('The file cannot be measured safely');
-        const handle = await fs.open(file, 'r');
-        const hash = createHash('sha256');
-        let count = 0;
-        try {
-          await verifyPath(ancestors);
-          if (!unchanged(before, await handle.stat({ bigint: true }))) throw refusal('The file changed during inspection');
-          for await (const chunk of handle.createReadStream({ autoClose: false })) {
-            count += chunk.length;
-            hash.update(chunk);
-          }
-          if (BigInt(count) !== before.size || !unchanged(before, await handle.stat({ bigint: true }))) {
-            throw refusal('The file changed during inspection');
-          }
-        } finally {
-          await handle.close();
-        }
-        files++;
-        bytes += count;
-        fingerprint.update(JSON.stringify(['file', relative, count, hash.digest('hex')]) + '\n');
-      } else {
-        throw refusal('The tree contains a link or special file');
-      }
-      await verifyPath(ancestors);
-      if (!unchanged(before, await fs.lstat(file, { bigint: true }))) throw refusal('The tree changed during inspection');
-    }
-    await inspect(actual, checked);
-    await verifyPath(checked);
-    return { path: actual, files, bytes, fingerprint: fingerprint.digest('hex') };
+    if (windows) return await withWindowsInspection(target, pin => inspectSnapshot(target, pin));
+    return await inspectSnapshot(target);
   } catch (error) {
     if (error.code === 'REFUSED') throw error;
     throw refusal('The target cannot be inspected safely');
   }
+}
+
+async function inspectSnapshot(target, pin) {
+  const checked = await capturePath(target);
+  const actual = await fs.realpath(target);
+  if (pathKey(actual) !== pathKey(target)) throw refusal('The target resolves to a different path');
+  await verifyPath(checked);
+  const fingerprint = createHash('sha256');
+  let files = 0;
+  let bytes = 0;
+  async function inspect(file, ancestors) {
+    await pin?.(file);
+    await verifyPath(ancestors);
+    const before = await fs.lstat(file, { bigint: true });
+    const relative = path.relative(actual, file).split(path.sep).join('/');
+    if (before.isDirectory()) {
+      const chain = [...ancestors, { path: file, stats: before }];
+      fingerprint.update(JSON.stringify(['directory', relative]) + '\n');
+      await verifyPath(chain);
+      for (const name of (await fs.readdir(file)).sort()) await inspect(path.join(file, name), chain);
+    } else if (before.isFile()) {
+      if (before.nlink !== 1n || before.size > BigInt(Number.MAX_SAFE_INTEGER - bytes)) throw refusal('The file cannot be measured safely');
+      const handle = await fs.open(file, 'r');
+      const hash = createHash('sha256');
+      let count = 0;
+      try {
+        await verifyPath(ancestors);
+        if (!unchanged(before, await handle.stat({ bigint: true }))) throw refusal('The file changed during inspection');
+        for await (const chunk of handle.createReadStream({ autoClose: false })) {
+          count += chunk.length;
+          hash.update(chunk);
+        }
+        if (BigInt(count) !== before.size || !unchanged(before, await handle.stat({ bigint: true }))) {
+          throw refusal('The file changed during inspection');
+        }
+      } finally {
+        await handle.close();
+      }
+      files++;
+      bytes += count;
+      fingerprint.update(JSON.stringify(['file', relative, count, hash.digest('hex')]) + '\n');
+    } else {
+      throw refusal('The tree contains a link or special file');
+    }
+    await verifyPath(ancestors);
+    if (!unchanged(before, await fs.lstat(file, { bigint: true }))) throw refusal('The tree changed during inspection');
+  }
+  await inspect(actual, checked);
+  await verifyPath(checked);
+  return { path: actual, files, bytes, fingerprint: fingerprint.digest('hex') };
 }
