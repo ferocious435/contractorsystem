@@ -125,9 +125,21 @@ export function compareBoqEdition(savedRow: ConsultantBoqRow, documents: Consult
             savedRow.unit !== current.unit ? `יחידה: ${savedRow.unit} ← ${current.unit}` : '',
             sameText(savedRow.scope) !== sameText(current.scope) ? `תכולה: ${savedRow.scope} ← ${current.scope}` : ''].filter(Boolean).join('; ');
     }
-    for (const row of [savedRow, ...out.chain.map(hop => hop.to)]) {
-        if (row.revision.conflictingDateEvidence?.length) out.warnings.push(`${row.title}: תאריכים סותרים במסמך; מועד המהדורה לא הוכרע.`);
-        if (!row.revision.date) out.warnings.push(`${row.title}: תאריך לא צוין; תאריך הדפסה או העלאה אינו תאריך מהדורה.`);
+    // Row chains can have gaps. Date warnings belong to every traversed document,
+    // including a document without the item and a current row reached after that gap.
+    const traversed = new Map<string, { title: string; revision: ConsultantBoqRevision }>();
+    traversed.set(savedRow.documentId, savedRow);
+    for (const hop of out.editionHistory) {
+        for (const [documentId, revision] of [[hop.fromDocumentId, hop.fromRevision], [hop.toDocumentId, hop.toRevision]] as const) {
+            traversed.set(documentId, { title: eligible.find(document => document.id === documentId)?.title || '', revision });
+        }
     }
+    traversed.set(out.currentRow.documentId, out.currentRow);
+    const warnings = new Set<string>();
+    for (const { title, revision } of traversed.values()) {
+        if (revision.conflictingDateEvidence?.length) warnings.add(`${title}: תאריכים סותרים במסמך; מועד המהדורה לא הוכרע.`);
+        if (!revision.date) warnings.add(`${title}: תאריך לא צוין; תאריך הדפסה או העלאה אינו תאריך מהדורה.`);
+    }
+    out.warnings = [...warnings];
     return out;
 }

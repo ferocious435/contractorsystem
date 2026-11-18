@@ -245,3 +245,28 @@ test('a successor without the saved item invalidates the intermediate current pr
  assert.deepEqual(extended.editionHistory.map(h=>h.toDocumentId),[b.id,c.id,d.id]);
  assert.equal(extended.chain.length,1); // No fabricated B→D row hop: C has no corresponding row.
 });
+const editionGap=()=>{
+ const a=edition('warning-a','A',100,{title:'A.pdf'}),b=edition('warning-b','B',120,{replacement:replaces('A','B'),title:'B.pdf'});
+ const c=edition('warning-c','C',130,{replacement:replaces('B','C'),date:null,title:'C.pdf'});
+ c.extracted_text=c.extracted_text.replace('57.91.0022','58.91.0022');c.extracted_text_hash=hash(c.extracted_text);
+ return [a,b,c];
+};
+test('missing date of the latest edition stays visible after an intermediate edition without the item',()=>{
+ const documents=editionGap(),d=edition('warning-d','D',190,{replacement:replaces('C','D'),date:null,title:'D.pdf'});
+ const out=compareBoqEdition(savedFrom(documents[0]),[...documents,d]);
+ assert.equal(out.status,'REPLACED');assert.equal(out.currentRow.documentId,d.id);assert.equal(out.currentRow.revision.date,null);
+ assert.deepEqual(out.chain.map(h=>h.to.documentId),['warning-b']);assert.equal(out.editionHistory.length,3);
+ assert.equal(out.warnings.filter(w=>w.includes('D.pdf')&&w.includes('תאריך לא צוין')).length,1);
+ assert.equal(out.warnings.filter(w=>w.includes('C.pdf')&&w.includes('תאריך לא צוין')).length,1);
+ assert.equal(out.warnings.length,new Set(out.warnings).size);
+});
+test('conflicting dates of the latest edition stay visible after an intermediate edition without the item',()=>{
+ const documents=editionGap(),d=edition('warning-d','D',190,{replacement:replaces('C','D'),title:'D.pdf'});
+ d.extracted_text='תאריך מהדורה: 05.05.2025\n'+d.extracted_text;d.extracted_text_hash=hash(d.extracted_text);
+ const out=compareBoqEdition(savedFrom(documents[0]),[...documents,d]);
+ assert.equal(out.status,'REPLACED');assert.equal(out.currentRow.documentId,d.id);assert.equal(out.currentRow.revision.date,null);
+ assert.equal(out.currentRow.revision.conflictingDateEvidence.length,2);
+ assert.equal(out.warnings.filter(w=>w.includes('D.pdf')&&w.includes('תאריכים סותרים')).length,1);
+ assert.equal(out.warnings.filter(w=>w.includes('C.pdf')&&w.includes('תאריך לא צוין')).length,1);
+ assert.equal(out.warnings.length,new Set(out.warnings).size);
+});
