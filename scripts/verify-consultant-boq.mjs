@@ -15,6 +15,26 @@ const doc=(id='boq',text=body,extra={})=>({id,project_id:'p',title:'כתב כמ�
  content_hash:hash('bytes-'+id),extracted_text_hash:hash(text),ocr_status:'COMPLETED',category:'CONTRACT',
  parsed_json:{source_reading:{version:'page-coverage-v1',complete:true,totalPages:18,readPages:Array.from({length:18},(_,i)=>i+1),unreadablePages:[]}},...extra});
 
+for(const separator of ['–','—','־'])test(`own non-execution heading with ${separator} cannot provide contract prices`,()=>{
+ const text=body.replace('כתב כמויות לביצוע',`כתב כמויות ${separator} לא לביצוע`);
+ assert.deepEqual(selectConsultantBoqRows([doc('own-heading',text)],question,[]),[]);
+ const note=`המהדורה הקודמת סומנה "כתב כמויות ${separator} לא לביצוע".`;
+ assert.equal(selectConsultantBoqRows([doc('other-heading',body+'\n'+note)],question,[]).length,2);
+});
+test('asking about pipe instructions does not impose an installation action',()=>{
+ for(const wording of ['מה ההנחיות לגבי','מה נאמר לגבי']){
+  const rows=selectConsultantBoqRows([doc()],`${wording} צינורות GRP בקוטר 450 מ"מ?`,[]);
+  assert.deepEqual(rows.map(row=>row.unitPrice),[3310.34,2680.57]);
+ }
+});
+for(const action of ['הנחת','הנחה של','להניח','התקנת'])test(`actual installation form ${action} selects its own work and rejects jacking and supply`,()=>{
+ const query=action==='להניח'?`כמה עולה להניח צינורות GRP בקוטר 450 מ"מ?`:`מה המחיר ל${action} צינורות GRP בקוטר 450 מ"מ?`;
+ assert.deepEqual(selectConsultantBoqRows([doc()],query,[]),[]);
+ const text=body.replace('דחיקת צינורות פיברגלס בשיטת Micro Tunneling',`${action} צינורות GRP`);
+ const rows=selectConsultantBoqRows([doc('installation',text)],query,[]);
+ assert.equal(rows.length,1);assert.equal(rows[0].unitPrice,3310.34);
+});
+
 for(const [action,label] of [['תיקון','repair'],['פירוק','dismantling']]){
  test(`${label} cannot inherit jacking or supply prices for the same pipe`,()=>{
   assert.deepEqual(selectConsultantBoqRows([doc()],`מה המחיר ל${action} צינורות GRP בקוטר 450 מ"מ?`,[]),[]);

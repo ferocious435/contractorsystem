@@ -85,7 +85,7 @@ const workActions = [
     ['SUPPLY', /אספק|supply/u],
     ['REPAIR', /תיקו[ןנ]|לתקן|repair/u],
     ['DISMANTLING', /פירוק|פרוק|הריס|dismantl|demolit/u],
-    ['INSTALLATION', /הנח|התקנ|install|laying/u],
+    ['INSTALLATION', /הנח(?:ה|ת)|להניח|התקנ|install|laying/u],
     ['CONSTRUCTION', /הקמ|בניית|בניה|construct/u],
 ] as const;
 function matchesScope(scope: string, topic: string) {
@@ -119,7 +119,7 @@ export function readConsultantBoqRevision(document: ConsultantBoqDocument): Cons
     // Only a designation/stamp of this source revokes its authority. Quoting a
     // different edition's designation in ordinary prose does not revoke this one.
     const nonExecution = /לא\s*לביצוע|אינו\s*לביצוע|not\s+for\s+(?:execution|construction)/iu;
-    const nonExecutionStamp = /^(?:הערה\s*:\s*)?(?:(?:כתב\s*כמויות|מסמך\s*זה|מהדורה\s*זו)\s*[:\-]?\s*)?(?:לא\s*לביצוע|אינו\s*לביצוע|not\s+for\s+(?:execution|construction))(?:\s|[.;:,]|$)/iu;
+    const nonExecutionStamp = /^(?:הערה\s*:\s*)?(?:(?:כתב\s*כמויות|מסמך\s*זה|מהדורה\s*זו)\s*[:\p{Pd}]?\s*)?(?:לא\s*לביצוע|אינו\s*לביצוע|not\s+for\s+(?:execution|construction))(?:\s|[.;:,]|$)/iu;
     if (nonExecution.test(searchText(document.title || ''))
         || lineEvidence(document, line => nonExecutionStamp.test(searchText(line).trim()))) return null;
     const designationEvidence = lineEvidence(document, line => /כתב\s*כמויות/u.test(searchText(line)));
