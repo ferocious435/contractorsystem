@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { withMaintenanceLock } from './maintenance/guard.mjs';
-import { createVerifiedArchive, extractVerifiedArchive, verifyArchive } from './maintenance/archive.mjs';
+import {
+  catalogArchiveGroups, createVerifiedArchive, deleteArchivedTarget, extractVerifiedArchive, measureArchiveTargets,
+  publishEvidenceArchive, verifyArchive,
+} from './maintenance/archive.mjs';
 import {
   applyStorage, captureGeneratedBuild, importLegacyEvidence, planStorage, prepareStoragePlan, registerLifecycleEvidence,
 } from './maintenance/storage.mjs';
@@ -21,6 +26,64 @@ const windows = process.platform === 'win32';
 const filesystemTest = (name, run) => test(name, { skip: !windows }, run);
 const notFound = file => assert.rejects(fs.access(file), { code: 'ENOENT' });
 const lockfile = '{"name":"fixture","lockfileVersion":3}';
+
+filesystemTest('Windows named streams on a file or directory prevent archiving and measuring', async t => {
+  const base = await directory(t);
+  const source = path.join(base, 'source');
+  const item = path.join(source, 'safe.txt');
+  const folder = path.join(source, 'nested');
+  const empty = path.join(source, 'empty');
+  await write(item, 'primary');
+  await write(path.join(folder, 'child'), 'nested primary');
+  await fs.mkdir(empty);
+  for (const [file, entry] of [[item, 'safe.txt'], [folder, 'nested/child'], [empty, null]]) {
+    const stream = file + ':private';
+    await fs.writeFile(stream, 'hidden bytes');
+    const destination = path.join(base, 'archive.zip');
+    if (entry) await assert.rejects(createVerifiedArchive({ source, files: [entry], destination }), /named stream/i);
+    const [measured] = await measureArchiveTargets([source]);
+    assert.equal(measured.fingerprint, null);
+    assert.equal(await fs.readFile(stream, 'utf8'), 'hidden bytes');
+    await notFound(destination);
+    await fs.unlink(stream);
+  }
+});
+
+filesystemTest('a late named stream blocks deletion and an open deletion transaction blocks a new stream', async t => {
+  const base = await directory(t);
+  const target = path.join(base, 'target');
+  const evidence = path.join(target, 'marker.txt');
+  await write(evidence, 'primary');
+  const [captured] = await measureArchiveTargets([target]);
+  const { groups } = await catalogArchiveGroups([{ source: target, prefix: 'artifact' }]);
+  const archive = await publishEvidenceArchive({
+    groups, destination: path.join(base, 'artifact.zip'), targetFingerprint: captured.fingerprint,
+  });
+  const operation = {
+    archive, target, targetFingerprint: captured.fingerprint, targetIdentity: captured.identity, resume: false,
+  };
+  await fs.writeFile(evidence + ':late', 'after planning');
+  await assert.rejects(deleteArchivedTarget(operation, async () => false), /named stream/i);
+  assert.equal(await fs.readFile(evidence + ':late', 'utf8'), 'after planning');
+  await fs.unlink(evidence + ':late');
+  await assert.rejects(deleteArchivedTarget(operation, async phase => {
+    if (phase === 'commit') {
+      assert.equal(await fs.readFile(evidence, 'utf8'), 'primary');
+      await assert.rejects(fs.writeFile(evidence + ':during-commit', 'racing bytes'));
+      throw new Error('simulated loss of authorization');
+    }
+    return true;
+  }), /loss of authorization/);
+  assert.equal(await fs.readFile(evidence, 'utf8'), 'primary');
+  const result = await deleteArchivedTarget(operation, async phase => {
+    if (phase === 'commit') return true;
+    await assert.rejects(fs.writeFile(evidence + ':during', 'racing bytes'));
+    await assert.rejects(fs.writeFile(target + ':during', 'racing directory bytes'));
+    return true;
+  });
+  assert.equal(result.status, 'completed');
+  await notFound(target);
+});
 
 async function directory(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'contractor-storage-')));
@@ -65,7 +128,7 @@ async function releases(t, count = 4) {
     await write(path.join(folder, dist, 'BUILD_ID'), buildId);
     await write(path.join(folder, 'a-unique.bin'), 'unknown-' + id);
     await json(root, { version: 1, id, root: folder, nodeExe, dependencyRoot, dist, buildId, createdAt,
-      dependencyLockSha256: hash(lockfile) });
+      dependencyLockSha256: hash(lockfile), nodeSha256: hash('node') });
     roots.set(id, folder);
     const at = new Date(Date.UTC(2025, 0, i + 1, 1)).toISOString();
     const install = path.join(evidence, id + '-install.json');
@@ -103,6 +166,20 @@ filesystemTest('preservesThreeAcceptedReleases over twenty real tiny packages', 
   // One real deletion already covers restoration. Keeping the other 16 examples tiny
   // tests the planner without spending time compressing the same fixture repeatedly.
   assert.equal(plan.actions[0].id, 'release:v1');
+});
+
+filesystemTest('manifest timestamps cannot displace a proven former release', async t => {
+  const f = await releases(t, 5);
+  for (const id of ['candidate-one', 'candidate-two']) {
+    const root = path.join(f.home, 'releases', id);
+    const prior = JSON.parse(await fs.readFile(path.join(f.roots.get('v5'), 'release.json'), 'utf8'));
+    await write(path.join(root, 'node_modules', 'dependency.js'), 'dependency');
+    await json(path.join(root, 'release.json'), { ...prior, root, id, acceptedAt: '2026-11-17T01:02:03Z' });
+  }
+  await f.importIndex();
+  const plan = await f.plan();
+  assert.deepEqual(plan.actions.map(item => item.id), ['release:v1', 'release:v2']);
+  assert.ok(plan.protected.find(item => item.id === 'release:v3').reasons.includes('previous-release'));
 });
 
 const gib = 1024 ** 3;
@@ -179,6 +256,40 @@ filesystemTest('changedCurrent invalidates the old plan', async t => {
   assert.equal(result.completed.length, 0);
   assert.equal(result.skipped.length, 1);
   await fs.access(f.roots.get('v1'));
+});
+
+filesystemTest('changing current between staging and commit rolls back the whole deletion', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const plan = await f.plan();
+  const spawn = childProcess.spawn;
+  let changed = false;
+  t.mock.method(childProcess, 'spawn', (executable, args, options) => {
+    const child = spawn(executable, args, options);
+    if (args.some(arg => typeof arg === 'string' && arg.endsWith('archive-worker.ps1'))) {
+      let last = '';
+      child.stdout?.on('data', chunk => {
+        last = (last + chunk.toString('utf8')).slice(-200);
+        if (!changed && last.includes('"phase":"commit"')) {
+          writeFileSync(path.join(f.home, 'current.json'), JSON.stringify({ releaseId: 'v1', previousId: 'v4' }));
+          changed = true;
+        }
+      });
+    }
+    return child;
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await f.apply(plan);
+    assert.equal(changed, true, JSON.stringify(result));
+    assert.equal(result.completed.length, 0);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.deletedBytes, 0);
+    assert.equal(await fs.readFile(path.join(f.roots.get('v1'), 'a-unique.bin'), 'utf8'), 'unknown-v1');
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
 
 filesystemTest('unknownFilesSurvive removal of the verified old package', async t => {
@@ -261,8 +372,13 @@ filesystemTest('partialDeleteCanResume using the same archive and recording both
     const interrupted = await f.apply(plan);
     assert.equal(interrupted.completed.length, 0);
     assert.equal(interrupted.failed.length, 1, JSON.stringify(interrupted));
-    assert.ok(interrupted.deletedBytes > 0);
-    await notFound(path.join(original, 'a-unique.bin'));
+    assert.equal(interrupted.deletedBytes, 0, JSON.stringify(interrupted));
+    const archive = await verifyArchive(interrupted.failed[0].archive.path);
+    const leftover = path.join(original, 'a-unique.bin');
+    const saved = archive.entries.find(entry => entry.path === 'artifact/a-unique.bin');
+    assert.equal(saved?.sha256, hash(await fs.readFile(leftover)));
+    // Model a verified, previously interrupted attempt in this temporary tree.
+    await fs.unlink(leftover);
     await fs.access(marker);
     await fs.access(path.join(original, '.next-test', 'BUILD_ID'));
     await fs.chmod(readonly, 0o666);
@@ -307,6 +423,34 @@ filesystemTest('archive round trip retains ordinary and long names and requires 
   await assert.rejects(extractVerifiedArchive(zip, destination));
 });
 
+filesystemTest('publication restarts the same staging slot and finishes a ZIP with a staged manifest', async t => {
+  const base = await directory(t);
+  const source = path.join(base, 'source');
+  await write(path.join(source, 'file.txt'), 'retained bytes');
+  const destination = path.join(base, 'publish.zip');
+  const request = { source, files: ['file.txt'], destination };
+  const first = await createVerifiedArchive(request);
+  const publications = () => fs.readdir(base).then(names => names.filter(name => name.startsWith('.publication-')));
+  const slots = await publications();
+  assert.equal(slots.length, 1, 'the published archive needs one identifiable recovery slot');
+  const stage = path.join(base, slots[0], 'archive.zip');
+  await fs.rename(destination + '.manifest.json', stage + '.manifest.json');
+  const finished = await createVerifiedArchive(request);
+  assert.equal(finished.sha256, first.sha256);
+  await fs.rename(destination, stage);
+  await fs.unlink(destination + '.manifest.json');
+  await fs.truncate(stage, 17);
+  const restarted = await createVerifiedArchive(request);
+  assert.deepEqual(restarted.entries, first.entries);
+  assert.deepEqual(await publications(), slots);
+  await notFound(stage);
+  await fs.rename(destination, path.join(base, 'saved.zip'));
+  await fs.unlink(destination + '.manifest.json');
+  await fs.writeFile(stage, 'a foreign file in the reserved slot');
+  await assert.rejects(createVerifiedArchive(request), /not owned/);
+  assert.equal(await fs.readFile(stage, 'utf8'), 'a foreign file in the reserved slot');
+});
+
 filesystemTest('archiveRejectsTraversalAndDuplicates in input and external ZIP entries', async t => {
   const base = await directory(t);
   const source = path.join(base, 'source');
@@ -347,9 +491,18 @@ filesystemTest('archiveRejectsTraversalAndDuplicates in input and external ZIP e
   await assert.rejects(verifyArchive(duplicate));
 });
 
-filesystemTest('a standalone-verified build omits only unchanged generated cache and retains its unknown files', async t => {
+const webpack = 'cache/webpack/server-production/';
+function pack(contents) {
+  const payload = Buffer.from(contents);
+  const header = Buffer.alloc(12);
+  header.writeUInt32LE(0x01637077);
+  header.writeUInt32LE(1, 4);
+  header.writeInt32LE(payload.byteLength, 8);
+  return Buffer.concat([header, payload]);
+}
+
+async function generatedFixture(t) {
   const f = await releases(t, 3);
-  await f.importIndex();
   const id = 'v3';
   const source = path.join(f.evidence, 'build-123-task');
   const target = path.join(source, '.next-test');
@@ -359,12 +512,16 @@ filesystemTest('a standalone-verified build omits only unchanged generated cache
   await fs.symlink(path.join(f.home, 'dependencies', 'baseline', 'node_modules'),
     path.join(source, 'node_modules'), 'junction');
   await write(path.join(target, 'BUILD_ID'), id + '-build');
-  await write(path.join(target, 'cache', 'known.bin'), 'generated cache');
-  await write(path.join(target, 'cache', 'changed.bin'), 'original cache');
+  await write(path.join(target, webpack, 'index.pack'), pack('generated cache'));
+  await write(path.join(target, webpack, '0.pack'), pack('original cache'));
+  const malformed = Buffer.from([0x77, 0x70, 0x63, 1, 1, 0, 0, 0, 20, 0, 0, 0, 8]);
+  await write(path.join(target, webpack, '1.pack'), malformed);
+  await write(path.join(target, 'cache', 'unknown-before.bin'), 'unique before capture');
   const options = { home: f.home, repoRoots: [f.repo] };
+  const nodeExe = path.join(f.home, 'runtime', 'node.exe');
   const generated = await withMaintenanceLock(f.home, 'capture-fixture', lease =>
-    captureGeneratedBuild({ ...options, lease, source, dist: '.next-test' }));
-  await write(path.join(target, 'cache', 'changed.bin'), 'changed after capture');
+    captureGeneratedBuild({ ...options, lease, source, dist: '.next-test', nodeExe }));
+  await write(path.join(target, webpack, '0.pack'), 'changed after capture');
   await write(path.join(target, 'cache', 'unknown.bin'), 'unique addition');
   const buildFile = path.join(f.evidence, 'verified-build.json');
   const typecheck = path.join(f.evidence, 'typecheck.json');
@@ -397,19 +554,75 @@ filesystemTest('a standalone-verified build omits only unchanged generated cache
     releases: [{ id, installationReceipts: [], verificationReceipts: [verified], packageReceipts: [packaged],
       buildReceipts: [buildFile] }],
   }, { ...options, lease }));
+  return { f, source, target, sourceText, malformed, nodeExe };
+}
+
+filesystemTest('an active direct task reference protects a historical snapshot from a different task', async t => {
+  const { f, source, target } = await generatedFixture(t);
+  await json(path.join(f.home, 'maintenance-state', 'tasks', 'active-other.json'), {
+    id: 'active-other', status: 'active', worktree: source, commit: 'a'.repeat(40), dirty: true,
+    build: null, candidate: null, pid: null, processStartedAt: null, result: null, pins: [],
+  });
+  const plan = await f.plan();
+  assert.equal(plan.actions.some(action => action.path === target), false);
+  assert.ok(plan.protected.find(item => item.path === target).reasons.includes('task:active-other'));
+});
+
+filesystemTest('a standalone-verified build omits only unchanged generated cache and retains its unknown files', async t => {
+  const { f, source, target, sourceText, malformed } = await generatedFixture(t);
+  const readonly = path.join(target, 'z-pending.txt');
+  await write(readonly, 'keep until retry');
+  await fs.chmod(readonly, 0o444);
+  t.after(() => fs.chmod(readonly, 0o666).catch(error => { if (error.code !== 'ENOENT') throw error; }));
   const plan = await f.plan();
   assert.deepEqual(plan.actions.map(action => action.path), [target]);
+  let failed;
+  try {
+    const interrupted = await f.apply(plan);
+    assert.equal(interrupted.failed.length, 1, JSON.stringify(interrupted));
+    [failed] = interrupted.failed;
+    assert.equal(interrupted.deletedBytes, 0);
+    await fs.unlink(path.join(target, webpack, '0.pack'));
+    const dependency = path.join(path.dirname(failed.archive.path), failed.archive.rebuildBasis.dependencies.file);
+    const original = await fs.readFile(dependency);
+    await fs.unlink(dependency);
+    const blocked = await f.apply(plan);
+    assert.equal(blocked.completed.length, 0);
+    assert.equal(blocked.deletedBytes, 0);
+    await fs.access(readonly);
+    await fs.writeFile(dependency, original);
+  } finally {
+    await fs.chmod(readonly, 0o666);
+  }
   const result = await f.apply(plan);
   assert.equal(result.completed.length, 1, JSON.stringify(result));
   await notFound(target);
   await fs.access(path.join(source, 'node_modules', 'dependency.js'));
   const archive = result.completed[0].archive;
+  assert.equal(archive.path, failed.archive.path);
   assert.deepEqual(archive.omittedJunctions, ['source/node_modules']);
-  assert.deepEqual(archive.generatedOmissions.map(item => item.path), ['artifact/cache/known.bin']);
+  assert.deepEqual(archive.generatedOmissions.map(item => item.path), ['artifact/' + webpack + 'index.pack']);
   const restored = path.join(f.home, 'verified-build-restored');
   await extractVerifiedArchive(archive.path, restored);
   assert.equal(await fs.readFile(path.join(restored, 'source', 'src', 'app.ts'), 'utf8'), sourceText);
-  assert.equal(await fs.readFile(path.join(restored, 'artifact', 'cache', 'changed.bin'), 'utf8'), 'changed after capture');
+  assert.equal(await fs.readFile(path.join(restored, 'artifact', webpack, '0.pack'), 'utf8'), 'changed after capture');
+  assert.deepEqual(await fs.readFile(path.join(restored, 'artifact', webpack, '1.pack')), malformed);
   assert.equal(await fs.readFile(path.join(restored, 'artifact', 'cache', 'unknown.bin'), 'utf8'), 'unique addition');
-  await notFound(path.join(restored, 'artifact', 'cache', 'known.bin'));
+  assert.equal(await fs.readFile(path.join(restored, 'artifact', 'cache', 'unknown-before.bin'), 'utf8'), 'unique before capture');
+  await notFound(path.join(restored, 'artifact', webpack, 'index.pack'));
+  const runtime = path.join(path.dirname(archive.path), archive.rebuildBasis.runtime.file);
+  await fs.truncate(runtime, 16);
+  await assert.rejects(verifyArchive(archive.path));
+});
+
+filesystemTest('a changed runtime before sealing the basis keeps every cache entry in the ZIP', async t => {
+  const { f, target, nodeExe } = await generatedFixture(t);
+  await write(nodeExe, 'different runtime');
+  const result = await f.apply(await f.plan());
+  assert.equal(result.completed.length, 1, JSON.stringify(result));
+  await notFound(target);
+  const archive = result.completed[0].archive;
+  assert.deepEqual(archive.generatedOmissions, []);
+  const verified = await verifyArchive(archive.path);
+  assert.ok(verified.entries.some(item => item.path === 'artifact/' + webpack + 'index.pack'));
 });

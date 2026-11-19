@@ -7,6 +7,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Win32.SafeHandles;
 
 public static class ContractorInspection {
@@ -54,6 +55,11 @@ public static class ContractorInspection {
     private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInfo information);
     [DllImport("kernel32.dll")]
     private static extern uint GetFileType(SafeFileHandle handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, byte[] data, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileTransactedW(string path, uint access, uint sharing, IntPtr security,
+        uint disposition, uint flags, IntPtr template, SafeFileHandle transaction, IntPtr miniVersion, IntPtr parameters);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder name, uint size, uint flags);
 
@@ -63,18 +69,39 @@ public static class ContractorInspection {
         return info;
     }
 
+    [ThreadStatic]
+    private static byte[] streamInfo;
+
+    public static void RequireNoNamedStreams(SafeFileHandle handle, bool directory) {
+        const int FileStreamInfo = 7;
+        if (streamInfo == null) streamInfo = new byte[1024];
+        if (!GetFileInformationByHandleEx(handle, FileStreamInfo, streamInfo, (uint)streamInfo.Length)) {
+            int code = Marshal.GetLastWin32Error();
+            if (directory && code == 38) return; // FILE_STREAM_INFO has no rows for a directory without data streams.
+            throw new IOException("File streams cannot be verified", new Win32Exception(code));
+        }
+        int nameLength = BitConverter.ToInt32(streamInfo, 4);
+        if (BitConverter.ToInt32(streamInfo, 0) != 0 || nameLength != 14 ||
+            Encoding.Unicode.GetString(streamInfo, 24, nameLength) != "::$DATA") {
+            throw new IOException("A named stream cannot be represented by this archive");
+        }
+    }
+
     public static SafeFileHandle OpenPlain(string path, bool requireDirectory, bool allowDelete = false,
-                                          bool shareDelete = false, bool shareWrite = false) {
-        // Read sharing excludes attempts to write or rename this object while it is held.
-        var handle = CreateFileW(ExtendedPath(path), ReadDataAndAttributes | (allowDelete ? 0x10000u : 0),
-                                 ShareRead | (shareDelete ? 4u : 0) | (shareWrite ? 2u : 0), IntPtr.Zero,
-                                 OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+                                          bool shareDelete = false, bool shareWrite = false, SafeFileHandle transaction = null) {
+        uint access = ReadDataAndAttributes | (allowDelete ? 0x10000u : 0);
+        uint sharing = ShareRead | (shareDelete ? 4u : 0) | (shareWrite ? 2u : 0);
+        var handle = transaction == null ?
+            CreateFileW(ExtendedPath(path), access, sharing, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero) :
+            CreateFileTransactedW(ExtendedPath(path), access, sharing, IntPtr.Zero, OpenExisting,
+                BackupSemantics | OpenReparsePoint, IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
         try {
             if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
             var info = ReadInfo(handle);
             if ((info.Attributes & ReparsePoint) != 0 || GetFileType(handle) != DiskFileType ||
                 (requireDirectory && (info.Attributes & Directory) == 0))
                 throw new InvalidOperationException("The path is a reparse point or an unexpected file type");
+            RequireNoNamedStreams(handle, (info.Attributes & Directory) != 0);
             return handle;
         } catch {
             handle.Dispose();
@@ -94,6 +121,7 @@ public static class ContractorInspection {
 
     public static void RequireUnchanged(FileInfo before, SafeFileHandle handle) {
         var after = ReadInfo(handle);
+        RequireNoNamedStreams(handle, (after.Attributes & Directory) != 0);
         if (before.Volume != after.Volume || before.IndexHigh != after.IndexHigh || before.IndexLow != after.IndexLow ||
             before.Attributes != after.Attributes || before.SizeHigh != after.SizeHigh || before.SizeLow != after.SizeLow ||
             before.Links != after.Links || before.WrittenHigh != after.WrittenHigh || before.WrittenLow != after.WrittenLow)
@@ -106,6 +134,31 @@ public static class ContractorInspection {
         if (digest != null) {
             writer.Write(length);
             writer.Write(digest);
+        }
+    }
+
+    public static bool IsWebpackCachePath(string relative) {
+        return relative != null && Regex.IsMatch(relative,
+            @"\Acache/webpack/(client|edge-server|server)-production/(index|0|[1-9][0-9]*)\.pack\z");
+    }
+
+    private static bool IsWebpackCachePack(Stream file, long length) {
+        if (length < 13) return false;
+        file.Position = 0;
+        // webpack FileMiddleware v1 uses a magic value, a section table and
+        // exactly the declared bytes. Unsupported formats are archived whole.
+        using (var reader = new BinaryReader(file, Encoding.UTF8, true)) {
+            if (reader.ReadUInt32() != 0x01637077) return false;
+            var count = reader.ReadUInt32();
+            if (count == 0 || count > 1000000 || 8 + 4L * count >= length) return false;
+            long remaining = length - 8 - 4L * count;
+            for (uint i = 0; i < count; i++) {
+                int size = reader.ReadInt32();
+                if (size < 0 && size > -9) return false; // Lazy sections include a size and a name.
+                remaining -= Math.Abs((long)size);
+                if (remaining < 0) return false;
+            }
+            return remaining == 0;
         }
     }
 
@@ -154,7 +207,7 @@ public static class ContractorInspection {
                 snapshot.Bytes = checked(snapshot.Bytes + before.Length);
                 WriteFingerprint(fingerprint, relative, before.Length, digest);
                 if (subtree != null) WriteFingerprint(subtree, subtreePath, before.Length, digest);
-                if (snapshot.Entries != null && relative.StartsWith("cache/", StringComparison.Ordinal)) {
+                if (snapshot.Entries != null && IsWebpackCachePath(relative) && IsWebpackCachePack(stream, before.Length)) {
                     snapshot.Entries.Add(new FileDigest {
                         path = relative, size = before.Length,
                         sha256 = BitConverter.ToString(digest).Replace("-", "").ToLowerInvariant(),
@@ -170,7 +223,7 @@ public static class ContractorInspection {
     }
 
     public static Stack<SafeFileHandle> HoldPath(string target, bool requireDirectory, bool allowDelete = false,
-                                                string pinnedRoot = null, bool shareWrite = false) {
+                                                string pinnedRoot = null, bool shareWrite = false, SafeFileHandle transaction = null) {
         var handles = new Stack<SafeFileHandle>();
         try {
             var root = System.IO.Path.GetPathRoot(target);
@@ -182,7 +235,8 @@ public static class ContractorInspection {
                 var last = index == names.Length - 1;
                 bool pinned = pinnedRoot != null && (current.Equals(pinnedRoot, StringComparison.OrdinalIgnoreCase) ||
                     current.StartsWith(pinnedRoot + @"\", StringComparison.OrdinalIgnoreCase));
-                handles.Push(OpenPlain(current, !last || requireDirectory, last && allowDelete, pinned, last && shareWrite));
+                handles.Push(OpenPlain(current, !last || requireDirectory, last && allowDelete, pinned, last && shareWrite,
+                    last ? transaction : null));
             }
             var actual = CanonicalPath(handles.Peek());
             if (!string.Equals(target, actual, StringComparison.OrdinalIgnoreCase))
@@ -210,6 +264,13 @@ public static class ContractorInspection {
             using (var writer = new BinaryWriter(sink, new UTF8Encoding(false, true), true)) {
                 writer.Write("windows-inspection-v1");
                 Visit(actual, "", handles.Peek(), snapshot, fileHash, writer, dependencies);
+                if (generated) {
+                    var indexes = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var row in snapshot.Entries)
+                        if (row.path.EndsWith("/index.pack", StringComparison.Ordinal))
+                            indexes.Add(row.path.Substring(0, row.path.LastIndexOf('/')));
+                    snapshot.Entries.RemoveAll(row => !indexes.Contains(row.path.Substring(0, row.path.LastIndexOf('/'))));
+                }
                 writer.Flush();
                 sink.FlushFinalBlock();
                 snapshot.Fingerprint = BitConverter.ToString(treeHash.Hash).Replace("-", "").ToLowerInvariant();

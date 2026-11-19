@@ -51,6 +51,21 @@ function readCommandResult(bytes) {
   return null;
 }
 
+function hasRebuildBasis(candidate, release) {
+  const basis = candidate.generated?.basis;
+  if (!basis || !release || !hashIsValid(basis.nodeSha256) || basis.nodeSha256 !== release.nodeSha256 ||
+      !hashIsValid(basis.dependencyFingerprint) ||
+      !Number.isSafeInteger(basis.nodeSize) || basis.nodeSize <= 0 ||
+      !hashIsValid(release.dependencyLockSha256) ||
+      candidate.expectedFiles['package-lock.json'] !== release.dependencyLockSha256) return false;
+  try {
+    return pathKey(basis.nodeExe) === pathKey(release.nodeExe) &&
+      pathKey(basis.dependencyRoot) === pathKey(path.join(release.dependencyRoot, 'node_modules'));
+  } catch {
+    return false;
+  }
+}
+
 function indexRecord(index, registered) {
   if (index?.version !== 1 || !Array.isArray(index.releases) || !Array.isArray(index.builds) ||
       !Array.isArray(index.evidence)) throw refusal('The legacy evidence index is malformed');
@@ -209,7 +224,7 @@ async function analyzeLegacy(record, registered, manifests, pinnedTarget = null,
             releaseBuilds.set(key, {
               releaseId: manifest.id, evidence: [...(install?.evidence ?? []), ...verified.evidence, ...packaged.evidence],
               dependencyRoot: manifest.dependencyRoot, nodeExe: manifest.nodeExe,
-              dependencyLockSha256: manifest.dependencyLockSha256,
+              dependencyLockSha256: manifest.dependencyLockSha256, nodeSha256: manifest.nodeSha256,
             });
           }
         } catch { /* An invalid reference confirms no build. */ }
@@ -229,9 +244,7 @@ async function analyzeLegacy(record, registered, manifests, pinnedTarget = null,
         packageVerified: Boolean(final), releaseId: final?.releaseId ?? null,
         unresolved: !build.passed || !final,
         expectedFiles: candidate.expectedFiles, evidence: [...candidate.evidence, ...(final?.evidence ?? [])],
-        generated: final && candidate.generated && hashIsValid(final.dependencyLockSha256) &&
-          candidate.expectedFiles['package-lock.json'] === final.dependencyLockSha256 ?
-          { ...candidate.generated, dependencyRoot: final.dependencyRoot, nodeExe: final.nodeExe } : null,
+        generated: hasRebuildBasis(candidate, final) ? candidate.generated : null,
       },
     };
     const previous = builds.get(pathKey(target));

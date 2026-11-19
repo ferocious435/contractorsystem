@@ -30,10 +30,11 @@ export async function nativeArchiveOperation(operation, payload, authorize) {
   else child.stdin.end(message);
   try {
     let response = await lines.next();
-    if (!response.done && JSON.parse(response.value)?.ready === true) {
+    while (!response.done && JSON.parse(response.value)?.ready === true) {
       if (!authorize) throw refusal('Unexpected native authorization request');
-      const authorized = await authorize();
-      child.stdin.end(authorized ? 'delete\n' : 'skip\n');
+      const { phase } = JSON.parse(response.value);
+      const authorized = await authorize(phase);
+      child.stdin.write(authorized ? 'delete\n' : 'skip\n');
       response = await lines.next();
     }
     if (!(await lines.next()).done || await done !== 0 || response.done) {

@@ -545,11 +545,13 @@ if (process.argv[2] === '--inventory-worker') {
     }
     await fs.writeFile(path.join(home, 'current.json'), JSON.stringify({ releaseId: 'current', previousId: 'previous' }));
     const inventory = await readInventory({ home, repoRoots: [] });
-    assert.deepEqual(inventory.acceptedReleases.map(release => release.id).sort(), ['accepted', 'current', 'previous']);
+    assert.deepEqual(inventory.acceptedReleases.map(release => release.id).sort(), ['current', 'previous']);
     for (const item of inventory.artifacts) assert.equal(item.fingerprint, null);
     assert.ok(inventory.artifacts.find(item => item.id === 'dependency:shared')?.protectedBy.includes('release:current'));
     assert.ok(inventory.artifacts.find(item => item.id === 'runtime:node.exe')?.protectedBy.includes('release:current'));
-    assert.equal(inventory.artifacts.find(item => item.id === 'release:unverified')?.status, 'UNCLASSIFIED');
+    for (const id of ['accepted', 'unverified']) {
+      assert.ok(inventory.artifacts.find(item => item.id === 'release:' + id)?.protectedBy.includes('acceptance-evidence-unverified'));
+    }
   });
 
   // Fails if missing acceptance evidence allows an unclassified historical release to lose protection.
@@ -565,8 +567,8 @@ if (process.argv[2] === '--inventory-worker') {
     assert.equal(inventory.artifacts.find(item => item.id === 'release:unknown')?.status, 'PROTECTED');
   });
 
-  // Fails if pointer position, a broken runtime, or a date predating creation can take either retention slot.
-  test('releaseRetentionUsesWorkingReleasesAndAcceptanceDates', { timeout: 45000 }, async t => {
+  // Release files are not proof of acceptance, even if their runtime paths are present.
+  test('unprovenManifestDatesCannotFillRetentionSlots', { timeout: 45000 }, async t => {
     const { readInventory } = await inventoryModule();
     const home = await sandbox(t);
     for (const [id, day, broken] of [['current', null], ['old-link', 12], ['newest', 17], ['second', 16],
@@ -576,11 +578,12 @@ if (process.argv[2] === '--inventory-worker') {
     await fs.writeFile(path.join(home, 'current.json'), JSON.stringify({ releaseId: 'current', previousId: 'old-link' }));
     const inventory = await readInventory({ home, repoRoots: [] });
     const find = id => inventory.artifacts.find(item => item.id === 'release:' + id);
-    assert.deepEqual(inventory.acceptedReleases.slice(1, 3).map(item => item.id), ['newest', 'second']);
-    for (const id of ['current', 'old-link', 'newest', 'second', 'broken', 'bad-time']) assert.equal(find(id)?.status, 'PROTECTED', id);
-    assert.equal(find('older')?.status, 'UNCLASSIFIED');
-    assert.ok(inventory.uncertainties.some(item => item.scope === 'release:bad-time'));
-    assert.ok(inventory.uncertainties.some(item => item.scope === 'release:broken'));
+    assert.deepEqual(inventory.acceptedReleases.map(item => item.id), ['current', 'old-link']);
+    assert.ok(find('old-link')?.protectedBy.includes('previous-release'));
+    for (const id of ['newest', 'second', 'older', 'broken', 'bad-time']) {
+      assert.ok(find(id)?.protectedBy.includes('acceptance-evidence-unverified'), id);
+    }
+    assert.ok(inventory.uncertainties.some(item => item.reason === 'accepted-history-incomplete'));
   });
 
   // Fails if an omitted PID automatically unpins a closed task or an unbound relative Next launch is ignored.

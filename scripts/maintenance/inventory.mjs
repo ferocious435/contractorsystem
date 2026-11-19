@@ -281,17 +281,13 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
         }
         if (kind === 'release') {
           const createdAt = isDate(release.createdAt) ? release.createdAt : null;
-          let acceptedAt = null;
           if (release.acceptedAt != null) {
-            if (createdAt && isDate(release.acceptedAt) && Date.parse(release.acceptedAt) >= Date.parse(createdAt)) {
-              acceptedAt = release.acceptedAt;
-            } else {
-              uncertain(artifact.id, 'acceptance-evidence-unverified', artifact);
-            }
+            protection(artifact, 'manifest-timestamp-is-not-acceptance');
           }
           manifests.set(entry.name, {
-            id: entry.name, path: artifact.path, dependencyRoot, nodeExe, createdAt, acceptedAt,
+            id: entry.name, path: artifact.path, dependencyRoot, nodeExe, createdAt, acceptedAt: null,
             dist: release.dist, buildId: release.buildId, dependencyLockSha256: release.dependencyLockSha256,
+            nodeSha256: release.nodeSha256,
             runtimeVerified: false,
           });
         }
@@ -308,7 +304,10 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
     inventory.legacyFingerprint = historical.hash;
     for (const [id, provenance] of historical.releases) {
       manifests.get(id).acceptedAt = provenance.acceptedAt;
-      items.get('release:' + id).provenance = provenance;
+      const artifact = items.get('release:' + id);
+      artifact.provenance = provenance;
+      artifact.protectedBy = artifact.protectedBy.filter(reason => reason !== 'manifest-timestamp-is-not-acceptance');
+      if (!artifact.protectedBy.length) artifact.status = 'UNCLASSIFIED';
     }
     for (const entry of historical.builds.values()) {
       const artifact = add('build:' + pathKey(entry.path), 'build', entry.path, { ...entry, historicalSnapshot: true });
@@ -326,6 +325,9 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
 
   const receipts = [...manifests.values()].filter(release => release.acceptedAt).map(release => release.id);
   const accepted = new Set([...(currentId ? [currentId] : []), ...previousIds, ...receipts]);
+  for (const id of manifests.keys()) {
+    if (!accepted.has(id)) protection(items.get('release:' + id), 'acceptance-evidence-unverified');
+  }
   const acceptedRecords = [...accepted].flatMap(id => manifests.has(id) ? [manifests.get(id)] : []);
   for (const id of accepted) if (!manifests.has(id)) uncertain('release:' + id, 'accepted-release-missing');
   const requirements = release => [
@@ -355,13 +357,13 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
     return Date.parse(b.acceptedAt) - Date.parse(a.acceptedAt);
   };
   const prior = acceptedRecords.filter(release => release.id !== currentId).sort(byAcceptance);
-  const workingPrior = prior.filter(release => release.runtimeVerified);
+  const workingPrior = prior.filter(release => release.acceptedAt && release.runtimeVerified);
   const retained = workingPrior.slice(0, maintenancePolicy.protectedPreviousReleases);
   const cutoff = retained.at(-1)?.acceptedAt;
   const ties = cutoff ? workingPrior.slice(retained.length).filter(release => Date.parse(release.acceptedAt) === Date.parse(cutoff)) : [];
   inventory.acceptedReleases = [
     ...acceptedRecords.filter(release => release.id === currentId), ...workingPrior,
-    ...prior.filter(release => !release.runtimeVerified),
+    ...prior.filter(release => !workingPrior.includes(release)),
   ];
   if (manifests.size && (!currentId ||
       (workingPrior.length < maintenancePolicy.protectedPreviousReleases &&
@@ -507,7 +509,8 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
     }
     for (const artifact of items.values()) {
       const matching = references.some(({ file, field }) => {
-        if (field === 'worktree' && artifact.historicalSnapshot && artifact.taskId !== task.id) return false;
+        if (field === 'worktree' && artifact.historicalSnapshot && artifact.taskId !== task.id &&
+            pathKey(file) === pathKey(artifact.worktree) && worktrees.has(pathKey(file))) return false;
         return relativeWithin(artifact.path, file) !== null || relativeWithin(file, artifact.path) !== null;
       });
       if (matching && (protects || state === 'live' || state === 'unknown')) protection(artifact, reason);

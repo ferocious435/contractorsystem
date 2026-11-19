@@ -9,7 +9,7 @@ import { probePaths, requireHeldLease, resolveMaintenanceHome } from './guard.mj
 import { readInventory } from './inventory.mjs';
 import { registerLegacyProvenance } from './legacy.mjs';
 import {
-  artifactRoot, assertNarrowRoot, isBuildName, maintenancePolicy, pathKey, refusal,
+  artifactRoot, assertNarrowRoot, isBuildName, maintenancePolicy, pathInMaintenanceHome, pathKey, refusal,
 } from './policy.mjs';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -88,7 +88,8 @@ function archivalIntent(item) {
       ? path.join(item.provenance.dependencyRoot, 'node_modules') : null,
     dependencyFingerprint: item.dependencyFingerprint ?? null,
     generatedCache: known ? { path: known.proof.path, sha256: known.proof.sha256, identity: known.identity,
-      dependencyRoot: known.dependencyRoot, nodeExe: known.nodeExe, releaseId: item.provenance.releaseId } : null,
+      dependencyRoot: known.basis.dependencyRoot, dependencyFingerprint: known.basis.dependencyFingerprint,
+      nodeExe: known.basis.nodeExe, nodeSha256: known.basis.nodeSha256, releaseId: item.provenance.releaseId } : null,
   };
 }
 
@@ -230,7 +231,7 @@ export function registerLifecycleEvidence(index, options) {
 
 // The build wrapper calls this once, immediately after its isolated build succeeds.
 // Capturing a file does not make a build eligible for cleanup.
-export async function captureGeneratedBuild({ home, lease, repoRoots = [], source, dist }) {
+export async function captureGeneratedBuild({ home, lease, repoRoots = [], source, dist, nodeExe }) {
   home = await requireHeldLease(home, lease);
   source = assertNarrowRoot(source);
   if (typeof dist !== 'string' || !isBuildName(dist) || !/^build-[0-9]+-[a-z0-9][a-z0-9-]*$/i.test(path.basename(source))) {
@@ -254,6 +255,30 @@ export async function captureGeneratedBuild({ home, lease, repoRoots = [], sourc
   if (pathKey(snapshot.target) !== pathKey(target) || !hashIsValid(snapshot.fingerprint)) {
     throw refusal('The generated build snapshot cannot be verified');
   }
+  if (snapshot.entries.length && nodeExe) {
+    try {
+      nodeExe = pathInMaintenanceHome(home, nodeExe);
+      const link = path.join(source, 'node_modules');
+      const dependencyRoot = pathInMaintenanceHome(home, await fs.readlink(link));
+      if (pathKey(path.dirname(nodeExe)) !== pathKey(path.join(home, 'runtime')) ||
+          path.basename(dependencyRoot) !== 'node_modules' ||
+          pathKey(path.dirname(path.dirname(dependencyRoot))) !== pathKey(path.join(home, 'dependencies'))) {
+        throw refusal('The runtime and dependencies are outside the installed basis');
+      }
+      const [node, [dependencies]] = await Promise.all([
+        nativeArchiveOperation('hash-file', { target: nodeExe }),
+        measureArchiveTargets([dependencyRoot]),
+      ]);
+      if (hashIsValid(node.sha256) && validBytes(node.size) && node.size > 0 &&
+          hashIsValid(dependencies?.fingerprint) &&
+          pathKey(pathInMaintenanceHome(home, await fs.readlink(link))) === pathKey(dependencyRoot)) {
+        snapshot.basis = { dependencyRoot, dependencyFingerprint: dependencies.fingerprint,
+          nodeExe, nodeSha256: node.sha256, nodeSize: node.size };
+      }
+    } catch {
+      // An unverified runtime or junction makes the cache part of the full ZIP.
+    }
+  }
   const file = path.join(path.dirname(source), path.basename(source) + '-generated-dist.json');
   const data = JSON.stringify(snapshot) + '\n';
   await requireHeldLease(home, lease);
@@ -269,6 +294,7 @@ function compactReceipt(receipt) {
     format: receipt.format, path: receipt.path, sha256: receipt.sha256, verifiedAt: receipt.verifiedAt,
     references: receipt.references, omittedJunctions: receipt.omittedJunctions,
     generatedOmissions: receipt.generatedOmissions,
+    rebuildBasis: receipt.rebuildBasis,
   };
 }
 
@@ -294,31 +320,40 @@ function evidenceGroups(items) {
   return [...groups.values()];
 }
 
-async function dependencyReference(action, directories) {
-  const { dependencyBaseline, dependencyFingerprint } = action.archiveRequirement;
+async function dependencyArchive(dependencyBaseline, dependencyFingerprint, directories) {
   if (!dependencyBaseline || !hashIsValid(dependencyFingerprint) ||
       path.basename(dependencyBaseline) !== 'node_modules') return null;
-  const pointer = path.join(directories.index, 'dependencies-' + dependencyFingerprint + '.json');
-  const existing = (await readGuardedRecords([pointer])).get(pointer);
-  if (existing) {
-    const saved = JSON.parse(existing.toString('utf8'));
-    const safe = hashIsValid(saved.archive?.sha256) && saved.archive.path ===
-      path.join(directories.archives, 'dependencies-' + saved.archive.sha256 + '.zip');
-    if (!safe || saved.fingerprint !== dependencyFingerprint) return null;
-    const verified = await verifyArchive(saved.archive.path);
-    if (verified.sha256 !== saved.archive.sha256 || verified.contentFingerprint !== dependencyFingerprint) return null;
-    return { prefix: 'artifact/node_modules', file: path.basename(verified.path), sha256: verified.sha256 };
+  const destination = path.join(directories.archives, 'dependencies-' + dependencyFingerprint + '.zip');
+  const states = await probePaths([destination, destination + '.manifest.json']);
+  if (states.some(state => state === 'unverified')) return null;
+  if (states.every(state => state === 'plain')) {
+    const verified = await verifyArchive(destination);
+    if (verified.contentFingerprint !== dependencyFingerprint || verified.references.length) return null;
+    return verified;
   }
   // A shared copy is retained independently. No release is allowed to rely on another release's node_modules.
   const { groups } = await catalogArchiveGroups([{ source: dependencyBaseline }]);
-  const saved = await publishEvidenceArchive({
-    groups, destination: path.join(directories.archives, 'placeholder.zip'),
+  return publishEvidenceArchive({
+    groups, destination,
     baseline: true, targetFingerprint: dependencyFingerprint,
   });
-  await saveState(pointer, {
-    version: 1, fingerprint: dependencyFingerprint, originalPath: dependencyBaseline, archive: compactReceipt(saved),
-  }, false);
-  return { prefix: 'artifact/node_modules', file: path.basename(saved.path), sha256: saved.sha256 };
+}
+
+const archiveReference = outcome => ({ file: path.basename(outcome.path), sha256: outcome.sha256 });
+
+async function rebuildBasis(known, directories) {
+  const { dependencyRoot, dependencyFingerprint, nodeExe, nodeSha256, nodeSize } = known.basis;
+  const dependencies = await dependencyArchive(dependencyRoot, dependencyFingerprint, directories);
+  if (!dependencies) return null;
+  const filename = path.basename(nodeExe);
+  const destination = path.join(directories.archives, 'runtime-' + digest([filename, nodeSize, nodeSha256]) + '.zip');
+  const runtime = await publishEvidenceArchive({
+    groups: [{ source: path.dirname(nodeExe), files: [filename], expectedFiles: { [filename]: nodeSha256 } }],
+    destination,
+  });
+  if (runtime.entries.length !== 1 || runtime.entries[0].path !== filename ||
+      runtime.entries[0].size !== nodeSize || runtime.entries[0].sha256 !== nodeSha256) return null;
+  return { dependencies: archiveReference(dependencies), runtime: archiveReference(runtime) };
 }
 
 async function getArchive(action, artifact, directories) {
@@ -338,10 +373,10 @@ async function getArchive(action, artifact, directories) {
   });
   const destination = path.join(directories.archives, transactionKey(action) + '.zip');
   const statuses = await probePaths([destination, destination + '.manifest.json']);
-  if (statuses.some(status => status === 'unverified') || statuses[0] !== statuses[1]) {
+  if (statuses.some(status => status === 'unverified')) {
     throw refusal('The previously published archive is incomplete or unsafe');
   }
-  if (statuses[0] === 'plain') {
+  if (statuses.every(status => status === 'plain')) {
     const existing = await verifyArchive(destination);
     const entries = new Map(existing.entries.map(row => [row.path, row.sha256]));
     for (const group of [...requests.slice(1), ...evidence]) {
@@ -355,7 +390,9 @@ async function getArchive(action, artifact, directories) {
   let generated = null;
   if (action.kind === 'release') {
     try {
-      reference = await dependencyReference(action, directories);
+      const { dependencyBaseline, dependencyFingerprint } = action.archiveRequirement;
+      const saved = await dependencyArchive(dependencyBaseline, dependencyFingerprint, directories);
+      if (saved) reference = { prefix: 'artifact/node_modules', ...archiveReference(saved) };
     } catch {
       // A complete ZIP is still safe when a shared copy is unavailable or unequal.
     }
@@ -363,13 +400,14 @@ async function getArchive(action, artifact, directories) {
   if (reference) targetGroup.skipDirectory = 'node_modules';
   const known = artifact.provenance.generated;
   if (known && known.identity === action.expectedIdentity) {
-    const basis = [known.nodeExe, path.join(known.dependencyRoot, 'node_modules')];
-    if ((await probePaths(basis)).every(status => status === 'plain') &&
-        (await fs.lstat(basis[0])).isFile() && (await fs.lstat(basis[1])).isDirectory()) {
-      generated = {
+    try {
+      const basis = await rebuildBasis(known, directories);
+      if (basis) generated = {
         proof: evidencePrefix(path.dirname(known.proof.path)) + '/' + path.basename(known.proof.path),
-        target: action.path, identity: known.identity, entries: known.entries,
+        target: action.path, identity: known.identity, entries: known.entries, ...basis,
       };
+    } catch {
+      // A new archive can always preserve all files when the basis cannot be sealed.
     }
   }
   const { groups, omittedJunctions } = await catalogArchiveGroups(requests);
@@ -471,7 +509,8 @@ export async function applyStorage(plan, { home, lease, repoRoots = [] }) {
               ...item, entry: evidencePrefix(path.dirname(item.path)) + '/' + path.basename(item.path),
             })),
             removedAt: new Date().toISOString(),
-            rebuildBasis: archive.generatedOmissions?.length ? action.archiveRequirement.generatedCache : null,
+            rebuildBasis: archive.generatedOmissions?.length
+              ? { ...action.archiveRequirement.generatedCache, ...archive.rebuildBasis } : null,
           }, true);
           removed.add(action.id);
         }
