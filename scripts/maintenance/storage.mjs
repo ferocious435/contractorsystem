@@ -80,16 +80,12 @@ function budget(rows, limitBytes) {
 }
 
 function archivalIntent(item) {
-  const known = item.provenance?.generated;
   return {
     format: 'zip-v1', includeTarget: 'all-files', source: item.historicalSnapshot ? item.root : null,
     evidence: (item.provenance?.evidence ?? []).map(record => ({ path: record.path, sha256: record.sha256 })),
     dependencyBaseline: item.provenance?.dependencyRoot && item.dependencyFingerprint
       ? path.join(item.provenance.dependencyRoot, 'node_modules') : null,
     dependencyFingerprint: item.dependencyFingerprint ?? null,
-    generatedCache: known ? { path: known.proof.path, sha256: known.proof.sha256, identity: known.identity,
-      dependencyRoot: known.basis.dependencyRoot, dependencyFingerprint: known.basis.dependencyFingerprint,
-      nodeExe: known.basis.nodeExe, nodeSha256: known.basis.nodeSha256, releaseId: item.provenance.releaseId } : null,
   };
 }
 
@@ -230,7 +226,7 @@ export function registerLifecycleEvidence(index, options) {
 }
 
 // The build wrapper calls this once, immediately after its isolated build succeeds.
-// Capturing a file does not make a build eligible for cleanup.
+// This late observation is diagnostic. It does not prove which process produced a file.
 export async function captureGeneratedBuild({ home, lease, repoRoots = [], source, dist, nodeExe }) {
   home = await requireHeldLease(home, lease);
   source = assertNarrowRoot(source);
@@ -341,21 +337,6 @@ async function dependencyArchive(dependencyBaseline, dependencyFingerprint, dire
 
 const archiveReference = outcome => ({ file: path.basename(outcome.path), sha256: outcome.sha256 });
 
-async function rebuildBasis(known, directories) {
-  const { dependencyRoot, dependencyFingerprint, nodeExe, nodeSha256, nodeSize } = known.basis;
-  const dependencies = await dependencyArchive(dependencyRoot, dependencyFingerprint, directories);
-  if (!dependencies) return null;
-  const filename = path.basename(nodeExe);
-  const destination = path.join(directories.archives, 'runtime-' + digest([filename, nodeSize, nodeSha256]) + '.zip');
-  const runtime = await publishEvidenceArchive({
-    groups: [{ source: path.dirname(nodeExe), files: [filename], expectedFiles: { [filename]: nodeSha256 } }],
-    destination,
-  });
-  if (runtime.entries.length !== 1 || runtime.entries[0].path !== filename ||
-      runtime.entries[0].size !== nodeSize || runtime.entries[0].sha256 !== nodeSha256) return null;
-  return { dependencies: archiveReference(dependencies), runtime: archiveReference(runtime) };
-}
-
 async function getArchive(action, artifact, directories) {
   const targetGroup = { source: action.path, prefix: 'artifact' };
   if (action.kind === 'release') {
@@ -387,7 +368,6 @@ async function getArchive(action, artifact, directories) {
     return compactReceipt(existing);
   }
   let reference = null;
-  let generated = null;
   if (action.kind === 'release') {
     try {
       const { dependencyBaseline, dependencyFingerprint } = action.archiveRequirement;
@@ -398,22 +378,10 @@ async function getArchive(action, artifact, directories) {
     }
   }
   if (reference) targetGroup.skipDirectory = 'node_modules';
-  const known = artifact.provenance.generated;
-  if (known && known.identity === action.expectedIdentity) {
-    try {
-      const basis = await rebuildBasis(known, directories);
-      if (basis) generated = {
-        proof: evidencePrefix(path.dirname(known.proof.path)) + '/' + path.basename(known.proof.path),
-        target: action.path, identity: known.identity, entries: known.entries, ...basis,
-      };
-    } catch {
-      // A new archive can always preserve all files when the basis cannot be sealed.
-    }
-  }
   const { groups, omittedJunctions } = await catalogArchiveGroups(requests);
   return compactReceipt(await publishEvidenceArchive({
     groups: [...groups, ...evidence], destination, omittedJunctions, references: reference ? [reference] : [],
-    targetFingerprint: action.expectedFingerprint, generated,
+    targetFingerprint: action.expectedFingerprint, targetIdentity: action.expectedIdentity, publicationTarget: action.path,
   }));
 }
 
@@ -433,8 +401,7 @@ function reconcileAction(action, fresh, home, pending) {
   const provenance = archivalIntent(item);
   const recorded = action.archiveRequirement;
   if (recorded?.format !== 'zip-v1' || recorded.includeTarget !== 'all-files' ||
-      recorded.source !== provenance.source || digest(recorded.evidence) !== digest(provenance.evidence) ||
-      digest(recorded.generatedCache ?? null) !== digest(provenance.generatedCache)) return null;
+      recorded.source !== provenance.source || digest(recorded.evidence) !== digest(provenance.evidence)) return null;
   return item;
 }
 
@@ -509,8 +476,6 @@ export async function applyStorage(plan, { home, lease, repoRoots = [] }) {
               ...item, entry: evidencePrefix(path.dirname(item.path)) + '/' + path.basename(item.path),
             })),
             removedAt: new Date().toISOString(),
-            rebuildBasis: archive.generatedOmissions?.length
-              ? { ...action.archiveRequirement.generatedCache, ...archive.rebuildBasis } : null,
           }, true);
           removed.add(action.id);
         }
@@ -520,11 +485,13 @@ export async function applyStorage(plan, { home, lease, repoRoots = [] }) {
         else receipt.skipped.push({ ...entry, reason: 'protection-or-scope-changed' });
       } catch (error) {
         const changed = /scheduled-target-changed|target directory was replaced|target differs from the verified archive|unarchived entry|target lost entries/.test(error.message);
-        const reason = changed ? 'target-changed' : error.message;
+        const protectedStage = /A previous unfinished publication must be preserved/.test(error.message);
+        const skipped = changed || protectedStage;
+        const reason = changed ? 'target-changed' : protectedStage ? 'unfinished-publication-protected' : error.message;
         const entry = { ...row, ...(archive ? { archive, journal: journalFile } : {}), reason };
-        (changed ? receipt.skipped : receipt.failed).push(entry);
+        (skipped ? receipt.skipped : receipt.failed).push(entry);
         if (record && journalFile) {
-          record.outcomes.push({ at: new Date().toISOString(), status: changed ? 'skipped' : 'failed', reason });
+          record.outcomes.push({ at: new Date().toISOString(), status: skipped ? 'skipped' : 'failed', reason });
           await saveState(journalFile, record, true).catch(() => {});
         }
       }

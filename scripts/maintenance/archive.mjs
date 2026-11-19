@@ -71,7 +71,7 @@ export async function createVerifiedArchive({ source, files, destination }) {
   if (new Set(checked.map(name => name.toLowerCase())).size !== checked.length) {
     throw refusal('The archive lists a file more than once');
   }
-  return nativeArchiveOperation('publish', { destination, groups: [{ source, files: checked }] });
+  return nativeArchiveOperation('publish', { destination, publicRequest: true, groups: [{ source, files: checked }] });
 }
 
 export async function verifyArchive(file) {
@@ -94,10 +94,11 @@ export async function catalogArchiveGroups(groups) {
 }
 
 export async function publishEvidenceArchive({
-  groups, destination, references, omittedJunctions, baseline = false, targetFingerprint, generated,
+  groups, destination, references, omittedJunctions, baseline = false, targetFingerprint, targetIdentity, publicationTarget,
 }) {
   return nativeArchiveOperation(baseline ? 'publish-base' : 'publish', {
-    groups, destination: zipPath(destination), references, omittedJunctions, targetFingerprint, generated,
+    groups, destination: zipPath(destination), references, omittedJunctions, targetFingerprint, targetIdentity,
+    publicationTarget: publicationTarget === undefined ? undefined : assertNarrowRoot(publicationTarget),
   });
 }
 

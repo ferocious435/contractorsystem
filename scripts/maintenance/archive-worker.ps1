@@ -53,6 +53,9 @@ namespace ContractorStorage {
             public List<Reference> references { get; set; }
             public List<string> omittedJunctions { get; set; }
             public Derivation generated { get; set; }
+            public string publicationFile { get; set; }
+            public string publicationTarget { get; set; }
+            public string publicationFingerprint { get; set; }
         }
 
         public sealed class Derivation {
@@ -103,7 +106,8 @@ namespace ContractorStorage {
             public Reference[] references { get; set; }
             public string[] omittedJunctions { get; set; }
             public StateWrite[] writes { get; set; }
-            public Derivation generated { get; set; }
+            public bool publicRequest { get; set; }
+            public string publicationTarget { get; set; }
         }
 
         public sealed class StateWrite {
@@ -324,7 +328,7 @@ namespace ContractorStorage {
 
         private static void WriteEntry(ZipArchive zip, string source, string relative, string prefix, SafeFileHandle handle,
             ILookup<string, string> files, ILookup<string, string> dirs, List<Entry> rows, HashSet<string> names,
-            Dictionary<string, string> expectedFiles, Dictionary<string, Entry> generated, List<Entry> omitted) {
+            Dictionary<string, string> expectedFiles) {
             var before = Guard.ReadInfo(handle);
             string fullName = AddPrefix(prefix, relative).TrimEnd('/');
             if (fullName.Length > 0) {
@@ -335,38 +339,27 @@ namespace ContractorStorage {
             foreach (var directory in dirs[relative]) {
                 var child = Join(source, directory.Split('/').Last());
                 using (var item = Guard.OpenPlain(child, true)) {
-                    WriteEntry(zip, child, directory, prefix, item, files, dirs, rows, names, expectedFiles, generated, omitted);
+                    WriteEntry(zip, child, directory, prefix, item, files, dirs, rows, names, expectedFiles);
                 }
             }
             foreach (var file in files[relative]) {
                 var name = AddPrefix(prefix, file);
                 Require(names.Add(name), "Duplicate ZIP entry");
-                using (var item = Guard.OpenPlain(Join(source, file.Split('/').Last()), false)) {
-                    Entry candidate;
-                    if (prefix == "artifact" && generated.TryGetValue(file, out candidate)) {
-                        var measured = PlainFile(file, item, Stream.Null);
-                        if (SameEntry(candidate, measured)) {
-                            measured.path = name;
-                            omitted.Add(measured);
-                            continue;
-                        }
+                using (var item = Guard.OpenPlain(Join(source, file.Split('/').Last()), false))
+                using (var entry = zip.CreateEntry(name, CompressionLevel.Optimal).Open()) {
+                    var row = PlainFile(name, item, entry);
+                    string digest;
+                    if (expectedFiles.TryGetValue(file, out digest)) {
+                        Require(digest == row.sha256, "Archived source or receipt differs from its registered hash");
+                        expectedFiles.Remove(file);
                     }
-                    using (var entry = zip.CreateEntry(name, CompressionLevel.Optimal).Open()) {
-                        var row = PlainFile(name, item, entry);
-                        string digest;
-                        if (expectedFiles.TryGetValue(file, out digest)) {
-                            Require(digest == row.sha256, "Archived source or receipt differs from its registered hash");
-                            expectedFiles.Remove(file);
-                        }
-                        rows.Add(row);
-                    }
+                    rows.Add(row);
                 }
             }
             Guard.RequireUnchanged(before, handle);
         }
 
-        private static void WriteGroup(ZipArchive zip, Group group, List<Entry> rows, HashSet<string> names,
-            Dictionary<string, Entry> generated, List<Entry> omitted) {
+        private static void WriteGroup(ZipArchive zip, Group group, List<Entry> rows, HashSet<string> names) {
             var files = group.files.Select(SafeName).ToArray();
             var dirs = new HashSet<string>((group.directories ?? new string[0]).Select(SafeName), StringComparer.Ordinal);
             // Explicit files may name nested files without listing their ancestor entries.
@@ -377,7 +370,7 @@ namespace ContractorStorage {
             var expected = new Dictionary<string, string>(group.expectedFiles ?? new Dictionary<string, string>(), StringComparer.Ordinal);
             using (var held = new HeldPath(group.source, true))
                 WriteEntry(zip, group.source, "", prefix, held.Handle, files.ToLookup(ParentName), dirs.ToLookup(ParentName),
-                    rows, names, expected, generated, omitted);
+                    rows, names, expected);
             Require(expected.Count == 0, "Registered archived files are missing");
         }
 
@@ -543,13 +536,13 @@ namespace ContractorStorage {
 
         private sealed class Publication : IDisposable {
             private readonly SafeFileHandle folder;
+            private readonly string staging;
             private FileStream owner;
             public readonly string Zip;
             public readonly string Metadata;
-            public Publication(string directory, string destination) {
-                string key;
-                using (var sha = SHA256.Create()) key = Hex(sha.ComputeHash(Utf8.GetBytes(destination.ToUpperInvariant())));
-                string staging = Join(directory, ".publication-" + key);
+            public Publication(string directory, string scope) {
+                string key = PublicationKey(scope);
+                staging = Join(directory, ".publication-" + key);
                 EnsureDirectory(staging);
                 // Publish holds the parent chain. Do not acquire a second read-only share of
                 // the destination directory, as NTFS needs write access to publish a child.
@@ -559,7 +552,7 @@ namespace ContractorStorage {
                     Metadata = Zip + ".manifest.json";
                     var name = Join(staging, "transaction");
                     owner = Create(name, true);
-                    string expected = "contractor-zip-publication-v1\n" + Guard.Identity(folder) + "\n" + key;
+                    string expected = "contractor-zip-publication-v2\n" + Guard.Identity(folder) + "\n" + key;
                     Require(owner.Length <= Utf8.GetByteCount(expected), "The archive staging owner is invalid");
                     string current;
                     using (var reader = new StreamReader(owner, Utf8, false, 1024, true))
@@ -572,13 +565,12 @@ namespace ContractorStorage {
                         owner.Write(bytes, 0, bytes.Length);
                         owner.Flush(true);
                     }
-                    var names = new HashSet<string>(new[] {
-                        "transaction", "archive.zip", "archive.zip.manifest.json",
-                        "archive.zip.id", "archive.zip.id.pending", "archive.zip.manifest.json.id", "archive.zip.manifest.json.id.pending"
-                    }, StringComparer.Ordinal);
-                    Require(Children(staging).All(names.Contains), "The archive staging directory has unknown entries");
-                    CheckSlot(Zip);
-                    CheckSlot(Metadata);
+                    foreach (var child in Children(staging)) {
+                        if (child == "transaction" || child == "archive.zip" || child == "archive.zip.manifest.json") continue;
+                        Require(Regex.IsMatch(child, @"\Aarchive\.zip(?:\.manifest\.json)?\.[a-f0-9]{8}-[a-f0-9]{16}\.[a-f0-9]{64}\.owned\z"),
+                            "The archive staging directory has unknown entries");
+                        CheckMarker(Join(staging, child));
+                    }
                 } catch {
                     Dispose();
                     throw;
@@ -589,42 +581,51 @@ namespace ContractorStorage {
                 folder.Dispose();
             }
 
-            private static string ReadIdentity(string file) {
-                if (!Present(file + ".id")) return null;
-                using (var proof = Guard.OpenPlain(file + ".id", false)) {
-                    Require(Guard.ReadInfo(proof).Length == 25, "An archive staging identity record is invalid");
-                    return Utf8.GetString(ReadSmall(proof));
+            private static void CheckMarker(string marker) {
+                using (var proof = Guard.OpenPlain(marker, false)) {
+                    var info = Guard.ReadInfo(proof);
+                    Require((info.Attributes & DirectoryFlag) == 0 && info.Links == 1 && info.Length == 0,
+                        "An archive staging identity marker is not empty and plain");
                 }
             }
 
-            private static void CheckSlot(string file) {
-                if (!Present(file)) return;
-                var saved = ReadIdentity(file);
-                using (var slot = Guard.OpenPlain(file, false)) {
-                    var info = Guard.ReadInfo(slot);
-                    Require((info.Attributes & DirectoryFlag) == 0 && info.Links == 1 &&
-                        (info.Length == 0 || Guard.Identity(slot) == saved), "A staging file is not owned by this transaction");
+            private string MarkerPrefix(string slot, SafeFileHandle handle) {
+                return Path.GetFileName(slot) + "." + Guard.Identity(handle).Replace(':', '-') + ".";
+            }
+
+            private string SlotOwner(string slot, SafeFileHandle handle) {
+                var mark = MarkerPrefix(slot, handle);
+                var owners = Children(staging).Where(child => child.StartsWith(mark, StringComparison.Ordinal)).ToArray();
+                Require(owners.Length <= 1, "The archive staging file has ambiguous ownership");
+                if (owners.Length == 0) return null;
+                Require(Regex.IsMatch(owners[0].Substring(mark.Length), @"\A[a-f0-9]{64}\.owned\z"),
+                    "The archive staging file has an invalid ownership marker");
+                CheckMarker(Join(staging, owners[0]));
+                return owners[0].Substring(mark.Length, 64);
+            }
+
+            public string SlotOwner(string slot, string file = null) {
+                file = file ?? slot;
+                if (!Present(file)) return null;
+                using (var held = new HeldPath(file, false)) {
+                    var info = Guard.ReadInfo(held.Handle);
+                    var key = SlotOwner(slot, held.Handle);
+                    Require((info.Attributes & DirectoryFlag) == 0 && info.Links == 1 && (info.Length == 0 || key != null),
+                        "A staging file is not owned by this transaction");
+                    return key;
                 }
             }
 
-            public FileStream OpenSlot(string file) {
+            public FileStream OpenSlot(string file, string destination) {
+                var key = PublicationKey(destination);
                 var writer = Create(file, true);
                 try {
-                    var saved = ReadIdentity(file);
-                    var identity = Guard.Identity(writer.SafeFileHandle);
-                    if (saved != identity) {
+                    var saved = SlotOwner(file, writer.SafeFileHandle);
+                    if (saved == null) {
                         Require(writer.Length == 0, "A staging file is not owned by this transaction");
-                        string temp = file + ".id.pending";
-                        using (var record = Create(temp, true)) {
-                            Require(record.Length <= 25, "An archive staging identity update is invalid");
-                            record.SetLength(0);
-                            var bytes = Utf8.GetBytes(identity);
-                            record.Write(bytes, 0, bytes.Length);
-                            record.Flush(true);
-                        }
-                        if (!MoveFileExW(Guard.ExtendedPath(temp), Guard.ExtendedPath(file + ".id"), 9))
-                            throw new Win32Exception(Marshal.GetLastWin32Error());
-                    }
+                        using (var marker = Create(Join(staging, MarkerPrefix(file, writer.SafeFileHandle) + key + ".owned")))
+                            marker.Flush(true);
+                    } else Require(saved == key, "A previous unfinished publication must be preserved");
                     return writer;
                 } catch {
                     writer.Dispose();
@@ -633,12 +634,65 @@ namespace ContractorStorage {
             }
         }
 
+        private static string PublicationKey(string path) {
+            using (var sha = SHA256.Create())
+                return Hex(sha.ComputeHash(Utf8.GetBytes(path.ToUpperInvariant())));
+        }
+
+        private static Manifest ReadStagedManifest(Publication stage) {
+            using (var held = new HeldPath(stage.Metadata, false))
+                return Json.Deserialize<Manifest>(Utf8.GetString(ReadSmall(held.Handle)));
+        }
+
+        private static bool IsTargetArchiveName(string filename) {
+            return filename != null && Regex.IsMatch(filename, @"\A[a-f0-9]{64}\.zip\z");
+        }
+
+        private static void FinishPreviousPublication(Request request, Publication stage, string directory) {
+            var requested = PublicationKey(request.destination);
+            var zipKey = stage.SlotOwner(stage.Zip);
+            var metadataKey = stage.SlotOwner(stage.Metadata);
+            if ((zipKey == null || zipKey == requested) && (metadataKey == null || metadataKey == requested)) return;
+            const string conflict = "A previous unfinished publication must be preserved";
+            Require(metadataKey != null && metadataKey != requested, conflict);
+            try {
+                var manifest = ReadStagedManifest(stage);
+                Require(manifest != null && Names.Equals(manifest.publicationTarget, request.publicationTarget) &&
+                    IsTargetArchiveName(manifest.publicationFile) && IsHash(manifest.publicationFingerprint), conflict);
+                var previous = Join(directory, manifest.publicationFile);
+                Require(PublicationKey(previous) == metadataKey && !Present(previous + ".manifest.json"), conflict);
+                var stillStaged = Present(stage.Zip);
+                Require(stillStaged != Present(previous), conflict);
+                var zip = stillStaged ? stage.Zip : previous;
+                Require(stage.SlotOwner(stage.Zip, zip) == metadataKey, conflict);
+                using (var verified = new Verified(zip, null, true, stage.Metadata, directory)) {
+                    Require(verified.Manifest.generated == null &&
+                        Fingerprint(verified.EffectiveEntries(), "artifact") == manifest.publicationFingerprint, conflict);
+                }
+                if (stillStaged) MoveNew(stage.Zip, previous);
+                MoveNew(stage.Metadata, previous + ".manifest.json");
+            } catch (Exception error) {
+                throw new IOException(conflict, error);
+            }
+        }
+
         private static void CheckPublished(Request request, Verified verified) {
+            Require(verified.Manifest.generated == null, "This archive omits files without managed build provenance");
             if (request.targetFingerprint != null) {
                 var root = request.operation == "publish-base" ? "" : "artifact";
                 Require(Fingerprint(verified.EffectiveEntries(true), root) == request.targetFingerprint, "scheduled-target-changed");
             }
             var rows = verified.Manifest.entries.ToDictionary(row => row.path, StringComparer.Ordinal);
+            if (request.publicRequest) {
+                var group = request.groups.Single();
+                Require(rows.Values.Count(row => !row.directory) == group.files.Length, "The staged ZIP has other input files");
+                foreach (var name in group.files) {
+                    Entry expected;
+                    Require(rows.TryGetValue(name, out expected) && !expected.directory, "The staged ZIP has other input files");
+                    using (var held = new HeldPath(Join(group.source, name), false))
+                        Require(SameEntry(expected, PlainFile(name, held.Handle, Stream.Null)), "The staged ZIP has different input bytes");
+                }
+            }
             foreach (var group in request.groups)
                 foreach (var item in group.expectedFiles ?? new Dictionary<string, string>()) {
                     Entry row;
@@ -652,24 +706,29 @@ namespace ContractorStorage {
             bool publishedManifest = Present(destination + ".manifest.json");
             if (publishedManifest) {
                 Require(publishedZip, "The published archive is missing its ZIP");
+                Require(!request.publicRequest, "The archive destination is already published");
                 using (var verified = new Verified(destination, null, true)) CheckPublished(request, verified);
                 return true;
             }
             if (publishedZip) {
                 Require(Present(stage.Metadata) && !Present(stage.Zip), "The published ZIP has no unique staged manifest");
+                Require(stage.SlotOwner(stage.Zip, destination) == PublicationKey(destination),
+                    "The ZIP is not owned by this publication");
                 using (var verified = new Verified(destination, null, true, stage.Metadata, directory)) CheckPublished(request, verified);
                 MoveNew(stage.Metadata, destination + ".manifest.json");
                 return true;
             }
             if (!Present(stage.Zip) || !Present(stage.Metadata)) return false;
+            Verified staged;
             try {
-                using (var verified = new Verified(stage.Zip, null, true, stage.Metadata, directory)) CheckPublished(request, verified);
+                staged = new Verified(stage.Zip, null, true, stage.Metadata, directory);
             } catch (Exception error) {
                 // Without a published ZIP, only reinitialize these two confirmed service files.
                 if (!(error is IOException || error is InvalidDataException || error is InvalidOperationException ||
                     error is ArgumentException || error is Win32Exception)) throw;
                 return false;
             }
+            using (staged) CheckPublished(request, staged);
             MoveNew(stage.Zip, destination);
             MoveNew(stage.Metadata, destination + ".manifest.json");
             return true;
@@ -678,32 +737,32 @@ namespace ContractorStorage {
         private static string Publish(Request request) {
             var destination = request.destination;
             var directory = Path.GetDirectoryName(destination);
+            var target = request.publicationTarget;
+            if (target != null)
+                Require(request.operation == "publish" && !request.publicRequest && IsHash(request.targetFingerprint) &&
+                    IsTargetArchiveName(Path.GetFileName(destination)) && request.groups.Length > 0 &&
+                    request.groups[0].prefix == "artifact" && Names.Equals(request.groups[0].source, target),
+                    "Invalid target publication scope");
             using (var parent = new HeldPath(directory, true, shareWrite: true))
-            using (var staging = new Publication(directory, destination)) {
+            using (var staging = new Publication(directory, target ?? destination)) {
+                FinishPreviousPublication(request, staging, directory);
                 if (ResumePublication(request, staging, directory, destination)) return destination;
+                if (target != null) {
+                    var live = Guard.Inspect(target);
+                    Require(live.Fingerprint == request.targetFingerprint && live.Identity == request.targetIdentity,
+                        "scheduled-target-changed");
+                }
                 var rows = new List<Entry>();
-                var omitted = new List<Entry>();
-                var captured = (request.generated == null ? new List<Entry>() : request.generated.entries)
-                    .ToDictionary(row => row.path, StringComparer.Ordinal);
                 string digest;
-                using (var stream = staging.OpenSlot(staging.Zip)) {
+                using (var stream = staging.OpenSlot(staging.Zip, destination)) {
                     stream.SetLength(0);
                     using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, true, Utf8)) {
                         var names = new HashSet<string>(Names);
-                        foreach (var group in request.groups) WriteGroup(zip, group, rows, names, captured, omitted);
+                        foreach (var group in request.groups) WriteGroup(zip, group, rows, names);
                     }
                     stream.Flush(true);
                     stream.Position = 0;
-                    using (var check = new ZipArchive(stream, ZipArchiveMode.Read, true, Utf8)) {
-                        CheckZip(check, rows);
-                        if (omitted.Count > 0) {
-                            request.generated.entries = omitted;
-                            var ledger = CheckGenerated(check, request.generated);
-                            var basis = new List<Verified>();
-                            try { VerifyRebuildBasis(directory, request.generated, ledger, basis); }
-                            finally { foreach (var verified in basis) verified.Dispose(); }
-                        }
-                    }
+                    using (var check = new ZipArchive(stream, ZipArchiveMode.Read, true, Utf8)) CheckZip(check, rows);
                     stream.Position = 0;
                     digest = CopyHash(stream, Stream.Null, stream.Length);
                 }
@@ -711,7 +770,6 @@ namespace ContractorStorage {
                     Require(Fingerprint(rows, "") == request.targetFingerprint, "The baseline changed while archiving");
                 else if (request.targetFingerprint != null) {
                     var effective = new List<Entry>(rows);
-                    effective.AddRange(omitted);
                     foreach (var reference in request.references ?? new Reference[0]) {
                         Require(IsHash(reference.sha256) && IsDependencyFile(reference.file),
                             "Invalid dependency archive reference");
@@ -729,9 +787,11 @@ namespace ContractorStorage {
                     format = "zip-v1", sha256 = digest, verifiedAt = DateTime.UtcNow.ToString("o"), entries = rows,
                     references = (request.references ?? new Reference[0]).ToList(),
                     omittedJunctions = (request.omittedJunctions ?? new string[0]).ToList(),
-                    generated = omitted.Count > 0 ? request.generated : null,
+                    publicationFile = Path.GetFileName(destination),
+                    publicationTarget = target,
+                    publicationFingerprint = request.targetFingerprint,
                 };
-                using (var stream = staging.OpenSlot(staging.Metadata)) {
+                using (var stream = staging.OpenSlot(staging.Metadata, destination)) {
                     stream.SetLength(0);
                     var bytes = Utf8.GetBytes(Json.Serialize(manifest));
                     stream.Write(bytes, 0, bytes.Length);
@@ -861,10 +921,12 @@ namespace ContractorStorage {
         }
 
         private static object Delete(Request request) {
-            using (var archive = new Verified(request.file, request.archiveSha256, true))
-            using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
-                if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-                return DeleteVerified(request, archive, transaction);
+            using (var archive = new Verified(request.file, request.archiveSha256, true)) {
+                Require(archive.Manifest.generated == null, "This archive omits files without managed build provenance");
+                using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                    if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    return DeleteVerified(request, archive, transaction);
+                }
             }
         }
 
@@ -873,9 +935,7 @@ namespace ContractorStorage {
             // share mode alone protects only the primary stream. An uncommitted exit rolls back.
             using (var root = new HeldPath(request.target, true, true, transaction: transaction)) {
                 Require(Guard.Identity(root.Handle) == request.targetIdentity, "The target directory was replaced");
-                if (archive.Manifest.generated != null) Require(Names.Equals(archive.Manifest.generated.target, request.target) &&
-                    archive.Manifest.generated.identity == request.targetIdentity, "Generated output belongs to another target");
-                var rows = archive.EffectiveEntries(true).ToList();
+                var rows = archive.EffectiveEntries().ToList();
                 Require(Fingerprint(rows, "artifact") == request.targetFingerprint, "ZIP does not contain the scheduled target");
                 var expected = rows.Where(row => row.path == "artifact" || row.path.StartsWith("artifact/", StringComparison.Ordinal))
                     .ToDictionary(row => row.path, Names);
