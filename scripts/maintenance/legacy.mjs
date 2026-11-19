@@ -181,7 +181,7 @@ async function analyzeLegacy(record, registered, manifests, pinnedTarget = null,
       if (!result || !stderr || result.release !== manifest.id || result.buildId !== manifest.buildId) continue;
       if (action === 'verify' && (result.verified !== true || result.stopped !== true)) continue;
       if (action === 'install' && (result.running !== true || value.current?.releaseId !== manifest.id)) continue;
-      results.push({ value, evidence: [found.item, stdout.item, stderr.item] });
+      results.push({ value, result, evidence: [found.item, stdout.item, stderr.item] });
     }
     return results.sort((left, right) => Date.parse(right.value.at) - Date.parse(left.value.at));
   };
@@ -206,7 +206,10 @@ async function analyzeLegacy(record, registered, manifests, pinnedTarget = null,
           if (candidate?.build.buildId === manifest.buildId && candidate.build.dist === manifest.dist &&
               Date.parse(candidate.build.at) <= Date.parse(packaged.value.at)) {
             releaseBuilds.set(key, {
-              releaseId: manifest.id, evidence: [...(install?.evidence ?? []), ...verified.evidence, ...packaged.evidence],
+              releaseId: manifest.id,
+              managedTask: lifecycle && verified.result.managedTask === packaged.result.managedTask
+                ? verified.result.managedTask : null,
+              evidence: [...(install?.evidence ?? []), ...verified.evidence, ...packaged.evidence],
             });
           }
         } catch { /* An invalid reference confirms no build. */ }
@@ -223,7 +226,7 @@ async function analyzeLegacy(record, registered, manifests, pinnedTarget = null,
       path: target, root: source, taskId: location.taskId, worktree: location.repository, commit: location.commit,
       provenance: {
         at: build.at, buildId: build.buildId, outcome: build.passed ? 'passed' : 'failed',
-        packageVerified: Boolean(final), releaseId: final?.releaseId ?? null,
+        packageVerified: Boolean(final), releaseId: final?.releaseId ?? null, managedTask: final?.managedTask ?? null,
         unresolved: !build.passed || !final,
         expectedFiles: candidate.expectedFiles, evidence: [...candidate.evidence, ...(final?.evidence ?? [])],
       },

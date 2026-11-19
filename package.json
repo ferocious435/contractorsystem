@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/local-system-build.mjs --npm-build",
+    "local:build": "node scripts/local-system-build.mjs",
+    "local:package": "node scripts/local-system-package.mjs",
+    "local:maintenance": "node scripts/local-system-maintenance.mjs",
     "start": "next start",
     "verify:financials": "node scripts/verify-financial-invariants.mjs",
     "verify:auth-login": "node scripts/verify-auth-login.mjs",

@@ -395,16 +395,50 @@ filesystemTest('partialDeleteCanResume using the same archive and recording both
 });
 
 filesystemTest('secondRunIsIdempotent for the same dry run and a fresh dry run', async t => {
-  const f = await releases(t, 5);
+  const f = await releases(t, 6);
+  const reader = 'data/tools/kreuzberg/1.2.3/bin';
+  for (const root of f.roots.values()) {
+    const folder = path.join(root, reader);
+    await write(path.join(folder, 'kreuzberg.exe'), 'small synthetic reader');
+    await write(path.join(folder, 'onnxruntime.dll'), 'small synthetic library');
+    const [observed] = await measureArchiveTargets([folder]);
+    const file = path.join(root, 'release.json');
+    const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+    await json(file, { ...manifest, ocrAssets: { prefix: reader, fingerprint: observed.fingerprint }, files: [
+      { path: reader + '/kreuzberg.exe', sha256: hash('small synthetic reader') },
+      { path: reader + '/onnxruntime.dll', sha256: hash('small synthetic library') },
+    ] });
+    await write(path.join(root, 'data', 'unique.txt'), 'unrelated ' + manifest.id);
+  }
+  await write(path.join(f.roots.get('v3'), reader, 'untracked.bin'), 'keep this too');
   await f.importIndex();
   const plan = await f.plan();
   const first = await f.apply(plan);
-  assert.equal(first.completed.length, 2, JSON.stringify(first));
+  assert.equal(first.completed.length, 3, JSON.stringify(first));
   assert.equal(first.completed[0].archive.references[0].file, first.completed[1].archive.references[0].file);
+  const ocr = first.completed.slice(0, 2).map(item => item.archive.references.find(reference => reference.prefix === 'artifact/' + reader));
+  assert.ok(ocr.every(Boolean), 'both releases use a verified exact reader copy');
+  assert.equal(ocr[0].file, ocr[1].file);
+  const directory = path.dirname(first.completed[0].archive.path);
+  const zips = async () => {
+    const files = (await fs.readdir(directory)).filter(file => file.endsWith('.zip')).sort();
+    return Promise.all(files.map(async file => [file, (await fs.stat(path.join(directory, file))).size]));
+  };
+  const retained = await zips();
+  assert.equal(retained.length, 5);
+  const restore = path.join(path.dirname(f.home), 'shared-restore');
+  await extractVerifiedArchive(first.completed[0].archive.path, restore);
+  assert.equal(await fs.readFile(path.join(restore, 'artifact', reader, 'kreuzberg.exe'), 'utf8'), 'small synthetic reader');
+  assert.equal(await fs.readFile(path.join(restore, 'artifact/data/unique.txt'), 'utf8'), 'unrelated v1');
+  const changed = path.join(path.dirname(f.home), 'changed-restore');
+  assert.equal(first.completed[2].archive.references.some(reference => reference.prefix === 'artifact/' + reader), false);
+  await extractVerifiedArchive(first.completed[2].archive.path, changed);
+  assert.equal(await fs.readFile(path.join(changed, 'artifact', reader, 'untracked.bin'), 'utf8'), 'keep this too');
   assert.equal((await f.apply(plan)).deletedBytes, 0);
   const second = await f.apply(await f.plan());
   assert.equal(second.deletedBytes, 0);
   assert.equal(second.completed.length, 0);
+  assert.deepEqual(await zips(), retained);
 });
 
 filesystemTest('archive round trip retains ordinary and long names and requires a new folder', async t => {

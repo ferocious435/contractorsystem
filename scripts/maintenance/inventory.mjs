@@ -1,4 +1,5 @@
 import { readLegacyProvenance } from './legacy.mjs';
+import { verifiedBuildClosure, verifiedCandidateClosure } from './lifecycle.mjs';
 import { readGuardedRecords } from './archive.mjs';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -35,6 +36,31 @@ function validateTask(record) {
   }
   assertNarrowRoot(record.worktree);
   for (const file of [record.build, record.candidate]) if (file !== null) assertNarrowRoot(file);
+  if (record.detachedBuild != null) assertNarrowRoot(record.detachedBuild);
+  if (record.closedCandidates != null && (!Array.isArray(record.closedCandidates) ||
+      record.closedCandidates.some(id => !isReleaseId(id)) ||
+      new Set(record.closedCandidates).size !== record.closedCandidates.length)) {
+    throw refusal('Invalid closed candidate identities');
+  }
+  if (record.closedBuilds != null) {
+    if (!Array.isArray(record.closedBuilds)) throw refusal('Invalid closed build records');
+    for (const subject of record.closedBuilds) {
+      assertNarrowRoot(subject?.source);
+      if (!isBuildName(subject?.dist)) throw refusal('Invalid closed build directory');
+    }
+  }
+}
+
+export async function readTask(home, id) {
+  if (!taskIdIsValid(id)) throw refusal('Invalid task identity');
+  const file = path.join(home, 'maintenance-state', 'tasks', id + '.json');
+  const [status] = await probePaths([file]);
+  if (status === 'missing') return null;
+  if (status !== 'plain') throw refusal('The task record cannot be verified');
+  const record = await readJson(file);
+  validateTask(record);
+  if (record.id !== id) throw refusal('The task record has a different identity');
+  return record;
 }
 
 export async function updateTask(home, lease, record) {
@@ -120,12 +146,12 @@ function needsOperationBinding(proc) {
     const script = path.basename(arg);
     if (/^next(?:\.cmd)?$/i.test(script)) return !path.isAbsolute(arg) && /^(?:build|start|dev)$/.test(args[index + 1]);
     if (/^server\.js$/i.test(script)) return !path.isAbsolute(arg);
-    if (/^local-system-(?:package|launch|backup|restore)\.mjs$/i.test(script)) return !path.isAbsolute(arg);
+    if (/^local-system-(?:build|package|launch|backup|restore)\.mjs$/i.test(script)) return !path.isAbsolute(arg);
     return /^npm(?:-cli\.js|\.cmd)?$/i.test(script) && args.slice(index + 1).includes('build');
   });
 }
 
-export async function readInventory({ home, repoRoots = [], pinnedTarget = null } = {}) {
+export async function readInventory({ home, repoRoots = [], pinnedTarget = null, coordinatorLease } = {}) {
   const inventory = {
     at: new Date().toISOString(), current: null, acceptedReleases: [], tasks: [],
     artifacts: [], processes: [], uncertainties: [], freeBytes: null,
@@ -195,6 +221,7 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
     uncertain('home', 'home-unavailable');
     return inventory;
   }
+  if (coordinatorLease) await requireHeldLease(home, coordinatorLease);
   try {
     const stats = await fs.statfs(home, { bigint: true });
     const free = stats.bavail * stats.bsize;
@@ -288,6 +315,7 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
             id: entry.name, path: artifact.path, dependencyRoot, nodeExe, createdAt, acceptedAt: null,
             dist: release.dist, buildId: release.buildId, dependencyLockSha256: release.dependencyLockSha256,
             nodeSha256: release.nodeSha256,
+            ocrAssets: release.ocrAssets ?? null,
             runtimeVerified: false,
           });
         }
@@ -412,6 +440,38 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
     inventory.tasks.push(record);
   }
 
+  for (const task of inventory.tasks) {
+    if (task.status !== 'closed' ||
+        inventory.uncertainties.some(item => item.scope === 'task:' + task.id)) continue;
+    for (const id of task.closedCandidates ?? []) {
+      const manifest = manifests.get(id);
+      if (!manifest || accepted.has(id)) continue;
+      try {
+        const closed = await verifiedCandidateClosure(home, manifest, task, pinnedTarget);
+        if (!closed) continue;
+        const candidate = items.get('release:' + id);
+        candidate.provenance = { closedAt: closed.closedAt, dependencyRoot: manifest.dependencyRoot, evidence: closed.evidence };
+        candidate.protectedBy = candidate.protectedBy.filter(reason => reason !== 'acceptance-evidence-unverified');
+        if (!candidate.protectedBy.length) candidate.status = 'UNCLASSIFIED';
+      } catch { /* Changed or missing closure evidence cannot authorize retirement. */ }
+    }
+    const tree = worktrees.get(pathKey(task.worktree));
+    if (!tree) continue;
+    for (const subject of task.closedBuilds ?? []) {
+      try {
+        const target = path.join(subject.source, subject.dist), id = 'build:' + pathKey(target);
+        if ((await statuses([target]))[0] !== 'plain' || !(await fs.lstat(target)).isDirectory()) continue;
+        const existing = items.get(id);
+        if (existing?.provenance?.packageVerified) continue;
+        const provenance = await verifiedBuildClosure(home, subject, task);
+        if (!provenance) continue;
+        if (existing) Object.assign(existing, { provenance, taskId: task.id });
+        else add(id, 'build', target, { provenance, taskId: task.id, root: subject.source, historicalSnapshot: true,
+          worktree: tree.path, commit: tree.commit });
+      } catch { /* Untrusted or changed evidence does not release the build. */ }
+    }
+  }
+
   const worktreeChecks = await statuses(registered.map(worktree => worktree.path));
   for (const [index, tree] of registered.entries()) {
     const id = 'worktree:' + pathKey(tree.path);
@@ -509,8 +569,12 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
     }
     for (const artifact of items.values()) {
       const matching = references.some(({ file, field }) => {
-        if (field === 'worktree' && artifact.historicalSnapshot && artifact.taskId !== task.id &&
-            pathKey(file) === pathKey(artifact.worktree) && worktrees.has(pathKey(file))) return false;
+        if (field === 'worktree' && artifact.historicalSnapshot &&
+            pathKey(file) === pathKey(artifact.worktree) && worktrees.has(pathKey(file))) {
+          if (artifact.taskId !== task.id) return false;
+          if (artifact.provenance?.managedTask === task.id && artifact.provenance?.packageVerified &&
+              task.detachedBuild && pathKey(task.detachedBuild) === pathKey(artifact.path)) return false;
+        }
         return relativeWithin(artifact.path, file) !== null || relativeWithin(file, artifact.path) !== null;
       });
       if (matching && (protects || state === 'live' || state === 'unknown')) protection(artifact, reason);
@@ -538,6 +602,7 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null 
   const useAlias = pathKey(home) === pathKey(physical) && pathKey(logical) !== pathKey(physical);
   let unboundOperation = false;
   for (const proc of live) {
+    if (coordinatorLease && proc.pid === process.pid) continue;
     const matches = [];
     for (const artifact of items.values()) {
       const relative = useAlias ? relativeWithin(home, artifact.path) : null;

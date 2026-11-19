@@ -94,11 +94,11 @@ export async function catalogArchiveGroups(groups) {
 }
 
 export async function publishEvidenceArchive({
-  groups, destination, references, omittedJunctions, baseline = false, targetFingerprint, targetIdentity, publicationTarget,
+  groups, destination, references, omittedJunctions, baseline = false, targetFingerprint, targetIdentity, publicationTarget, generated,
 }) {
   const source = publicationTarget ?? (baseline ? groups?.[0]?.source : undefined);
   return nativeArchiveOperation(baseline ? 'publish-base' : 'publish', {
-    groups, destination: zipPath(destination), references, omittedJunctions, targetFingerprint, targetIdentity,
+    groups, destination: zipPath(destination), references, omittedJunctions, targetFingerprint, targetIdentity, generated,
     publicationTarget: source === undefined ? undefined : assertNarrowRoot(source),
   });
 }
@@ -108,12 +108,12 @@ export async function measureArchiveTargets(files) {
   return nativeArchiveOperation('measure', { records: files.map(assertNarrowRoot) });
 }
 
-export async function deleteArchivedTarget({ archive, target, targetFingerprint, targetIdentity, resume }, authorize) {
+export async function deleteArchivedTarget({ archive, target, targetFingerprint, targetIdentity, resume, managedProofSha256 }, authorize) {
   if (!validDigest(archive.sha256) || !validDigest(targetFingerprint) || typeof targetIdentity !== 'string') {
     throw refusal('A verified archive and planned target are required');
   }
   return nativeArchiveOperation('delete', {
     file: zipPath(archive.path), archiveSha256: archive.sha256, target: assertNarrowRoot(target),
-    targetIdentity, targetFingerprint, resume,
+    targetIdentity, targetFingerprint, resume, managedProofSha256,
   }, authorize);
 }

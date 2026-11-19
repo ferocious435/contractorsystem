@@ -95,7 +95,8 @@ export function artifactRoot({ home, repoRoots }, artifact) {
     return assertNarrowRoot(parent);
   }
   if (artifact.kind === 'build' && artifact.historicalSnapshot && isBuildName(name) &&
-      artifact.provenance?.buildId && pathKey(parent) === pathKey(artifact.root)) {
+      (artifact.provenance?.buildId || artifact.provenance?.managedFailure === true) &&
+      pathKey(parent) === pathKey(artifact.root)) {
     for (const tree of repoRoots) {
       const parts = relativeWithin(tree, parent)?.split(path.sep);
       if (parts?.length === 3 && parts[0] === '.superpowers' &&

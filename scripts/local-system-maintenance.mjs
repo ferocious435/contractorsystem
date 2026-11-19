@@ -3,9 +3,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { nativeArchiveOperation, readGuardedRecords } from './maintenance/archive.mjs';
-import { resolveMaintenanceHome, withMaintenanceLock } from './maintenance/guard.mjs';
-import { readInventory } from './maintenance/inventory.mjs';
-import { assertNarrowRoot, refusal } from './maintenance/policy.mjs';
+import { inheritedMaintenanceLease, resolveMaintenanceHome, withLifecycleLock } from './maintenance/guard.mjs';
+import { readInventory, updateTask } from './maintenance/inventory.mjs';
+import { closeManagedBuild, closeManagedCandidate } from './maintenance/lifecycle.mjs';
+import { assertNarrowRoot, pathKey, refusal } from './maintenance/policy.mjs';
 import { applyStorage, importLegacyEvidence, prepareStoragePlan, runStorageEvent } from './maintenance/storage.mjs';
 
 const execute = promisify(execFile);
@@ -15,6 +16,9 @@ const commands = {
   apply: ['--plan'],
   run: ['--event', '--task'],
   'import-legacy': ['--input'],
+  task: ['--input'],
+  'close-candidate': ['--task', '--release', '--result'],
+  'close-build': ['--task', '--source', '--result'],
 };
 
 function parseArgs(args) {
@@ -65,6 +69,7 @@ async function main(args) {
   const override = flags.get('--home');
   const home = await resolveMaintenanceHome({ explicitHome: override === undefined ? undefined : path.resolve(override) });
   const options = { home, repoRoots: await repoRoots(repos) };
+  const lease = inheritedMaintenanceLease();
   if (command === 'inspect') return readInventory(options);
   if (command === 'plan') {
     const destination = assertNarrowRoot(path.resolve(required('--output')));
@@ -76,22 +81,45 @@ async function main(args) {
   }
   if (command === 'apply') {
     const plan = await input(required('--plan'));
-    return withMaintenanceLock(home, command, lease => applyStorage(plan, { ...options, lease }));
+    return withLifecycleLock(home, command, lock => applyStorage(plan, { ...options, lease: lock }), lease);
   }
   if (command === 'import-legacy') {
     const index = await input(required('--input'));
-    return withMaintenanceLock(home, command, lease => importLegacyEvidence(index, { ...options, lease }));
+    return withLifecycleLock(home, command, lock => importLegacyEvidence(index, { ...options, lease: lock }), lease);
+  }
+  if (command === 'task') {
+    return withLifecycleLock(home, command, async lock => {
+      const record = await input(required('--input'));
+      await updateTask(home, lock, record);
+      return { task: record.id, status: record.status, pins: record.pins.length };
+    }, lease);
+  }
+  if (command === 'close-candidate') {
+    return withLifecycleLock(home, command, lock => closeManagedCandidate({
+      home, lease: lock, taskId: required('--task'), releaseId: required('--release'), result: required('--result'),
+    }), lease);
+  }
+  if (command === 'close-build') {
+    return withLifecycleLock(home, command, lock => closeManagedBuild({
+      home, lease: lock, taskId: required('--task'), source: path.resolve(required('--source')), result: required('--result'),
+    }), lease);
   }
   const event = required('--event');
   const task = required('--task');
-  return withMaintenanceLock(home, command + ':' + event, lease => runStorageEvent(event, task, { ...options, lease }));
+  return withLifecycleLock(home, command + ':' + event, lock => runStorageEvent(event, task, { ...options, lease: lock }), lease);
 }
 
-try {
-  const receipt = await main(process.argv.slice(2));
-  console.log(JSON.stringify(receipt, null, 2));
-  if (receipt.failed?.length) process.exitCode = 1;
-} catch (error) {
-  console.error(JSON.stringify({ code: error.code ?? 'FAILED', message: error.message }));
-  process.exitCode = error.code === 'BUSY' ? 2 : 1;
+export async function maintenanceMain(args = process.argv.slice(2)) {
+  try {
+    const receipt = await main(args);
+    console.log(JSON.stringify(receipt, null, 2));
+    if (receipt.failed?.length) process.exitCode = 1;
+  } catch (error) {
+    console.error(JSON.stringify({ code: error.code ?? 'FAILED', message: error.message }));
+    process.exitCode = error.code === 'BUSY' ? 2 : 1;
+  }
+}
+
+if (process.argv[1] && pathKey(path.resolve(process.argv[1])) === pathKey(fileURLToPath(import.meta.url))) {
+  await maintenanceMain();
 }

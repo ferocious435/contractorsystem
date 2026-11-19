@@ -10,6 +10,7 @@ import { windowsInspectionScript, windowsInspectionSource } from './windows-insp
 const windows = process.platform === 'win32';
 const execute = promisify(execFile);
 const heldLeases = new WeakSet();
+const borrowedLeases = new WeakSet();
 const failedAcquisitions = new Map();
 const recoveringLeases = new WeakSet();
 const busy = () => Object.assign(new Error('The maintenance lock is held or cannot be verified'), { code: 'BUSY' });
@@ -247,7 +248,7 @@ async function releaseLease(file, lease) {
 
 const idleGate = '{"version":1,"state":"idle"}';
 
-async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo } = {}) {
+async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo, timeout = 45000 } = {}) {
   const info = await fs.lstat(file).catch(error => {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -301,7 +302,7 @@ async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo 
     } finally {
       $stream.Dispose()
     }
-  `, { file, idle: idleGate, recoverOwn }, AbortSignal.timeout(45000));
+  `, { file, idle: idleGate, recoverOwn }, AbortSignal.timeout(timeout));
   let claimed = false;
   let sent = false;
   try {
@@ -391,9 +392,62 @@ export async function requireHeldLease(home, lease) {
     const actualHome = await resolveMaintenanceHome({ explicitHome: home });
     const file = path.join(actualHome, 'maintenance-state', 'maintenance.lock');
     if (pathKey(actualHome) !== pathKey(lease.home) || !sameLease(await readLease(file, actualHome), lease)) throw busy();
+    if (borrowedLeases.has(lease)) {
+      const [[parent], [child]] = await Promise.all([processSnapshot(lease.pid), processSnapshot(process.pid)]);
+      if (parent?.processStartedAt !== lease.processStartedAt || child?.parentPid !== lease.pid ||
+          !(Date.parse(child.processStartedAt) >= Date.parse(parent.processStartedAt))) throw busy();
+    }
     return actualHome;
   } catch {
     throw busy();
+  }
+}
+
+export async function withLifecycleLock(home, operation, run, existing) {
+  if (!existing) return withMaintenanceLock(home, operation, run);
+  if (heldLeases.has(existing)) {
+    await requireHeldLease(home, existing);
+    return run(existing);
+  }
+  const inherited = Object.freeze({ ...existing });
+  if (inherited.pid !== process.ppid || inherited.pid === process.pid) throw busy();
+  heldLeases.add(inherited);
+  borrowedLeases.add(inherited);
+  try {
+    await requireHeldLease(home, inherited);
+    return await run(inherited);
+  } finally {
+    heldLeases.delete(inherited);
+  }
+}
+
+export function inheritedMaintenanceLease() {
+  const raw = process.env.CONTRACTOR_MAINTENANCE_LEASE;
+  if (raw === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw busy();
+    return parsed;
+  } catch {
+    throw busy();
+  }
+}
+
+export async function withReservationGate(home, lease, run) {
+  home = await requireHeldLease(home, lease);
+  const [actual] = await processSnapshot(process.pid);
+  if (!actual?.processStartedAt) throw busy();
+  const owner = { home, token: randomUUID(), pid: process.pid, processStartedAt: actual.processStartedAt };
+  const gate = path.join(home, 'maintenance-state', 'reservation-gate');
+  let started = false;
+  try {
+    return await withAcquisitionGate(gate, owner, () => {
+      started = true;
+      return run();
+    }, { timeout: 45 * 60 * 1000 });
+  } catch (error) {
+    if (!started) throw busy();
+    throw error;
   }
 }
 

@@ -59,6 +59,7 @@ namespace ContractorStorage {
         }
 
         public sealed class Derivation {
+            public string managedProofSha256 { get; set; }
             public string proof { get; set; }
             public string target { get; set; }
             public string identity { get; set; }
@@ -88,6 +89,7 @@ namespace ContractorStorage {
             public string[] files { get; set; }
             public string[] directories { get; set; }
             public string skipDirectory { get; set; }
+            public string[] skipEntries { get; set; }
             public bool omitNodeModulesJunction { get; set; }
             public Dictionary<string, string> expectedFiles { get; set; }
         }
@@ -108,6 +110,8 @@ namespace ContractorStorage {
             public StateWrite[] writes { get; set; }
             public bool publicRequest { get; set; }
             public string publicationTarget { get; set; }
+            public Derivation generated { get; set; }
+            public string managedProofSha256 { get; set; }
         }
 
         public sealed class StateWrite {
@@ -295,6 +299,7 @@ namespace ContractorStorage {
                 var child = AddPrefix(relative, SafeName(name));
                 var file = Join(root, name);
                 if (relative.Length == 0 && name == group.skipDirectory) continue;
+                if (group.skipEntries != null && Array.IndexOf(group.skipEntries, child) >= 0) continue;
                 if (relative.Length == 0 && name == "node_modules" && group.omitNodeModulesJunction) {
                     var flags = (uint)File.GetAttributes(Guard.ExtendedPath(file));
                     if ((flags & ReparseFlag) != 0) {
@@ -489,6 +494,7 @@ namespace ContractorStorage {
                     entries = EffectiveEntries().Where(row => !row.directory).Select(row => new { row.path, row.size, row.sha256 }).ToArray(),
                     references = Manifest.references, omittedJunctions = Manifest.omittedJunctions,
                     generatedOmissions = Manifest.generated == null ? new List<Entry>() : Manifest.generated.entries,
+                    managedProofSha256 = Manifest.generated == null ? null : Manifest.generated.managedProofSha256,
                     rebuildBasis = Manifest.generated == null ? null : new { Manifest.generated.dependencies, Manifest.generated.runtime },
                     contentFingerprint = Fingerprint(Manifest.entries, ""),
                 };
@@ -673,8 +679,8 @@ namespace ContractorStorage {
                 var zip = stillStaged ? stage.Zip : previous;
                 Require(stage.SlotOwner(stage.Zip, zip) == metadataKey, conflict);
                 using (var verified = new Verified(zip, null, !baseline, stage.Metadata, directory)) {
-                    Require(verified.Manifest.generated == null &&
-                        Fingerprint(verified.EffectiveEntries(), baseline ? "" : "artifact") == manifest.publicationFingerprint, conflict);
+                    Require(Fingerprint(verified.EffectiveEntries(true), baseline ? "" : "artifact") ==
+                        manifest.publicationFingerprint, conflict);
                 }
                 if (stillStaged) MoveNew(stage.Zip, previous);
                 MoveNew(stage.Metadata, previous + ".manifest.json");
@@ -684,7 +690,11 @@ namespace ContractorStorage {
         }
 
         private static void CheckPublished(Request request, Verified verified) {
-            Require(verified.Manifest.generated == null, "This archive omits files without managed build provenance");
+            var generated = verified.Manifest.generated;
+            Require((generated == null && request.generated == null) ||
+                (generated != null && request.generated != null && IsHash(generated.managedProofSha256) &&
+                    generated.managedProofSha256 == request.generated.managedProofSha256),
+                "This archive omits files without managed build provenance");
             if (request.targetFingerprint != null) {
                 var root = request.operation == "publish-base" ? "" : "artifact";
                 Require(Fingerprint(verified.EffectiveEntries(true), root) == request.targetFingerprint, "scheduled-target-changed");
@@ -747,6 +757,10 @@ namespace ContractorStorage {
             var directory = Path.GetDirectoryName(destination);
             bool baseline = request.operation == "publish-base";
             var target = request.publicationTarget;
+            Require(request.generated == null || (!baseline && !request.publicRequest && target != null &&
+                request.generated.target == target && request.generated.identity == request.targetIdentity &&
+                IsHash(request.generated.managedProofSha256) && request.generated.entries != null &&
+                request.generated.entries.Count > 0), "Invalid managed build archive request");
             if (baseline) {
                 Require(!request.publicRequest && IsPublicationName(Path.GetFileName(destination), request.targetFingerprint, true) &&
                     request.groups != null && request.groups.Length == 1 && !string.IsNullOrEmpty(request.groups[0].source) &&
@@ -798,6 +812,7 @@ namespace ContractorStorage {
                             }));
                         }
                     }
+                    if (request.generated != null) effective.AddRange(request.generated.entries);
                     ValidateEntries(effective);
                     Require(Fingerprint(effective, "artifact") == request.targetFingerprint, "scheduled-target-changed");
                 }
@@ -805,6 +820,7 @@ namespace ContractorStorage {
                     format = "zip-v1", sha256 = digest, verifiedAt = DateTime.UtcNow.ToString("o"), entries = rows,
                     references = (request.references ?? new Reference[0]).ToList(),
                     omittedJunctions = (request.omittedJunctions ?? new string[0]).ToList(),
+                    generated = request.generated,
                     publicationFile = Path.GetFileName(destination),
                     publicationTarget = target,
                     publicationFingerprint = request.targetFingerprint,
@@ -940,7 +956,11 @@ namespace ContractorStorage {
 
         private static object Delete(Request request) {
             using (var archive = new Verified(request.file, request.archiveSha256, true)) {
-                Require(archive.Manifest.generated == null, "This archive omits files without managed build provenance");
+                var generated = archive.Manifest.generated;
+                Require(generated == null || (IsHash(request.managedProofSha256) &&
+                    generated.managedProofSha256 == request.managedProofSha256 &&
+                    Names.Equals(generated.target, request.target) && generated.identity == request.targetIdentity),
+                    "This archive omits files without managed build provenance");
                 using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
                     if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
                     return DeleteVerified(request, archive, transaction);
@@ -953,7 +973,7 @@ namespace ContractorStorage {
             // share mode alone protects only the primary stream. An uncommitted exit rolls back.
             using (var root = new HeldPath(request.target, true, true, transaction: transaction)) {
                 Require(Guard.Identity(root.Handle) == request.targetIdentity, "The target directory was replaced");
-                var rows = archive.EffectiveEntries().ToList();
+                var rows = archive.EffectiveEntries(true).ToList();
                 Require(Fingerprint(rows, "artifact") == request.targetFingerprint, "ZIP does not contain the scheduled target");
                 var expected = rows.Where(row => row.path == "artifact" || row.path.StartsWith("artifact/", StringComparison.Ordinal))
                     .ToDictionary(row => row.path, Names);
