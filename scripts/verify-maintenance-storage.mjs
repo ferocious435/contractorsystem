@@ -554,6 +554,72 @@ filesystemTest('foreign bytes in identity markers of a reserved stage are preser
   }
 });
 
+async function baselinePublicationFixture(t) {
+  const base = await directory(t);
+  const source = path.join(base, 'node_modules');
+  const file = path.join(source, 'package.js');
+  await write(file, 'original baseline bytes');
+  return {
+    base, file,
+    async request(expected) {
+      const { groups } = await catalogArchiveGroups([{ source }]);
+      const fingerprint = expected ?? (await measureArchiveTargets([source]))[0].fingerprint;
+      return { groups, destination: path.join(base, 'dependencies-' + fingerprint + '.zip'),
+        baseline: true, targetFingerprint: fingerprint };
+    },
+    slots: async () => (await fs.readdir(base)).filter(name => name.startsWith('.publication-')),
+  };
+}
+
+filesystemTest('two mismatching baseline fingerprints reserve at most one slot and write no ZIP payload', async t => {
+  const f = await baselinePublicationFixture(t);
+  for (const fingerprint of ['1'.repeat(64), '2'.repeat(64)]) {
+    await assert.rejects(publishEvidenceArchive(await f.request(fingerprint)), /baseline changed/i);
+  }
+  const slots = await f.slots();
+  assert.ok(slots.length <= 1, JSON.stringify(slots));
+  for (const slot of slots) await notFound(path.join(f.base, slot, 'archive.zip'));
+  assert.equal(await fs.readFile(f.file, 'utf8'), 'original baseline bytes');
+});
+
+filesystemTest('a changed baseline finishes an interrupted publication and reuses its original verified bytes', async t => {
+  const f = await baselinePublicationFixture(t);
+  const first = await f.request();
+  const saved = await publishEvidenceArchive(first);
+  const [slot] = await f.slots();
+  const staged = path.join(f.base, slot, 'archive.zip');
+  await fs.rename(first.destination + '.manifest.json', staged + '.manifest.json');
+  await write(f.file, 'new baseline bytes');
+  const next = await f.request();
+  assert.notEqual(next.targetFingerprint, first.targetFingerprint);
+  const changed = await publishEvidenceArchive(next);
+  assert.notEqual(changed.sha256, saved.sha256);
+  const reused = await publishEvidenceArchive(first);
+  assert.equal(reused.sha256, saved.sha256);
+  assert.deepEqual(await f.slots(), [slot]);
+  await notFound(staged);
+  const restored = path.join(f.base, 'restored');
+  await extractVerifiedArchive(reused.path, restored);
+  assert.equal(await fs.readFile(path.join(restored, 'package.js'), 'utf8'), 'original baseline bytes');
+  assert.equal(await fs.readFile(f.file, 'utf8'), 'new baseline bytes');
+});
+
+filesystemTest('a changed baseline preserves an unprovable interrupted ZIP without allocating a new slot', async t => {
+  const f = await baselinePublicationFixture(t);
+  const first = await f.request();
+  await publishEvidenceArchive(first);
+  const [slot] = await f.slots();
+  const staged = path.join(f.base, slot, 'archive.zip');
+  await fs.rename(first.destination, staged);
+  await fs.unlink(first.destination + '.manifest.json');
+  await fs.truncate(staged, 17);
+  const bytes = await fs.readFile(staged);
+  await write(f.file, 'new baseline bytes');
+  await assert.rejects(publishEvidenceArchive(await f.request()), /previous unfinished publication/i);
+  assert.deepEqual(await f.slots(), [slot]);
+  assert.deepEqual(await fs.readFile(staged), bytes);
+});
+
 filesystemTest('archiveRejectsTraversalAndDuplicates in input and external ZIP entries', async t => {
   const base = await directory(t);
   const source = path.join(base, 'source');

@@ -648,6 +648,12 @@ namespace ContractorStorage {
             return filename != null && Regex.IsMatch(filename, @"\A[a-f0-9]{64}\.zip\z");
         }
 
+        private static bool IsPublicationName(string filename, string fingerprint, bool baseline) {
+            return IsHash(fingerprint) && (baseline
+                ? filename == "dependencies-" + fingerprint + ".zip"
+                : IsTargetArchiveName(filename));
+        }
+
         private static void FinishPreviousPublication(Request request, Publication stage, string directory) {
             var requested = PublicationKey(request.destination);
             var zipKey = stage.SlotOwner(stage.Zip);
@@ -656,18 +662,19 @@ namespace ContractorStorage {
             const string conflict = "A previous unfinished publication must be preserved";
             Require(metadataKey != null && metadataKey != requested, conflict);
             try {
+                bool baseline = request.operation == "publish-base";
                 var manifest = ReadStagedManifest(stage);
                 Require(manifest != null && Names.Equals(manifest.publicationTarget, request.publicationTarget) &&
-                    IsTargetArchiveName(manifest.publicationFile) && IsHash(manifest.publicationFingerprint), conflict);
+                    IsPublicationName(manifest.publicationFile, manifest.publicationFingerprint, baseline), conflict);
                 var previous = Join(directory, manifest.publicationFile);
                 Require(PublicationKey(previous) == metadataKey && !Present(previous + ".manifest.json"), conflict);
                 var stillStaged = Present(stage.Zip);
                 Require(stillStaged != Present(previous), conflict);
                 var zip = stillStaged ? stage.Zip : previous;
                 Require(stage.SlotOwner(stage.Zip, zip) == metadataKey, conflict);
-                using (var verified = new Verified(zip, null, true, stage.Metadata, directory)) {
+                using (var verified = new Verified(zip, null, !baseline, stage.Metadata, directory)) {
                     Require(verified.Manifest.generated == null &&
-                        Fingerprint(verified.EffectiveEntries(), "artifact") == manifest.publicationFingerprint, conflict);
+                        Fingerprint(verified.EffectiveEntries(), baseline ? "" : "artifact") == manifest.publicationFingerprint, conflict);
                 }
                 if (stillStaged) MoveNew(stage.Zip, previous);
                 MoveNew(stage.Metadata, previous + ".manifest.json");
@@ -702,26 +709,27 @@ namespace ContractorStorage {
         }
 
         private static bool ResumePublication(Request request, Publication stage, string directory, string destination) {
+            bool permitReferences = request.operation != "publish-base";
             bool publishedZip = Present(destination);
             bool publishedManifest = Present(destination + ".manifest.json");
             if (publishedManifest) {
                 Require(publishedZip, "The published archive is missing its ZIP");
                 Require(!request.publicRequest, "The archive destination is already published");
-                using (var verified = new Verified(destination, null, true)) CheckPublished(request, verified);
+                using (var verified = new Verified(destination, null, permitReferences)) CheckPublished(request, verified);
                 return true;
             }
             if (publishedZip) {
                 Require(Present(stage.Metadata) && !Present(stage.Zip), "The published ZIP has no unique staged manifest");
                 Require(stage.SlotOwner(stage.Zip, destination) == PublicationKey(destination),
                     "The ZIP is not owned by this publication");
-                using (var verified = new Verified(destination, null, true, stage.Metadata, directory)) CheckPublished(request, verified);
+                using (var verified = new Verified(destination, null, permitReferences, stage.Metadata, directory)) CheckPublished(request, verified);
                 MoveNew(stage.Metadata, destination + ".manifest.json");
                 return true;
             }
             if (!Present(stage.Zip) || !Present(stage.Metadata)) return false;
             Verified staged;
             try {
-                staged = new Verified(stage.Zip, null, true, stage.Metadata, directory);
+                staged = new Verified(stage.Zip, null, permitReferences, stage.Metadata, directory);
             } catch (Exception error) {
                 // Without a published ZIP, only reinitialize these two confirmed service files.
                 if (!(error is IOException || error is InvalidDataException || error is InvalidOperationException ||
@@ -737,10 +745,17 @@ namespace ContractorStorage {
         private static string Publish(Request request) {
             var destination = request.destination;
             var directory = Path.GetDirectoryName(destination);
+            bool baseline = request.operation == "publish-base";
             var target = request.publicationTarget;
-            if (target != null)
-                Require(request.operation == "publish" && !request.publicRequest && IsHash(request.targetFingerprint) &&
-                    IsTargetArchiveName(Path.GetFileName(destination)) && request.groups.Length > 0 &&
+            if (baseline) {
+                Require(!request.publicRequest && IsPublicationName(Path.GetFileName(destination), request.targetFingerprint, true) &&
+                    request.groups != null && request.groups.Length == 1 && !string.IsNullOrEmpty(request.groups[0].source) &&
+                    string.IsNullOrEmpty(request.groups[0].prefix) && (request.references ?? new Reference[0]).Length == 0 &&
+                    (target == null || Names.Equals(target, request.groups[0].source)), "Invalid dependency publication scope");
+                request.publicationTarget = target = request.groups[0].source;
+            } else if (target != null)
+                Require(request.operation == "publish" && !request.publicRequest &&
+                    IsPublicationName(Path.GetFileName(destination), request.targetFingerprint, false) && request.groups.Length > 0 &&
                     request.groups[0].prefix == "artifact" && Names.Equals(request.groups[0].source, target),
                     "Invalid target publication scope");
             using (var parent = new HeldPath(directory, true, shareWrite: true))
@@ -749,8 +764,11 @@ namespace ContractorStorage {
                 if (ResumePublication(request, staging, directory, destination)) return destination;
                 if (target != null) {
                     var live = Guard.Inspect(target);
-                    Require(live.Fingerprint == request.targetFingerprint && live.Identity == request.targetIdentity,
-                        "scheduled-target-changed");
+                    if (baseline)
+                        Require(live.Fingerprint == request.targetFingerprint, "The baseline changed before archiving");
+                    else
+                        Require(live.Fingerprint == request.targetFingerprint && live.Identity == request.targetIdentity,
+                            "scheduled-target-changed");
                 }
                 var rows = new List<Entry>();
                 string digest;
@@ -766,7 +784,7 @@ namespace ContractorStorage {
                     stream.Position = 0;
                     digest = CopyHash(stream, Stream.Null, stream.Length);
                 }
-                if (request.operation == "publish-base")
+                if (baseline)
                     Require(Fingerprint(rows, "") == request.targetFingerprint, "The baseline changed while archiving");
                 else if (request.targetFingerprint != null) {
                     var effective = new List<Entry>(rows);

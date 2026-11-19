@@ -96,9 +96,10 @@ export async function catalogArchiveGroups(groups) {
 export async function publishEvidenceArchive({
   groups, destination, references, omittedJunctions, baseline = false, targetFingerprint, targetIdentity, publicationTarget,
 }) {
+  const source = publicationTarget ?? (baseline ? groups?.[0]?.source : undefined);
   return nativeArchiveOperation(baseline ? 'publish-base' : 'publish', {
     groups, destination: zipPath(destination), references, omittedJunctions, targetFingerprint, targetIdentity,
-    publicationTarget: publicationTarget === undefined ? undefined : assertNarrowRoot(publicationTarget),
+    publicationTarget: source === undefined ? undefined : assertNarrowRoot(source),
   });
 }
 
