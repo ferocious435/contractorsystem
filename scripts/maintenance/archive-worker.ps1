@@ -116,6 +116,10 @@ namespace ContractorStorage {
             public string publicationTarget { get; set; }
             public Derivation generated { get; set; }
             public string managedProofSha256 { get; set; }
+            public Entry[] ownedEntries { get; set; }
+            public string outputTarget { get; set; }
+            public string outputIdentity { get; set; }
+            public string proofData { get; set; }
         }
 
         public sealed class StateWrite {
@@ -258,6 +262,7 @@ namespace ContractorStorage {
                 "Expected a plain, bounded metadata file");
             using (var reader = Reader(handle))
             using (var buffer = new MemoryStream()) {
+                reader.Position = 0;
                 CopyHash(reader, buffer, info.Length);
                 Guard.RequireUnchanged(info, handle);
                 return buffer.ToArray();
@@ -511,7 +516,7 @@ namespace ContractorStorage {
 
             public object Receipt(string file) {
                 return new {
-                    format = "zip-v1", path = file, sha256 = Manifest.sha256, verifiedAt = Manifest.verifiedAt,
+                    format = "zip-v1", path = file, sha256 = Manifest.sha256, metadataSha256 = MetadataSha256(), verifiedAt = Manifest.verifiedAt,
                     entries = EffectiveEntries().Where(row => !row.directory).Select(row => new { row.path, row.size, row.sha256 }).ToArray(),
                     references = Manifest.references, omittedJunctions = Manifest.omittedJunctions,
                     generatedOmissions = Manifest.generated == null ? new List<Entry>() : Manifest.generated.entries,
@@ -876,23 +881,35 @@ namespace ContractorStorage {
             foreach (var pair in verified.Bases) Unpack(pair.Value, destination, AddPrefix(prefix, pair.Key.prefix));
         }
 
-        private static object Extract(string file, string destination) {
-            using (var verified = new Verified(file, null, true))
-            using (var parent = new HeldPath(Path.GetDirectoryName(destination), true)) {
-                CreateDirectory(destination);
-                using (var owned = new HeldPath(destination, true)) {
+        private static object Extract(Request request) {
+            string file = request.file, destination = request.destination;
+            using (var owner = request.target == null ? null : new HeldPath(request.target, true)) {
+                if (owner != null) Require(Guard.Identity(owner.Handle) == request.targetIdentity &&
+                    Names.Equals(Path.GetDirectoryName(destination), request.target) && Path.GetFileName(destination) == "input",
+                    "Restore extraction slot changed");
+                using (var verified = new Verified(file, null, true))
+                using (var parent = new HeldPath(Path.GetDirectoryName(destination), true)) {
+                    CreateDirectory(destination);
                     var dirs = new SortedSet<string>(StringComparer.Ordinal);
-                    foreach (var row in verified.EffectiveEntries()) {
-                        string parentName = row.directory ? row.path : ParentName(row.path);
-                        while (parentName.Length > 0 && dirs.Add(parentName)) parentName = ParentName(parentName);
+                    using (var owned = new HeldPath(destination, true)) {
+                        foreach (var row in verified.EffectiveEntries()) {
+                            string name = row.directory ? row.path : ParentName(row.path);
+                            while (name.Length > 0 && dirs.Add(name)) name = ParentName(name);
+                        }
+                        foreach (var dir in dirs) {
+                            var output = Join(destination, dir);
+                            using (var ancestors = new HeldPath(Path.GetDirectoryName(output), true)) CreateDirectory(output);
+                        }
+                        Unpack(verified, destination, "");
                     }
-                    foreach (var dir in dirs) {
-                        var output = Join(destination, dir);
-                        using (var ancestors = new HeldPath(Path.GetDirectoryName(output), true)) CreateDirectory(output);
-                    }
-                    Unpack(verified, destination, "");
+                    if (owner == null) return verified.Receipt(file);
+                    var ledger = new List<Entry> { Folder("input") };
+                    ledger.AddRange(dirs.Select(dir => Folder("input/" + dir)));
+                    ledger.AddRange(verified.EffectiveEntries().Where(row => !row.directory).Select(row => new Entry {
+                        path = "input/" + row.path, size = row.size, sha256 = row.sha256, directory = false,
+                    }));
+                    return new { archive = verified.Receipt(file), ownedEntries = ledger };
                 }
-                return verified.Receipt(file);
             }
         }
 
@@ -1043,41 +1060,48 @@ namespace ContractorStorage {
             }
         }
 
-        // Only an exact create-only restore scratch slot; transactional handles reject
-        // links, replacements, added/changed bytes and roll back interrupted deletion.
-        private static Entry GatherScratch(string file, string name, SafeFileHandle handle,
-            List<DeletionEntry> held, SafeFileHandle transaction) {
-            var before = Guard.ReadInfo(handle);
-            bool directory = (before.Attributes & DirectoryFlag) != 0;
-            var row = directory ? Folder(name) : PlainFile(name, handle, Stream.Null);
-            if (directory) {
-                foreach (var child in Children(file)) {
-                    CheckCleanupName(child);
-                    var next = Join(file, SafeName(child));
-                    var opened = Guard.OpenPlain(next, false, true, transaction: transaction);
-                    var retained = new DeletionEntry { Handle = opened };
-                    held.Add(retained);
-                    retained.Row = GatherScratch(next, AddPrefix(name, child), opened, held, transaction);
-                }
-                Guard.RequireUnchanged(before, handle);
+        private static void RequireRestoreSlot(string target) {
+            Require(Regex.IsMatch(Path.GetFileName(target), @"\Arestore-[a-f0-9-]{36}\z") &&
+                Names.Equals(Path.GetFileName(Path.GetDirectoryName(target)), "restore-scratch") &&
+                Names.Equals(Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(target))), "maintenance-state"),
+                "Only an exact restore scratch slot is allowed");
+        }
+        private static object CreateRestoreScratch(Request request) {
+            RequireRestoreSlot(request.target);
+            Require(Names.Equals(Path.GetDirectoryName(request.target), request.destination), "Wrong restore parent");
+            using (var parent = new HeldPath(request.destination, true)) {
+                CreateDirectory(request.target);
+                using (var owned = new HeldPath(request.target, true)) return new { identity = Guard.Identity(owned.Handle) };
             }
-            return row;
+        }
+        private static object CreateRestoreObjects(Request request) {
+            RequireRestoreSlot(request.target);
+            using (var owned = new HeldPath(request.target, true)) {
+                Require(Guard.Identity(owned.Handle) == request.targetIdentity, "Restore scratch was replaced");
+                CreateDirectory(Join(request.target, "objects"));
+                return new { created = true };
+            }
+        }
+        private static Dictionary<string, Entry> OwnedEntries(Entry[] rows) {
+            Require(rows != null && rows.Length > 0 && rows.Any(row => row.path == "artifact" && row.directory) &&
+                rows.All(row => row.path == "artifact" || row.path.StartsWith("artifact/", StringComparison.Ordinal)),
+                "An original owned manifest is required");
+            ValidateEntries(rows);
+            return rows.ToDictionary(row => row.path, Names);
         }
         private static object DeleteRestoreScratch(Request request) {
-            Require(Names.Equals(Path.GetDirectoryName(request.target), request.destination) &&
-                Names.Equals(Path.GetFileName(request.destination), "restore-scratch") &&
-                Names.Equals(Path.GetFileName(Path.GetDirectoryName(request.destination)), "maintenance-state") &&
-                Regex.IsMatch(Path.GetFileName(request.target), @"\Arestore-[a-f0-9-]{36}\z") &&
-                IsHash(request.targetFingerprint), "Only an owned restore scratch slot may be deleted");
+            RequireRestoreSlot(request.target);
+            Require(Names.Equals(Path.GetDirectoryName(request.target), request.destination), "Wrong restore parent");
+            var expected = OwnedEntries(request.ownedEntries);
+            var fingerprint = Fingerprint(request.ownedEntries, "artifact");
             using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
                 if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
                 using (var root = new HeldPath(request.target, true, true, transaction: transaction)) {
                     Require(Guard.Identity(root.Handle) == request.targetIdentity, "Owned scratch was replaced");
                     var held = new List<DeletionEntry>();
                     try {
-                        var folder = GatherScratch(request.target, "artifact", root.Handle, held, transaction);
-                        Require(Fingerprint(new[] { folder }.Concat(held.Select(x => x.Row)), "artifact") == request.targetFingerprint,
-                            "Owned scratch changed before cleanup");
+                        GatherDeletion(request.target, "artifact", root.Handle, expected, held, transaction);
+                        Require(expected.Count == 0, "Owned scratch lost expected entries");
                         Console.WriteLine(@"{""ready"":true,""phase"":""stage""}");
                         if (Console.ReadLine() != "delete") return new { status = "skipped" };
                         long bytes = held.Where(x => !x.Row.directory).Sum(x => x.Row.size);
@@ -1088,7 +1112,7 @@ namespace ContractorStorage {
                         if (Console.ReadLine() != "delete") return new { status = "skipped" };
                         if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastWin32Error());
                         Require(!Present(request.target), "Owned scratch removal is unverified");
-                        return new { status = "completed", deletedBytes = bytes };
+                        return new { status = "completed", deletedBytes = bytes, fingerprint };
                     } finally { foreach (var item in held) item.Dispose(); }
                 }
             }
@@ -1134,14 +1158,144 @@ namespace ContractorStorage {
                 Names.Equals(Path.GetFileName(Path.GetDirectoryName(slot)), "restore-scratch") &&
                 Regex.IsMatch(Path.GetFileName(request.destination), @"\A[a-f0-9]{64}\z") && IsHash(request.archiveSha256),
                 "Only a new object in an owned restore slot can be written");
+            RequireRestoreSlot(request.target);
+            using (var owned = new HeldPath(request.target, true))
             using (var input = new HeldPath(request.file, false))
-            using (var parent = new HeldPath(objects, true))
-            using (var output = Create(request.destination)) {
+            using (var parent = new HeldPath(objects, true)) {
+                Require(Names.Equals(slot, request.target) && Guard.Identity(owned.Handle) == request.targetIdentity, "Restore object target changed");
+                using (var output = Create(request.destination)) {
                 var copied = PlainFile("object", input.Handle, output);
                 Require(copied.sha256 == request.archiveSha256, "Restored object differs");
                 output.Flush(true); output.Position = 0;
                 Require(CopyHash(output, Stream.Null, copied.size) == request.archiveSha256, "Reread restored object differs");
                 return new { bytes = copied.size, sha256 = copied.sha256 };
+                }
+            }
+        }
+
+        private static object StreamBackup(Request request) {
+            Require(IsHash(request.archiveSha256) && request.maximumBytes >= 1 && request.maximumBytes <= 65536, "Invalid backup stream");
+            using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                using (var held = new HeldPath(request.file, false, true, transaction: transaction)) {
+                    var before = Guard.ReadInfo(held.Handle);
+                    Require(PlainFile("table", held.Handle, Stream.Null).sha256 == request.archiveSha256, "Backup stream source changed");
+                    Console.WriteLine(@"{""phase"":""read""}");
+                    using (var input = Reader(held.Handle))
+                    using (var digest = SHA256.Create()) {
+                        input.Position = 0; long total = 0; var chunk = new byte[(int)request.maximumBytes];
+                        for (;;) {
+                            Require(Console.ReadLine() == "next", "Backup stream was interrupted");
+                            int count = input.Read(chunk, 0, chunk.Length); if (count == 0) break;
+                            digest.TransformBlock(chunk, 0, count, chunk, 0); total = checked(total + count);
+                            Console.WriteLine(Json.Serialize(new { chunk = Convert.ToBase64String(chunk, 0, count) }));
+                        }
+                        digest.TransformFinalBlock(new byte[0], 0, 0);
+                        Guard.RequireUnchanged(before, held.Handle);
+                        Require(total == before.Length && Hex(digest.Hash) == request.archiveSha256, "Backup stream bytes changed");
+                        return new { bytes = total, sha256 = Hex(digest.Hash) };
+                    }
+                }
+            }
+        }
+
+        private static string CreateProofFile(string file, byte[] data, string expectedHash) {
+            using (var created = Create(file)) {
+                created.Write(data, 0, data.Length); created.Flush(true); created.Position = 0;
+                Require(CopyHash(created, Stream.Null, data.Length) == expectedHash, "Proof create echo changed");
+                return Guard.Identity(created.SafeFileHandle);
+            }
+        }
+
+        // Evidence is immutable, while its sibling backup-index must still be
+        // atomically renamed. Pin each plain directory without share-delete;
+        // share-write is only for these state directories, never the leaf.
+        private sealed class HeldEvidence : IDisposable {
+            private HeldPath home;
+            private readonly Stack<SafeFileHandle> chain = new Stack<SafeFileHandle>();
+            public SafeFileHandle Handle { get { return chain.Peek(); } }
+            public HeldEvidence(string root, string file, SafeFileHandle transaction, byte[] data, string expectedHash) {
+                try {
+                    home = new HeldPath(root, true);
+                    var state = Join(root, "maintenance-state");
+                    var directory = Join(state, "restore-evidence");
+                    Require(Names.Equals(Path.GetDirectoryName(file), directory), "Invalid evidence parent");
+                    chain.Push(Guard.OpenPlain(state, true, shareWrite: true));
+                    chain.Push(Guard.OpenPlain(directory, true, shareWrite: true));
+                    var originalIdentity = CreateProofFile(file, data, expectedHash);
+                    chain.Push(Guard.OpenPlain(file, false, true, transaction: transaction));
+                    Require(Names.Equals(Guard.CanonicalPath(Handle), file) && Guard.Identity(Handle) == originalIdentity &&
+                        PlainFile("proof", Handle, Stream.Null).sha256 == expectedHash, "Evidence identity or bytes changed");
+                } catch { Dispose(); throw; }
+            }
+            public void Dispose() { Guard.ClosePath(chain); if (home != null) home.Dispose(); }
+        }
+
+        private static object HoldRestorePublication(Request request) {
+            Require(request.proofData != null && request.writes != null, "A trusted proof write is required");
+            var data = Utf8.GetBytes(request.proofData); string proofHash;
+            using (var digest = SHA256.Create()) proofHash = Hex(digest.ComputeHash(data));
+            if (request.file != null) {
+                Require(Regex.IsMatch(request.destination ?? "", @"\Apoint-[a-f0-9-]{36}\z") &&
+                    Names.Equals(request.file, Join(Join(Join(request.target, "backups"), "archives"), request.destination + ".zip")) &&
+                    IsHash(request.archiveSha256) && IsHash(request.targetFingerprint) && IsHash(request.archiveMetadataSha256), "Invalid managed restore source");
+            } else Require(request.outputTarget != null && request.writes.Length == 0, "An unmanaged proof requires explicit output");
+            using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                Verified source = null; HeldPath output = null;
+                var heldOutput = new List<DeletionEntry>(); var proofs = new List<SafeFileHandle>(); var proofOwners = new List<IDisposable>();
+                bool committed = false;
+                try {
+                    if (request.file != null) {
+                        source = new Verified(request.file, request.archiveSha256, false, transaction: transaction);
+                        Require(source.Manifest.generated == null && source.Bases.Count == 0 &&
+                            source.MetadataSha256() == request.archiveMetadataSha256 &&
+                            Fingerprint(source.Manifest.entries, "") == request.targetFingerprint, "The exact restore archive pair changed");
+                    }
+                    if (request.outputTarget != null) {
+                        output = new HeldPath(request.outputTarget, true);
+                        Require(Guard.Identity(output.Handle) == request.outputIdentity, "Explicit restore output was replaced");
+                        var expected = OwnedEntries(request.ownedEntries);
+                        GatherDeletion(request.outputTarget, "artifact", output.Handle, expected, heldOutput, transaction);
+                        Require(expected.Count == 0, "Explicit restore output lost expected files");
+                    }
+                    Console.WriteLine(@"{""ready"":true,""phase"":""publish""}");
+                    if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                    if (request.outputTarget != null) {
+                        var file = Join(request.outputTarget, "recovery-proof.json");
+                        var originalIdentity = CreateProofFile(file, data, proofHash);
+                        var proof = new HeldPath(file, false, true, transaction: transaction);
+                        try {
+                            Require(Guard.Identity(proof.Handle) == originalIdentity &&
+                                PlainFile("proof", proof.Handle, Stream.Null).sha256 == proofHash, "Explicit proof identity or echo changed");
+                            proofs.Add(proof.Handle); proofOwners.Add(proof);
+                        } catch { proof.Dispose(); throw; }
+                    }
+                    HeldEvidence evidence = null;
+                    if (request.writes.Length != 0) {
+                        Require(request.file != null && request.writes.Length == 1, "Only one managed proof is allowed");
+                        var write = request.writes[0];
+                        Require(!write.overwrite && write.data == request.proofData &&
+                            Names.Equals(Path.GetDirectoryName(write.path), Join(Join(request.target, "maintenance-state"), "restore-evidence")) &&
+                            Regex.IsMatch(Path.GetFileName(write.path), @"\A[a-f0-9-]{36}\.json\z"), "Invalid immutable evidence slot");
+                        evidence = new HeldEvidence(request.target, write.path, transaction, data, proofHash); proofs.Add(evidence.Handle); proofOwners.Add(evidence);
+                        Require(PlainFile("proof", evidence.Handle, Stream.Null).sha256 == proofHash, "Managed proof echo changed");
+                    }
+                    Console.WriteLine(Json.Serialize(new { ready = true, phase = "commit", proofSha256 = proofHash,
+                        evidence = evidence == null ? null : Convert.ToBase64String(ReadSmall(evidence.Handle)), evidenceSha256 = evidence == null ? null : proofHash }));
+                    if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                    committed = true;
+                    return new { status = "completed", proofSha256 = proofHash };
+                } finally {
+                    // Unpublished new proof files are owned handles, never inferred paths.
+                    if (!committed && proofs.Count != 0) {
+                        foreach (var proof in proofs) MarkDelete(proof);
+                        if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    }
+                    foreach (var owner in proofOwners) owner.Dispose();
+                    foreach (var item in heldOutput) item.Dispose();
+                    if (output != null) output.Dispose(); if (source != null) source.Dispose();
+                }
             }
         }
 
@@ -1380,7 +1534,19 @@ namespace ContractorStorage {
                     using (var verified = new Verified(request.file, request.archiveSha256, true)) result = verified.Receipt(request.file);
                     break;
                 case "extract":
-                    result = Extract(request.file, request.destination);
+                    result = Extract(request);
+                    break;
+                case "backup-stream":
+                    result = StreamBackup(request);
+                    break;
+                case "restore-scratch-create":
+                    result = CreateRestoreScratch(request);
+                    break;
+                case "restore-scratch-objects":
+                    result = CreateRestoreObjects(request);
+                    break;
+                case "restore-publication":
+                    result = HoldRestorePublication(request);
                     break;
                 case "restore-output":
                     result = ExportRestoreOutput(request);

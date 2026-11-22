@@ -21,6 +21,7 @@ import { runLifecycle } from './maintenance/storage.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const day = '2026-06-08T10:00:00.000Z';
+const exactSources=point=>({sourceArchiveSha256:point.archive.sha256,sourceArchiveFingerprint:point.archive.contentFingerprint,sourceSidecarSha256:point.archive.metadataSha256});
 const schema = { tables: [{ schema: 'public', name: 'items', constraints: [{ type: 'p', definition: 'PRIMARY KEY (id)' }] }] };
 const schemaBytes = Buffer.from(JSON.stringify(schema));
 function client({ rows = [{ id: 'one', value: 1 }], object = 'abc', fail = false, drift = false,
@@ -132,7 +133,8 @@ test('old arbitrary restore receipts cannot authorize rotation', () => {
   assert.equal(rotationEvidenceMatches({ passed: true, at: day }, point, day), false);
   const exact = { id: 'point-' + randomUUID(), contentFingerprint: hash('data'), schemaHash: hash('schema'),
     format: 'backup-v2+zip-v1', archive: { format: 'zip-v1' }, counts: { tables: 1, objects: 1 } };
-  const proof = { version: 1, status: 'passed', passed: true, at: day, backupId: exact.id,
+  exact.archive={...exact.archive,path:path.join(os.tmpdir(),'synthetic-home','backups','archives',exact.id+'.zip'),sha256:hash('zip'),contentFingerprint:hash('entries'),metadataSha256:hash('sidecar')};
+  const proof = { ...exactSources(exact),version: 1, status: 'passed', passed: true, at: day, backupId: exact.id,
     backupFingerprint: exact.contentFingerprint, schemaHash: exact.schemaHash, format: exact.format,
     counts: exact.counts, checks: { tables: true, storage: true, schema: true, permissions: true } };
   assert.equal(rotationEvidenceMatches(proof, exact, day), true);
@@ -167,7 +169,7 @@ test('unchangedDataDoesNotCreateCopy and mandatory preliminary point reuses veri
     assert.equal(preliminaryAlias.reason, 'before-schema-change');
     assert.deepEqual(preliminaryAlias.provenance, { synthetic: true });
     assert.equal(preliminaryAlias.verifiedReference, original.id);
-    assert.deepEqual(Object.keys(original.archive).sort(), ['contentFingerprint', 'format', 'path', 'sha256', 'verifiedAt']);
+    assert.deepEqual(Object.keys(original.archive).sort(), ['contentFingerprint', 'format', 'metadataSha256', 'path', 'sha256', 'verifiedAt']);
     for (let n = 1; n <= 6; n++) {
       const id = 'point-' + randomUUID(), archivePath = path.join(home, 'backups', 'archives', id + '.zip');
       await fs.copyFile(original.archive.path, archivePath);
@@ -176,7 +178,7 @@ test('unchangedDataDoesNotCreateCopy and mandatory preliminary point reuses veri
         at: '2026-06-0' + n + 'T10:00:00.000Z', archive: { ...original.archive, path: archivePath } };
       oldPoints.push(prior); index.points.push(prior);
     }
-    const proof = { version: 1, status: 'passed', passed: true, at: '2026-06-09T11:00:00.000Z', backupId: original.id,
+    const proof = { ...exactSources(original),version: 1, status: 'passed', passed: true, at: '2026-06-09T11:00:00.000Z', backupId: original.id,
       backupFingerprint: original.contentFingerprint, schemaHash: original.schemaHash, format: original.format,
       counts: original.counts, checks: { tables: true, storage: true, schema: true, permissions: true } };
     const evidencePath = path.join(home, 'maintenance-state', 'restore-evidence', 'synthetic.json');

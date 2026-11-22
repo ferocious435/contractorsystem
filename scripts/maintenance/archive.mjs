@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -38,13 +39,13 @@ export async function nativeArchiveOperation(operation, payload, authorize, comm
     let response = await lines.next();
     while (!response.done && JSON.parse(response.value)?.ready === true) {
       if (!authorize) throw refusal('Unexpected native authorization request');
-      const { phase } = JSON.parse(response.value);
+      const message = JSON.parse(response.value), { phase } = message;
       if (phase === 'commit' && commitScope) return await commitScope(async () => {
-        const authorized = await authorize(phase);
+        const authorized = await authorize(phase, message);
         child.stdin.write(authorized ? 'delete\n' : 'skip\n');
         return finish(await lines.next());
       });
-      const authorized = await authorize(phase);
+      const authorized = await authorize(phase, message);
       child.stdin.write(authorized ? 'delete\n' : 'skip\n');
       response = await lines.next();
     }
@@ -129,8 +130,9 @@ export async function verifyArchive(file) {
   return nativeArchiveOperation('verify', { file: zipPath(file) });
 }
 
-export async function extractVerifiedArchive(file, destination) {
-  return nativeArchiveOperation('extract', { file: zipPath(file), destination: assertNarrowRoot(destination) });
+export async function extractVerifiedArchive(file, destination, owner = {}) {
+  const result=await nativeArchiveOperation('extract', {file:zipPath(file),destination:assertNarrowRoot(destination),target:owner.target,targetIdentity:owner.targetIdentity});
+  return result.archive?{...result.archive,ownedEntries:result.ownedEntries}:result;
 }
 
 export async function readGuardedRecords(files, pinnedTarget = null) {
@@ -167,4 +169,34 @@ export async function deleteArchivedTarget({ archive, target, targetFingerprint,
     file: zipPath(archive.path), archiveSha256: archive.sha256, target: assertNarrowRoot(target),
     targetIdentity, targetFingerprint, resume, managedProofSha256,
   }, authorize, commitScope);
+}
+// Guarded streaming read. The native process holds the source (including all
+// streams) until the final hash. Only a chunk, never the whole table, is JSON/base64.
+export async function readGuardedBackupFile(file, expectedSha256, { chunkBytes = 65536 } = {}) {
+  if (!validDigest(expectedSha256) || !Number.isInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > 65536 || process.platform !== 'win32') throw refusal('Invalid guarded backup stream');
+  const system = absolutePath(process.env.SystemRoot || 'C:\\Windows');
+  const child = spawn(path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', workerFile],
+    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], signal: AbortSignal.timeout(40 * 60 * 1000) });
+  child.on('error', () => {}); child.stdin.on('error', () => {}); child.stderr.resume();
+  const done = new Promise(resolve => child.once('close', resolve));
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  child.stdin.write(JSON.stringify(windowsInspectionSource) + '\n' + JSON.stringify({ operation: 'backup-stream', file: absolutePath(file), archiveSha256: expectedSha256, maximumBytes: chunkBytes }) + '\n');
+  const chunks = [], digest=createHash('sha256'); let bytes = 0, result;
+  try {
+    const first = await lines.next();
+    if (first.done || JSON.parse(first.value).phase !== 'read') throw refusal('Backup source stream cannot be held safely');
+    child.stdin.write('next\n');
+    for (;;) {
+      const row = await lines.next(); if (row.done) throw refusal('Backup stream ended early');
+      const value = JSON.parse(row.value);
+      if (typeof value.chunk !== 'string') { result = value; break; }
+      const chunk = Buffer.from(value.chunk, 'base64');
+      if (!chunk.length || chunk.length > chunkBytes) throw refusal('Backup stream chunk exceeds its bound');
+      chunks.push(chunk); digest.update(chunk); bytes += chunk.length; child.stdin.write('next\n');
+    }
+    child.stdin.end();
+    if (!(await lines.next()).done || await done !== 0 || result.sha256 !== expectedSha256 || result.bytes !== bytes || digest.digest('hex')!==expectedSha256) throw refusal('Backup stream did not finish with the expected bytes');
+    return Buffer.concat(chunks, bytes);
+  } finally { child.stdin.end(); await done; }
 }

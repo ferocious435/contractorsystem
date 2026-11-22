@@ -121,8 +121,13 @@ export async function verifyBackupBytes(input) {
 
 // B2 must persist exact byte-backed restore evidence. A status-only/legacy proof
 // never enables deletion, nor does a proof for an older schema or different point.
-export function rotationEvidenceMatches(proof, point, now) {
-  return Boolean(point?.archive?.format === 'zip-v1' && proof?.version === 1 && proof.passed === true && proof.status === 'passed' &&
+export function rotationEvidenceMatches(proof, point, now, home) {
+  let slot=false;
+  try{const file=absolutePath(point.archive.path),root=home??path.dirname(path.dirname(path.dirname(file)));
+    slot=pathKey(file)===pathKey(path.join(root,'backups','archives',point.id+'.zip'));
+  }catch{/* Older records remain history; they require a new exact restore. */}
+  return Boolean(slot && point?.archive?.format === 'zip-v1' && validHash(point.archive.sha256) && validHash(point.archive.contentFingerprint) && validHash(point.archive.metadataSha256) &&
+    proof?.sourceArchiveSha256===point.archive.sha256 && proof?.sourceArchiveFingerprint===point.archive.contentFingerprint && proof?.sourceSidecarSha256===point.archive.metadataSha256 && proof?.version === 1 && proof.passed === true && proof.status === 'passed' &&
     validId(proof.backupId) && proof.backupId === point.id && proof.backupFingerprint === point.contentFingerprint &&
     validHash(proof.backupFingerprint) && proof.schemaHash === point.schemaHash && validHash(proof.schemaHash) &&
     proof.format === format && point.format === format && Number.isFinite(Date.parse(proof.at)) &&
@@ -348,7 +353,7 @@ async function compressPoint(home, lease, index, point, checked, receipt) {
   const verified = await verifyArchive(archive.path);
   if (verified.sha256 !== archive.sha256 || verified.contentFingerprint !== archive.contentFingerprint) throw refusal('Archive reread differs');
   point.archive = { format: verified.format, path: verified.path, sha256: verified.sha256,
-    contentFingerprint: verified.contentFingerprint, verifiedAt: verified.verifiedAt };
+    contentFingerprint: verified.contentFingerprint, metadataSha256: verified.metadataSha256, verifiedAt: verified.verifiedAt };
   point.rawRemovalIntent = { at: receipt.at, directory: point.directory, archivePath: verified.path,
     archiveSha256: verified.sha256, targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity };
   await saveIndex(home, lease, index);
@@ -374,11 +379,11 @@ async function rotationProof(home, index, current, now) {
   const { bytes, value } = await smallJson(record.evidencePath);
   const restored = index.points.find(point => point.id === value.backupId);
   if (!restored?.complete || restored.archiveRemoved || restored.archive?.format !== 'zip-v1' || restored.schemaHash !== current.schemaHash || restored.format !== current.format ||
-      backupHash(bytes) !== record.evidenceSha256 || canonical(value) !== canonical(record.proof) || !rotationEvidenceMatches(value, restored, now)) return null;
+      backupHash(bytes) !== record.evidenceSha256 || canonical(value) !== canonical(record.proof) || !rotationEvidenceMatches(value, restored, now, home)) return null;
   const protectedBackups = [];
   for (const point of [restored, ...(current.id === restored.id ? [] : [current])]) {
     const verified = await verifyPoint(home, point);
-    if (verified.format !== 'zip-v1' || !validHash(verified.metadataSha256)) return null;
+    if (verified.format !== 'zip-v1' || !validHash(verified.metadataSha256) || point.id===value.backupId && verified.metadataSha256!==value.sourceSidecarSha256) return null;
     protectedBackups.push({ id: point.id, file: verified.path, sha256: verified.sha256, metadataSha256: verified.metadataSha256 });
   }
   return { proof: value, protectedBackups };
@@ -437,7 +442,7 @@ async function terminalProtection(home, baseline, point, now, needsRestore) {
   const originalCurrent = baseline.points.find(p => p.id === baseline.lastComplete?.id);
   const originalRestored = baseline.points.find(p => p.id === proof.backupId);
   return Boolean(restored?.complete && current?.complete && !restored.archiveUnavailable && !current.archiveUnavailable &&
-    canonical(proof) === canonical(fresh.lastVerified.proof) && rotationEvidenceMatches(proof, restored, now) &&
+    canonical(proof) === canonical(fresh.lastVerified.proof) && rotationEvidenceMatches(proof, restored, now, home) &&
     restored.schemaHash === current.schemaHash && restored.format === current.format &&
     canonical(current) === canonical(originalCurrent) && canonical(restored) === canonical(originalRestored) &&
     selectBackupRetention(fresh.points.filter(p => !p.archiveRemoved && !p.archiveUnavailable)
