@@ -1,9 +1,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import { consumeStandaloneAttempt } from '../local-system-launch.mjs';
 import { archiveName, measureArchiveTargets, nativeArchiveOperation, readGuardedRecords } from './archive.mjs';
 import { probePaths, requireHeldLease, withLifecycleLock } from './guard.mjs';
 import { readTask, updateTask } from './inventory.mjs';
+import { closePackageStage } from './package-staging.mjs';
 import { assertNarrowRoot, isBuildName, isReleaseId, pathKey, refusal, relativeWithin } from './policy.mjs';
 import { registerLifecycleEvidence, runLifecycle } from './storage.mjs';
 
@@ -193,6 +195,14 @@ export async function registerPackagedRelease(context, build, result) {
   if (!build) return;
   const manifest = path.join(context.home, 'releases', result.release, 'release.json');
   const [bytes] = await readRecords([manifest]);
+  const existing = await packagedRelease(context.home, result.release);
+  if (existing) {
+    if (existing.manifestSha256 !== sha256(bytes) || existing.buildId !== result.buildId ||
+        existing.task !== build.task || pathKey(existing.source) !== pathKey(build.source) || existing.dist !== build.dist) {
+      throw refusal('The existing package evidence belongs to a different release');
+    }
+    return lifecycleEvidence(context, build, existing);
+  }
   const packaged = { version: 1, id: result.release, buildId: result.buildId, repo: build.repo,
     source: build.source, dist: build.dist, task: build.task, manifestSha256: sha256(bytes),
     actions: { package: await recordAction(path.dirname(build.result.receipt), 'package', { ...result, managedTask: build.task }) } };
@@ -200,10 +210,8 @@ export async function registerPackagedRelease(context, build, result) {
   return lifecycleEvidence(context, build, packaged);
 }
 
-export async function completeStandaloneVerification(result, context, stoppedProcess) {
-  if (result?.verified !== true || result.stopped !== true || ![3007, 3008, 3009, 3010].includes(result.port)) {
-    throw refusal('An independently checked and stopped release is required');
-  }
+export async function completeStandaloneVerification(attempt, context) {
+  const { result, stoppedProcess } = consumeStandaloneAttempt(attempt, context, true);
   await requireHeldLease(context.home, context.lease);
   const release = await packagedRelease(context.home, result.release);
   if (!release) return null; // Pre-existing immutable release; no managed build to release.
@@ -212,14 +220,10 @@ export async function completeStandaloneVerification(result, context, stoppedPro
     throw refusal('The standalone result does not match its package and build');
   }
   const target = path.join(build.source, build.dist);
-  if (!release.actions.verify) {
+  if (!hasObservedStandalone(release)) {
     release.actions.verify = await recordAction(path.dirname(build.result.receipt), 'verify', { ...result, managedTask: build.task });
-    if (stoppedProcess?.releaseId === result.release && Number.isSafeInteger(stoppedProcess.pid) &&
-        stoppedProcess.process?.ProcessId === stoppedProcess.pid &&
-        typeof stoppedProcess.process.CommandLine === 'string' && typeof stoppedProcess.process.ExecutablePath === 'string' &&
-        typeof stoppedProcess.process.CreationDate === 'string') {
-      release.observedStandalone = stoppedProcess;
-    }
+    release.observationVersion = 2;
+    release.observedStandalone = stoppedProcess;
     await writeArtifact(context, 'release', release.id, release, true);
   }
   const repos = [...new Set([release.repo, ...(context.repoRoots ?? [])])];
@@ -241,24 +245,40 @@ export async function registerInstalledRelease(context, result) {
   if (!release) return null;
   const build = await registeredBuild(context.home, release.source, release.dist);
   if (!build || result.running !== true || result.buildId !== release.buildId || result.current?.releaseId !== release.id ||
-      !release.actions.verify) throw refusal('The installed release has not passed standalone verification');
+      !hasObservedStandalone(release)) throw refusal('The installed release has not passed standalone verification');
   release.actions.install = await recordAction(path.dirname(build.result.receipt), 'install', result);
   await writeArtifact(context, 'release', release.id, release, true);
   return lifecycleEvidence(context, build, release);
 }
 
-export async function registerStandaloneFailure(context, releaseId, port, error) {
+export async function registerStandaloneFailure(attempt, context) {
+  const { release: releaseId, port, error } = consumeStandaloneAttempt(attempt, context, false);
   const release = await packagedRelease(context.home, releaseId);
   if (!release || release.closed) return;
   const build = await registeredBuild(context.home, release.source, release.dist);
   if (!build || build.task !== release.task) return;
   release.actions.failedVerify = await recordAction(path.dirname(build.result.receipt), 'verify-failed', {
-    release: releaseId, buildId: release.buildId, port, passed: false, error: error.message,
+    release: releaseId, buildId: release.buildId, port, passed: false, error,
   });
   await writeArtifact(context, 'release', release.id, release, true);
 }
 
 const closingResults = ['superseded', 'rejected', 'unused'];
+
+export function hasObservedStandalone(release) {
+  return release?.observationVersion === 2 && Boolean(release.observedStandalone && release.actions?.verify);
+}
+
+export async function observedStandaloneBinding(home, releaseId, pinnedTarget) {
+  const release = await packagedRelease(home, releaseId, pinnedTarget);
+  if (!hasObservedStandalone(release)) return null;
+  const build = await registeredBuild(home, release.source, release.dist);
+  if (!build || build.result.buildId !== release.buildId || build.task !== release.task) return null;
+  return {
+    verify: release.actions.verify.evidence, package: release.actions.package.evidence,
+    build: { path: build.result.receipt, sha256: build.result.receiptSha256 },
+  };
+}
 
 async function checkedAction(action, name, release, passed) {
   if (action?.evidence?.length !== 3) throw refusal('A signed candidate receipt is missing');
@@ -277,7 +297,7 @@ async function checkedAction(action, name, release, passed) {
 
 async function candidateOutcome(release) {
   const packaged = await checkedAction(release.actions.package, 'package', release, true);
-  if (release.actions.verify && release.observedStandalone) {
+  if (hasObservedStandalone(release)) {
     const attempt = await checkedAction(release.actions.verify, 'verify', release, true);
     if (attempt.result.verified !== true || attempt.result.stopped !== true) {
       throw refusal('The standalone receipt does not confirm the candidate');
@@ -290,12 +310,16 @@ async function candidateOutcome(release) {
   return { at: attempt.receipt.at, passed: false, evidence: [...packaged.evidence, ...attempt.evidence] };
 }
 
-export async function closeManagedCandidate({ home, lease, taskId, releaseId, result }) {
+export async function closeManagedCandidate({ home, lease, taskId, releaseId, result, source, dist }) {
   if (!closingResults.includes(result)) throw refusal('Choose superseded, rejected or unused as the candidate result');
   home = await requireHeldLease(home, lease);
   const task = await readTask(home, taskId);
+  if (source !== undefined || dist !== undefined) {
+    return closePackageStage({ home, lease }, { taskId, releaseId, source, dist, result, task });
+  }
   if (task?.status !== 'closed') throw refusal('A closed task is required to close a candidate');
   const release = await packagedRelease(home, releaseId);
+  if (!release) return closePackageStage({ home, lease }, { taskId, releaseId, result, task });
   if (!release || release.task !== taskId || pathKey(release.repo) !== pathKey(task.worktree) || release.actions.install) {
     throw refusal('The uninstalled candidate does not belong to the closed task');
   }
@@ -460,7 +484,7 @@ export async function managedCacheProof(home, artifact, manifest) {
       execution.argv[0] !== 'build' || build.result.buildId !== manifest.buildId || runtime.nodeSha256 !== manifest.nodeSha256) return null;
   const release = await packagedRelease(home, id);
   const observation = release?.observedStandalone;
-  if (!observation || !release.actions.verify || observation.releaseId !== id ||
+  if (!hasObservedStandalone(release) || observation.releaseId !== id ||
       pathKey(release.source) !== pathKey(artifact.root) || release.buildId !== build.result.buildId ||
       pathKey(observation.process.ExecutablePath) !== pathKey(manifest.nodeExe)) return null;
   const registered = artifact.provenance.evidence;

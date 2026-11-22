@@ -92,6 +92,7 @@ namespace ContractorStorage {
             public string[] skipEntries { get; set; }
             public bool omitNodeModulesJunction { get; set; }
             public Dictionary<string, string> expectedFiles { get; set; }
+            public long? maximumBytes { get; set; }
         }
 
         public sealed class Request {
@@ -333,7 +334,7 @@ namespace ContractorStorage {
 
         private static void WriteEntry(ZipArchive zip, string source, string relative, string prefix, SafeFileHandle handle,
             ILookup<string, string> files, ILookup<string, string> dirs, List<Entry> rows, HashSet<string> names,
-            Dictionary<string, string> expectedFiles) {
+            Dictionary<string, string> expectedFiles, ref long remaining) {
             var before = Guard.ReadInfo(handle);
             string fullName = AddPrefix(prefix, relative).TrimEnd('/');
             if (fullName.Length > 0) {
@@ -344,15 +345,19 @@ namespace ContractorStorage {
             foreach (var directory in dirs[relative]) {
                 var child = Join(source, directory.Split('/').Last());
                 using (var item = Guard.OpenPlain(child, true)) {
-                    WriteEntry(zip, child, directory, prefix, item, files, dirs, rows, names, expectedFiles);
+                    WriteEntry(zip, child, directory, prefix, item, files, dirs, rows, names, expectedFiles, ref remaining);
                 }
             }
             foreach (var file in files[relative]) {
                 var name = AddPrefix(prefix, file);
                 Require(names.Add(name), "Duplicate ZIP entry");
-                using (var item = Guard.OpenPlain(Join(source, file.Split('/').Last()), false))
-                using (var entry = zip.CreateEntry(name, CompressionLevel.Optimal).Open()) {
-                    var row = PlainFile(name, item, entry);
+                using (var item = Guard.OpenPlain(Join(source, file.Split('/').Last()), false)) {
+                    var bytes = Guard.ReadInfo(item).Length;
+                    Require(bytes >= 0 && bytes <= remaining, "An archive input grew beyond its budget");
+                    remaining -= bytes;
+                    Entry row;
+                    using (var entry = zip.CreateEntry(name, CompressionLevel.Optimal).Open())
+                        row = PlainFile(name, item, entry);
                     string digest;
                     if (expectedFiles.TryGetValue(file, out digest)) {
                         Require(digest == row.sha256, "Archived source or receipt differs from its registered hash");
@@ -373,9 +378,10 @@ namespace ContractorStorage {
             }
             var prefix = string.IsNullOrEmpty(group.prefix) ? "" : SafeName(group.prefix);
             var expected = new Dictionary<string, string>(group.expectedFiles ?? new Dictionary<string, string>(), StringComparer.Ordinal);
+            long remaining = group.maximumBytes ?? long.MaxValue;
             using (var held = new HeldPath(group.source, true))
                 WriteEntry(zip, group.source, "", prefix, held.Handle, files.ToLookup(ParentName), dirs.ToLookup(ParentName),
-                    rows, names, expected);
+                    rows, names, expected, ref remaining);
             Require(expected.Count == 0, "Registered archived files are missing");
         }
 

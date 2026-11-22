@@ -62,7 +62,7 @@ function zipPath(file) {
   return result;
 }
 
-export async function createVerifiedArchive({ source, files, destination }) {
+export async function createVerifiedArchive({ source, files, destination, maximumBytes }) {
   source = assertNarrowRoot(source);
   destination = zipPath(destination);
   if (relativeWithin(source, destination) !== null) throw refusal('An archive cannot be written inside its source');
@@ -71,7 +71,7 @@ export async function createVerifiedArchive({ source, files, destination }) {
   if (new Set(checked.map(name => name.toLowerCase())).size !== checked.length) {
     throw refusal('The archive lists a file more than once');
   }
-  return nativeArchiveOperation('publish', { destination, publicRequest: true, groups: [{ source, files: checked }] });
+  return nativeArchiveOperation('publish', { destination, publicRequest: true, groups: [{ source, files: checked, maximumBytes }] });
 }
 
 export async function verifyArchive(file) {

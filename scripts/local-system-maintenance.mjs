@@ -17,7 +17,7 @@ const commands = {
   run: ['--event', '--task'],
   'import-legacy': ['--input'],
   task: ['--input'],
-  'close-candidate': ['--task', '--release', '--result'],
+  'close-candidate': ['--task', '--release', '--result', '--source', '--dist'],
   'close-build': ['--task', '--source', '--result'],
 };
 
@@ -97,6 +97,7 @@ async function main(args) {
   if (command === 'close-candidate') {
     return withLifecycleLock(home, command, lock => closeManagedCandidate({
       home, lease: lock, taskId: required('--task'), releaseId: required('--release'), result: required('--result'),
+      source: flags.has('--source') ? path.resolve(flags.get('--source')) : undefined, dist: flags.get('--dist'),
     }), lease);
   }
   if (command === 'close-build') {

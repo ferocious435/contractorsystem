@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,22 +12,16 @@ import {
 } from './maintenance/lifecycle.mjs';
 import { assertNarrowRoot, isBuildName, isReleaseId, pathKey, refusal } from './maintenance/policy.mjs';
 import { runLifecycle } from './maintenance/storage.mjs';
+import {
+  markPackagePublished, markPackageReady, openPackageStage, packageTree, plainFileHash as fileHash,
+  recordPackageStageFailure, resumableCopy,
+} from './maintenance/package-staging.mjs';
 
 const scripts = ['local-system-backup.mjs', 'local-system-restore.mjs', 'local-system-launch.mjs',
   'local-system-maintenance.mjs', 'local-system-build.mjs', 'local-system-package.mjs'];
 const releaseFiles = ['package.json', 'package-lock.json', 'next.config.ts', 'tsconfig.json', 'next-env.d.ts', 'postcss.config.mjs'];
 const readerBinaries = ['kreuzberg.exe', 'onnxruntime.dll'];
 const programScripts = path.dirname(fileURLToPath(import.meta.url));
-
-async function fileHash(file) {
-  const info = await fs.lstat(file);
-  if (!info.isFile() || info.nlink !== 1 || pathKey(await fs.realpath(file)) !== pathKey(file)) {
-    throw refusal('A package input is not an ordinary file');
-  }
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
-  return hash.digest('hex');
-}
 
 async function checkedSnapshot(source, dist, checks) {
   const receipt = await guardedJson(checks);
@@ -99,15 +92,9 @@ async function selectedScripts(source, inputs, legacy) {
   for (const file of files) {
     const hash = await fileHash(file.from);
     if (!legacy && hash !== inputs.get(file.relative.toLowerCase())) throw refusal('The checked package input is missing or changed: ' + file.relative);
+    file.sha256 = hash;
   }
   return files;
-}
-
-async function copyFile(root, from, relative, expected) {
-  const to = path.join(root, relative);
-  await fs.mkdir(path.dirname(to), { recursive: true });
-  await fs.copyFile(from, to);
-  if (expected && await fileHash(to) !== expected) throw refusal('A packaged file differs from the checked snapshot: ' + relative);
 }
 
 async function statBytes(directory) {
@@ -133,8 +120,8 @@ export async function runPackage({ id, source, dist, dependencies = path.resolve
   const managed = legacy ? null : await registeredBuild(home, source, dist);
   const task = taskId ?? managed?.task ?? 'local-package';
   const repoRoots = [managed?.repo ?? repo].filter(Boolean);
+  let attempt;
   const perform = async (context, reservation) => {
-    if ((await probePaths([root]))[0] !== 'missing') throw refusal('Release already exists; it will not be overwritten');
     const snapshot = legacy ? null : await checkedSnapshot(source, dist, path.resolve(checks));
     if (managed && (task !== managed.task || managed.result.passed !== true ||
         pathKey(path.resolve(checks)) !== pathKey(managed.result.receipt) ||
@@ -187,63 +174,90 @@ export async function runPackage({ id, source, dist, dependencies = path.resolve
       await runLifecycle('package', { ...context, phase: 'resize', reservation, expectedAdditionalBytes: knownBytes });
     }
     const owner = managed || taskId ? await activeTask(context, task, managed?.repo ?? repo) : null;
+    const snapshotFiles = [];
+    for (const name of files) snapshotFiles.push({ path: name, sha256: snapshot?.inputs.get(name.toLowerCase()) ?? await fileHash(path.join(source, name)) });
+    const copyable = relative => !relative.split('/').some(part => part === 'cache' || part === 'trace');
+    const recipe = sha256(JSON.stringify([buildId, output.fingerprint, supplied.fingerprint, sha256(lock), nodeSha256,
+      businessRuntime, reader?.fingerprint, snapshotFiles, extras, legacy]));
+    attempt = await openPackageStage(context, { releaseId: id, task,
+      owner: owner ? { id: owner.id, worktree: owner.worktree } : null, source, dist, recipe });
     if (owner) {
       await updateTask(home, context.lease, { ...owner, candidate: root });
     }
     await nativeArchiveOperation('ensure-directories', { records: [
       path.dirname(dependencyRoot), path.dirname(root), path.dirname(nodeExe), path.dirname(configuration),
     ] });
-    if (storeState === 'missing') {
-      const staging = dependencyRoot + '.building-' + Date.now();
-      await fs.mkdir(staging);
-      await fs.cp(dependenciesInput, path.join(staging, 'node_modules'), { recursive: true });
-      if ((await statBytes(path.join(staging, 'node_modules'))).fingerprint !== supplied.fingerprint) {
-        throw refusal('The copied dependency basis changed');
+    const payload = path.join(attempt.stage, 'release');
+    if (attempt.status === 'copying') {
+      if ((await probePaths([root]))[0] !== 'missing') throw refusal('Release already exists; it will not be overwritten');
+      const dependenciesTree = await packageTree(dependenciesInput, 'node_modules');
+      if (storeState === 'missing') {
+        const basis = path.join(attempt.stage, 'basis');
+        await resumableCopy(basis, [dependenciesTree, { source, files: [{ path: 'package-lock.json', sha256: sha256(lock) }] }]);
+        if ((await statBytes(path.join(basis, 'node_modules'))).fingerprint !== supplied.fingerprint) {
+          throw refusal('The copied dependency basis changed');
+        }
+        await fs.rename(basis, dependencyRoot);
       }
-      await fs.writeFile(path.join(staging, 'package-lock.json'), lock, { flag: 'wx' });
-      await fs.rename(staging, dependencyRoot);
+      const groups = [await packageTree(buildRoot, dist, copyable), { source, files: snapshotFiles },
+        ...extras.map(file => ({ source: path.dirname(file.from),
+          files: [{ path: path.basename(file.from), output: file.relative, sha256: file.sha256 }] }))];
+      if (reader) groups.push(await packageTree(reader.root, reader.relative));
+      // The runtime always receives a physical private dependency copy.
+      await resumableCopy(payload, [...groups, dependenciesTree], { allowed: ['release.json'] });
+      if ((await statBytes(path.join(payload, 'node_modules'))).fingerprint !== supplied.fingerprint) {
+        throw refusal('The release dependency copy changed');
+      }
+      if (reader && (await statBytes(path.join(payload, reader.relative))).fingerprint !== reader.fingerprint) {
+        throw refusal('The packaged OCR assets changed');
+      }
+      const sealed = groups.flatMap(({ prefix, files: inputs }) => inputs.map(input =>
+        ({ path: [prefix, input.output ?? input.path].filter(Boolean).join('/'), sha256: input.sha256 })));
+      sealed.sort((a, b) => a.path.localeCompare(b.path));
+      const release = { version: 1, id, root, dist, buildId, nodeExe, nodeSha256, nodeVersion: process.version,
+        codexExe: businessRuntime, dependencyRoot, dependencyLockSha256: sha256(lock), legacyCompiledBuild: legacy,
+        files: sealed, createdAt: attempt.startedAt,
+        ...(reader ? { ocrAssets: { prefix: reader.relative, fingerprint: reader.fingerprint } } : {}) };
+      const manifest = path.join(payload, 'release.json');
+      const bytes = JSON.stringify(release, null, 2) + '\n';
+      const manifestSha256 = sha256(bytes);
+      if ((await probePaths([manifest]))[0] === 'missing') await writeRecords([{ path: manifest, value: bytes }]);
+      if (await fileHash(manifest) !== manifestSha256) throw refusal('The staged manifest changed');
+      attempt = await markPackageReady(context, attempt, await statBytes(payload), manifestSha256);
     }
-    await fs.mkdir(root);
-    await fs.cp(buildRoot, path.join(root, dist), { recursive: true,
-      filter: file => !path.relative(buildRoot, file).split(path.sep).some(part => part === 'cache' || part === 'trace') });
-    for (const name of files) await copyFile(root, path.join(source, name), name, snapshot?.inputs.get(name.toLowerCase()));
-    for (const file of extras) await copyFile(root, file.from, file.relative, snapshot?.inputs.get(file.relative.toLowerCase()));
-    if (reader) {
-      const destination = path.join(root, reader.relative);
-      await fs.mkdir(path.dirname(destination), { recursive: true });
-      await fs.cp(reader.root, destination, { recursive: true });
-      if ((await statBytes(destination)).fingerprint !== reader.fingerprint) throw refusal('The packaged OCR assets changed');
+    const [rootState, payloadState] = await probePaths([root, payload]);
+    if (!((rootState === 'missing' && payloadState === 'plain') || (rootState === 'plain' && payloadState === 'missing'))) {
+      throw refusal('The release cannot be uniquely located for publication');
     }
-    // The release always has its own physical dependency copy.
-    const privateModules = path.join(root, 'node_modules');
-    await fs.cp(stored, privateModules, { recursive: true });
-    if ((await statBytes(privateModules)).fingerprint !== supplied.fingerprint) throw refusal('The release dependency copy changed');
-    if (nodeState === 'missing') await fs.copyFile(node, nodeExe);
+    const prepared = rootState === 'missing' ? payload : root;
+    const measured = await statBytes(prepared);
+    const manifest = path.join(prepared, 'release.json');
+    if (measured.identity !== attempt.payloadIdentity || measured.fingerprint !== attempt.payloadFingerprint ||
+        await fileHash(manifest) !== attempt.manifestSha256) throw refusal('The sealed release candidate changed');
+    if (nodeState === 'missing') {
+      const stagedNode = path.join(attempt.stage, 'runtime.exe');
+      if ((await probePaths([stagedNode]))[0] === 'missing') await fs.copyFile(node, stagedNode, constants.COPYFILE_EXCL);
+      if (await fileHash(stagedNode) !== nodeSha256) throw refusal('The staged Node runtime differs');
+      await fs.rename(stagedNode, nodeExe);
+    }
     if (await fileHash(nodeExe) !== nodeSha256) throw refusal('The saved Node runtime differs');
     if (configurationState === 'missing') {
-      await fs.copyFile(path.join(repo ?? process.cwd(), '.env.local'), configuration);
+      await fs.copyFile(path.join(repo ?? process.cwd(), '.env.local'), configuration, constants.COPYFILE_EXCL);
     }
-    const sealed = [];
-    for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-      if (entry.name === 'node_modules') continue;
-      const names = entry.isDirectory()
-        ? (await plainFiles(path.join(root, entry.name))).map(name => entry.name + '/' + name) : [entry.name];
-      for (const name of names) sealed.push({ path: name, sha256: await fileHash(path.join(root, name)) });
-    }
-    sealed.sort((a, b) => a.path.localeCompare(b.path));
-    const release = { version: 1, id, root, dist, buildId, nodeExe, nodeSha256, nodeVersion: process.version,
-      codexExe: businessRuntime, dependencyRoot, dependencyLockSha256: sha256(lock), legacyCompiledBuild: legacy,
-      files: sealed, createdAt: new Date().toISOString(),
-      ...(reader ? { ocrAssets: { prefix: reader.relative, fingerprint: reader.fingerprint } } : {}) };
-    await writeRecords([{ path: path.join(root, 'release.json'), value: release }]);
-    const result = { release: id, root, buildId, files: sealed.length, nodeExe, dependencies: dependencyRoot,
-      legacyCompiledBuild: legacy, measuredBytes: (await statBytes(root)).bytes + extraCopies };
+    const release = await guardedJson(manifest);
+    if (rootState === 'missing') await fs.rename(payload, root);
+    const result = { release: id, root, buildId, files: release.files.length, nodeExe, dependencies: dependencyRoot,
+      legacyCompiledBuild: legacy, measuredBytes: measured.bytes + extraCopies };
     await registerPackagedRelease(context, managed, result);
     await publishLauncherBundle({ ...context, source: path.join(root, 'scripts'), nodeExe });
+    await markPackagePublished(context, attempt);
     return result;
   };
   return withLifecycleOperation('package', { home, lease, task, repoRoots, build: buildRoot, releaseId: id, getFreeBytes },
     (context, reservation) => perform(context, reservation).catch(async error => {
+      await recordPackageStageFailure(context, attempt, error).catch(receiptError => {
+        process.stderr.write('The staged package failure could not be recorded: ' + receiptError.message + '\n');
+      });
       if (managed?.task === task) {
         await registerPackageFailure(context, managed, id, error).catch(receiptError => {
           process.stderr.write('The failed package receipt could not be recorded: ' + receiptError.message + '\n');

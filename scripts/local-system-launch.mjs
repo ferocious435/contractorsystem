@@ -4,17 +4,34 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { archiveName } from './maintenance/archive.mjs';
-import { inheritedMaintenanceLease, resolveMaintenanceHome, withLifecycleLock } from './maintenance/guard.mjs';
+import { inheritedMaintenanceLease, processSnapshot, resolveMaintenanceHome, withLifecycleLock } from './maintenance/guard.mjs';
 import {
-  completeStandaloneVerification, guardedJson, packagedRelease, registerInstalledRelease, withLifecycleOperation,
+  completeStandaloneVerification, guardedJson, hasObservedStandalone, packagedRelease, registerInstalledRelease, withLifecycleOperation,
   registerStandaloneFailure,
 } from './maintenance/lifecycle.mjs';
 import { isBuildName, isReleaseId, localHomes, pathInMaintenanceHome, pathKey, refusal } from './maintenance/policy.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const verifyPorts = [3007, 3008, 3009, 3010];
+const standaloneAttempts = new WeakMap();
+
+function issueStandaloneAttempt(context, details) {
+  const attempt = Object.freeze({});
+  standaloneAttempts.set(attempt, { home: context.home, lease: context.lease, details });
+  return attempt;
+}
+
+// Consumption is public to the lifecycle module. Only this module can issue an
+// attempt, and only the actual standalone branch below supplies the evidence.
+export function consumeStandaloneAttempt(attempt, context, passed) {
+  const observation = standaloneAttempts.get(attempt);
+  if (!observation || observation.details.passed !== passed || observation.lease !== context.lease ||
+      pathKey(observation.home) !== pathKey(context.home)) throw refusal('An observed standalone attempt is required');
+  standaloneAttempts.delete(attempt);
+  return observation.details;
+}
 
 function readRelease(home, id) {
   if (!isReleaseId(id)) throw refusal('Invalid release identity');
@@ -117,9 +134,27 @@ function processInfo(pid) {
   return JSON.parse(result.stdout);
 }
 
+function matchingProcess(expected, actual) {
+  return expected && actual.ProcessId === expected.ProcessId &&
+    actual.CommandLine === expected.CommandLine && actual.CreationDate === expected.CreationDate &&
+    actual.ExecutablePath === expected.ExecutablePath;
+}
+
 function requireMatchingProcess(expected, actual) {
-  if (!expected || actual.CommandLine !== expected.CommandLine || actual.CreationDate !== expected.CreationDate ||
-      actual.ExecutablePath !== expected.ExecutablePath) throw refusal('Process identity changed');
+  if (!matchingProcess(expected, actual)) throw refusal('Process identity changed');
+}
+
+async function inspectOwned(current) {
+  try {
+    const [found] = await processSnapshot(current.pid);
+    if (!found) return 'gone';
+    const actual = processInfo(current.pid);
+    if (matchingProcess(current.process, actual)) return 'owned';
+    if (actual.CreationDate && current.process?.CreationDate && actual.CreationDate !== current.process.CreationDate) {
+      return 'gone';
+    }
+  } catch { /* An unreadable identity is not evidence of absence. */ }
+  return 'unknown';
 }
 
 function stopPid(pid, expected) {
@@ -196,26 +231,45 @@ async function launch(home, release, port, previousId) {
   } catch (error) {
     if (owned) {
       try { stopPid(child.pid, owned); } catch { /* A different or absent process cannot be stopped. */ }
+      error.failedProcess = { releaseId: release.id, pid: child.pid, process: owned };
     }
     throw error;
   }
 }
 
-export async function switchRelease(id, { current, readRelease, verify, stop, launch, store }) {
+export async function switchRelease(id, { current, readRelease, verify, stop, launch, store,
+  inspect, portFree, stopOwned = stop }) {
   if (id === current.releaseId) throw refusal('This release is already selected');
   const previous = readRelease(current.releaseId), next = readRelease(id);
   await verify(next);
   await verify(previous);
-  await stop(current);
   let started;
   try {
+    await stop(current);
     started = await launch(next, current.releaseId);
     await store(started);
     return started;
   } catch (error) {
-    if (started) await stop(started);
-    const restored = await launch(previous, current.previousId);
-    await store(restored);
+    const candidate = started ?? error.failedProcess;
+    if (!candidate && await inspect(current) === 'owned') throw error;
+    try {
+      if (candidate && await inspect(candidate) === 'owned') {
+        // The process remains owned even when its HTTP endpoint is broken.
+        await stopOwned(candidate).catch(() => {});
+      }
+      if (await inspect(current) !== 'gone' || (candidate && await inspect(candidate) !== 'gone') || !await portFree()) {
+        throw refusal('The ownership or the local port could not be confirmed for recovery');
+      }
+      const restored = await launch(previous, current.previousId);
+      try {
+        await store(restored);
+      } catch (pointerError) {
+        throw Object.assign(Error('The previous program is running, but its current pointer could not be saved.'),
+          { cause: pointerError });
+      }
+    } catch (recovery) {
+      throw new AggregateError([error, recovery], 'Installation failed. ' + recovery.message);
+    }
     throw Object.assign(Error('Installation failed. The previous program was restored.'), { cause: error });
   }
 }
@@ -267,10 +321,18 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
     fs.writeFileSync(temp, JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 });
     fs.renameSync(temp, currentFile);
   };
+  const portFree = () => portIsFree(port);
+  const stopOwned = async current => {
+    stopPid(current.pid, current.process);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (await inspectOwned(current) === 'gone' && await portFree()) return;
+      await wait(200);
+    }
+    throw refusal('The stopped process or the local port could not be confirmed');
+  };
   const stop = async current => {
     await probe(read(current.releaseId), port);
-    stopPid(current.pid, current.process);
-    if (!await portIsFree(port)) throw refusal('The selected local port is still occupied');
+    await stopOwned(current);
   };
   const start = (release, previousId = null) => launch(home, release, port, previousId);
   const running = async current => {
@@ -313,13 +375,15 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
           started = await start(release);
           await stop(started);
         } catch (error) {
-          await registerStandaloneFailure(context, release.id, port, error).catch(receiptError => {
+          const failed = issueStandaloneAttempt(context, { passed: false, release: release.id, port, error: error.message });
+          await registerStandaloneFailure(failed, context).catch(receiptError => {
             process.stderr.write('The failed standalone receipt could not be recorded: ' + receiptError.message + '\n');
           });
           throw error;
         }
         const result = { verified: true, release: release.id, buildId: release.buildId, port, stopped: true };
-        await completeStandaloneVerification(result, context, started);
+        const observed = issueStandaloneAttempt(context, { passed: true, result, stoppedProcess: started });
+        await completeStandaloneVerification(observed, context);
         return result;
       }
       if (mode === 'adopt') {
@@ -343,12 +407,13 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
         store(started);
         return publish(await running(started), context);
       }
-      if (mode === 'install' && binding && (!binding.actions.verify || binding.closed)) {
+      if (mode === 'install' && binding && (!hasObservedStandalone(binding) || binding.closed)) {
         throw refusal('An open candidate must pass standalone verification before installation');
       }
       const target = mode === 'rollback' ? current.previousId : release.id;
       if (!target) throw refusal('No previous release');
-      const started = await switchRelease(target, { current, readRelease: read, verify: verifyRelease, stop, launch: start, store });
+      const started = await switchRelease(target, { current, readRelease: read, verify: verifyRelease,
+        stop, stopOwned, portFree, inspect: inspectOwned, launch: start, store });
       const result = await running(started);
       if (mode === 'install' && binding) {
         try {
@@ -376,6 +441,9 @@ export async function launcherMain(args = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && pathKey(path.resolve(process.argv[1])) === pathKey(fileURLToPath(import.meta.url))) {
+const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
+if (entryUrl && (process.platform === 'win32'
+  ? entryUrl.toLowerCase() === import.meta.url.toLowerCase()
+  : entryUrl === import.meta.url)) {
   await launcherMain();
 }

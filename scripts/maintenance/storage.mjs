@@ -10,13 +10,13 @@ import { readInventory } from './inventory.mjs';
 import { registerLegacyProvenance } from './legacy.mjs';
 import { managedCacheProof } from './lifecycle.mjs';
 import {
-  artifactRoot, assertNarrowRoot, isBuildName, maintenancePolicy, pathInMaintenanceHome, pathKey, refusal,
+  artifactRoot, assertNarrowRoot, isBuildName, maintenancePolicy, pathInMaintenanceHome, pathKey, refusal, relativeWithin,
 } from './policy.mjs';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const hashIsValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const validBytes = bytes => Number.isSafeInteger(bytes) && bytes >= 0;
-const jobKinds = new Set(['build', 'release']);
+const jobKinds = new Set(['build', 'release', 'package-stage']);
 const policyOptions = policy => ({ ...maintenancePolicy, ...policy });
 
 function freshness(inventory, removed = new Set()) {
@@ -52,7 +52,7 @@ function classified(inventory, policy) {
     const reasons = [...item.protectedBy];
     if (!jobKinds.has(item.kind)) {
       if (!reasons.length) reasons.push('outside-cleanup-policy');
-    } else if (item.kind === 'release') {
+    } else if (item.kind === 'release' || item.kind === 'package-stage') {
       if (!item.provenance?.acceptedAt && !item.provenance?.closedAt) reasons.push('acceptance-not-proven');
     } else if (item.provenance?.outcome === 'failed') {
       if (item.provenance.unresolved !== false) reasons.push('failed-build-unresolved');
@@ -93,7 +93,8 @@ function archivalIntent(item) {
 function actionFor(item) {
   return {
     id: item.id, path: item.path, root: item.root, kind: item.kind, bytes: item.bytes,
-    reason: item.kind === 'release' ? (item.provenance.acceptedAt ? 'older-accepted-release' : 'managed-candidate-closed') :
+    reason: item.kind === 'package-stage' ? 'managed-package-attempt-closed' :
+      item.kind === 'release' ? (item.provenance.acceptedAt ? 'older-accepted-release' : 'managed-candidate-closed') :
       item.provenance.outcome === 'failed' ? 'resolved-failure-outside-retention' : 'standalone-package-verified',
     expectedFingerprint: item.pending?.action.expectedFingerprint ?? item.fingerprint,
     expectedIdentity: item.pending?.action.expectedIdentity ?? item.identity,
@@ -101,10 +102,11 @@ function actionFor(item) {
   };
 }
 
-export function planStorage(inventory, policy) {
+export function planStorage(inventory, policy, protectedInputs = []) {
   policy = policyOptions(policy);
   const rows = classified(inventory, policy);
   for (const item of rows) {
+    if (isOperationInput(item.path, protectedInputs)) item.reasons.push('active-package-input');
     if (!item.reasons.length && (!(item.root && item.identity && hashIsValid(item.fingerprint)) ||
         (item.pending && item.identity !== item.pending.action.expectedIdentity))) item.reasons.push('target-not-verified');
   }
@@ -121,7 +123,7 @@ export function planStorage(inventory, policy) {
     })),
     budgets: {
       builds: budget(rows.filter(item => item.kind === 'build'), policy.buildBudgetBytes),
-      releases: budget(rows.filter(item => item.kind === 'release'), policy.releaseBudgetBytes),
+      releases: budget(rows.filter(item => item.kind === 'release' || item.kind === 'package-stage'), policy.releaseBudgetBytes),
     },
     uncertainties: inventory.uncertainties,
     freeBytes: inventory.freeBytes,
@@ -172,12 +174,13 @@ function operationRoot(home, inventory, artifact) {
   return artifactRoot({ home, repoRoots: (inventory.worktrees ?? []).map(tree => tree.path) }, artifact);
 }
 
-export async function prepareStoragePlan({ home, repoRoots = [], policy, coordinatorLease } = {}) {
+export async function prepareStoragePlan({ home, repoRoots = [], policy, coordinatorLease, protectedInputs = [] } = {}) {
   home = await resolveMaintenanceHome({ explicitHome: home });
   const inventory = await readInventory({ home, repoRoots, coordinatorLease });
   const pending = await readJournals(layout(home));
   const eligible = [];
-  for (const item of classified(inventory, policyOptions(policy)).filter(row => !row.reasons.length)) {
+  for (const item of classified(inventory, policyOptions(policy)).filter(row =>
+    !row.reasons.length && !isOperationInput(row.path, protectedInputs))) {
     const original = inventory.artifacts.find(artifact => artifact.id === item.id);
     try {
       original.root = operationRoot(home, inventory, item);
@@ -202,10 +205,14 @@ export async function prepareStoragePlan({ home, repoRoots = [], policy, coordin
     for (const [index, result] of measured.entries()) {
       if (!result?.fingerprint || !validBytes(result.bytes)) continue;
       const { bytes, files, fingerprint, identity, dependencyFingerprint } = result;
+      if (batch[index].kind === 'package-stage' && identity !== batch[index].provenance?.stageIdentity) {
+        batch[index].protectedBy.push('package-stage-identity-changed');
+        continue;
+      }
       Object.assign(batch[index], { bytes, files, fingerprint, identity, dependencyFingerprint });
     }
   }
-  return planStorage(inventory, policy);
+  return planStorage(inventory, policy, protectedInputs);
 }
 
 async function registerEvidence(index, { home, repoRoots = [], lease }, lifecycle) {
@@ -319,7 +326,7 @@ function evidenceGroups(items) {
   return [...groups.values()];
 }
 
-async function sharedTreeArchive(dependencyBaseline, dependencyFingerprint, directories) {
+async function planSharedTreeArchive(dependencyBaseline, dependencyFingerprint, directories) {
   if (!dependencyBaseline || !hashIsValid(dependencyFingerprint) ||
       !['node_modules', 'bin'].includes(path.basename(dependencyBaseline))) return null;
   const destination = path.join(directories.archives, 'dependencies-' + dependencyFingerprint + '.zip');
@@ -328,19 +335,49 @@ async function sharedTreeArchive(dependencyBaseline, dependencyFingerprint, dire
   if (states.every(state => state === 'plain')) {
     const verified = await verifyArchive(destination);
     if (verified.contentFingerprint !== dependencyFingerprint || verified.references.length) return null;
-    return verified;
+    return { bound: 0, publish: async () => verified };
   }
   // A shared copy is retained independently. No release is allowed to rely on another release's node_modules.
   const { groups } = await catalogArchiveGroups([{ source: dependencyBaseline }]);
-  return publishEvidenceArchive({
-    groups, destination,
-    baseline: true, targetFingerprint: dependencyFingerprint,
-  });
+  const sized = await sizeArchiveGroups(groups);
+  return { bound: sized.bound, publish: () => publishEvidenceArchive({
+    groups: sized.groups, destination, baseline: true, targetFingerprint: dependencyFingerprint,
+  }) };
 }
 
 const archiveReference = outcome => ({ file: path.basename(outcome.path), sha256: outcome.sha256 });
 
-async function sharedOcrArchive(artifact, inventory, directories) {
+export function archiveFits(freeBytes, reservedBytes, parts) {
+  if (!validBytes(freeBytes) || !validBytes(reservedBytes) || !parts.every(validBytes)) return false;
+  const required = parts.reduce((sum, value) => sum + value, reservedBytes + maintenancePolicy.minimumFreeBytes);
+  return validBytes(required) && freeBytes >= required;
+}
+
+const zipMetadataMargin = 8 * 1024 ** 2;
+
+async function sizeArchiveGroups(groups) {
+  let bound = zipMetadataMargin;
+  const measured = [];
+  for (const group of groups) {
+    let data = 0;
+    const names = [...(group.directories ?? []), ...group.files];
+    // ZIP has two filename copies, central-directory records, and a JSON
+    // manifest. Reserve UTF-8 escaping and ZIP64 overhead per entry.
+    for (const name of names) bound += 512 + 8 * Buffer.byteLength([group.prefix, name].filter(Boolean).join('/'));
+    for (const name of group.files) {
+      const file = await fs.lstat(path.join(group.source, name));
+      if (!file.isFile() || file.nlink !== 1 || !validBytes(file.size)) throw refusal('An archive input cannot be sized safely');
+      data += file.size;
+    }
+    if (!validBytes(data)) throw refusal('Archive input size is out of range');
+    bound += Math.ceil(data * 1.1);
+    measured.push({ ...group, maximumBytes: data });
+  }
+  if (!validBytes(bound)) throw refusal('The archive forecast is out of range');
+  return { bound, groups: measured };
+}
+
+async function planSharedOcrArchive(artifact, inventory, directories) {
   const release = inventory.releaseManifests.find(item => pathKey(item.path) === pathKey(artifact.path));
   const ocr = release?.ocrAssets;
   if (!/^data\/tools\/kreuzberg\/\d+\.\d+\.\d+\/bin$/.test(ocr?.prefix ?? '') || !hashIsValid(ocr.fingerprint)) return null;
@@ -367,18 +404,23 @@ async function sharedOcrArchive(artifact, inventory, directories) {
     const tree = paths[index + 1];
     const [other] = await measureArchiveTargets([tree]);
     if (other?.fingerprint !== ocr.fingerprint || !await checkManifest(candidate, tree)) continue;
-    const base = await sharedTreeArchive(tree, ocr.fingerprint, directories);
+    const base = await planSharedTreeArchive(tree, ocr.fingerprint, directories);
     if (!base) continue;
     const manifestPath = path.join(release.path, 'release.json');
     const bytes = (await readGuardedRecords([manifestPath])).get(manifestPath);
     const sealed = new Map(JSON.parse(bytes).files.map(file => [file.path.replaceAll('\\', '/'), file.sha256]));
-    if (base.entries.some(row => sealed.get(ocr.prefix + '/' + row.path) !== row.sha256)) return null;
-    return { prefix: 'artifact/' + ocr.prefix, ...archiveReference(base) };
+    return {
+      bound: base.bound, prefix: 'artifact/' + ocr.prefix,
+      publish: async () => {
+        const saved = await base.publish();
+        return saved.entries.some(row => sealed.get(ocr.prefix + '/' + row.path) !== row.sha256) ? null : saved;
+      },
+    };
   }
   return null;
 }
 
-async function archiveCacheBasis(action, artifact, inventory, directories, home) {
+async function archiveCacheBasis(action, artifact, inventory, directories, home, admit) {
   if (!artifact.historicalSnapshot || artifact.provenance?.outcome !== 'passed') return null;
   const release = inventory.releaseManifests.find(item => item.id === artifact.provenance.releaseId);
   const observed = await managedCacheProof(home, artifact, release);
@@ -394,20 +436,19 @@ async function archiveCacheBasis(action, artifact, inventory, directories, home)
   const [privateModules] = await measureArchiveTargets([path.join(release.path, 'node_modules')]);
   if (privateModules?.fingerprint !== runtime.dependencyFingerprint) return null;
   const runtimeArchive = path.join(directories.archives, 'runtime-' + runtime.nodeSha256 + '.zip');
-  const dependencyZip = path.join(directories.archives, 'dependencies-' + runtime.dependencyFingerprint + '.zip');
-  const states = await probePaths([runtimeArchive, runtimeArchive + '.manifest.json', dependencyZip, dependencyZip + '.manifest.json']);
+  const states = await probePaths([runtimeArchive, runtimeArchive + '.manifest.json']);
   if (states.includes('unverified')) return null;
-  const extra = (states[0] === 'plain' && states[1] === 'plain' ? 0 : runtime.nodeSize) +
-    (states[2] === 'plain' && states[3] === 'plain' ? 0 : runtime.dependencyBytes);
-  const available = await freeSpace(home);
-  if (!validBytes(extra) || !validBytes(available) ||
-      available < maintenancePolicy.minimumFreeBytes + 1.1 * (extra + action.bytes)) return null;
-  const deps = await sharedTreeArchive(runtime.dependencyRoot, runtime.dependencyFingerprint, directories);
-  if (!deps) return null;
-  const executable = states[0] === 'plain' && states[1] === 'plain'
-    ? await verifyArchive(runtimeArchive)
-    : await createVerifiedArchive({ source: path.dirname(runtime.nodeExe),
-      files: [path.basename(runtime.nodeExe)], destination: runtimeArchive });
+  const dependencies = await planSharedTreeArchive(runtime.dependencyRoot, runtime.dependencyFingerprint, directories);
+  if (!dependencies) return null;
+  const source = path.dirname(runtime.nodeExe), filesForRuntime = [path.basename(runtime.nodeExe)];
+  const existing = states.every(state => state === 'plain') ? await verifyArchive(runtimeArchive) : null;
+  const runtimeSize = existing ? { bound: 0 } : await sizeArchiveGroups([{ source, files: filesForRuntime }]);
+  if (!await admit([dependencies.bound, runtimeSize.bound])) return null;
+  const deps = await dependencies.publish();
+  if (!await admit([runtimeSize.bound])) return null;
+  const executable = existing ?? await createVerifiedArchive({
+    source, files: filesForRuntime, destination: runtimeArchive, maximumBytes: runtimeSize.groups[0].maximumBytes,
+  });
   if (executable.entries.length !== 1 || executable.entries[0].sha256 !== runtime.nodeSha256 ||
       executable.entries[0].size !== runtime.nodeSize || executable.references.length) return null;
   return { managedProofSha256, proof: evidencePrefix(path.dirname(proof.path)) + '/' + path.basename(proof.path),
@@ -415,7 +456,7 @@ async function archiveCacheBasis(action, artifact, inventory, directories, home)
     dependencies: archiveReference(deps), runtime: archiveReference(executable) };
 }
 
-async function getArchive(action, artifact, directories, inventory, home) {
+async function getArchive(action, artifact, directories, inventory, home, checkBudget) {
   const targetGroup = { source: action.path, prefix: 'artifact' };
   if (action.kind === 'release') {
     const registered = artifact.provenance?.dependencyRoot;
@@ -445,30 +486,46 @@ async function getArchive(action, artifact, directories, inventory, home) {
     }
     return compactReceipt(existing);
   }
+  const initialGroups = await catalogArchiveGroups(requests);
+  const main = await sizeArchiveGroups([...initialGroups.groups, ...evidence]);
+  const admit = extra => checkBudget([main.bound, ...extra]);
+  if (!await admit([])) throw archiveSpace();
+  await ensureDirectories(directories);
   const references = [];
   let generated;
   if (action.kind === 'release') {
+    const bases = [];
     try {
       const { dependencyBaseline, dependencyFingerprint } = action.archiveRequirement;
-      const saved = await sharedTreeArchive(dependencyBaseline, dependencyFingerprint, directories);
-      if (saved) references.push({ prefix: 'artifact/node_modules', ...archiveReference(saved) });
+      const saved = await planSharedTreeArchive(dependencyBaseline, dependencyFingerprint, directories);
+      if (saved) bases.push({ prefix: 'artifact/node_modules', ...saved });
     } catch {
       // A complete ZIP is still safe when a shared copy is unavailable or unequal.
     }
     try {
-      const ocr = await sharedOcrArchive(artifact, inventory, directories);
-      if (ocr) references.push(ocr);
+      const ocr = await planSharedOcrArchive(artifact, inventory, directories);
+      if (ocr) bases.push(ocr);
     } catch { /* Keep all OCR bytes when an exact shared copy cannot be secured. */ }
+    for (const [index, base] of bases.entries()) {
+      try {
+        if (base.bound > 0 && !await admit(bases.slice(index).map(item => item.bound))) continue;
+        const saved = await base.publish();
+        if (saved) references.push({ prefix: base.prefix, ...archiveReference(saved) });
+      } catch { /* Keep a full archive with the verified groups that are available. */ }
+    }
   } else {
     try {
-      generated = await archiveCacheBasis(action, artifact, inventory, directories, home);
+      generated = await archiveCacheBasis(action, artifact, inventory, directories, home, admit);
     } catch { /* A full archive retains every unproven cache byte. */ }
   }
-  targetGroup.skipEntries = [...references.map(row => row.prefix.slice('artifact/'.length)),
+  const skipped = [...references.map(row => row.prefix.slice('artifact/'.length)),
     ...(generated?.entries.map(row => row.path.slice('artifact/'.length)) ?? [])];
-  const { groups, omittedJunctions } = await catalogArchiveGroups(requests);
+  const filter = name => !skipped.some(entry => entry === name || name.startsWith(entry + '/'));
+  const [target, ...otherGroups] = main.groups;
+  const groups = [{ ...target, files: target.files.filter(filter), directories: target.directories.filter(filter) }, ...otherGroups];
+  if (!await admit([])) throw archiveSpace();
   return compactReceipt(await publishEvidenceArchive({
-    groups: [...groups, ...evidence], destination, omittedJunctions, references, generated,
+    groups, destination, omittedJunctions: initialGroups.omittedJunctions, references, generated,
     targetFingerprint: action.expectedFingerprint, targetIdentity: action.expectedIdentity, publicationTarget: action.path,
   }));
 }
@@ -485,6 +542,7 @@ function reconcileAction(action, fresh, home, pending) {
   if (!item || item.reasons.length || item.kind !== action.kind || pathKey(item.path) !== pathKey(action.path) ||
       pathKey(operationRoot(home, fresh, item)) !== pathKey(action.root) ||
       !hashIsValid(action.expectedFingerprint) || typeof action.expectedIdentity !== 'string') return null;
+  if (item.kind === 'package-stage' && item.provenance?.stageIdentity !== action.expectedIdentity) return null;
   if (pending && transactionKey(action) !== transactionKey(pending.action)) return null;
   const provenance = archivalIntent(item);
   const recorded = action.archiveRequirement;
@@ -503,7 +561,10 @@ async function freeSpace(home) {
   }
 }
 
-export async function applyStorage(plan, { home, lease, repoRoots = [], coordinatorLease }) {
+const archiveSpace = () => Object.assign(new Error('Insufficient verified disk space for the complete archive'), { code: 'ARCHIVE_SPACE' });
+
+export async function applyStorage(plan, { home, lease, repoRoots = [], coordinatorLease, protectedInputs = [],
+  prospectiveBytes = 0, getFreeBytes = freeSpace }) {
   validatePlan(plan);
   home = await requireHeldLease(home, lease);
   const directories = layout(home);
@@ -513,6 +574,14 @@ export async function applyStorage(plan, { home, lease, repoRoots = [], coordina
   const initial = await readInventory(options);
   const removed = new Set();
   const pending = await readJournals(directories);
+  const reservations = () => activeReservations(home, lease);
+  const inputProtected = async target => isOperationInput(target, [
+    ...protectedInputs, ...(await reservations()).filter(item => item.event === 'package').map(item => item.build).filter(Boolean),
+  ]);
+  const checkBudget = async groups => {
+    const reserved = prospectiveBytes + (await reservations()).reduce((sum, item) => sum + item.bytes, 0);
+    return archiveFits(await getFreeBytes(home), reserved, groups);
+  };
   if (plan.inventoryFingerprint !== freshness(initial)) {
     for (const action of plan.actions) receipt.skipped.push({ id: action.id, path: action.path, reason: 'inventory-changed' });
   } else {
@@ -521,6 +590,10 @@ export async function applyStorage(plan, { home, lease, repoRoots = [], coordina
       let archive, journalFile, record;
       try {
         await requireHeldLease(home, lease);
+        if (await inputProtected(action.path)) {
+          receipt.skipped.push({ ...row, reason: 'active-package-input' });
+          continue;
+        }
         const expectedState = freshness(initial, removed);
         const fresh = await readInventory(options);
         const previous = pending.get(action.id);
@@ -529,11 +602,11 @@ export async function applyStorage(plan, { home, lease, repoRoots = [], coordina
           receipt.skipped.push({ ...row, reason: 'protection-or-scope-changed' });
           continue;
         }
-        await ensureDirectories(directories);
         const key = transactionKey(action);
         journalFile = path.join(directories.journals, key + '.json');
         const tombstone = path.join(directories.index, key + '.json');
-        archive = previous?.archive ?? await getArchive(action, artifact, directories, fresh, home);
+        archive = previous?.archive ?? await getArchive(action, artifact, directories, fresh, home, checkBudget);
+        await ensureDirectories(directories);
         const proofFromInventory = value => managedCacheProof(home, value, fresh.releaseManifests.find(
           item => item.id === value.provenance?.releaseId));
         if (archive.generatedOmissions?.length &&
@@ -553,6 +626,7 @@ export async function applyStorage(plan, { home, lease, repoRoots = [], coordina
           managedProofSha256: archive.managedProofSha256,
         }, async () => {
           await requireHeldLease(home, lease);
+          if (await inputProtected(action.path)) return false;
           const now = await readInventory({ ...options, pinnedTarget: action.path });
           const rechecked = expectedState === freshness(now) && reconcileAction(action, now, home, previous);
           if (!rechecked || (archive.generatedOmissions?.length &&
@@ -583,8 +657,9 @@ export async function applyStorage(plan, { home, lease, repoRoots = [], coordina
       } catch (error) {
         const changed = /scheduled-target-changed|target directory was replaced|target differs from the verified archive|unarchived entry|target lost entries/.test(error.message);
         const protectedStage = /A previous unfinished publication must be preserved/.test(error.message);
-        const skipped = changed || protectedStage;
-        const reason = changed ? 'target-changed' : protectedStage ? 'unfinished-publication-protected' : error.message;
+        const skipped = changed || protectedStage || error.code === 'ARCHIVE_SPACE';
+        const reason = changed ? 'target-changed' : protectedStage ? 'unfinished-publication-protected' :
+          error.code === 'ARCHIVE_SPACE' ? 'archive-space' : error.message;
         const entry = { ...row, ...(archive ? { archive, journal: journalFile } : {}), reason };
         (skipped ? receipt.skipped : receipt.failed).push(entry);
         if (record && journalFile) {
@@ -633,6 +708,17 @@ async function lifecycleState(file) {
   return saved;
 }
 
+function isOperationInput(target, inputs) {
+  return inputs.some(input => relativeWithin(target, input) !== null || relativeWithin(input, target) !== null);
+}
+
+async function activeReservations(home, lease) {
+  const file = path.join(home, 'maintenance-state', 'lifecycle-costs.json');
+  if (!await fs.lstat(file).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) return [];
+  const state = await lifecycleState(file);
+  return state.leaseToken === lease.token ? state.active : [];
+}
+
 export async function runLifecycle(event, context) {
   if (!lifecycleEvents.has(event) || typeof context.task !== 'string' ||
       !/^[a-z0-9][a-z0-9_-]{0,89}$/i.test(context.task)) throw refusal('Invalid lifecycle operation');
@@ -679,16 +765,12 @@ async function lifecycleReservation(event, context) {
   let maintenanceError = null;
   if (context.cleanup !== false && !context.phase && reservedBytes === 0) {
     try {
-      const options = { ...context, home, coordinatorLease: lease };
+      const protectedInputs = event === 'package' && context.build ? [context.build] : [];
+      const options = { ...context, home, coordinatorLease: lease, protectedInputs, prospectiveBytes: bytes };
       const plan = await prepareStoragePlan(options);
-      let headroom = free[0] - maintenancePolicy.minimumFreeBytes - bytes - reservedBytes;
       plan.actions = plan.actions.filter(action => {
         if (context.target && pathKey(action.path) !== pathKey(context.target)) return false;
-        // Allow for a ZIP of incompressible bytes and its metadata before the source can be removed.
-        const needed = (action.bytes ?? Infinity) * 1.1 + 8 * 1024 ** 2;
-        if (!validBytes(free[0]) || needed > headroom) return false;
-        headroom -= needed;
-        return true;
+        return !isOperationInput(action.path, protectedInputs);
       });
       if (plan.actions.length) {
         cleanup = await applyStorage(plan, options);

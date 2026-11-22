@@ -95,6 +95,30 @@ async function directory(t) {
   return root;
 }
 
+async function smallFixtureForecast(t, f) {
+  const base = await fs.realpath(path.dirname(f.home));
+  assert.equal(path.dirname(base), await fs.realpath(os.tmpdir()));
+  assert.match(path.basename(base), /^contractor-storage-/);
+  let bytes = 0;
+  const visit = async directory => {
+    for (const name of await fs.readdir(directory)) {
+      const file = path.join(directory, name), info = await fs.lstat(file);
+      if (info.isSymbolicLink()) {
+        const relative = path.relative(base, await fs.realpath(file));
+        assert.ok(relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+      } else if (info.isDirectory()) await visit(file);
+      else {
+        assert.ok(info.isFile());
+        bytes += info.size;
+        assert.ok(bytes < 4 * 1024 ** 2, 'modeled archive forecasts are limited to tiny owned fixtures');
+      }
+    }
+  };
+  await visit(base);
+  t.diagnostic(JSON.stringify({ fixtureBytes: bytes, modeledArchiveFreeBytes: 20 * gib }));
+  return { getFreeBytes: async () => 20 * gib };
+}
+
 async function releases(t, count = 4) {
   const base = await directory(t);
   const home = path.join(base, 'home');
@@ -149,8 +173,8 @@ async function releases(t, count = 4) {
   const readOptions = { home, repoRoots };
   const importIndex = () => withMaintenanceLock(home, 'fixture-import', lease =>
     importLegacyEvidence(index, { ...readOptions, lease }));
-  const apply = plan => withMaintenanceLock(home, 'fixture-apply', lease =>
-    applyStorage(plan, { ...readOptions, lease }));
+  const apply = (plan, { getFreeBytes } = {}) => withMaintenanceLock(home, 'fixture-apply', lease =>
+    applyStorage(plan, { ...readOptions, lease, getFreeBytes }));
   return { home, repo, evidence, ids, roots, index, record, importIndex, apply,
     plan: () => prepareStoragePlan(readOptions) };
 }
@@ -394,9 +418,10 @@ filesystemTest('partialDeleteCanResume using the same archive and recording both
   }
 });
 
-filesystemTest('secondRunIsIdempotent for the same dry run and a fresh dry run', async t => {
-  const f = await releases(t, 6);
-  const reader = 'data/tools/kreuzberg/1.2.3/bin';
+const fixtureOcr = 'data/tools/kreuzberg/1.2.3/bin';
+
+async function installFixtureReaders(f) {
+  const reader = fixtureOcr;
   for (const root of f.roots.values()) {
     const folder = path.join(root, reader);
     await write(path.join(folder, 'kreuzberg.exe'), 'small synthetic reader');
@@ -410,10 +435,50 @@ filesystemTest('secondRunIsIdempotent for the same dry run and a fresh dry run',
     ] });
     await write(path.join(root, 'data', 'unique.txt'), 'unrelated ' + manifest.id);
   }
+}
+
+filesystemTest('a missing or corrupt OCR archive base cannot authorize an interrupted release deletion', async t => {
+  const f = await releases(t);
+  await installFixtureReaders(f);
+  await f.importIndex();
+  const marker = path.join(f.roots.get('v1'), 'readonly-fixture.bin');
+  await write(marker, 'keep the original until the archived reader can be verified');
+  await fs.chmod(marker, 0o444);
+  try {
+    const plan = await f.plan();
+    const forecast = await smallFixtureForecast(t, f);
+    const interrupted = await f.apply(plan, forecast);
+    const archive = interrupted.failed[0]?.archive;
+    assert.ok(archive, JSON.stringify(interrupted));
+    const reader = archive.references.find(item => item.prefix === 'artifact/' + fixtureOcr);
+    assert.ok(reader);
+    const base = path.join(path.dirname(archive.path), reader.file);
+    await fs.unlink(base);
+    const missing = await f.apply(plan, forecast);
+    assert.equal(missing.completed.length, 0);
+    assert.equal(missing.deletedBytes, 0);
+    await fs.writeFile(base, 'corrupt synthetic OCR archive');
+    await assert.rejects(verifyArchive(archive.path));
+    const corrupt = await f.apply(plan, forecast);
+    assert.equal(corrupt.completed.length, 0);
+    assert.equal(corrupt.deletedBytes, 0);
+    assert.equal(await fs.readFile(path.join(f.roots.get('v1'), fixtureOcr, 'kreuzberg.exe'), 'utf8'), 'small synthetic reader');
+    assert.match(await fs.readFile(marker, 'utf8'), /keep the original/);
+  } finally {
+    await fs.chmod(marker, 0o666);
+  }
+});
+
+filesystemTest('secondRunIsIdempotent for the same dry run and a fresh dry run', async t => {
+  const f = await releases(t, 6);
+  const reader = fixtureOcr;
+  await installFixtureReaders(f);
   await write(path.join(f.roots.get('v3'), reader, 'untracked.bin'), 'keep this too');
   await f.importIndex();
   const plan = await f.plan();
-  const first = await f.apply(plan);
+  const forecast = await smallFixtureForecast(t, f);
+  const first = await f.apply(plan, forecast);
+  t.diagnostic(JSON.stringify({ actualFreeBytesBefore: first.freeBytesBefore, actualFreeBytesAfter: first.freeBytesAfter }));
   assert.equal(first.completed.length, 3, JSON.stringify(first));
   assert.equal(first.completed[0].archive.references[0].file, first.completed[1].archive.references[0].file);
   const ocr = first.completed.slice(0, 2).map(item => item.archive.references.find(reference => reference.prefix === 'artifact/' + reader));
@@ -434,8 +499,8 @@ filesystemTest('secondRunIsIdempotent for the same dry run and a fresh dry run',
   assert.equal(first.completed[2].archive.references.some(reference => reference.prefix === 'artifact/' + reader), false);
   await extractVerifiedArchive(first.completed[2].archive.path, changed);
   assert.equal(await fs.readFile(path.join(changed, 'artifact', reader, 'untracked.bin'), 'utf8'), 'keep this too');
-  assert.equal((await f.apply(plan)).deletedBytes, 0);
-  const second = await f.apply(await f.plan());
+  assert.equal((await f.apply(plan, forecast)).deletedBytes, 0);
+  const second = await f.apply(await f.plan(), forecast);
   assert.equal(second.deletedBytes, 0);
   assert.equal(second.completed.length, 0);
   assert.deepEqual(await zips(), retained);
@@ -704,7 +769,7 @@ function pack(contents) {
   return Buffer.concat([header, payload]);
 }
 
-async function generatedFixture(t) {
+async function generatedFixture(t, { historical = false } = {}) {
   const f = await releases(t, 3);
   const id = 'v3';
   const source = path.join(f.evidence, 'build-123-task');
@@ -752,16 +817,23 @@ async function generatedFixture(t) {
   const packaged = await command('package', '2025-01-03T00:10:00.000Z', {});
   const verified = await command('verify', '2025-01-03T00:20:00.000Z', { verified: true, stopped: true });
   f.index.evidence.push({ path: generated.path, bytes: generated.bytes, sha256: generated.sha256 });
-  await withMaintenanceLock(f.home, 'register-fixture', lease => registerLifecycleEvidence({
-    version: 1, builds: [{ receipt: { evidence: buildFile } }], evidence: f.index.evidence,
-    releases: [{ id, installationReceipts: [], verificationReceipts: [verified], packageReceipts: [packaged],
-      buildReceipts: [buildFile] }],
-  }, { ...options, lease }));
+  const builds = [{ receipt: { evidence: buildFile } }];
+  const packageEvidence = { verificationReceipts: [verified], packageReceipts: [packaged], buildReceipts: [buildFile] };
+  if (historical) {
+    f.index.builds = builds;
+    Object.assign(f.index.releases.find(row => row.id === id), packageEvidence);
+    await f.importIndex();
+  } else {
+    await withMaintenanceLock(f.home, 'register-fixture', lease => registerLifecycleEvidence({
+      version: 1, builds, evidence: f.index.evidence,
+      releases: [{ id, installationReceipts: [], ...packageEvidence }],
+    }, { ...options, lease }));
+  }
   return { f, source, target, sourceText, malformed, nodeExe };
 }
 
 filesystemTest('an active direct task reference protects a historical snapshot from a different task', async t => {
-  const { f, source, target } = await generatedFixture(t);
+  const { f, source, target } = await generatedFixture(t, { historical: true });
   await json(path.join(f.home, 'maintenance-state', 'tasks', 'active-other.json'), {
     id: 'active-other', status: 'active', worktree: source, commit: 'a'.repeat(40), dirty: true,
     build: null, candidate: null, pid: null, processStartedAt: null, result: null, pins: [],
@@ -771,11 +843,28 @@ filesystemTest('an active direct task reference protects a historical snapshot f
   assert.ok(plan.protected.find(item => item.path === target).reasons.includes('task:active-other'));
 });
 
+filesystemTest('an unobserved lifecycle index cannot release a build', async t => {
+  const { f, target } = await generatedFixture(t);
+  const plan = await f.plan();
+  assert.equal(plan.actions.some(action => action.path === target), false);
+  assert.ok(plan.protected.find(item => item.path === target).reasons.includes('standalone-package-not-proven'));
+  assert.equal(await fs.readFile(path.join(target, 'BUILD_ID'), 'utf8'), 'v3-build');
+});
+
 filesystemTest('a late capture of valid-looking webpack data preserves every cache file', async t => {
-  const { f, source, target, sourceText, malformed } = await generatedFixture(t);
+  const { f, source, target, sourceText, malformed } = await generatedFixture(t, { historical: true });
   const plan = await f.plan();
   assert.deepEqual(plan.actions.map(action => action.path), [target]);
-  const result = await f.apply(plan);
+  const nearFloor = await withMaintenanceLock(f.home, 'archive forecast fixture', lease => applyStorage(plan, {
+    home: f.home, repoRoots: [f.repo], lease, prospectiveBytes: 2 * 1024 ** 3,
+    getFreeBytes: async () => 14 * 1024 ** 3 + 8 * 1024 ** 2 + Math.ceil(plan.actions[0].bytes * 1.1),
+  }));
+  assert.deepEqual(nearFloor.skipped.map(item => item.reason), ['archive-space']);
+  await fs.access(target);
+  await notFound(path.join(f.home, 'maintenance-state', 'evidence-archives'));
+  const forecast = await smallFixtureForecast(t, f);
+  const result = await f.apply(plan, forecast);
+  t.diagnostic(JSON.stringify({ actualFreeBytesBefore: result.freeBytesBefore, actualFreeBytesAfter: result.freeBytesAfter }));
   assert.equal(result.completed.length, 1, JSON.stringify(result));
   await notFound(target);
   await fs.access(path.join(source, 'node_modules', 'dependency.js'));
@@ -793,7 +882,7 @@ filesystemTest('a late capture of valid-looking webpack data preserves every cac
 });
 
 filesystemTest('a changed runtime before sealing the basis keeps every cache entry in the ZIP', async t => {
-  const { f, target, nodeExe } = await generatedFixture(t);
+  const { f, target, nodeExe } = await generatedFixture(t, { historical: true });
   await write(nodeExe, 'different runtime');
   const result = await f.apply(await f.plan());
   assert.equal(result.completed.length, 1, JSON.stringify(result));

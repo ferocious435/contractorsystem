@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import * as fs from 'node:fs/promises';
+import fsBindings, * as fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -21,7 +22,7 @@ const write = async (file, bytes) => {
   await fs.writeFile(file, bytes);
 };
 
-async function fixture(t) {
+async function fixture(t, { cliHome = false } = {}) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'contractor-lifecycle-')));
   t.after(async () => {
     const resolved = await fs.realpath(base);
@@ -30,7 +31,7 @@ async function fixture(t) {
     assert.match(path.basename(resolved), /^contractor-lifecycle-/);
     await fs.rm(resolved, { recursive: true, force: true });
   });
-  const repo = path.join(base, 'repo'), home = path.join(base, 'home');
+  const repo = path.join(base, 'repo'), home = path.join(base, cliHome ? 'ContractorSystem' : 'home');
   const outputRoot = path.join(repo, '.superpowers', 'receipts');
   await fs.mkdir(repo);
   await fs.mkdir(home);
@@ -71,10 +72,53 @@ async function fixture(t) {
   return { base, home, repo, outputRoot, verifiedReceipt, deps, task };
 }
 
+async function rejectAfterPackageCopy(runPackage, options) {
+  const original = fs.copyFile;
+  fsBindings.copyFile = async (from, to, ...flags) => {
+    if (to.startsWith(options.home + path.sep) && to.endsWith(path.join('src', 'utils', 'local-ocr-mcp.ts'))) {
+      throw Object.assign(Error('fixture copy failed after starting the package'), { code: 'EIO' });
+    }
+    return original(from, to, ...flags);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(runPackage(options), /fixture copy failed/);
+  } finally {
+    fsBindings.copyFile = original;
+    syncBuiltinESMExports();
+  }
+}
+
 test('buildReservesDiskBeforeCopy', async () => {
   const { mayStart } = await import('./maintenance/storage.mjs');
   assert.equal(await mayStart({ freeGiB: 13, estimatedGiB: 2 }), false);
   assert.equal(await mayStart({ freeGiB: 14, estimatedGiB: 2 }), true);
+});
+
+test('launcher imports from eval with file URL arguments without starting its CLI', async () => {
+  const launcher = new URL('./local-system-launch.mjs', import.meta.url);
+  const guard = new URL('./maintenance/guard.mjs', import.meta.url);
+  const program = 'await import(' + JSON.stringify(launcher.href) + "); console.log('imported');";
+  for (const argument of [null, guard.href, launcher.href, fileURLToPath(guard)]) {
+    const args = ['--input-type=module', '-e', program, ...(argument ? [argument] : [])];
+    const result = await execute(process.execPath, args, { windowsHide: true });
+    assert.equal(result.stdout.trim(), 'imported');
+    assert.equal(result.stderr, '');
+  }
+  const entry = fileURLToPath(launcher);
+  for (const file of windows ? [entry, entry.slice(0, -4).toUpperCase() + '.mjs'] : [entry]) {
+    await assert.rejects(execute(process.execPath, [file, 'invalid-fixture-mode'], { windowsHide: true }),
+      error => error.code === 1 && /Use start, status, stop/.test(error.stderr) && error.stdout === '');
+  }
+});
+
+test('archive headroom includes the target, source, receipts, new bases and reservations', async () => {
+  const { archiveFits } = await import('./maintenance/storage.mjs');
+  const parts = { target: 100, source: 200, evidence: 50, bases: 300, reserved: 100 };
+  const boundary = 12 * gib + 750;
+  assert.equal(archiveFits(boundary, parts.reserved, [parts.target, parts.source, parts.evidence, parts.bases]), true);
+  assert.equal(archiveFits(boundary - 1, parts.reserved, [parts.target, parts.source, parts.evidence, parts.bases]), false);
+  assert.equal(archiveFits(boundary, parts.reserved, [parts.target, null]), false);
 });
 
 test('a completed managed candidate is eligible without filling a working-release slot', () => {
@@ -133,7 +177,7 @@ windowsTest('packageFailureRetainsBuild', async t => {
   });
 });
 
-windowsTest('successfulStandaloneVerificationReleasesBuild', async t => {
+windowsTest('standalone flags and a fabricated process cannot detach the build', async t => {
   const f = await fixture(t);
   const { runBuild } = await import('./local-system-build.mjs');
   const { runPackage } = await import('./local-system-package.mjs');
@@ -155,45 +199,240 @@ windowsTest('successfulStandaloneVerificationReleasesBuild', async t => {
   await fs.writeFile(proof, JSON.stringify(forged));
   await assert.rejects(registeredBuild(f.home, first.source, dist), /evidence has changed/i);
   await fs.writeFile(proof, genuine);
-  await runPackage({ ...f, id: 'candidate', taskId: f.task.id, source: first.source, dist, dependencies,
-    checks: first.receipt, nodeExecutable, codexExe: nodeExecutable, getFreeBytes: free });
+  const packageOptions = { ...f, id: 'candidate', taskId: f.task.id, source: first.source, dist, dependencies,
+    checks: first.receipt, nodeExecutable, codexExe: nodeExecutable, getFreeBytes: free };
+  try {
+    await runPackage(packageOptions);
+  } catch (error) {
+    const staging = path.join(f.home, 'package-staging');
+    const names = await fs.readdir(staging).catch(failure => [failure.code]);
+    const paths = [f.base, f.home, staging, ...names.map(name => path.join(staging, name))];
+    const observed = await Promise.all(paths.map(async file => ({ file,
+      state: await fs.lstat(file).then(info => info.isDirectory() ? 'directory' : 'other', failure => failure.code) })));
+    const records = path.join(f.home, 'maintenance-state', 'package-attempts');
+    const attempts = await Promise.all((await fs.readdir(records).catch(() => []))
+      .filter(name => name !== 'seal.json').map(async name => {
+        const record = JSON.parse(await fs.readFile(path.join(records, name)));
+        return { stage: record.stage, status: record.status, release: record.releaseId, failure: record.failure };
+      }));
+    t.diagnostic(JSON.stringify({ firstPackageFailure: error.code, observed, attempts }));
+    throw error;
+  }
+  await t.test('same-ID package resumes only the owned staged copy after a real file write failure', async () => {
+    const retryOptions = { ...packageOptions, id: 'retry-candidate' };
+    await rejectAfterPackageCopy(runPackage, retryOptions);
+    await assert.rejects(fs.stat(path.join(f.home, 'releases', 'retry-candidate')), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(first.source, dist, 'BUILD_ID'), 'utf8'), 'synthetic-build');
+    const { registeredBuild } = await import('./maintenance/lifecycle.mjs');
+    const state = await registeredBuild(f.home, first.source, dist);
+    assert.match(await fs.readFile(state.failedPackage.failure.stdout, 'utf8'), /fixture copy failed/);
+    await assert.rejects(runPackage({ ...packageOptions, id: 'different-id' }), /unfinished|staging/i);
+    const root = path.join(f.home, 'package-staging');
+    const [slot] = await fs.readdir(root);
+    const unknown = path.join(root, slot, 'release', 'unexpected.fixture');
+    await write(unknown, 'an unexpected byte cannot be overwritten');
+    await assert.rejects(runPackage(retryOptions), /unknown file/i);
+    assert.match(await fs.readFile(unknown, 'utf8'), /cannot be overwritten/);
+    await fs.unlink(unknown);
+    const packaged = await runPackage(retryOptions);
+    assert.equal(packaged.release, 'retry-candidate');
+    assert.equal(await fs.readFile(path.join(packaged.root, dist, 'BUILD_ID'), 'utf8'), 'synthetic-build');
+  });
   const target = path.join(first.source, dist);
   await withMaintenanceLock(f.home, 'verify', async lease => {
     const context = { home: f.home, lease, repoRoots: [f.repo], getFreeBytes: free };
     await assert.rejects(completeStandaloneVerification(
       { release: 'candidate', buildId: 'synthetic-build', verified: true, stopped: false }, context));
     assert.equal(await fs.readFile(path.join(target, 'BUILD_ID'), 'utf8'), 'synthetic-build');
-    const other = { ...f.task, id: 'other-task', build: first.source };
-    await updateTask(f.home, lease, other);
     const standalone = { release: 'candidate', buildId: 'synthetic-build', verified: true, stopped: true, port: 3007 };
-    const protectedResult = await completeStandaloneVerification(standalone, context);
-    assert.equal(protectedResult?.completed?.length ?? 0, 0);
+    await assert.rejects(completeStandaloneVerification(standalone, context), /observed|independent/i);
+    await assert.rejects(completeStandaloneVerification(standalone, context, {
+      releaseId: 'candidate', pid: 76543,
+      process: { ProcessId: 76543, CommandLine: 'fiction', CreationDate: 'fiction', ExecutablePath: nodeExecutable },
+    }), /observed|independent/i);
     assert.equal(await fs.readFile(path.join(target, 'BUILD_ID'), 'utf8'), 'synthetic-build');
-    assert.equal((await readTask(f.home, f.task.id)).build, null);
-    await updateTask(f.home, lease, { ...other, status: 'closed', build: null });
-    await completeStandaloneVerification(
-      standalone, context);
+    assert.equal((await readTask(f.home, f.task.id)).build, target);
+    const { packagedRelease } = await import('./maintenance/lifecycle.mjs');
+    const binding = await packagedRelease(f.home, 'candidate');
+    assert.equal(binding.actions.verify, undefined);
+    assert.equal(binding.observedStandalone, undefined);
   });
-  await assert.rejects(fs.stat(target), { code: 'ENOENT' });
   const plan = await prepareStoragePlan({ home: f.home, repoRoots: [f.repo] });
   await t.test('candidateRemainsPinned', () => {
-    assert.ok(plan.protected.some(row => row.id === 'release:candidate' && row.reasons.some(reason => reason.includes(f.task.id))));
+    assert.ok(plan.protected.some(row => row.id === 'release:retry-candidate' && row.reasons.some(reason => reason.includes(f.task.id))));
   });
+  await t.test('explicit package closure archives an owned stage and respects a foreign source pin', async () => {
+    const { closeManagedCandidate } = await import('./maintenance/lifecycle.mjs');
+    const { applyStorage } = await import('./maintenance/storage.mjs');
+    const { verifyArchive } = await import('./maintenance/archive.mjs');
+    await rejectAfterPackageCopy(runPackage, { ...packageOptions, id: 'terminal-stage' });
+    const directory = path.join(f.home, 'package-staging');
+    const [slot] = await fs.readdir(directory);
+    const stage = path.join(directory, slot);
+    const unknown = path.join(directory, 'f'.repeat(64));
+    await write(path.join(unknown, 'unknown.fixture'), 'unclaimed bytes');
+    const options = { home: f.home, repoRoots: [f.repo] };
+    await withMaintenanceLock(f.home, 'close the staging fixture', async lease => {
+      const close = taskId => closeManagedCandidate({ ...options, lease, taskId, releaseId: 'terminal-stage', result: 'unused' });
+      await assert.rejects(close(f.task.id), /closed task/i);
+      await updateTask(f.home, lease, { ...f.task, status: 'closed' });
+      await updateTask(f.home, lease, { ...f.task, id: 'foreign-stage', status: 'closed' });
+      await assert.rejects(close('foreign-stage'), /no matching/i);
+      await updateTask(f.home, lease, { ...f.task, id: 'foreign-stage', pins: [target] });
+      await close(f.task.id);
+    });
+    const pinned = await prepareStoragePlan(options);
+    assert.ok(pinned.protected.some(item => item.path === stage && item.reasons.includes('pin:foreign-stage')));
+    assert.ok(pinned.protected.some(item => item.path === unknown && item.reasons.includes('package-stage-unverified')));
+    await withMaintenanceLock(f.home, 'unpin and retain the staged bytes', async lease => {
+      await updateTask(f.home, lease, { ...f.task, id: 'foreign-stage', status: 'closed' });
+      const ready = await prepareStoragePlan(options);
+      assert.deepEqual(ready.actions.map(item => item.path), [stage]);
+      const { measureArchiveTargets } = await import('./maintenance/archive.mjs');
+      const [small] = await measureArchiveTargets([f.home]);
+      assert.ok(small.bytes < 4 * 1024 ** 2, 'the modeled archive budget is limited to the tiny owned fixture');
+      const result = await applyStorage(ready, { ...options, lease, getFreeBytes: free });
+      t.diagnostic(JSON.stringify({ fixtureBytes: small.bytes, modeledArchiveFreeBytes: 40 * gib,
+        actualFreeBytesBefore: result.freeBytesBefore, actualFreeBytesAfter: result.freeBytesAfter }));
+      assert.equal(result.completed.length, 1, JSON.stringify(result));
+      const archive = await verifyArchive(result.completed[0].archive.path);
+      assert.ok(archive.entries.some(item => item.path === 'artifact/release/' + dist + '/BUILD_ID'));
+      assert.ok(archive.entries.some(item => item.path.startsWith('evidence/')));
+    });
+    assert.equal(await fs.readFile(path.join(unknown, 'unknown.fixture'), 'utf8'), 'unclaimed bytes');
+    assert.equal(await fs.readFile(path.join(target, 'BUILD_ID'), 'utf8'), 'synthetic-build');
+  });
+});
+
+windowsTest('an owned missing stage can close without an archive and retains its diagnostic bytes', async t => {
+  const f = await fixture(t);
+  const { openPackageStage, readPackageStage, recordPackageStageFailure } = await import('./maintenance/package-staging.mjs');
+  const { closeManagedCandidate } = await import('./maintenance/lifecycle.mjs');
+  await withMaintenanceLock(f.home, 'missing stage fixture', async lease => {
+    const context = { home: f.home, lease };
+    const descriptor = { releaseId: 'missing-candidate', task: f.task.id,
+      owner: { id: f.task.id, worktree: f.repo }, source: f.repo, dist: '.next-missing-fixture', recipe: sha256('first attempt') };
+    const attempt = await openPackageStage(context, descriptor);
+    await recordPackageStageFailure(context, attempt, Error('retained original failure: עברית'));
+    const state = path.join(f.home, 'maintenance-state', 'package-attempts', attempt.slot + '.json');
+    const originalDiagnostic = await fs.readFile(state);
+    assert.deepEqual(await fs.readdir(attempt.stage), []);
+    await fs.rmdir(attempt.stage); // Only the newly created, empty, owned TEMP directory.
+    await assert.rejects(openPackageStage(context, descriptor), /missing/i);
+    const close = taskId => closeManagedCandidate({ ...context, taskId, releaseId: descriptor.releaseId, result: 'unused' });
+    await assert.rejects(close(f.task.id), /closed task/i);
+    await updateTask(f.home, lease, { ...f.task, status: 'closed' });
+    await updateTask(f.home, lease, { ...f.task, id: 'other-stage-owner', status: 'closed' });
+    await assert.rejects(close('other-stage-owner'), /matching|belong/i);
+    const release = path.join(f.home, 'releases', descriptor.releaseId);
+    await fs.mkdir(release, { recursive: true });
+    await assert.rejects(close(f.task.id));
+    await fs.rmdir(release);
+    const closed = await close(f.task.id);
+    assert.equal(closed.stageMissing, true);
+    assert.deepEqual(await fs.readFile(closed.diagnostic.path), originalDiagnostic);
+    const conclusion = await fs.readFile(closed.receipt.path);
+    assert.equal(JSON.parse(conclusion).stageMissing, true);
+    await assert.rejects(fs.stat(path.join(f.home, 'maintenance-state', 'evidence-archives')), { code: 'ENOENT' });
+    const repeated = await close(f.task.id);
+    assert.deepEqual(repeated, closed);
+    const next = { ...descriptor, releaseId: 'replacement-candidate', recipe: sha256('next attempt') };
+    await write(path.join(attempt.stage, 'foreign.fixture'), 'a reappeared tree is not owned by the new attempt');
+    await assert.rejects(close(f.task.id));
+    await assert.rejects(openPackageStage(context, next), /taken over|changed|unsafe/i);
+    assert.match(await fs.readFile(path.join(attempt.stage, 'foreign.fixture'), 'utf8'), /not owned/);
+    await fs.unlink(path.join(attempt.stage, 'foreign.fixture'));
+    await fs.rmdir(attempt.stage);
+    await updateTask(f.home, lease, f.task);
+    const replacement = await openPackageStage(context, next);
+    assert.equal(replacement.releaseId, 'replacement-candidate');
+    assert.deepEqual(await fs.readFile(closed.diagnostic.path), originalDiagnostic);
+    assert.deepEqual(await fs.readFile(closed.receipt.path), conclusion);
+    const current = (await readPackageStage(f.home, replacement.slot)).record;
+    assert.equal(current.releaseId, 'replacement-candidate');
+    await updateTask(f.home, lease, { ...f.task, status: 'closed' });
+    const ordinary = await closeManagedCandidate({ ...context, taskId: f.task.id, releaseId: replacement.releaseId, result: 'unused' });
+    assert.equal(ordinary.stageMissing, undefined);
+    assert.deepEqual(await fs.readdir(replacement.stage), []);
+  });
+});
+
+windowsTest('a returned missing stage stays protected with its original directory identity', async t => {
+  const f = await fixture(t);
+  const { openPackageStage } = await import('./maintenance/package-staging.mjs');
+  const { closeManagedCandidate } = await import('./maintenance/lifecycle.mjs');
+  let stage;
+  await withMaintenanceLock(f.home, 'returned stage fixture', async lease => {
+    const context = { home: f.home, lease };
+    const attempt = await openPackageStage(context, { releaseId: 'returned-candidate', task: f.task.id,
+      owner: { id: f.task.id, worktree: f.repo }, source: f.repo, dist: '.next-returned-fixture', recipe: sha256('returned stage') });
+    stage = attempt.stage;
+    const parked = path.join(f.base, 'parked-empty-stage');
+    await fs.rename(stage, parked);
+    await updateTask(f.home, lease, { ...f.task, status: 'closed' });
+    await closeManagedCandidate({ ...context, taskId: f.task.id, releaseId: 'returned-candidate', result: 'unused' });
+    await fs.rename(parked, stage);
+    await write(path.join(stage, 'foreign.fixture'), 'the same directory returned after its missing conclusion');
+  });
+  const plan = await prepareStoragePlan({ home: f.home, repoRoots: [f.repo] });
+  assert.equal(plan.actions.some(action => action.path === stage), false, 'a same-identity returned stage must stay protected');
+  assert.ok(plan.protected.some(item => item.path === stage));
+  assert.match(await fs.readFile(path.join(stage, 'foreign.fixture'), 'utf8'), /same directory returned/);
 });
 
 test('installRollbackPreservesBoth', async () => {
   const { switchRelease } = await import('./local-system-launch.mjs');
   const old = { releaseId: 'old', previousId: 'earlier' };
   let pointer = old;
+  let listener = old;
   await assert.rejects(switchRelease('new', {
-    current: old, readRelease: id => ({ id }), verify: async () => {}, stop: async () => {},
+    current: old, readRelease: id => ({ id }), verify: async () => {},
+    stop: async process => { assert.equal(listener, process); listener = null; },
+    inspect: async process => listener === process ? 'owned' : 'gone',
+    portFree: async () => listener === null,
     launch: async (release, previousId) => {
       if (release.id === 'new') throw Error('failed candidate');
-      return { releaseId: release.id, previousId, pid: 42 };
+      return listener = { releaseId: release.id, previousId, pid: 42 };
     },
     store: async value => { pointer = value; },
   }), /previous program was restored/i);
   assert.deepEqual(pointer, { releaseId: 'old', previousId: 'earlier', pid: 42 });
+});
+
+test('rollback inspects both processes after stop and current-write failures', async t => {
+  const { switchRelease } = await import('./local-system-launch.mjs');
+  for (const fault of ['before-stop', 'after-stop', 'candidate-store']) {
+    await t.test(fault, async () => {
+      const current = { releaseId: 'old', previousId: 'prior', pid: 1 };
+      let listener = current, pointer = current;
+      const started = [], recovered = [];
+      const stop = async process => {
+        assert.equal(listener, process);
+        if (process === current && fault === 'before-stop') throw Error('preflight before termination');
+        listener = null;
+        if (process === current && fault === 'after-stop') throw Error('post-stop port check');
+      };
+      await assert.rejects(switchRelease('new', {
+        current, readRelease: id => ({ id }), verify: () => {}, stop,
+        inspect: async process => listener === process ? 'owned' : 'gone',
+        portFree: async () => listener === null,
+        stopOwned: async process => { assert.equal(listener, process); recovered.push(process.releaseId); listener = null; },
+        launch: async ({ id }, previousId) => {
+          assert.equal(listener, null);
+          started.push(id);
+          return listener = { releaseId: id, pid: 17 + started.length, previousId };
+        },
+        store: async process => {
+          if (process.releaseId === 'new' && fault === 'candidate-store') throw Error('cannot write current');
+          pointer = process;
+        },
+      }), fault === 'before-stop' ? /before termination/ : /previous program was restored/);
+      assert.equal(listener.releaseId, 'old');
+      assert.equal(pointer, listener);
+      assert.deepEqual(started, fault === 'before-stop' ? [] : fault === 'after-stop' ? ['old'] : ['new', 'old']);
+      assert.deepEqual(recovered, fault === 'candidate-store' ? ['new'] : []);
+    });
+  }
 });
 
 test('an already-running start dispatches maintenance and preserves availability on BUSY', async () => {
@@ -417,6 +656,17 @@ windowsTest('verified managed Next output omits only unchanged cache packs', asy
 
     const check = () => runLauncher(['verify', '--release', 'managed-candidate', '--port', '3010'],
       { home: f.home, repoRoots: [f.repo] });
+    const pin = async pins => withMaintenanceLock(f.home, 'pin package input', async lease => {
+      const state = await readTask(f.home, f.task.id);
+      await updateTask(f.home, lease, { ...state, pins });
+    });
+    await pin([target]);
+    assert.equal((await check()).stopped, true);
+    assert.equal(await fs.readFile(path.join(target, 'BUILD_ID'), 'utf8'), 'managed-fixture');
+    await pin([]);
+    await runPackage({ ...f, id: 'repacked-candidate', taskId: f.task.id, source: build.source, dist,
+      dependencies: f.deps, checks: build.receipt, codexExe: nodeExe, getFreeBytes: free });
+    assert.equal(await fs.readFile(path.join(target, 'BUILD_ID'), 'utf8'), 'managed-fixture');
     const verified = await check();
     assert.equal(verified.stopped, true);
     const remaining = await fs.stat(target).catch(error => {
@@ -524,4 +774,31 @@ windowsTest('legacyHelpersCannotBypassGuard', async t => {
       legacy: true, dependencies: f.deps }), { code: 'BUSY' });
   });
   await assert.rejects(fs.stat(path.join(f.home, 'releases')), { code: 'ENOENT' });
+});
+
+windowsTest('legacy-shaped helper reaches buildMain and leaves output untouched on BUSY and LOW_DISK', async t => {
+  const f = await fixture(t, { cliHome: true });
+  const helper = path.join(f.outputRoot, 'fixture-build-adapter.mjs');
+  const entry = new URL('./local-system-build.mjs', import.meta.url).href;
+  await write(helper, [
+    'const { buildMain } = await import(' + JSON.stringify(entry) + ');',
+    'const [task, checks, output] = process.argv.slice(2);',
+    "try { await buildMain(['--task', task, '--checks', checks, '--dist', '.next-fixture', '--output', output], { receiptLabel: 'task5-final' }); }",
+    "catch (error) { console.error(error.code); process.exitCode = 3; }",
+  ].join('\n'));
+  const run = lease => {
+    const env = { ...process.env, LOCALAPPDATA: f.base };
+    delete env.CONTRACTOR_MAINTENANCE_LEASE;
+    if (lease) env.CONTRACTOR_MAINTENANCE_LEASE = JSON.stringify(lease);
+    return execute(process.execPath, [helper, f.task.id, f.verifiedReceipt, f.outputRoot],
+      { cwd: f.repo, windowsHide: true, env });
+  };
+  await withMaintenanceLock(f.home, 'outer fixture', async lease => {
+    await assert.rejects(run(), error => error.code === 3 && /BUSY/.test(error.stderr));
+    const { runLifecycle } = await import('./maintenance/storage.mjs');
+    await runLifecycle('build', { home: f.home, task: 'occupied-reserve', lease, cleanup: false,
+      expectedAdditionalBytes: 100000 * gib, getFreeBytes: async () => 200000 * gib });
+    await assert.rejects(run(lease), error => error.code === 3 && /LOW_DISK/.test(error.stderr));
+  });
+  assert.deepEqual((await fs.readdir(f.outputRoot)).sort(), ['1-tsc.json', 'fixture-build-adapter.mjs']);
 });

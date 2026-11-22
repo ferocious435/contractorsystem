@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { archiveName, nativeArchiveOperation, readGuardedRecords } from './archive.mjs';
 import { requireHeldLease } from './guard.mjs';
+import { observedStandaloneBinding } from './lifecycle.mjs';
 import {
   absolutePath, assertNarrowRoot, isBuildName, isHistoricalBuildSource, isReleaseId, pathKey, refusal, relativeWithin,
 } from './policy.mjs';
@@ -100,7 +101,7 @@ function references(record, registered) {
   return safe;
 }
 
-async function analyzeLegacy(record, registered, manifests, pinnedTarget = null, lifecycle = false) {
+async function analyzeLegacy(record, registered, manifests, pinnedTarget = null, lifecycle = false, home) {
   const known = references(record, registered);
   const artifactFiles = new Map();
   const addArtifactFile = file => artifactFiles.set(pathKey(file), file);
@@ -185,15 +186,22 @@ async function analyzeLegacy(record, registered, manifests, pinnedTarget = null,
     }
     return results.sort((left, right) => Date.parse(right.value.at) - Date.parse(left.value.at));
   };
+  const sameEvidence = (left, right) => left && right && pathKey(left.path) === pathKey(right.path) && left.sha256 === right.sha256;
+  const sameActionEvidence = (left, right) => left?.length === right.length &&
+    left.every((item, index) => sameEvidence(item, right[index]));
   const releaseBuilds = new Map();
   for (const row of record.releases) {
     const manifest = manifests.get(row?.id);
     if (!manifest || !isBuildName(manifest.dist ?? '') ||
         observedId(path.join(manifest.path, manifest.dist, 'BUILD_ID')) !== manifest.buildId) continue;
     const [install] = actionReceipt(row.install, 'install', manifest);
-    const [verified] = actionReceipt(row.verify, 'verify', manifest);
-    const [packaged] = actionReceipt(row.package, 'package', manifest);
-    if (install) proofs.set(manifest.id, {
+    const binding = lifecycle && row.verify.length
+      ? await observedStandaloneBinding(home, manifest.id, pinnedTarget).catch(() => null) : null;
+    const verified = actionReceipt(row.verify, 'verify', manifest)
+      .find(item => !lifecycle || sameActionEvidence(binding?.verify, item.evidence));
+    const packaged = actionReceipt(row.package, 'package', manifest)
+      .find(item => !lifecycle || sameActionEvidence(binding?.package, item.evidence));
+    if (install && (!lifecycle || (verified && packaged))) proofs.set(manifest.id, {
       acceptedAt: install.value.at, buildId: manifest.buildId, dependencyRoot: manifest.dependencyRoot,
       previousId: isReleaseId(install.value.current.previousId) ? install.value.current.previousId : null,
       evidence: [...install.evidence, ...(verified?.evidence ?? []), ...(packaged?.evidence ?? [])],
@@ -204,6 +212,7 @@ async function analyzeLegacy(record, registered, manifests, pinnedTarget = null,
           const key = pathKey(build.path);
           const candidate = candidates.get(key);
           if (candidate?.build.buildId === manifest.buildId && candidate.build.dist === manifest.dist &&
+              (!lifecycle || sameEvidence(binding?.build, candidate.proof.item)) &&
               Date.parse(candidate.build.at) <= Date.parse(packaged.value.at)) {
             releaseBuilds.set(key, {
               releaseId: manifest.id,
@@ -258,7 +267,7 @@ async function readRegistry(home, registered, manifests, pinnedTarget, lifecycle
   const record = readJson((await readGuardedRecords([file])).get(file));
   if (record?.version !== 1 || !Array.isArray(record.evidence) || !Array.isArray(record.releases) ||
       !Array.isArray(record.builds)) throw refusal('Stored legacy evidence is invalid');
-  return analyzeLegacy(record, registered, manifests, pinnedTarget, lifecycle);
+  return analyzeLegacy(record, registered, manifests, pinnedTarget, lifecycle, home);
 }
 
 export async function readLegacyProvenance(home, registered, manifests, pinnedTarget) {
@@ -301,7 +310,7 @@ export async function registerLegacyProvenance(index, { home, lease, registered,
       };
     }
   }
-  const analyzed = await analyzeLegacy(record, registered, manifests, null, lifecycle);
+  const analyzed = await analyzeLegacy(record, registered, manifests, null, lifecycle, home);
   if (!analyzed.releases.size && !analyzed.builds.size) throw refusal('The index contains no verifiable legacy evidence');
   await requireHeldLease(home, lease);
   await nativeArchiveOperation('write', { writes: [{

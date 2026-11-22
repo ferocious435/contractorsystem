@@ -110,5 +110,7 @@ export function artifactRoot({ home, repoRoots }, artifact) {
     const expected = path.join(assertNarrowRoot(home), directory);
     if (pathKey(parent) === pathKey(expected)) return expected;
   }
+  if (artifact.kind === 'package-stage' && /^[a-f0-9]{64}$/.test(name) && artifact.provenance?.stageIdentity &&
+      pathKey(parent) === pathKey(path.join(home, 'package-staging'))) return assertNarrowRoot(parent);
   throw refusal('The artifact is outside the registered operation roots');
 }

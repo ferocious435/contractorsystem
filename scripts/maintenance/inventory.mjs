@@ -1,5 +1,6 @@
 import { readLegacyProvenance } from './legacy.mjs';
 import { verifiedBuildClosure, verifiedCandidateClosure } from './lifecycle.mjs';
+import { readPackageStage, stagingDirectory } from './package-staging.mjs';
 import { readGuardedRecords } from './archive.mjs';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -157,6 +158,8 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
     artifacts: [], processes: [], uncertainties: [], freeBytes: null,
   };
   const items = new Map();
+  const overlaps = (left, right) => relativeWithin(left, right) !== null || relativeWithin(right, left) !== null;
+  const artifactPaths = artifact => [artifact.path, ...(artifact.stageSources ?? [])];
   const protection = (item, reason) => {
     if (item && !item.protectedBy.includes(reason)) {
       item.protectedBy.push(reason);
@@ -440,6 +443,32 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
     inventory.tasks.push(record);
   }
 
+  for (const entry of await entries(stagingDirectory(home), 'package-staging')) {
+    const stage = path.join(stagingDirectory(home), entry.name);
+    const artifact = add('package-stage:' + entry.name, 'package-stage', stage);
+    try {
+      if (!entry.isDirectory()) throw refusal('Unknown staging entry');
+      const { record, evidence } = await readPackageStage(home, entry.name);
+      const release = path.join(home, 'releases', record.releaseId);
+      artifact.stageSources = [path.join(record.source, record.dist), release];
+      artifact.taskId = record.task;
+      const owner = record.owner && inventory.tasks.find(task => task.id === record.owner.id);
+      if (record.stageMissing === true) {
+        protection(artifact, 'package-stage-reappeared');
+      } else if (record.status !== 'closed' || !record.identity || !isDate(record.closedAt) ||
+          (record.owner && (owner?.status !== 'closed' || pathKey(owner.worktree) !== pathKey(record.owner.worktree)))) {
+        protection(artifact, 'package-attempt-unfinished');
+      } else {
+        artifact.provenance = { closedAt: record.closedAt, stageIdentity: record.identity, evidence: [evidence] };
+      }
+      if (record.releaseId === currentId || previousIds.includes(record.releaseId)) {
+        protection(artifact, 'published-release-protected');
+      }
+    } catch {
+      protection(artifact, 'package-stage-unverified');
+    }
+  }
+
   for (const task of inventory.tasks) {
     if (task.status !== 'closed' ||
         inventory.uncertainties.some(item => item.scope === 'task:' + task.id)) continue;
@@ -575,7 +604,7 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
           if (artifact.provenance?.managedTask === task.id && artifact.provenance?.packageVerified &&
               task.detachedBuild && pathKey(task.detachedBuild) === pathKey(artifact.path)) return false;
         }
-        return relativeWithin(artifact.path, file) !== null || relativeWithin(file, artifact.path) !== null;
+        return artifactPaths(artifact).some(target => overlaps(target, file));
       });
       if (matching && (protects || state === 'live' || state === 'unknown')) protection(artifact, reason);
       const pins = Array.isArray(task.pins) ? task.pins : [];
@@ -586,7 +615,7 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
           try {
             let pinned = absolutePath(pin);
             try { pinned = pathInMaintenanceHome(home, pinned); } catch { /* A worktree pin can be external. */ }
-            if (relativeWithin(artifact.path, pinned) !== null || relativeWithin(pinned, artifact.path) !== null) {
+            if (artifactPaths(artifact).some(target => overlaps(target, pinned))) {
               protection(artifact, 'pin:' + task.id);
             }
           } catch {
@@ -605,11 +634,13 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
     if (coordinatorLease && proc.pid === process.pid) continue;
     const matches = [];
     for (const artifact of items.values()) {
-      const relative = useAlias ? relativeWithin(home, artifact.path) : null;
-      const aliases = relative?.startsWith('..') || relative === null ? [artifact.path] : [artifact.path, path.join(logical, relative)];
+      const aliases = artifactPaths(artifact).flatMap(file => {
+        const relative = useAlias ? relativeWithin(home, file) : null;
+        return relative === null ? [file] : [file, path.join(logical, relative)];
+      });
       if (aliases.some(file => referencedByProcess(proc, file))) matches.push(artifact);
     }
-    const bound = boundPids.has(proc.pid) || matches.some(item => ['build', 'release', 'rejected-release', 'worktree'].includes(item.kind));
+    const bound = boundPids.has(proc.pid) || matches.some(item => ['build', 'release', 'rejected-release', 'worktree', 'package-stage'].includes(item.kind));
     if (!bound && needsOperationBinding(proc)) {
       uncertain('process:' + proc.pid, 'process-path-unverified');
       unboundOperation = true;
@@ -630,6 +661,8 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
     entry.reason === 'task-record-unverified' || entry.reason === 'task-path-unverified');
   const incompleteReleases = inventory.uncertainties.some(entry => entry.scope === 'current' || entry.scope === 'previous' ||
     entry.scope === 'releases' || entry.reason === 'accepted-release-missing');
+  const uncertainStagePointers = inventory.uncertainties.some(entry => entry.scope === 'current' ||
+    (entry.scope === 'previous' && entry.reason !== 'accepted-history-incomplete') || entry.scope === 'releases');
   for (const item of items.values()) {
     if (!processesKnown) protection(item, 'process-enumeration-unavailable');
     if (inventory.uncertainties.some(entry => entry.scope === 'worktrees' || entry.scope === 'history')) {
@@ -639,8 +672,9 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
       protection(item, 'worktree-status-unavailable');
     }
     if (incompleteTasks) protection(item, 'task-registry-unverified');
-    if (incompleteReleases && ['release', 'rejected-release'].includes(item.kind)) protection(item, 'release-history-unverified');
-    if (unboundOperation && ['build', 'release', 'rejected-release'].includes(item.kind)) protection(item, 'process-path-unverified');
+    if ((incompleteReleases && ['release', 'rejected-release'].includes(item.kind)) ||
+        (item.kind === 'package-stage' && uncertainStagePointers)) protection(item, 'release-history-unverified');
+    if (unboundOperation && ['build', 'release', 'rejected-release', 'package-stage'].includes(item.kind)) protection(item, 'process-path-unverified');
     if (item.kind !== 'worktree' && registered.some(tree => relativeWithin(item.path, tree.path) !== null)) {
       protection(item, 'contains-registered-worktree');
     }
