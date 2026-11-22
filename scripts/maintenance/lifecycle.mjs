@@ -310,6 +310,16 @@ async function candidateOutcome(release) {
   return { at: attempt.receipt.at, passed: false, evidence: [...packaged.evidence, ...attempt.evidence] };
 }
 
+export async function requireInstallableCandidate({ home, lease }, releaseId) {
+  home = await requireHeldLease(home, lease);
+  const release = await packagedRelease(home, releaseId);
+  if (!hasObservedStandalone(release) || release.closed) {
+    throw refusal('An open candidate must pass standalone verification before installation');
+  }
+  await candidateOutcome(release);
+  return release;
+}
+
 export async function closeManagedCandidate({ home, lease, taskId, releaseId, result, source, dist }) {
   if (!closingResults.includes(result)) throw refusal('Choose superseded, rejected or unused as the candidate result');
   home = await requireHeldLease(home, lease);
@@ -523,7 +533,7 @@ export async function plainFiles(root) {
   return result.sort();
 }
 
-export async function publishLauncherBundle({ home, lease, source, nodeExe }) {
+export async function stageLauncherBundle({ home, lease, source, nodeExe, expectedFiles }) {
   home = await requireHeldLease(home, lease);
   const scripts = ['local-system-launch.mjs', 'local-system-maintenance.mjs', 'local-system-backup.mjs', 'local-system-restore.mjs'];
   const library = await plainFiles(path.join(source, 'maintenance'));
@@ -532,7 +542,11 @@ export async function publishLauncherBundle({ home, lease, source, nodeExe }) {
     const file = path.join(source, name);
     const info = await fs.lstat(file);
     if (!info.isFile() || info.nlink !== 1) throw refusal('A launcher input is not a plain file');
-    return fs.readFile(file);
+    const read = await fs.readFile(file);
+    if (expectedFiles && sha256(read) !== expectedFiles.get('scripts/' + name)) {
+      throw refusal('A launcher input differs from the verified package');
+    }
+    return read;
   }));
   const version = sha256(JSON.stringify(names.map((name, index) => [name, sha256(bytes[index])])));
   const code = path.join(home, 'maintenance');
@@ -552,7 +566,6 @@ export async function publishLauncherBundle({ home, lease, source, nodeExe }) {
       throw refusal('An existing launcher bundle contains different bytes');
     }
   }
-  await requireHeldLease(home, lease);
   const modulePath = './maintenance/' + version + '/';
   const bootstrap = [
     "if (process.argv[2] === 'maintenance') {",
@@ -563,14 +576,26 @@ export async function publishLauncherBundle({ home, lease, source, nodeExe }) {
     '  if (launcherMain) await launcherMain();',
     '}',
   ].join('\n') + '\n';
-  await writeRecords([{ path: path.join(home, 'launcher.mjs'), value: bootstrap, overwrite: true }]);
-  if (nodeExe) {
-    const command = '@echo off\r\n"' + nodeExe + '" "' + path.join(home, 'launcher.mjs') +
-      '" start\r\nif errorlevel 1 pause\r\n';
-    await writeRecords(['Запустить ContractorSystem.cmd', 'start.cmd'].map(name =>
-      ({ path: path.join(home, name), value: command, overwrite: true })));
-  }
-  return { version, root };
+  return async function activateLauncher() {
+    await requireHeldLease(home, lease);
+    const target = path.join(home, 'launcher.mjs');
+    if (nodeExe) {
+      // These wrappers always address the same bootstrap. Keep installed copies intact.
+      const command = '@echo off\r\n"' + nodeExe + '" "' + target + '" start\r\nif errorlevel 1 pause\r\n';
+      const wrappers = ['Запустить ContractorSystem.cmd', 'start.cmd'].map(name => path.join(home, name));
+      const states = await probePaths(wrappers);
+      if (states.includes('unverified')) throw refusal('A launcher command cannot be verified');
+      const missing = wrappers.filter((_, index) => states[index] === 'missing');
+      if (missing.length) await writeRecords(missing.map(file => ({ path: file, value: command })));
+    }
+    try {
+      await writeRecords([{ path: target, value: bootstrap, overwrite: true }]);
+    } catch (error) {
+      // A lost worker acknowledgement after the atomic replacement is recoverable.
+      const active = await readRecords([target]).catch(() => []);
+      if (!active[0]?.equals(Buffer.from(bootstrap))) throw error;
+    }
+  };
 }
 
 export async function measuredBytes(root) {

@@ -13,10 +13,12 @@ async function releaseJson(file) {
   return JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
 }
 
-export function readRelease(home, id) {
+export function readRelease(home, id, manifestSha256) {
   if (!isReleaseId(id)) throw refusal('Invalid release identity');
   const root = path.join(home, 'releases', id);
-  const release = JSON.parse(privateFile(path.join(root, 'release.json')).toString('utf8'));
+  const bytes = privateFile(path.join(root, 'release.json'));
+  if (manifestSha256 !== undefined && hash(bytes) !== manifestSha256) throw refusal('The candidate manifest changed after packaging');
+  const release = JSON.parse(bytes.toString('utf8'));
   const nodeExe = pathInMaintenanceHome(home, release.nodeExe);
   const dependencyRoot = pathInMaintenanceHome(home, release.dependencyRoot);
   if (release.id !== id || pathKey(pathInMaintenanceHome(home, release.root)) !== pathKey(root) ||

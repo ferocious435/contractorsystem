@@ -7,7 +7,7 @@ import { archiveName, measureArchiveTargets, nativeArchiveOperation } from './ma
 import { inheritedMaintenanceLease, probePaths, requirePlainPath, resolveMaintenanceHome } from './maintenance/guard.mjs';
 import { updateTask } from './maintenance/inventory.mjs';
 import {
-  activeTask, guardedJson, plainFiles, publishLauncherBundle, registerPackagedRelease, registeredBuild,
+  activeTask, guardedJson, plainFiles, registerPackagedRelease, registeredBuild,
   registerPackageFailure, sha256, withLifecycleOperation, writeRecords,
 } from './maintenance/lifecycle.mjs';
 import { assertNarrowRoot, isBuildName, isReleaseId, pathKey, refusal } from './maintenance/policy.mjs';
@@ -249,7 +249,6 @@ export async function runPackage({ id, source, dist, dependencies = path.resolve
     const result = { release: id, root, buildId, files: release.files.length, nodeExe, dependencies: dependencyRoot,
       legacyCompiledBuild: legacy, measuredBytes: measured.bytes + extraCopies };
     await registerPackagedRelease(context, managed, result);
-    await publishLauncherBundle({ ...context, source: path.join(root, 'scripts'), nodeExe });
     await markPackagePublished(context, attempt);
     return result;
   };

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import fsBindings, * as fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { withMaintenanceLock } from './maintenance/guard.mjs';
 import { readTask, updateTask } from './maintenance/inventory.mjs';
+import { pathKey } from './maintenance/policy.mjs';
 import { planStorage, prepareStoragePlan } from './maintenance/storage.mjs';
 
 const execute = promisify(execFile);
@@ -504,6 +505,117 @@ windowsTest('a returned missing stage stays protected with its original director
   assert.match(await fs.readFile(path.join(stage, 'foreign.fixture'), 'utf8'), /same directory returned/);
 });
 
+windowsTest('install rejects published bytes with no signed candidate before switching', async t => {
+  const f = await fixture(t);
+  const { runLauncher } = await import('./local-system-launch.mjs');
+  const root = path.join(f.home, 'releases', 'interrupted-candidate');
+  const current = JSON.stringify({ releaseId: 'old', previousId: 'older' });
+  await write(path.join(f.home, 'current.json'), current);
+  await write(path.join(f.home, 'launcher.mjs'), 'old launcher');
+  await write(path.join(root, 'release.json'), JSON.stringify({
+    id: 'interrupted-candidate', root, nodeExe: path.join(f.home, 'runtime', 'unused.exe'),
+    dependencyRoot: path.dirname(f.deps), dist: '.next-fixture', buildId: 'interrupted-fixture', files: [],
+  }));
+  await assert.rejects(runLauncher(['install', '--release', 'interrupted-candidate'], { home: f.home }),
+    /open candidate must pass standalone verification/i);
+  assert.equal(await fs.readFile(path.join(f.home, 'current.json'), 'utf8'), current);
+  assert.equal(await fs.readFile(path.join(f.home, 'launcher.mjs'), 'utf8'), 'old launcher');
+});
+
+windowsTest('package does not replace the working launcher or its commands', async t => {
+  const f = await fixture(t);
+  const { runPackage } = await import('./local-system-package.mjs');
+  const dist = '.next-tiny-package';
+  await write(path.join(f.repo, dist, 'BUILD_ID'), 'tiny-package');
+  const executable = path.join(f.base, 'dummy.exe');
+  await write(executable, 'test-only runtime bytes; never executed');
+  const active = ['launcher.mjs', 'start.cmd', 'Запустить ContractorSystem.cmd'];
+  await Promise.all(active.map(name => write(path.join(f.home, name), 'previous ' + name)));
+  const result = await runPackage({ home: f.home, repo: f.repo, id: 'tiny-candidate', source: f.repo, dist,
+    dependencies: f.deps, nodeExecutable: executable, codexExe: executable, legacy: true, getFreeBytes: async () => 40 * gib });
+  assert.equal(await fs.readFile(path.join(result.root, dist, 'BUILD_ID'), 'utf8'), 'tiny-package');
+  assert.ok((await fs.stat(path.join(result.root, 'scripts', 'local-system-launch.mjs'))).isFile());
+  for (const name of active) assert.equal(await fs.readFile(path.join(f.home, name), 'utf8'), 'previous ' + name);
+});
+
+windowsTest('managed install activates the launcher only for the healthy selected candidate', async t => {
+  const f = await fixture(t);
+  const { installVerifiedRelease, runLauncher } = await import('./local-system-launch.mjs');
+  const id = 'checked-candidate', buildId = 'checked-build', root = path.join(f.home, 'releases', id);
+  const programs = { 'local-system-launch.mjs': "export function launcherMain() { console.log('candidate launcher'); }",
+    'local-system-maintenance.mjs': 'export {};', 'local-system-backup.mjs': 'export {};',
+    'local-system-restore.mjs': 'export {};', 'maintenance/test.mjs': 'export {};' };
+  for (const [name, content] of Object.entries(programs)) await write(path.join(root, 'scripts', name), content);
+  const manifest = JSON.stringify({ id, buildId, root, dist: '.next-fixture',
+    nodeExe: path.join(f.home, 'runtime', 'unused.exe'), dependencyRoot: path.dirname(f.deps),
+    files: Object.entries(programs).map(([name, content]) => ({ path: 'scripts/' + name, sha256: sha256(content) })),
+  });
+  await write(path.join(root, 'release.json'), manifest);
+  const currentFile = path.join(f.home, 'current.json');
+  const activeLauncher = path.join(f.home, 'launcher.mjs');
+  const wrappers = ['start.cmd', 'Запустить ContractorSystem.cmd'];
+  const old = { releaseId: 'old', previousId: 'older' };
+  await write(currentFile, JSON.stringify(old));
+  await write(activeLauncher, 'previous launcher');
+  await Promise.all(wrappers.map(name => write(path.join(f.home, name), 'previous ' + name)));
+  const state = path.join(f.home, 'maintenance-state'), key = '1'.repeat(64);
+  const artifact = path.join(state, 'lifecycle-artifacts', 'release-' + id + '.json');
+  const action = async (name, result) => {
+    const [receipt, stdout, stderr] = ['.json', '.out', '.err'].map(extension => path.join(f.outputRoot, name + extension));
+    const contents = [JSON.stringify({ action: name, release: id, buildId, passed: true, at: new Date().toISOString() }),
+      JSON.stringify({ release: id, buildId, ...result }), ''];
+    const evidence = await Promise.all([receipt, stdout, stderr].map(async (file, index) => {
+      await write(file, contents[index]);
+      return { path: file, bytes: Buffer.byteLength(contents[index]), sha256: sha256(contents[index]) };
+    }));
+    return { receipt, stdout, stderr, evidence };
+  };
+  const binding = { version: 1, id, buildId, repo: f.repo, task: f.task.id, manifestSha256: sha256(manifest),
+    observationVersion: 2, observedStandalone: { fixture: true },
+    actions: { package: await action('package', {}), verify: await action('verify', { verified: true, stopped: true }) } };
+  const save = value => write(artifact, JSON.stringify({ ...value,
+    seal: createHmac('sha256', Buffer.from(key, 'hex')).update(JSON.stringify([pathKey(artifact), value])).digest('hex') }));
+  await write(path.join(state, 'lifecycle-seal.json'), JSON.stringify({ key }));
+  await save({ ...binding, closed: { result: 'unused' } });
+  await assert.rejects(runLauncher(['install', '--release', id], { home: f.home }), /open candidate must pass/i);
+  await save(binding);
+  let live = old.releaseId;
+  const controls = failCandidate => ({ current: old, readRelease: release => ({ id: release }), verify: () => {},
+    stop: async () => { live = null; }, inspect: release => live === release.releaseId ? 'owned' : 'gone', portFree: () => live === null,
+    launch: async (release, previousId) => {
+      assert.equal(await fs.readFile(activeLauncher, 'utf8'), 'previous launcher');
+      if (release.id === id && failCandidate) throw Error('candidate was not healthy');
+      live = release.id;
+      return { releaseId: release.id, previousId };
+    },
+    store: pointer => write(currentFile, JSON.stringify(pointer)),
+  });
+  await withMaintenanceLock(f.home, 'install-authorization-fixture', async lease => {
+    await assert.rejects(runLauncher(['install', '--release', id], { home: f.home, lease }), { code: 'BUSY' });
+    const context = { home: f.home, lease };
+    await assert.rejects(installVerifiedRelease(id, context, controls(true)), /previous program was restored/i);
+    assert.deepEqual(JSON.parse(await fs.readFile(currentFile, 'utf8')), old);
+    assert.equal(await fs.readFile(activeLauncher, 'utf8'), 'previous launcher');
+    const command = path.join(f.home, wrappers[0]);
+    await fs.unlink(command);
+    await fs.symlink(f.repo, command, 'junction');
+    try {
+      await assert.rejects(installVerifiedRelease(id, context, controls(false)), error =>
+        /previous program was restored/i.test(error.message) && /launcher command cannot be verified/i.test(error.cause?.message));
+      assert.deepEqual(JSON.parse(await fs.readFile(currentFile, 'utf8')), old);
+      assert.equal(await fs.readFile(activeLauncher, 'utf8'), 'previous launcher');
+    } finally {
+      await fs.unlink(command);
+      await write(command, 'previous ' + wrappers[0]);
+    }
+    const result = await installVerifiedRelease(id, context, controls(false));
+    assert.equal(result.started.releaseId, id);
+  });
+  assert.equal(JSON.parse(await fs.readFile(currentFile, 'utf8')).releaseId, id);
+  assert.equal((await execute(process.execPath, [activeLauncher], { windowsHide: true })).stdout.trim(), 'candidate launcher');
+  for (const name of wrappers) assert.equal(await fs.readFile(path.join(f.home, name), 'utf8'), 'previous ' + name);
+});
+
 test('installRollbackPreservesBoth', async () => {
   const { switchRelease } = await import('./local-system-launch.mjs');
   const old = { releaseId: 'old', previousId: 'earlier' };
@@ -604,7 +716,7 @@ test('an installed program dispatches maintenance only after availability under 
 
 windowsTest('installedLauncherResolvesOwnLibrary', async t => {
   const f = await fixture(t);
-  const { publishLauncherBundle } = await import('./maintenance/lifecycle.mjs');
+  const { stageLauncherBundle } = await import('./maintenance/lifecycle.mjs');
   const source = path.join(f.base, 'scripts');
   await write(path.join(source, 'local-system-launch.mjs'),
     "import { value } from './maintenance/proof.mjs'; console.log(value);");
@@ -613,15 +725,15 @@ windowsTest('installedLauncherResolvesOwnLibrary', async t => {
   await write(path.join(source, 'local-system-restore.mjs'), 'export {};');
   await write(path.join(source, 'maintenance', 'proof.mjs'), "export const value = 'own bundle';");
   await withMaintenanceLock(f.home, 'fixture', async lease => {
-    await publishLauncherBundle({ home: f.home, lease, source });
-    await publishLauncherBundle({ home: f.home, lease, source });
+    await (await stageLauncherBundle({ home: f.home, lease, source }))();
+    await (await stageLauncherBundle({ home: f.home, lease, source }))();
   });
   assert.equal((await fs.readdir(path.join(f.home, 'maintenance'))).length, 1);
   const launch = () => execute(process.execPath, [path.join(f.home, 'launcher.mjs')], { cwd: f.repo, windowsHide: true });
   assert.equal((await launch()).stdout.trim(), 'own bundle');
   await fs.unlink(path.join(source, 'local-system-maintenance.mjs'));
   await withMaintenanceLock(f.home, 'fixture', lease =>
-    assert.rejects(publishLauncherBundle({ home: f.home, lease, source })));
+    assert.rejects(stageLauncherBundle({ home: f.home, lease, source })));
   assert.equal((await launch()).stdout.trim(), 'own bundle');
 });
 

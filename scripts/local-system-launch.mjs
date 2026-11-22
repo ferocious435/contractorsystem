@@ -9,8 +9,8 @@ export { resolveVerifiedRelease } from './maintenance/release.mjs';
 import { maintainAvailableBackups } from './maintenance/backups.mjs';
 import { inheritedMaintenanceLease, processSnapshot, resolveMaintenanceHome, withLifecycleLock } from './maintenance/guard.mjs';
 import {
-  completeStandaloneVerification, guardedJson, hasObservedStandalone, packagedRelease, registerInstalledRelease, withLifecycleOperation,
-  registerStandaloneFailure,
+  completeStandaloneVerification, guardedJson, packagedRelease, registerInstalledRelease, registerStandaloneFailure,
+  requireInstallableCandidate, stageLauncherBundle, withLifecycleOperation,
 } from './maintenance/lifecycle.mjs';
 import { isReleaseId, localHomes, pathKey, refusal } from './maintenance/policy.mjs';
 
@@ -169,7 +169,7 @@ async function launch(home, release, port, previousId) {
 }
 
 export async function switchRelease(id, { current, readRelease, verify, stop, launch, store,
-  inspect, portFree, stopOwned = stop }) {
+  inspect, portFree, stopOwned = stop, select = store }) {
   if (id === current.releaseId) throw refusal('This release is already selected');
   const previous = readRelease(current.releaseId), next = readRelease(id);
   await verify(next);
@@ -178,7 +178,7 @@ export async function switchRelease(id, { current, readRelease, verify, stop, la
   try {
     await stop(current);
     started = await launch(next, current.releaseId);
-    await store(started);
+    await select(started);
     return started;
   } catch (error) {
     const candidate = started ?? error.failedProcess;
@@ -203,6 +203,22 @@ export async function switchRelease(id, { current, readRelease, verify, stop, la
     }
     throw Object.assign(Error('Installation failed. The previous program was restored.'), { cause: error });
   }
+}
+
+export async function installVerifiedRelease(releaseId, context, controls) {
+  const binding = await requireInstallableCandidate(context, releaseId);
+  const release = readRelease(context.home, releaseId, binding.manifestSha256);
+  const expectedFiles = new Map(release.files.map(file => [file.path.replaceAll('\\', '/'), file.sha256]));
+  const activate = await stageLauncherBundle({ ...context, source: path.join(release.root, 'scripts'),
+    nodeExe: release.nodeExe, expectedFiles });
+  const started = await switchRelease(releaseId, { ...controls,
+    readRelease: id => id === releaseId ? release : controls.readRelease(id),
+    select: async current => {
+      await controls.store(current);
+      await activate();
+    },
+  });
+  return { started, binding };
 }
 
 export async function runAvailabilityEvent(event, { readRunning, change, after, report = error => {
@@ -271,6 +287,8 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
     await probe(release, port);
     return { running: true, url: 'http://127.0.0.1:' + port + '/', release: release.id, buildId: release.buildId, pid: current.pid };
   };
+  const switchControls = current => ({ current, readRelease: read, verify: verifyRelease,
+    stop, stopOwned, portFree, inspect: inspectOwned, launch: start, store });
   if (mode === 'status') return running(await readCurrent());
   const readRunning = async () => {
     const current = await readCurrent();
@@ -280,7 +298,7 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
   const lifecycleContext = async (releaseId, lease = options.lease) => {
     const binding = await packagedRelease(home, releaseId);
     const repoRoots = [...new Set([binding?.repo, ...(options.repoRoots ?? [])].filter(Boolean))];
-    return { home, task: binding?.task ?? 'local-launch', releaseId, repoRoots, lease, binding };
+    return { home, task: binding?.task ?? 'local-launch', releaseId, repoRoots, lease };
   };
   const after = async (event, result, context) => {
     const eventContext = context ?? await lifecycleContext(result.release);
@@ -296,9 +314,24 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
     const requested = flags.get('--release');
     const releaseId = requested ?? (mode === 'adopt' ? null : (await readCurrent()).releaseId);
     if (!isReleaseId(releaseId)) throw refusal('A valid release is required');
+    if (mode === 'install') {
+      // An installation must exclude even commands sharing another operation's lease.
+      return withLifecycleLock(home, mode, async lease => {
+        const current = await readCurrent();
+        const { started, binding } = await installVerifiedRelease(releaseId, { home, lease }, switchControls(current));
+        const repoRoots = [...new Set([binding.repo, ...(options.repoRoots ?? [])])];
+        const context = { home, lease, task: binding.task, releaseId, repoRoots };
+        const result = await running(started);
+        try {
+          await registerInstalledRelease(context, { ...result, current: started });
+        } catch (error) {
+          process.stderr.write('The installed program is running. Its maintenance receipt is pending: ' + error.message + '\n');
+        }
+        return publish(result, context);
+      });
+    }
     const operation = await lifecycleContext(releaseId);
     const step = async context => {
-      const { binding } = operation;
       const release = read(releaseId);
       if (checking) {
         let started;
@@ -338,21 +371,10 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
         store(started);
         return publish(await running(started), context);
       }
-      if (mode === 'install' && binding && (!hasObservedStandalone(binding) || binding.closed)) {
-        throw refusal('An open candidate must pass standalone verification before installation');
-      }
       const target = mode === 'rollback' ? current.previousId : release.id;
       if (!target) throw refusal('No previous release');
-      const started = await switchRelease(target, { current, readRelease: read, verify: verifyRelease,
-        stop, stopOwned, portFree, inspect: inspectOwned, launch: start, store });
+      const started = await switchRelease(target, switchControls(current));
       const result = await running(started);
-      if (mode === 'install' && binding) {
-        try {
-          await registerInstalledRelease(context, { ...result, current: started });
-        } catch (error) {
-          process.stderr.write('The installed program is running. Its maintenance receipt is pending: ' + error.message + '\n');
-        }
-      }
       return publish(result, context);
     };
     if (checking) return withLifecycleOperation(mode, { ...operation, cleanup: false }, step);
