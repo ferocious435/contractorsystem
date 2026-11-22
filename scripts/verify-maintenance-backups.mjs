@@ -12,7 +12,7 @@ import { backupDue, selectBackupRetention, verifyBackupBytes, maintainBackups, r
 import { localHomes } from './maintenance/policy.mjs';
 import { captureBackupSnapshot, parsePageSize } from './local-system-backup.mjs';
 import { withMaintenanceLock, withReservationGate } from './maintenance/guard.mjs';
-import { nativeArchiveOperation, openBackupFile, catalogArchiveGroups, publishEvidenceArchive, deleteArchivedTarget } from './maintenance/archive.mjs';
+import { nativeArchiveOperation, openBackupFile, catalogArchiveGroups, publishEvidenceArchive, deleteArchivedTarget, measureArchiveTargets } from './maintenance/archive.mjs';
 import { updateTask, readTask } from './maintenance/inventory.mjs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -61,6 +61,22 @@ async function materialize(directory) {
     return { write: bytes => handle.writeFile(bytes), close: () => handle.close() };
   } });
   return snapshot;
+}
+async function incompleteFixture(t, change = async () => {}) {
+  const home = await fixture(t), id = 'point-' + randomUUID(), directory = path.join(home, 'backups', id);
+  await fs.mkdir(directory, { recursive: true });
+  const snapshot = await materialize(directory);
+  await fs.rm(path.join(directory, snapshot.manifest.objects[0].file));
+  const point = { id, originalName: id, directory, legacy: false, complete: false, at: day, reason: 'routine',
+    format: 'backup-v2+zip-v1', contentFingerprint: snapshot.contentFingerprint, schemaHash: hash(schemaBytes),
+    aliases: [{ name: id, at: day }], counts: { tables: 1, objects: 1 } };
+  const [tree] = await measureArchiveTargets([directory]);
+  point.directoryIdentity = tree.identity;
+  await change(point);
+  await fs.mkdir(path.join(home, 'maintenance-state'), { recursive: true });
+  await fs.writeFile(path.join(home, 'maintenance-state', 'backup-index.json'), JSON.stringify({ version: 1,
+    points: [point], lastComplete: null, lastAttempt: { at: day, reason: 'routine', passed: false } }));
+  return { home, point };
 }
 
 test('changedDataCreatesAtMostOneRoutinePointPerDay', () => {
@@ -219,6 +235,173 @@ test('incompleteCopyNeverTriggersRotation or repeats a large materialization slo
     assert.equal(index.points[0].complete, false);
   });
 });
+
+// A new folder, overwritten partial file, or skipped SHA check breaks these cases.
+test('same-point recovery resumes only missing files and retains the original reason', async t => {
+  const home = await fixture(t);
+  await withMaintenanceLock(home, 'resume-fixture', async lease => {
+    const options = { home, lease, schemaBytes, now: day, getFreeBytes: async () => 100 * 1024 ** 3 };
+    await assert.rejects(maintainBackups({ ...options, client: client({ failAfter: 1 }) }));
+    const initial = await backupStatus({ home }), point = initial.points[0];
+    const table = path.join(point.directory, 'tables/items.json');
+    const before = await fs.stat(table, { bigint: true });
+    await updateTask(home, lease, { id: 'resume-pin', status: 'active', result: null, commit: null, dirty: true, pid: null,
+      processStartedAt: null, pins: [point.id], worktree: path.join(home, 'worktree'), build: null, candidate: null });
+    await assert.rejects(fs.access(path.join(point.directory, 'incomplete-manifest.json')), { code: 'ENOENT' });
+    const receipt = await maintainBackups({ ...options, client: client(), resume: point.id });
+    assert.deepEqual(receipt.resumed, [point.id]);
+    const final = await backupStatus({ home });
+    assert.equal(final.points.length, 1); assert.equal(final.points[0].reason, 'routine');
+    assert.equal(final.points[0].complete, true); assert.equal(final.lastComplete.id, point.id);
+    assert.ok(final.points[0].archive);
+    const after = await fs.stat(table, { bigint: true });
+    assert.equal(after.ino, before.ino); assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.equal(after.size, before.size);
+    assert.equal((await fs.readdir(path.join(home, 'backups', 'archives'))).filter(x => x.endsWith('.zip')).length, 1);
+  });
+});
+
+test('same-point recovery preserves SHA drift and explicit close frees only the recorded slot', async t => {
+  const home = await fixture(t);
+  await withMaintenanceLock(home, 'resume-drift', async lease => {
+    const options = { home, lease, schemaBytes, now: day, getFreeBytes: async () => 100 * 1024 ** 3 };
+    await assert.rejects(maintainBackups({ ...options, client: client({ failAfter: 1 }) }));
+    const point = (await backupStatus({ home })).points[0], file = path.join(point.directory, 'tables/items.json');
+    const original = await fs.readFile(file), changed = Buffer.from(original); changed[changed.length - 2] ^= 1;
+    await fs.writeFile(file, changed);
+    await assert.rejects(maintainBackups({ ...options, client: client(), resume: point.id }), { code: 'INCOMPLETE_BACKUP' });
+    assert.deepEqual(await fs.readFile(file), changed);
+    const closed = await maintainBackups({ ...options, preserveIncomplete: point.id });
+    assert.deepEqual(closed.preserved, [point.id]);
+    const status = await backupStatus({ home });
+    assert.equal(status.points[0].complete, false); assert.equal(status.points[0].recovery.status, 'closed-preserved');
+    assert.deepEqual(await fs.readFile(file), changed);
+  });
+});
+
+test('same-point recovery refuses source drift, unknown bytes, legacy diagnostics and replaced directories', async t => {
+  for (const variant of ['source', 'unknown', 'marker', 'replacement', 'partial']) await t.test(variant, async sub => {
+    const { home, point } = await incompleteFixture(sub, async point => {
+      if (variant === 'unknown') await fs.writeFile(path.join(point.directory, 'extra.json'), 'private bytes');
+      if (variant === 'marker') await fs.writeFile(path.join(point.directory, 'incomplete-manifest.json'),
+        JSON.stringify({ version: 2, complete: false, at: day, error: 'Backup could not be verified' }, null, 2) + '\n');
+      if (variant === 'replacement') {
+        await fs.rename(point.directory, point.directory + '-protected');
+        await fs.mkdir(point.directory); await materialize(point.directory);
+      }
+      if (variant === 'partial') await fs.writeFile(path.join(point.directory, 'schema.json'), '{');
+    });
+    const [treeBefore] = await measureArchiveTargets([point.directory]);
+    await withMaintenanceLock(home, 'unsafe-resume', async lease => {
+      await assert.rejects(maintainBackups({ home, lease, now: day, resume: point.id, schemaBytes,
+        client: client({ object: variant === 'source' ? 'xyz' : 'abc' }), getFreeBytes: async () => 100 * 1024 ** 3 }), { code: 'INCOMPLETE_BACKUP' });
+      const status = await backupStatus({ home }); assert.equal(status.points.length, 1); assert.equal(status.points[0].complete, false);
+      const [treeAfter] = await measureArchiveTargets([point.directory]);
+      assert.equal(treeAfter.fingerprint, treeBefore.fingerprint); assert.equal(treeAfter.identity, treeBefore.identity);
+      if (variant === 'marker') {
+        const bytes = await fs.readFile(path.join(point.directory, 'incomplete-manifest.json'));
+        await maintainBackups({ home, lease, now: day, preserveIncomplete: point.id });
+        assert.deepEqual(await fs.readFile(path.join(point.directory, 'incomplete-manifest.json')), bytes);
+        const skipped = await maintainBackups({ home, lease, now: day });
+        assert.equal(skipped.due, false);
+      }
+    });
+  });
+});
+
+test('same-point recovery ordinary due resumes the same ID and retry limit blocks source reads', async t => {
+  const { home, point } = await incompleteFixture(t);
+  await withMaintenanceLock(home, 'bounded-resume', async lease => {
+    const options = { home, lease, schemaBytes, now: day, getFreeBytes: async () => 100 * 1024 ** 3 };
+    const failing = client({ fail: true });
+    for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(maintainBackups({ ...options, client: failing, resume: point.id }));
+    const downloaded = failing.downloads;
+    await assert.rejects(maintainBackups({ ...options, client: failing, resume: point.id }), { code: 'INCOMPLETE_BACKUP' });
+    assert.equal(failing.downloads, downloaded);
+    const state = await backupStatus({ home }); assert.equal(state.points.length, 1); assert.equal(state.points[0].recovery.attempts, 2);
+  });
+  const second = await incompleteFixture(t);
+  await withMaintenanceLock(second.home, 'ordinary-resume', async lease => {
+    const receipt = await maintainBackups({ home: second.home, lease, schemaBytes, client: client(),
+      now: '2026-06-09T10:00:00Z', getFreeBytes: async () => 100 * 1024 ** 3 });
+    assert.deepEqual(receipt.resumed, [second.point.id]); assert.deepEqual(receipt.created, []);
+  });
+});
+
+test('same-point recovery native writer rejects a replaced root before creating payload', async t => {
+  const { home, point } = await incompleteFixture(t);
+  await fs.rename(point.directory, point.directory + '-original');
+  await fs.mkdir(point.directory);
+  await assert.rejects(openBackupFile({ directory: point.directory, file: 'schema.json', maximumBytes: 0,
+    directoryIdentity: point.directoryIdentity }));
+  assert.deepEqual(await fs.readdir(point.directory), []);
+});
+
+test('same-point recovery reports source phase even if diagnostic publication fails', async t => {
+  const { home, point } = await incompleteFixture(t), original = childProcess.spawn;
+  childProcess.spawn = function (...args) {
+    const child = original(...args), end = child.stdin.end.bind(child.stdin);
+    child.stdin.end = function (chunk, ...tail) {
+      if (typeof chunk === 'string' && chunk.includes('"operation":"write"')) {
+        const parts = chunk.trimEnd().split('\n');
+        try {
+          const request = JSON.parse(parts.at(-1));
+          if (request.writes?.some(row => row.path.includes('backup-failures'))) {
+            request.operation = 'fixture-diagnostic-refusal'; parts[parts.length - 1] = JSON.stringify(request); chunk = parts.join('\n') + '\n';
+          }
+        } catch { /* Preserve other native operations. */ }
+      }
+      return end(chunk, ...tail);
+    };
+    return child;
+  };
+  syncBuiltinESMExports();
+  try {
+    await withMaintenanceLock(home, 'diagnostic-failure', async lease => {
+      await assert.rejects(maintainBackups({ home, lease, now: day, resume: point.id, schemaBytes,
+        client: client({ fail: true }), getFreeBytes: async () => 100 * 1024 ** 3 }), error => {
+        assert.equal(error.code, 'REFUSED');
+        assert.equal(error.receipt.failed[0].phase, 'storage-download');
+        assert.equal(error.receipt.failed[0].cause, 'SOURCE_READ_FAILED');
+        assert.equal(error.receipt.failed[0].completedFiles, 2);
+        assert.ok(error.receipt.cleanupFailures.some(row => row.operation === 'diagnostic-write'));
+        assert.ok(!JSON.stringify(error.receipt).includes('private payload'));
+        return true;
+      });
+    });
+  } finally { childProcess.spawn = original; syncBuiltinESMExports(); }
+});
+
+test('same-point recovery maintenance CLI relays exact preserving-close and resume IDs', async t => {
+  const { home, point } = await incompleteFixture(t), execute = promisify(execFile);
+  const entry = fileURLToPath(new URL('./local-system-maintenance.mjs', import.meta.url));
+  const run = (...args) => execute(process.execPath, [entry, 'backup', '--home', home, ...args],
+    { cwd: os.tmpdir(), windowsHide: true, timeout: 120000 });
+  await assert.rejects(run('--resume', 'point-00000000-0000-0000-0000-000000000000'), error => {
+    assert.equal(JSON.parse(error.stderr.trim()).code, 'INCOMPLETE_BACKUP'); return true;
+  });
+  const closed = JSON.parse((await run('--preserve-incomplete', point.id)).stdout);
+  assert.deepEqual(closed.preserved, [point.id]);
+  assert.equal((await backupStatus({ home })).points[0].recovery.status, 'closed-preserved');
+});
+
+test('same-point recovery preserving-close permits one later ordinary point and preserves unknown bytes', async t => {
+  const { home, point } = await incompleteFixture(t, async point => fs.writeFile(path.join(point.directory, 'unknown.json'), 'preserved'));
+  await withMaintenanceLock(home, 'close-later', async lease => {
+    const options = { home, lease, now: day, client: client(), schemaBytes, getFreeBytes: async () => 100 * 1024 ** 3 };
+    await maintainBackups({ ...options, preserveIncomplete: point.id });
+    const skipped = await maintainBackups(options); assert.equal(skipped.due, false);
+    const next = await maintainBackups({ ...options, now: '2026-06-09T10:00:00Z' });
+    assert.equal(next.created.length, 1); assert.notEqual(next.created[0], point.id);
+    assert.equal(await fs.readFile(path.join(point.directory, 'unknown.json'), 'utf8'), 'preserved');
+    const state = await backupStatus({ home }); assert.equal(state.points.length, 2);
+    const closed = state.points.find(p => p.id === point.id);
+    assert.equal(closed.complete, false); assert.equal(closed.recovery.status, 'closed-preserved');
+    assert.equal(hash(await fs.readFile(closed.recovery.evidencePath)), closed.recovery.evidenceSha256);
+    const repeated = await maintainBackups({ ...options, now: '2026-06-09T11:00:00Z' });
+    assert.equal(repeated.due, false); assert.equal((await backupStatus({ home })).points.length, 2);
+  });
+});
 test('backup reservation excludes another backup while sibling finish can proceed', async t => {
   const home = await fixture(t);
   await withMaintenanceLock(home, 'reservation-fixture', async lease => {
@@ -294,10 +477,11 @@ test('partial materialization fails mandatory operation and leaves one protected
     const index = JSON.parse(await fs.readFile(indexPath));
     assert.equal(index.points.length, 1); assert.equal(index.points[0].complete, false);
     assert.equal(index.lastComplete, null); assert.equal(index.lastAttempt.passed, false);
-    await fs.access(path.join(index.points[0].directory, 'incomplete-manifest.json'));
+    await assert.rejects(fs.access(path.join(index.points[0].directory, 'incomplete-manifest.json')), { code: 'ENOENT' });
+    assert.ok((await fs.readdir(path.join(home, 'maintenance-state', 'backup-failures'))).length);
     const before = live.downloads;
-    await assert.rejects(maintainBackups(options), { code: 'INCOMPLETE_BACKUP' });
-    assert.equal(live.downloads, before);
+    await assert.rejects(maintainBackups(options));
+    assert.ok(live.downloads > before);
     assert.equal(JSON.parse(await fs.readFile(indexPath)).points.length, 1);
   });
 });

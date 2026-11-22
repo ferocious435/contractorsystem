@@ -214,50 +214,134 @@ async function freshBudget(home, bytes, getFreeBytes) {
   const free = getFreeBytes ? await getFreeBytes(home) : Number(data.bavail * data.bsize);
   if (!Number.isSafeInteger(free) || free - bytes < maintenancePolicy.minimumFreeBytes) throw Object.assign(Error('Insufficient verified disk space for backup'), { code: 'LOW_DISK' });
 }
-async function materializationSink(directory, expected, getFreeBytes) {
+async function materializationSink(directory, expected, getFreeBytes, { existing = new Set(), identity, progress = () => {} } = {}) {
   const limits = new Map(expected.files.map(f => [f.file, f.size]));
   return async file => {
     archiveName(file);
     if (!limits.has(file)) throw refusal('Unplanned backup file');
-    const output = await openBackupFile({ directory, file, maximumBytes: limits.get(file) }); let written = 0;
+    if (existing.has(file)) return null; // The fresh pass still hashes these source bytes.
+    progress({ phase: 'file-create' });
+    const output = await openBackupFile({ directory, file, maximumBytes: limits.get(file), directoryIdentity: identity }); let written = 0;
     return { async write(bytes) { written += bytes.length;
+      progress({ phase: 'file-write' });
       if (written > limits.get(file)) throw refusal('Backup grew beyond the admitted snapshot');
       await freshBudget(directory, bytes.length, getFreeBytes); await output.write(bytes); },
-    close: () => output.close(), abort: () => output.abort() };
+    close: () => { progress({ phase: 'file-flush' }); return output.close(); }, abort: () => output.abort() };
   };
 }
 
+const incompleteFailure = () => Object.assign(Error('The incomplete backup remains protected; use its exact ID to resume or preserve it'), { code: 'INCOMPLETE_BACKUP' });
+function managedDirectory(home, point) {
+  if (!point?.directory || !validId(point.id) || pathKey(path.dirname(point.directory)) !== pathKey(path.join(home, 'backups')) ||
+      path.basename(point.directory) !== point.originalName) throw incompleteFailure();
+  return point.directory;
+}
+async function measuredIncomplete(home, point) {
+  const directory = managedDirectory(home, point), [tree] = await measureArchiveTargets([directory]);
+  if (!validHash(tree?.fingerprint) || typeof tree.identity !== 'string' ||
+      point.directoryIdentity && point.directoryIdentity !== tree.identity) throw incompleteFailure();
+  return tree;
+}
+async function resumeFiles(home, point, snapshot) {
+  if (point.schemaHash !== snapshot.manifest.schemaSha256 || point.contentFingerprint !== snapshot.contentFingerprint) throw incompleteFailure();
+  const before = await measuredIncomplete(home, point);
+  const { groups: [catalog], omittedJunctions } = await catalogArchiveGroups([{ source: point.directory }]);
+  if (omittedJunctions.length || canonical([...catalog.directories].sort()) !== canonical(['objects', 'tables'])) throw incompleteFailure();
+  const expected = new Map(snapshot.files.map(row => [row.file, row]));
+  const manifestBytes = Buffer.from(JSON.stringify(snapshot.manifest, null, 2) + '\n');
+  expected.set('manifest.json', { size: manifestBytes.length, sha256: backupHash(manifestBytes) });
+  // A legacy diagnostic marker stays intact; explicit preserving-close is its recovery route.
+  if (catalog.files.some(name => !expected.has(name))) throw incompleteFailure();
+  const rows = await nativeArchiveOperation('backup-files', { records: catalog.files.map(name => path.join(point.directory, name)) });
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i], want = expected.get(catalog.files[i]);
+    if (row.size !== want.size || row.sha256 !== want.sha256) throw incompleteFailure();
+  }
+  const after = await measuredIncomplete(home, point);
+  if (before.fingerprint !== after.fingerprint || before.identity !== after.identity) throw incompleteFailure();
+  return { existing: new Set(catalog.files), identity: after.identity };
+}
+async function preserveIncomplete(home, lease, index, id, now) {
+  const active = index.points.filter(p => p.legacy === false && !p.complete && p.recovery?.status !== 'closed-preserved');
+  if (active.length !== 1 || active[0].id !== id) throw incompleteFailure();
+  const point = active[0], tree = await measuredIncomplete(home, point);
+  const evidencePath = path.join(home, 'maintenance-state', 'backup-failures', id + '-preserved-' + randomUUID() + '.json');
+  await nativeArchiveOperation('ensure-directories', { records: [path.dirname(evidencePath)] });
+  const proof = { version: 1, id, at: now, status: 'closed-preserved', complete: false, directory: point.directory,
+    identity: tree.identity, fingerprint: tree.fingerprint, files: tree.files, bytes: tree.bytes,
+    sourceFingerprint: point.contentFingerprint, schemaHash: point.schemaHash, reason: point.reason };
+  await writeRecords([{ path: evidencePath, value: proof }]);
+  const after = await measuredIncomplete(home, point);
+  if (after.identity !== tree.identity || after.fingerprint !== tree.fingerprint) throw incompleteFailure();
+  point.recovery = { ...point.recovery, status: 'closed-preserved', at: now, evidencePath,
+    evidenceSha256: backupHash(Buffer.from(JSON.stringify(proof, null, 2) + '\n')) };
+  point.protected = true;
+  await saveIndex(home, lease, index);
+  return { version: 1, at: now, created: [], reused: [], archived: [], protected: [id], failed: [], preserved: [id] };
+}
+
+function safeFailure(error, progress) {
+  const code = ['LOW_DISK', 'INCOMPLETE_BACKUP', 'BUSY', 'REFUSED', 'ENOENT', 'EACCES', 'EPERM'].includes(error.code) ? error.code : 'FAILED';
+  const cause = code === 'LOW_DISK' ? 'INSUFFICIENT_SPACE' : code === 'INCOMPLETE_BACKUP' ? 'PROTECTED_INCOMPLETE' :
+    ['source-read', 'table-read', 'storage-list', 'storage-download', 'storage-read', 'source-verify'].includes(progress.phase) ? 'SOURCE_READ_FAILED' :
+    progress.phase === 'file-create' ? 'FILE_CREATE_FAILED' : progress.phase === 'file-write' || progress.phase === 'file-flush' ? 'FILE_WRITE_FAILED' :
+    progress.phase === 'index-publication' ? 'INDEX_PUBLICATION_FAILED' : progress.phase?.startsWith('archive') ? 'ARCHIVE_FAILED' : 'VERIFICATION_FAILED';
+  return { code, cause, ...progress, ...(Number.isInteger(error.nativeCode) && error.nativeCode >= 0 && error.nativeCode <= 65535 ? { osCode: error.nativeCode } : {}) };
+}
+
 export async function maintainBackups({ home, lease, reason = 'routine', now = new Date().toISOString(),
-  releaseId, pageSize, schemaPath, envPath, destination, reuse, client, schemaBytes, getFreeBytes } = {}) {
+  releaseId, pageSize, schemaPath, envPath, destination, reuse, resume, preserveIncomplete: preserveId, client, schemaBytes, getFreeBytes } = {}) {
   if (!reasons.has(reason)) throw refusal('Invalid backup reason');
   pageSize = parsePageSize(pageSize); now = iso(now);
   home = await requireHeldLease(home, lease);
+  if (resume && !validId(resume) || preserveId && !validId(preserveId) || resume && preserveId || (resume || preserveId) && destination) throw refusal('Invalid incomplete backup options');
   const options = { home, lease, event: 'backup', task: 'data-backup', cleanup: false, ...(getFreeBytes ? { getFreeBytes } : {}) };
   const reservation = await runLifecycle('backup', options);
   let passed = false, index, receipt, point, primaryFailure;
+  const progressState = { phase: 'admission', completedFiles: 0, completedBytes: 0 };
+  const progress = value => Object.assign(progressState, value);
   try {
     index = await loadIndex(home);
+    if (preserveId) { receipt = await preserveIncomplete(home, lease, index, preserveId, now); passed = true; return receipt; }
     if (await reconcileRemovalIntents(home, index, now)) await saveIndex(home, lease, index);
     await nativeArchiveOperation('ensure-directories', { records: [path.join(home, 'backups'), path.join(home, 'backups', 'archives')] });
     await legacyPoints(home, index);
-    const due = backupDue({ now, lastAttempt: index.lastAttempt, lastComplete: index.lastComplete, reason });
-    receipt = { version: 1, at: now, reason, due: due.due, created: [], reused: [], archived: [], protected: [], failed: [] };
+    const active = index.points.filter(p => p.legacy === false && !p.complete && p.recovery?.status !== 'closed-preserved');
+    if (resume && (active.length !== 1 || active[0].id !== resume)) throw incompleteFailure();
+    const candidate = active.length === 1 ? active[0] : null;
+    const due = resume ? { due: true } : backupDue({ now, lastAttempt: index.lastAttempt, lastComplete: index.lastComplete, reason });
+    receipt = { version: 1, at: now, reason, due: due.due, created: [], reused: [], resumed: [], archived: [], protected: [], failed: [] };
     if (!due.due) { passed = true; return { ...receipt, previousComplete: index.lastComplete, protected: ['routine-already-attempted-today'] }; }
     index.lastAttempt = { at: now, reason, passed: false };
+    progress({ phase: 'index-publication' });
     await saveIndex(home, lease, index);
-    if (index.points.some(p => p.legacy === false && !p.complete)) throw Object.assign(
-      Error('An incomplete managed backup is protected; resolve its recorded slot before another materialization'), { code: 'INCOMPLETE_BACKUP' });
+    // One original attempt plus at most two bounded recovery admissions.
+    if (active.length && (!candidate || (candidate.recovery?.attempts ?? 0) >= 2 || candidate.recovery?.status === 'needs-preserving-close')) throw incompleteFailure();
+    if (candidate) {
+      point = candidate;
+      point.recovery = { ...point.recovery, attempts: (point.recovery?.attempts ?? 0) + 1, at: now, status: 'checking' };
+      await saveIndex(home, lease, index);
+    }
     const binding = client && schemaBytes ? { client, schemaBytes, provenance: { synthetic: true } }
       : await verifiedClient({ home, releaseId, schemaPath, envPath });
-    const first = await captureBackupSnapshot({ ...binding, pageSize, now });
+    progress({ phase: 'source-read' });
+    const first = await captureBackupSnapshot({ ...binding, pageSize, now: candidate?.at ?? now, progress });
+    let continuation;
+    if (candidate) {
+      progress({ phase: 'existing-files-verify' });
+      try { continuation = await resumeFiles(home, point, first); }
+      catch (error) { point.recovery.status = 'needs-preserving-close'; throw incompleteFailure(); }
+      point.directoryIdentity = continuation.identity;
+      await saveIndex(home, lease, index);
+    }
     const previous = index.points.find(p => p.id === index.lastComplete?.id);
-    if (previous?.complete && !previous.archiveUnavailable && previous.contentFingerprint === first.contentFingerprint) {
+    if (!candidate && previous?.complete && !previous.archiveUnavailable && previous.contentFingerprint === first.contentFingerprint) {
       const previousCheck = await verifyPoint(home, previous);
       if (!previous.archive) {
         const forecast = Math.ceil(first.bytes * 1.1) + 16 * 1024 ** 2;
         await runLifecycle('backup', { ...options, phase: 'resize', reservation, expectedAdditionalBytes: forecast });
         await freshBudget(home, forecast, getFreeBytes);
-        await compressPoint(home, lease, index, previous, previousCheck, receipt);
+        await compressPoint(home, lease, index, previous, previousCheck, receipt, progress);
       }
       previous.aliases.push({ name: destination ? path.basename(destination) : 'unchanged-' + now, at: now,
         reason, provenance: binding.provenance, contentFingerprint: first.contentFingerprint,
@@ -267,30 +351,46 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
       receipt.reused.push(previous.id);
       previous.verifiedAt = now;
     } else {
-      const id = 'point-' + randomUUID();
-      const directory = destination ? pathInMaintenanceHome(home, path.resolve(destination)) : path.join(home, 'backups', id);
-      if (pathKey(path.dirname(directory)) !== pathKey(path.join(home, 'backups')) ||
-          (await probePaths([directory]))[0] !== 'missing') throw refusal('A new backup destination directly inside HOME/backups is required');
+      const id = candidate?.id ?? 'point-' + randomUUID();
+      const directory = candidate?.directory ?? (destination ? pathInMaintenanceHome(home, path.resolve(destination)) : path.join(home, 'backups', id));
+      if (!candidate && (pathKey(path.dirname(directory)) !== pathKey(path.join(home, 'backups')) ||
+          (await probePaths([directory]))[0] !== 'missing')) throw refusal('A new backup destination directly inside HOME/backups is required');
       const forecast = Math.ceil(first.bytes * 2.2) + 16 * 1024 ** 2 + Buffer.byteLength(canonical(first.manifest)) * 4;
       await runLifecycle('backup', { ...options, phase: 'resize', reservation, expectedAdditionalBytes: forecast });
-      point = { id, originalName: path.basename(directory), legacy: false, complete: false, at: now, reason, format,
+      point ??= { id, originalName: path.basename(directory), legacy: false, complete: false, at: now, reason, format,
         schemaHash: first.manifest.schemaSha256, contentFingerprint: first.contentFingerprint, directory,
         provenance: binding.provenance, aliases: [{ name: path.basename(directory), at: now }], counts: {
           tables: first.manifest.tables.length, objects: first.manifest.objects.length }, pinned: false };
-      index.points.push(point); await saveIndex(home, lease, index);
-      await nativeArchiveOperation('ensure-directories', { records: [directory, path.join(directory, 'tables'), path.join(directory, 'objects')] });
-      const materialized = await captureBackupSnapshot({ ...binding, pageSize, now, sink: await materializationSink(directory, first, getFreeBytes) });
+      if (!candidate) index.points.push(point);
+      progress({ phase: 'index-publication' });
+      await saveIndex(home, lease, index);
+      progress({ phase: 'file-create' });
+      if (!candidate) await nativeArchiveOperation('ensure-directories', { records: [directory, path.join(directory, 'tables'), path.join(directory, 'objects')] });
+      if (!point.directoryIdentity) { point.directoryIdentity = (await measuredIncomplete(home, point)).identity; await saveIndex(home, lease, index); }
+      const materialized = await captureBackupSnapshot({ ...binding, pageSize, now: point.at, progress,
+        sink: await materializationSink(directory, first, getFreeBytes, { ...continuation, identity: point.directoryIdentity, progress }) });
       if (materialized.contentFingerprint !== first.contentFingerprint) throw refusal('Backup snapshot changed before materialization completed');
-      await writeRecords([{ path: path.join(directory, 'manifest.json'), value: materialized.manifest }]);
+      progress({ phase: 'manifest-write' });
+      if (!continuation?.existing.has('manifest.json')) {
+        const bytes = Buffer.from(JSON.stringify(materialized.manifest, null, 2) + '\n');
+        const output = await openBackupFile({ directory, file: 'manifest.json', maximumBytes: bytes.length, directoryIdentity: point.directoryIdentity });
+        try { await output.write(bytes); await output.close(); }
+        catch (error) { await output.abort().catch(() => {}); throw error; }
+      }
+      progress({ phase: 'result-verify' });
+      if ((await measuredIncomplete(home, point)).identity !== point.directoryIdentity) throw incompleteFailure();
       const checked = await verifyBackupBytes(directory);
-      if (checked.contentFingerprint !== first.contentFingerprint) throw refusal('Materialized backup bytes differ');
+      if (checked.contentFingerprint !== first.contentFingerprint || checked.tree.identity !== point.directoryIdentity) throw refusal('Materialized backup bytes differ');
       point.complete = true; point.verifiedAt = now;
+      if (candidate) { point.recovery.status = 'completed'; receipt.resumed.push(id); }
       index.lastComplete = { id, at: now, schemaHash: point.schemaHash };
       index.lastAttempt = { at: now, reason, passed: true, created: id };
-      receipt.created.push(id);
+      if (!candidate) receipt.created.push(id);
+      progress({ phase: 'index-publication' });
       await saveIndex(home, lease, index);
       await freshBudget(home, Math.ceil(first.bytes * 1.1) + 16 * 1024 ** 2, getFreeBytes);
-      await compressPoint(home, lease, index, point, checked, receipt);
+      progress({ phase: 'archive' });
+      await compressPoint(home, lease, index, point, checked, receipt, progress);
     }
     // Existing --reuse remains accepted but cannot replace fresh Storage reads.
     if (reuse) receipt.cacheIgnored = true;
@@ -298,25 +398,34 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
     receipt.verification = { id: complete.id, at: now, contentFingerprint: complete.contentFingerprint,
       schemaHash: complete.schemaHash, format: complete.format, archive: complete.archive?.path, directory: complete.directory };
     await rotatePoints(home, lease, index, now, receipt);
-    passed = true; index.lastReceipt = receipt; await saveIndex(home, lease, index);
+    progress({ phase: 'index-publication' });
+    index.lastReceipt = receipt; await saveIndex(home, lease, index); passed = true;
     return receipt;
   } catch (error) {
     receipt ??= { version: 1, at: now, reason, created: [], reused: [], archived: [], protected: [], failed: [] };
     const failureReason = error.code === 'LOW_DISK' ? 'insufficient-space' : error.code === 'INCOMPLETE_BACKUP' ? 'incomplete-managed-slot' : 'backup-not-verified';
-    receipt.failed.push({ code: error.code ?? 'FAILED', reason: failureReason });
-    if (error.cleanupFailures?.length) (receipt.cleanupFailures ??= []).push(...error.cleanupFailures);
+    const failure = safeFailure(error, progressState);
+    receipt.failed.push({ ...failure, reason: failureReason });
+    for (const cleanup of error.cleanupFailures ?? []) (receipt.cleanupFailures ??= []).push({
+      operation: cleanup.operation === 'stream-close' ? 'stream-close' : 'cleanup', code: safeFailure(cleanup, {}).code });
     if (index) { index.lastReceipt = receipt; await saveIndex(home, lease, index).catch(() => {}); }
-    if (point && !point.complete) await writeRecords([{ path: path.join(point.directory, 'incomplete-manifest.json'), value: { version: 2, complete: false, at: now, error: 'Backup could not be verified' } }]).catch(() => {});
-    primaryFailure = Object.assign(Error(error.code === 'INCOMPLETE_BACKUP' ? error.message :
-      'Backup could not be verified; the dependent maintenance operation must not continue'), { code: error.code ?? 'FAILED', receipt, cause: error });
+    if (point && !point.complete) {
+      const diagnostic = path.join(home, 'maintenance-state', 'backup-failures', point.id + '-' + randomUUID() + '.json');
+      try {
+        await nativeArchiveOperation('ensure-directories', { records: [path.dirname(diagnostic)] });
+        await writeRecords([{ path: diagnostic, value: { version: 1, id: point.id, at: now, initialReason: point.reason, failure } }]);
+      } catch { (receipt.cleanupFailures ??= []).push({ operation: 'diagnostic-write', code: 'FAILED' }); }
+    }
+    primaryFailure = Object.assign(Error(failure.code === 'INCOMPLETE_BACKUP' ? incompleteFailure().message :
+      'Backup could not be verified; the dependent maintenance operation must not continue'), { code: failure.code, receipt, cause: error });
     throw primaryFailure;
   } finally {
     try { await runLifecycle('backup', { ...options, phase: 'finish', reservation, passed }); }
     catch (cleanup) {
-      (receipt.cleanupFailures ??= []).push({ operation: 'reservation-finish', code: cleanup.code ?? 'FAILED' });
+      (receipt.cleanupFailures ??= []).push({ operation: 'reservation-finish', code: safeFailure(cleanup, {}).code });
       if (index) { index.lastReceipt = receipt; await saveIndex(home, lease, index).catch(() => {}); }
       if (!primaryFailure) throw Object.assign(Error('The backup receipt could not finish its reservation'), {
-        code: cleanup.code ?? 'FAILED', receipt, cause: cleanup });
+        code: safeFailure(cleanup, {}).code, receipt, cause: cleanup });
     }
   }
 }
@@ -345,19 +454,23 @@ async function verifyPoint(home, point) {
   return checked;
 }
 
-async function compressPoint(home, lease, index, point, checked, receipt) {
+async function compressPoint(home, lease, index, point, checked, receipt, progress = () => {}) {
   await requireHeldLease(home, lease);
+  progress({ phase: 'archive-create' });
   const { groups } = await catalogArchiveGroups([{ source: point.directory, prefix: 'artifact' }]);
   const archive = await publishEvidenceArchive({ groups, destination: path.join(home, 'backups', 'archives', point.id + '.zip'),
     targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity });
+  progress({ phase: 'archive-verify' });
   const verified = await verifyArchive(archive.path);
   if (verified.sha256 !== archive.sha256 || verified.contentFingerprint !== archive.contentFingerprint) throw refusal('Archive reread differs');
   point.archive = { format: verified.format, path: verified.path, sha256: verified.sha256,
     contentFingerprint: verified.contentFingerprint, metadataSha256: verified.metadataSha256, verifiedAt: verified.verifiedAt };
   point.rawRemovalIntent = { at: receipt.at, directory: point.directory, archivePath: verified.path,
     archiveSha256: verified.sha256, targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity };
+  progress({ phase: 'index-publication' });
   await saveIndex(home, lease, index);
   // Preserve the archived point before any source removal, including interruption.
+  progress({ phase: 'source-removal' });
   const removed = await deleteArchivedTarget({ archive: verified, target: point.directory,
     targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity, resume: false }, async phase => {
     if (!await terminalProtection(home, index, point, receipt.at, false)) return false;
@@ -534,13 +647,14 @@ export async function backupCli(args = []) {
   const flags = new Map();
   while (args.length) {
     const name = args.shift(), value = args.shift();
-    if (!['--destination', '--schema', '--env', '--reuse', '--page-size', '--reason', '--home'].includes(name) || !value || value.startsWith('--') || flags.has(name)) throw refusal('Invalid backup options');
+    if (!['--destination', '--schema', '--env', '--reuse', '--page-size', '--reason', '--home', '--resume', '--preserve-incomplete'].includes(name) || !value || value.startsWith('--') || flags.has(name)) throw refusal('Invalid backup options');
     flags.set(name, value);
   }
   const home = await resolveMaintenanceHome({ explicitHome: flags.has('--home') ? path.resolve(flags.get('--home')) : undefined });
   return withLifecycleLock(home, 'backup', lease => maintainBackups({ home, lease, reason: flags.get('--reason') ?? 'routine',
     pageSize: flags.get('--page-size'), schemaPath: flags.get('--schema'), envPath: flags.get('--env'),
-    destination: flags.get('--destination'), reuse: flags.get('--reuse') }), inheritedMaintenanceLease());
+    destination: flags.get('--destination'), reuse: flags.get('--reuse'), resume: flags.get('--resume'),
+    preserveIncomplete: flags.get('--preserve-incomplete') }), inheritedMaintenanceLease());
 }
 
 export async function maintainAvailableBackups(event, context) {

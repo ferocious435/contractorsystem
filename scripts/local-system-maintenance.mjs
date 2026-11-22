@@ -18,7 +18,7 @@ const commands = {
   run: ['--event', '--task'],
   'import-legacy': ['--input'],
   task: ['--input'],
-  backup: ['--reason', '--page-size', '--schema', '--env', '--destination', '--reuse'],
+  backup: ['--reason', '--page-size', '--schema', '--env', '--destination', '--reuse', '--resume', '--preserve-incomplete'],
   'backup-status': ['--json'],
   restore: ['--backup', '--destination'],
   'close-candidate': ['--task', '--release', '--result', '--source', '--dist'],
@@ -78,7 +78,8 @@ async function main(args) {
   if (command === 'backup-status') return backupStatus({ home });
   if (command === 'backup') return withLifecycleLock(home, 'backup', lock => maintainBackups({ home, lease: lock,
     reason: flags.get('--reason') ?? 'routine', pageSize: flags.get('--page-size'), schemaPath: flags.get('--schema'),
-    envPath: flags.get('--env'), destination: flags.get('--destination'), reuse: flags.get('--reuse') }), lease);
+    envPath: flags.get('--env'), destination: flags.get('--destination'), reuse: flags.get('--reuse'),
+    resume: flags.get('--resume'), preserveIncomplete: flags.get('--preserve-incomplete') }), lease);
   if(command==='restore')return withLifecycleLock(home,'restore',async lock=>{
     const {restoreBackup}=await import('./local-system-restore.mjs');
     const result=await restoreBackup({home,lease:lock,backup:required('--backup'),destination:flags.get('--destination')});
@@ -130,7 +131,8 @@ export async function maintenanceMain(args = process.argv.slice(2)) {
     console.log(JSON.stringify(receipt, null, 2));
     if (receipt.failed?.length) process.exitCode = 1;
   } catch (error) {
-    console.error(JSON.stringify({ code: error.code ?? 'FAILED', message: error.message }));
+    console.error(JSON.stringify({ code: error.code ?? 'FAILED', message: error.message,
+      failure: error.receipt?.failed?.[0], cleanupFailures: error.receipt?.cleanupFailures }));
     process.exitCode = error.code === 'BUSY' ? 2 : 1;
   }
 }

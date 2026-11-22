@@ -67,7 +67,7 @@ export function archiveName(value) {
 
 // A streaming, create-only backup sink. The native process keeps the complete
 // plain directory chain and output handle pinned until the last bounded chunk.
-export async function openBackupFile({ directory, file, maximumBytes }) {
+export async function openBackupFile({ directory, file, maximumBytes, directoryIdentity }) {
   if (process.platform !== 'win32' || !Number.isSafeInteger(maximumBytes) || maximumBytes < 0) throw refusal('Invalid native backup write');
   archiveName(file);
   const system = absolutePath(process.env.SystemRoot || 'C:\\Windows');
@@ -80,7 +80,7 @@ export async function openBackupFile({ directory, file, maximumBytes }) {
   const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   const send = value => new Promise((resolve, reject) => child.stdin.write(value + '\n', error => error ? reject(refusal('Native backup write failed')) : resolve()));
   await send(JSON.stringify(windowsInspectionSource));
-  await send(JSON.stringify({ operation: 'backup-write', target: assertNarrowRoot(directory), file, maximumBytes }));
+  await send(JSON.stringify({ operation: 'backup-write', target: assertNarrowRoot(directory), file, maximumBytes, targetIdentity: directoryIdentity }));
   const ready = await lines.next();
   if (ready.done || JSON.parse(ready.value).phase !== 'write') {
     child.stdin.end(); await done; throw refusal('The backup output cannot be created safely');

@@ -68,7 +68,7 @@ async function storageListing(client) {
 
 // Hash-only by default. Materialization supplies a sequential sink. Every pass
 // downloads fresh bytes and independently rereads all table pages.
-export async function captureBackupSnapshot({ client, schemaBytes, pageSize, sink, now = new Date().toISOString() }) {
+export async function captureBackupSnapshot({ client, schemaBytes, pageSize, sink, progress = () => {}, now = new Date().toISOString() }) {
   pageSize = parsePageSize(pageSize);
   schemaBytes = Buffer.from(schemaBytes);
   const tables = publicTables(JSON.parse(schemaBytes.toString('utf8'))), files = [];
@@ -91,12 +91,14 @@ export async function captureBackupSnapshot({ client, schemaBytes, pageSize, sin
     }
     const entry = { file, size, sha256: hash.digest('hex') };
     if (materialize) files.push(entry);
+    progress({ completedFiles: files.length, completedBytes: files.reduce((sum, row) => sum + row.size, 0) });
     return entry;
   }
   async function rows(table, push) {
     let expected = null, seen = 0;
     await push('[');
     for (let start = 0; ; start += pageSize) {
+      progress({ phase: 'table-read' });
       let query = client.from(table.name).select('*', { count: 'exact' });
       for (const column of table.primaryKey) query = query.order(column);
       const { data, error, count } = await query.range(start, start + pageSize - 1);
@@ -113,24 +115,29 @@ export async function captureBackupSnapshot({ client, schemaBytes, pageSize, sin
   }
   await record('schema.json', push => push(schemaBytes));
   for (const table of tables) {
+    progress({ phase: 'table-read' });
     let count;
     const entry = await record('tables/' + table.name + '.json', async push => { count = await rows(table, push); });
     manifest.tables.push({ ...table, ...entry, count });
   }
+  progress({ phase: 'storage-list' });
   const listing = await storageListing(client);
   manifest.buckets = listing.buckets;
   for (const object of listing.objects) {
     const expected = object.metadata.metadata?.size;
     if (!Number.isSafeInteger(expected) || expected < 0) throw refusal('Storage object size is unavailable');
+    progress({ phase: 'storage-download' });
     const response = await client.storage.from(object.bucket).download(object.key);
     if (response.error || !response.data) throw refusal('Storage download failed');
     const entry = await record('objects/' + backupHash(object.bucket + '\0' + object.key), async push => {
       if (typeof response.data.stream === 'function') {
         let size = 0;
+        progress({ phase: 'storage-read' });
         for await (const chunk of response.data.stream()) {
           size += chunk.length;
           if (size > expected) throw refusal('Storage bytes exceed the listed object size');
           await push(chunk);
+          progress({ phase: 'storage-read' });
         }
       } else {
         if (!Number.isSafeInteger(response.data.size) || response.data.size !== expected ||
@@ -141,6 +148,7 @@ export async function captureBackupSnapshot({ client, schemaBytes, pageSize, sin
     if (entry.size !== expected) throw refusal('Storage bytes differ from the listed object size');
     manifest.objects.push({ ...object, ...entry });
   }
+  progress({ phase: 'source-verify' });
   if (canonical(await storageListing(client)) !== canonical(listing)) throw refusal('Storage listing changed during the backup');
   for (const table of manifest.tables) {
     const again = await record(table.file, push => rows(table, push), false);
@@ -156,5 +164,6 @@ export async function backupMain(args = process.argv.slice(2)) {
 const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
 if (entryUrl && (process.platform === 'win32' ? entryUrl.toLowerCase() === import.meta.url.toLowerCase() : entryUrl === import.meta.url)) {
   try { console.log(JSON.stringify(await backupMain(), null, 2)); }
-  catch (error) { console.error(JSON.stringify({ code: error.code ?? 'FAILED', message: error.message })); process.exitCode = 1; }
+  catch (error) { console.error(JSON.stringify({ code: error.code ?? 'FAILED', message: error.message,
+    failure: error.receipt?.failed?.[0], cleanupFailures: error.receipt?.cleanupFailures })); process.exitCode = 1; }
 }

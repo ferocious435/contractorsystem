@@ -1368,10 +1368,12 @@ namespace ContractorStorage {
 
         private static object WriteBackupFile(Request request) {
             var name = SafeName(request.file);
-            Require(name == "schema.json" || Regex.IsMatch(name, @"\Atables/[a-z_][a-z0-9_]*\.json\z") ||
+            Require(name == "schema.json" || name == "manifest.json" || Regex.IsMatch(name, @"\Atables/[a-z_][a-z0-9_]*\.json\z") ||
                 Regex.IsMatch(name, @"\Aobjects/[a-f0-9]{64}\z"), "Invalid backup output file");
             Require(request.maximumBytes >= 0, "Invalid backup write bound");
             var file = Join(request.target, name);
+            using (var root = new HeldPath(request.target, true, shareWrite: true)) {
+            if (request.targetIdentity != null) Require(Guard.Identity(root.Handle) == request.targetIdentity, "Backup directory was replaced");
             using (var parent = new HeldPath(Path.GetDirectoryName(file), true, shareWrite: true))
             using (var stream = Create(file)) {
                 long written = 0;
@@ -1389,6 +1391,7 @@ namespace ContractorStorage {
                 Require(written == request.maximumBytes, "Incomplete backup output file");
                 stream.Flush(true);
                 return new { written };
+            }
             }
         }
 
