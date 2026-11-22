@@ -17,6 +17,7 @@ import {
 import {
   applyStorage, captureGeneratedBuild, importLegacyEvidence, planStorage, prepareStoragePlan, registerLifecycleEvidence,
 } from './maintenance/storage.mjs';
+import { pathKey } from './maintenance/policy.mjs';
 
 const write = async (file, content) => {
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -638,6 +639,23 @@ filesystemTest('unknownFilesSurvive removal of the verified old package', async 
   await notFound(path.join(f.home, 'corrupt-base-restore'));
 });
 
+filesystemTest('verified archive evidence is published before authorizing target removal', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const plan = await f.plan();
+  assert.equal(plan.actions.length, 1);
+  const [action] = plan.actions;
+  const key = hash(JSON.stringify([action.id, pathKey(action.path), action.expectedIdentity, action.expectedFingerprint]));
+  const index = path.join(f.home, 'maintenance-state', 'evidence-index', key + '.json');
+  await fs.mkdir(index, { recursive: true }); // Force this exact pointer write to fail.
+  const forecast = await smallFixtureForecast(t, f);
+  const blocked = await f.apply(plan, forecast);
+  assert.equal(blocked.failed.length, 1);
+  assert.equal(blocked.deletedBytes, 0, 'a failed evidence publication must preserve the original');
+  assert.equal(await fs.readFile(path.join(action.path, 'a-unique.bin'), 'utf8'), 'unknown-v1');
+  assert.equal((await verifyArchive(blocked.failed[0].archive.path)).sha256, blocked.failed[0].archive.sha256);
+});
+
 filesystemTest('truncatedArchiveNeverAuthorizesDeletion during a retry', async t => {
   const f = await releases(t);
   await f.importIndex();
@@ -683,13 +701,19 @@ filesystemTest('partialDeleteCanResume using the same archive and recording both
   const readonly = path.join(original, 'z-readonly.bin');
   await write(readonly, 'read-only file');
   await fs.chmod(readonly, 0o444);
+  const forecast = await smallFixtureForecast(t, f);
   try {
     const plan = await f.plan();
-    const interrupted = await f.apply(plan);
+    const interrupted = await f.apply(plan, forecast);
     assert.equal(interrupted.completed.length, 0);
     assert.equal(interrupted.failed.length, 1, JSON.stringify(interrupted));
     assert.equal(interrupted.deletedBytes, 0, JSON.stringify(interrupted));
     const archive = await verifyArchive(interrupted.failed[0].archive.path);
+    const index = path.join(f.home, 'maintenance-state', 'evidence-index', path.basename(archive.path, '.zip') + '.json');
+    const pending = JSON.parse(await fs.readFile(index, 'utf8'));
+    assert.equal(pending.archive.sha256, archive.sha256);
+    assert.ok(Number.isFinite(Date.parse(pending.archivedAt)));
+    assert.equal(pending.removedAt, undefined);
     const leftover = path.join(original, 'a-unique.bin');
     const saved = archive.entries.find(entry => entry.path === 'artifact/a-unique.bin');
     assert.equal(saved?.sha256, hash(await fs.readFile(leftover)));
@@ -698,10 +722,14 @@ filesystemTest('partialDeleteCanResume using the same archive and recording both
     await fs.access(marker);
     await fs.access(path.join(original, '.next-test', 'BUILD_ID'));
     await fs.chmod(readonly, 0o666);
-    const retry = await f.apply(await f.plan());
+    const retry = await f.apply(await f.plan(), forecast);
     assert.equal(retry.completed.length, 1, JSON.stringify(retry));
     assert.equal(retry.completed[0].archive.path, interrupted.failed[0].archive.path);
     assert.equal(retry.completed[0].archive.sha256, interrupted.failed[0].archive.sha256);
+    const completed = JSON.parse(await fs.readFile(index, 'utf8'));
+    assert.equal(retry.completed[0].tombstone, index);
+    assert.equal(completed.archivedAt, pending.archivedAt);
+    assert.ok(Number.isFinite(Date.parse(completed.removedAt)));
     const journal = JSON.parse(await fs.readFile(retry.completed[0].journal, 'utf8'));
     assert.deepEqual(journal.outcomes.map(outcome => outcome.status), ['failed', 'completed']);
     await notFound(original);

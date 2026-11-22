@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   catalogArchiveGroups, createVerifiedArchive, deleteArchivedTarget, measureArchiveTargets, nativeArchiveOperation,
   publishEvidenceArchive, readGuardedRecords, verifyArchive,
@@ -306,6 +307,35 @@ function compactReceipt(receipt) {
 }
 
 const evidencePrefix = folder => 'evidence/' + digest(pathKey(folder));
+
+async function publishArchiveIndex(file, action, archive, journal) {
+  const pointer = {
+    version: 1, originalPath: action.path, kind: action.kind, archive, journal,
+    artifactPrefix: 'artifact/',
+    source: action.archiveRequirement.source
+      ? { originalPath: action.archiveRequirement.source, prefix: 'source/' } : null,
+    evidence: action.archiveRequirement.evidence.map(item => ({
+      ...item, entry: evidencePrefix(path.dirname(item.path)) + '/' + path.basename(item.path),
+    })),
+  };
+  const [status] = await probePaths([file]);
+  if (status === 'missing') {
+    const fresh = { ...pointer, archivedAt: new Date().toISOString() };
+    await saveState(file, fresh, false);
+    return fresh;
+  }
+  const bytes = status === 'plain' && (await readGuardedRecords([file])).get(file);
+  if (!bytes) throw refusal('The archive index cannot be verified');
+  const existing = JSON.parse(bytes.toString('utf8'));
+  const { archivedAt, removedAt, ...details } = existing;
+  const archived = archivedAt !== undefined && Number.isFinite(Date.parse(archivedAt));
+  const removed = removedAt !== undefined && Number.isFinite(Date.parse(removedAt));
+  if ((!archived && !removed) || (removedAt !== undefined && !removed) ||
+      !isDeepStrictEqual(details, JSON.parse(JSON.stringify(pointer)))) {
+    throw refusal('The archive index belongs to different or unverified evidence');
+  }
+  return existing;
+}
 
 function evidenceGroups(items) {
   const groups = new Map();
@@ -637,6 +667,7 @@ async function applyStorageWithHeldGate(plan, { home, lease, repoRoots = [], coo
           await requireHeldLease(home, lease);
           await saveState(journalFile, record, false);
         }
+        let archivePointer;
         const result = await deleteArchivedTarget({
           archive, target: action.path, targetFingerprint: action.expectedFingerprint,
           targetIdentity: action.expectedIdentity, resume: Boolean(previous),
@@ -648,25 +679,18 @@ async function applyStorageWithHeldGate(plan, { home, lease, repoRoots = [], coo
           const rechecked = expectedState === freshness(now) && reconcileAction(action, now, home, previous);
           if (!rechecked || (archive.generatedOmissions?.length &&
               (await proofFromInventory(rechecked))?.managedProofSha256 !== archive.managedProofSha256)) return false;
+          // The native worker holds the verified archive before asking to stage deletion.
+          archivePointer ??= await publishArchiveIndex(tombstone, action, archive, journalFile);
           await requireHeldLease(home, lease);
           return true;
         });
         receipt.deletedBytes += result.deletedBytes;
         const entry = { ...row, archive, journal: journalFile, ...result };
-        record.outcomes.push({ at: new Date().toISOString(), ...result });
         if (result.status === 'completed') {
-          await saveState(tombstone, {
-            version: 1, originalPath: action.path, kind: action.kind, archive, journal: journalFile,
-            artifactPrefix: 'artifact/',
-            source: action.archiveRequirement.source
-              ? { originalPath: action.archiveRequirement.source, prefix: 'source/' } : null,
-            evidence: action.archiveRequirement.evidence.map(item => ({
-              ...item, entry: evidencePrefix(path.dirname(item.path)) + '/' + path.basename(item.path),
-            })),
-            removedAt: new Date().toISOString(),
-          }, true);
+          if (!archivePointer.removedAt) await saveState(tombstone, { ...archivePointer, removedAt: new Date().toISOString() }, true);
           removed.add(action.id);
         }
+        record.outcomes.push({ at: new Date().toISOString(), ...result });
         await saveState(journalFile, record, true);
         if (result.status === 'completed') receipt.completed.push({ ...entry, tombstone });
         else if (result.status === 'failed') receipt.failed.push(entry);
