@@ -273,7 +273,7 @@ await scratch.objects();for(const object of manifest.objects)await scratch.copyO
     if(pinnedId||detail.output)await recordRestore(home,detail,{lease,pin:token});
     return detail;
   }catch(error){
-    await updateBackupIndex(home,lease,async index=>{index.lastRestoreAttempt={at:new Date().toISOString(),status:signal?.aborted?'interrupted':'failed',backupId:pinnedId??null,runId:token,code:error.code??'FAILED',cleanupEvidence};});
+    if(error.code!=='RESTORE_PUBLICATION_UNCERTAIN')await updateBackupIndex(home,lease,async index=>{index.lastRestoreAttempt={at:new Date().toISOString(),status:signal?.aborted?'interrupted':'failed',backupId:pinnedId??null,runId:token,code:error.code??'FAILED',cleanupEvidence};});
     throw error;
   }finally{if(pinnedId)await updateBackupIndex(home,lease,async index=>{const p=index.points.find(p=>p.id===pinnedId);if(p)p.restorePins=(p.restorePins||[]).filter(pin=>pin!==token);});}
 }
@@ -288,29 +288,56 @@ export async function recordRestore(home,receipt,{lease,pin}={}) {
   const evidencePath=proof.backupId?path.join(home,'maintenance-state','restore-evidence',crypto.randomUUID()+'.json'):null;
   if(evidencePath)await nativeArchiveOperation('ensure-directories',{records:[path.dirname(evidencePath)]});
   check();
+  let casStarted=false,preCommitError;
+  const matchesCommitted=async()=>{
+    try{
+      const index=await backupStatus({home}),record=index.lastVerified,point=index.points.find(p=>p.id===proof.backupId);
+      const matches=row=>row?.evidencePath===evidencePath&&row.evidenceSha256===digest(expected)&&JSON.stringify(row.proof)===JSON.stringify(proof);
+      if(!matches(record)||!index.restoreHistory?.some(matches)||index.lastRestoreAttempt?.status!=='passed'||
+        index.lastRestoreAttempt.backupId!==proof.backupId||index.lastRestoreAttempt.at!==proof.at||!rotationEvidenceMatches(proof,point,proof.at,home))return false;
+      const bytes=(await readGuardedRecords([evidencePath])).get(evidencePath);
+      return Boolean(bytes?.equals(expected)&&digest(bytes)===record.evidenceSha256);
+    }catch{return false;}
+  };
   try{
     const result=await nativeArchiveOperation('restore-publication',{target:home,destination:proof.backupId,
       file:source?.path,archiveSha256:proof.sourceArchiveSha256,targetFingerprint:proof.sourceArchiveFingerprint,
       archiveMetadataSha256:proof.sourceSidecarSha256,outputTarget:proof.output?.directory,
       outputIdentity:proof.output?.identity,ownedEntries:outputEntries??[],
       writes:evidencePath?[{path:evidencePath,data:expected.toString('utf8'),overwrite:false}]:[],proofData:expected.toString('utf8')},async (phase,message)=>{
-      check();if(phase==='publish')return true;
+      if(phase==='publish'){check();return true;}
       if(phase!=='commit')throw refusal('Unexpected restore publication stage');
-      if(message.proofSha256!==digest(expected))throw refusal('Restore proof echo differs');
-      if(evidencePath)await updateBackupIndex(home,lease,async index=>{
-        check();const point=index.points.find(p=>p.id===proof.backupId);
-        if(!point?.complete||!point.restorePins?.includes(pin)||!rotationEvidenceMatches(proof,point,proof.at,home))throw refusal('Trusted restore source no longer matches');
-        const actual=typeof message.evidence==='string'?Buffer.from(message.evidence,'base64'):null;
-        if(!actual?.equals(expected)||message.evidenceSha256!==digest(expected))throw refusal('Restore evidence echo differs from its trusted bytes');
-        check();const history=[...(index.restoreHistory||[])];
-        if(index.lastVerified&&!history.some(record=>record.evidencePath===index.lastVerified.evidencePath))history.push(index.lastVerified);
-        index.lastVerified={evidencePath,evidenceSha256:digest(expected),proof};
-        index.restoreHistory=[...history,index.lastVerified];
-        index.lastRestoreAttempt={at:proof.at,status:'passed',backupId:point.id};
-      });
-      check();return true;
+      try{
+        check();
+        if(message.proofSha256!==digest(expected))throw refusal('Restore proof echo differs');
+        if(evidencePath)await updateBackupIndex(home,lease,async index=>{
+          check();const point=index.points.find(p=>p.id===proof.backupId);
+          if(!point?.complete||!point.restorePins?.includes(pin)||!rotationEvidenceMatches(proof,point,proof.at,home))throw refusal('Trusted restore source no longer matches');
+          const actual=typeof message.evidence==='string'?Buffer.from(message.evidence,'base64'):null;
+          if(!actual?.equals(expected)||message.evidenceSha256!==digest(expected))throw refusal('Restore evidence echo differs from its trusted bytes');
+          const history=[...(index.restoreHistory||[])];
+          if(index.lastVerified&&!history.some(record=>record.evidencePath===index.lastVerified.evidencePath))history.push(index.lastVerified);
+          check();casStarted=true;
+          index.lastVerified={evidencePath,evidenceSha256:digest(expected),proof};
+          index.restoreHistory=[...history,index.lastVerified];
+          index.lastRestoreAttempt={at:proof.at,status:'passed',backupId:point.id};
+        });
+        // The last cancellation check precedes the CAS. A committed index must
+        // finish the native protocol even if the signal arrives during its write.
+        return true;
+      }catch(error){
+        if(!casStarted){preCommitError=error;return false;}
+        throw error;
+      }
     });
+    if(preCommitError)throw preCommitError;
     if(result.status!=='completed')throw refusal('Restore publication did not complete');
+  }catch(error){
+    if(evidencePath&&casStarted){
+      if(await matchesCommitted())return;
+      throw Object.assign(Error('Restore publication outcome is uncertain; verified proof files are preserved'),{code:'RESTORE_PUBLICATION_UNCERTAIN',cause:error});
+    }
+    throw error;
   }finally{trusted.delete(receipt);}
 }
 
@@ -341,7 +368,7 @@ export async function maintainAvailableRestore({home,lease,engine,signal,now=new
   let result;
   try{result=await restoreBackup({home,lease,backup:point.archive.path,...(engine?{engine}:{}),signal});}
   catch(error){result={status:signal?.aborted||error.code==='INTERRUPTED'?'interrupted':'failed',passed:false,code:error.code??'FAILED'};}
-  if(!result.passed)await updateBackupIndex(home,lease,async fresh=>{fresh.lastRestoreAttempt={...fresh.lastRestoreAttempt,at:now,status:result.status,backupId:point.id,code:result.code??null};});
+  if(!result.passed&&result.code!=='RESTORE_PUBLICATION_UNCERTAIN')await updateBackupIndex(home,lease,async fresh=>{fresh.lastRestoreAttempt={...fresh.lastRestoreAttempt,at:now,status:result.status,backupId:point.id,code:result.code??null};});
   return result;
 }
 

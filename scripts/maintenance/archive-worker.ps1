@@ -1235,16 +1235,19 @@ namespace ContractorStorage {
             Require(request.proofData != null && request.writes != null, "A trusted proof write is required");
             var data = Utf8.GetBytes(request.proofData); string proofHash;
             using (var digest = SHA256.Create()) proofHash = Hex(digest.ComputeHash(data));
-            if (request.file != null) {
-                Require(Regex.IsMatch(request.destination ?? "", @"\Apoint-[a-f0-9-]{36}\z") &&
+            bool managed = request.destination != null;
+            if (managed) {
+                Require(request.file != null && Regex.IsMatch(request.destination, @"\Apoint-[a-f0-9-]{36}\z") &&
                     Names.Equals(request.file, Join(Join(Join(request.target, "backups"), "archives"), request.destination + ".zip")) &&
                     IsHash(request.archiveSha256) && IsHash(request.targetFingerprint) && IsHash(request.archiveMetadataSha256), "Invalid managed restore source");
             } else Require(request.outputTarget != null && request.writes.Length == 0, "An unmanaged proof requires explicit output");
+            if (request.file != null) Require(IsHash(request.archiveSha256) && IsHash(request.targetFingerprint) &&
+                IsHash(request.archiveMetadataSha256), "Invalid standalone restore archive hashes");
             using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
                 if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
                 Verified source = null; HeldPath output = null;
                 var heldOutput = new List<DeletionEntry>(); var proofs = new List<SafeFileHandle>(); var proofOwners = new List<IDisposable>();
-                bool committed = false;
+                bool committed = false, commitReady = false, rollback = false;
                 try {
                     if (request.file != null) {
                         source = new Verified(request.file, request.archiveSha256, false, transaction: transaction);
@@ -1273,7 +1276,7 @@ namespace ContractorStorage {
                     }
                     HeldEvidence evidence = null;
                     if (request.writes.Length != 0) {
-                        Require(request.file != null && request.writes.Length == 1, "Only one managed proof is allowed");
+                        Require(managed && request.writes.Length == 1, "Only one managed proof is allowed");
                         var write = request.writes[0];
                         Require(!write.overwrite && write.data == request.proofData &&
                             Names.Equals(Path.GetDirectoryName(write.path), Join(Join(request.target, "maintenance-state"), "restore-evidence")) &&
@@ -1281,14 +1284,19 @@ namespace ContractorStorage {
                         evidence = new HeldEvidence(request.target, write.path, transaction, data, proofHash); proofs.Add(evidence.Handle); proofOwners.Add(evidence);
                         Require(PlainFile("proof", evidence.Handle, Stream.Null).sha256 == proofHash, "Managed proof echo changed");
                     }
+                    commitReady = true;
                     Console.WriteLine(Json.Serialize(new { ready = true, phase = "commit", proofSha256 = proofHash,
                         evidence = evidence == null ? null : Convert.ToBase64String(ReadSmall(evidence.Handle)), evidenceSha256 = evidence == null ? null : proofHash }));
-                    if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                    var decision = Console.ReadLine();
+                    rollback = decision == "rollback";
+                    if (decision != "delete") return new { status = "skipped" };
                     committed = true;
                     return new { status = "completed", proofSha256 = proofHash };
                 } finally {
-                    // Unpublished new proof files are owned handles, never inferred paths.
-                    if (!committed && proofs.Count != 0) {
+                    // Once the managed index could have committed, EOF is not a
+                    // rollback instruction. Preserve its exact held proof bytes.
+                    // Only an explicit pre-CAS rollback can remove those files.
+                    if (!committed && proofs.Count != 0 && (!managed || !commitReady || rollback)) {
                         foreach (var proof in proofs) MarkDelete(proof);
                         if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastWin32Error());
                     }

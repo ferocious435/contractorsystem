@@ -42,11 +42,11 @@ export async function nativeArchiveOperation(operation, payload, authorize, comm
       const message = JSON.parse(response.value), { phase } = message;
       if (phase === 'commit' && commitScope) return await commitScope(async () => {
         const authorized = await authorize(phase, message);
-        child.stdin.write(authorized ? 'delete\n' : 'skip\n');
+        child.stdin.write(authorized ? 'delete\n' : operation === 'restore-publication' ? 'rollback\n' : 'skip\n');
         return finish(await lines.next());
       });
       const authorized = await authorize(phase, message);
-      child.stdin.write(authorized ? 'delete\n' : 'skip\n');
+      child.stdin.write(authorized ? 'delete\n' : operation === 'restore-publication' && phase === 'commit' ? 'rollback\n' : 'skip\n');
       response = await lines.next();
     }
     return await finish(response);
