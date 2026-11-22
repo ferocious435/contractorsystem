@@ -16,6 +16,7 @@ import {
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const hashIsValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const validBytes = bytes => Number.isSafeInteger(bytes) && bytes >= 0;
+const lowFreeSpace = (bytes, policy = maintenancePolicy) => validBytes(bytes) ? bytes < policy.warningFreeBytes : null;
 const jobKinds = new Set(['build', 'release', 'package-stage']);
 const policyOptions = policy => ({ ...maintenancePolicy, ...policy });
 
@@ -127,7 +128,7 @@ export function planStorage(inventory, policy, protectedInputs = []) {
     },
     uncertainties: inventory.uncertainties,
     freeBytes: inventory.freeBytes,
-    lowFreeSpace: validBytes(inventory.freeBytes) ? inventory.freeBytes < policy.warningFreeBytes : null,
+    lowFreeSpace: lowFreeSpace(inventory.freeBytes, policy),
   };
 }
 
@@ -746,10 +747,14 @@ export async function runLifecycle(event, context) {
   for (let attempt = 0; ; attempt++) {
     let entered = false;
     try {
-      return await withReservationGate(context.home, context.lease, () => {
+      const receipt = await withReservationGate(context.home, context.lease, () => {
         entered = true;
         return lifecycleReservation(event, context);
       });
+      if (!context.phase && (heavyOperations.has(event) || event === 'start') && receipt.lowFreeSpace === true) {
+        process.stderr.write(`Предупреждение: на диске осталось меньше ${maintenancePolicy.warningFreeBytes / gib} ГиБ.\n`);
+      }
+      return receipt;
     } catch (error) {
       // Only a finish whose state transition never began may retry a short gate
       // collision. The exact reservation is checked again inside the same gate.
@@ -780,7 +785,7 @@ async function lifecycleReservation(event, context) {
     if (context.passed && heavyOperations.has(event) && validBytes(context.measuredBytes)) {
       state.lastBytes[event] = context.measuredBytes;
     }
-    const result = { ...operation, finishedAt: startedAt, passed: context.passed === true,
+    const result = { ...operation, lowFreeSpace: lowFreeSpace(operation.freeBytes), finishedAt: startedAt, passed: context.passed === true,
       measuredBytes: validBytes(context.measuredBytes) ? context.measuredBytes : null };
     state.lastReceipt = result;
     await saveState(file, state, true);
@@ -828,13 +833,14 @@ async function lifecycleReservation(event, context) {
     throw Object.assign(new Error('Insufficient verified disk space for the operation'), { code: 'LOW_DISK' });
   }
   if (context.phase === 'resize') {
-    Object.assign(operation, { freeBytes, bytes: Math.max(operation.bytes, bytes), reservedBytes });
+    Object.assign(operation, { freeBytes, lowFreeSpace: lowFreeSpace(freeBytes), bytes: Math.max(operation.bytes, bytes), reservedBytes });
+    state.lastReceipt = { ...(state.lastReceipt?.id === operation.id ? state.lastReceipt : {}), ...operation };
     await requireHeldLease(home, lease);
     await saveState(file, state, true);
     return operation;
   }
   const reservation = { id: randomUUID(), event, task: context.task, build: context.build ?? null,
-    releaseId: context.releaseId ?? null, packageSlot, startedAt, freeBytes, bytes, reservedBytes };
+    releaseId: context.releaseId ?? null, packageSlot, startedAt, freeBytes, lowFreeSpace: lowFreeSpace(freeBytes), bytes, reservedBytes };
   state.active.push(reservation);
   state.lastReceipt = { ...reservation, maintenanceError };
   await requireHeldLease(home, lease);

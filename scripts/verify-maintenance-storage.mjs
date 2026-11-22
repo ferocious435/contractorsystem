@@ -325,6 +325,47 @@ filesystemTest('round3 an admitted sibling finishes after public apply refuses w
   });
 });
 
+filesystemTest('lifecycle warns below 20 GiB without changing the admission floor', async t => {
+  const home = await directory(t);
+  const storage = new URL('./maintenance/storage.mjs', import.meta.url).href;
+  const guard = new URL('./maintenance/guard.mjs', import.meta.url).href;
+  const program = `
+    import * as fs from 'node:fs/promises';
+    import path from 'node:path';
+    const [storage, guard, home] = process.argv.slice(1);
+    const { runLifecycle } = await import(storage);
+    const { withLifecycleLock } = await import(guard);
+    const receipts = path.join(home, 'maintenance-state', 'lifecycle-costs.json');
+    const lastReceipt = async () => JSON.parse(await fs.readFile(receipts, 'utf8')).lastReceipt;
+    const gib = 1024 ** 3;
+    const result = await withLifecycleLock(home, 'disk-warning-fixture', async lease => {
+      const context = { home, lease, task: 'disk-warning-fixture', cleanup: false };
+      const packageAt = (free, details = {}) => runLifecycle('package', {
+        ...context, getFreeBytes: async () => free, ...details,
+      });
+      const admitted = await packageAt(20 * gib);
+      const at20 = [admitted.lowFreeSpace, (await lastReceipt()).lowFreeSpace];
+      const resized = await packageAt(19 * gib, { phase: 'resize', reservation: admitted });
+      const afterResize = [resized.lowFreeSpace, (await lastReceipt()).lowFreeSpace];
+      const finished = await packageAt(19 * gib, { phase: 'finish', reservation: admitted, passed: true });
+      const afterFinish = [finished.lowFreeSpace, (await lastReceipt()).lowFreeSpace];
+      const at19 = await runLifecycle('build', { ...context, getFreeBytes: async () => 19 * gib });
+      const blocked = await packageAt(16 * gib - 1).catch(error => error.code);
+      const unknown = await runLifecycle('start', { ...context, getFreeBytes: async () => null });
+      return { at20, afterResize, afterFinish, at19: at19.lowFreeSpace, blocked, unknown: unknown.lowFreeSpace };
+    });
+    console.log(JSON.stringify(result));
+  `;
+  const { stdout, stderr } = await execute(process.execPath, ['--input-type=module', '-e', program, storage, guard, home],
+    { windowsHide: true });
+  assert.deepEqual(JSON.parse(stdout), {
+    at20: [false, false], afterResize: [true, true], afterFinish: [true, true],
+    at19: true, blocked: 'LOW_DISK', unknown: null,
+  });
+  assert.equal(stderr.trim().split(/\r?\n/).length, 1);
+  assert.match(stderr, /20 ГиБ/);
+});
+
 filesystemTest('round3 finish recovers a real short gate collision for only its matching reservation', async t => {
   const base = await directory(t), home = path.join(base, 'home');
   await fs.mkdir(home);
