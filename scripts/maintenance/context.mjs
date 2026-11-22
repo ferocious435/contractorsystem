@@ -97,7 +97,8 @@ async function evidenceRecords(home) {
 function archiveLocation(record, file) {
   const exact = record.evidence.find(item => pathKey(item.path) === pathKey(file));
   if (exact) {
-    if (!/^[a-f0-9]{64}$/.test(exact.sha256) || !Number.isSafeInteger(exact.bytes) || exact.bytes < 0) {
+    if (!/^[a-f0-9]{64}$/.test(exact.sha256) || (exact.bytes !== undefined &&
+        (!Number.isSafeInteger(exact.bytes) || exact.bytes < 0))) {
       throw refusal('The evidence checksum is unverified');
     }
     return { entry: archiveName(exact.entry), sha256: exact.sha256, bytes: exact.bytes };
@@ -110,9 +111,39 @@ function archiveLocation(record, file) {
   return null;
 }
 
+function* inlineLinkTargets(document) {
+  const linkStart = /\]\(/g;
+  let start;
+  while ((start = linkStart.exec(document)) !== null) {
+    const first = start.index + start[0].length;
+    let end = first;
+    let target;
+    if (document[first] === '<') {
+      const wrapped = /^<([^<>\r\n]+)>/.exec(document.slice(first));
+      if (!wrapped) continue;
+      [, target] = wrapped;
+      end += wrapped[0].length;
+    } else {
+      let depth = 0;
+      for (; end < document.length; end++) {
+        const char = document[end];
+        if (/\s/.test(char) || (char === ')' && depth === 0)) break;
+        if (char === '(') depth++;
+        if (char === ')') depth--;
+      }
+      if (depth !== 0 || end === first) continue;
+      target = document.slice(first, end);
+    }
+    const close = /^(?:[ \t]+"[^"\r\n]*")?[ \t]*\)/.exec(document.slice(end));
+    if (!close) continue;
+    linkStart.lastIndex = end + close[0].length;
+    yield target;
+  }
+}
+
 async function checkEvidence(repo, home, handoffPath, document, facts, issue) {
-  const links = new Set([...document.matchAll(/\]\((<[^>]+>|[^\s()]+)(?:\s+"[^"]*")?\)/g)]
-    .map(match => match[1].replace(/^<|>$/g, '').split('#')[0])
+  const links = new Set([...inlineLinkTargets(document)]
+    .map(target => target.split('#')[0])
     .filter(link => link && !/^https?:\/\//i.test(link) && !/^mailto:/i.test(link)));
   const missing = [];
   const files = [];
@@ -147,7 +178,8 @@ async function checkEvidence(repo, home, handoffPath, document, facts, issue) {
         const archive = await verified.get(record.archive.path);
         if (archive?.sha256 !== record.archive.sha256) continue;
         if (archive.entries.some(entry => location.sha256
-          ? entry.path === location.entry && entry.sha256 === location.sha256 && entry.size === location.bytes
+          ? entry.path === location.entry && entry.sha256 === location.sha256 &&
+            (location.bytes === undefined || entry.size === location.bytes)
           : entry.path === location.entry || entry.path.startsWith(location.entry.replace(/\/?$/, '/')))) {
           facts.evidence[link] = { status: 'ARCHIVED', archive: record.archive.path, entry: location.entry };
           break;

@@ -119,6 +119,46 @@ test('resolvesArchivedEvidence', { skip: process.platform !== 'win32' }, async t
   assert.equal(altered.issues[0].field, 'evidence/small.json');
 });
 
+test('resolvesExactStorageEvidenceWithoutByteCount', { skip: process.platform !== 'win32' }, async t => {
+  const caseData = await fixture(t);
+  const source = path.join(caseData.repo, 'receipts');
+  const state = path.join(caseData.home, 'maintenance-state');
+  const archives = path.join(state, 'evidence-archives');
+  const index = path.join(state, 'evidence-index');
+  const key = 'b'.repeat(64);
+  const name = 'receipt.json';
+  const bytes = Buffer.from('{"receipt":1}\n');
+  const original = path.join(source, name);
+  const entry = 'evidence/receipt-fixture/' + name;
+  await Promise.all([source, archives, index].map(directory => fs.mkdir(directory, { recursive: true })));
+  await fs.writeFile(original, bytes);
+  const archive = await publishEvidenceArchive({ destination: path.join(archives, key + '.zip'),
+    groups: [{ source, prefix: 'evidence/receipt-fixture', files: [name] }] });
+  const record = { version: 1, originalPath: path.join(caseData.repo, 'removed-build'), artifactPrefix: 'artifact/',
+    archive: { path: archive.path, sha256: archive.sha256 }, evidence: [{ path: original, sha256: digest(bytes), entry }] };
+  const saveIndex = () => fs.writeFile(path.join(index, key + '.json'), JSON.stringify(record));
+  await saveIndex();
+  await fs.unlink(original);
+  const links = '[Квитанция](receipts/receipt.json)';
+  const result = await caseData.check({ links });
+  assert.equal(result.passed, true);
+  assert.equal(result.facts.evidence['receipts/receipt.json'].entry, entry);
+  record.evidence[0].sha256 = '0'.repeat(64);
+  await saveIndex();
+  const changed = await caseData.check({ links });
+  assert.equal(changed.passed, false);
+  assert.equal(changed.issues[0].field, 'receipts/receipt.json');
+});
+
+test('checksMarkdownLinksWithBalancedParentheses', async t => {
+  const caseData = await fixture(t);
+  await fs.writeFile(path.join(caseData.repo, 'report(1).json'), '{}');
+  const result = await caseData.check({ links: '[Есть](report(1).json)\n[Нет](missing((2)).json "квитанция")' });
+  assert.equal(result.facts.evidence['report(1).json']?.status, 'LOCAL');
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.issues, [{ code: 'UNKNOWN', field: 'missing((2)).json', observed: 'local-evidence-not-verified' }]);
+});
+
 test('refusesConcurrentHandoffOverwrite', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cs-handoff-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
