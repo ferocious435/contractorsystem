@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { verifyArchive, extractVerifiedArchive, nativeArchiveOperation, readGuardedRecords, readGuardedBackupFile } from './maintenance/archive.mjs';
 import { verifyBackupBytes, updateBackupIndex, backupStatus, restoreDue, rotationEvidenceMatches } from './maintenance/backups.mjs';
 import { inheritedMaintenanceLease, requireHeldLease, requirePlainPath, probePaths, resolveMaintenanceHome, withLifecycleLock } from './maintenance/guard.mjs';
@@ -395,7 +395,8 @@ export async function restoreMain(args=process.argv.slice(2)) {
   try{return await withLifecycleLock(home,'restore',lease=>restoreBackup({home,lease,backup:flags.get('--backup'),destination:flags.get('--destination'),signal:controller.signal}),inheritedMaintenanceLease());}
   finally{process.removeListener('SIGINT',interrupt);process.removeListener('SIGTERM',interrupt);}
 }
-if(process.argv[1]&&pathKey(path.resolve(process.argv[1]))===pathKey(fileURLToPath(import.meta.url))){
+const entryUrl=process.argv[1]?pathToFileURL(path.resolve(process.argv[1])).href:null;
+if(entryUrl&&(process.platform==='win32'?entryUrl.toLowerCase()===import.meta.url.toLowerCase():entryUrl===import.meta.url)){
   try{const result=await restoreMain();console.log(JSON.stringify(result));if(!result.passed)process.exitCode=1;}
   catch(error){console.error(JSON.stringify({code:error.code??'FAILED',message:error.message}));process.exitCode=1;}
 }

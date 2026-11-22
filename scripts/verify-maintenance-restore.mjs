@@ -151,14 +151,17 @@ test('cleanup failure preserves previous proof and cannot claim success',async t
     assert.deepEqual((await f.readIndex()).lastVerified,previous);assert.equal((await f.readIndex()).lastRestoreAttempt.status,'failed');
   });
 });
-import { publishLauncherBundle } from './maintenance/lifecycle.mjs';
+import { stageLauncherBundle } from './maintenance/lifecycle.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 test('installed bundle restore accepts corrupt ZIP and refuses before engine outside repository',async t=>{
   const parent=await fs.realpath(os.tmpdir()),home=await fs.realpath(await fs.mkdtemp(path.join(parent,'restore-synthetic-')));
   t.after(async()=>{assert.equal(await fs.realpath(home),home);assert.equal(path.dirname(home),parent);await fs.rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
-  await withMaintenanceLock(home,'bundle',lease=>publishLauncherBundle({home,lease,source:path.dirname(fileURLToPath(import.meta.url))}));
+  await withMaintenanceLock(home, 'bundle', async lease => {
+    const activate = await stageLauncherBundle({ home, lease, source: path.dirname(fileURLToPath(import.meta.url)) });
+    await activate();
+  });
   const corrupt=path.join(home,'corrupt.zip');await fs.writeFile(corrupt,'synthetic corrupt ZIP');
   const preload=path.join(home,'no-engine.mjs');
   await fs.writeFile(preload,'import cp from "node:child_process";import {syncBuiltinESMExports} from "node:module";const original=cp.spawn;cp.spawn=(command,...args)=>{if(command==="docker")throw Error("FORBIDDEN_REAL_ENGINE");return original(command,...args)};syncBuiltinESMExports();');

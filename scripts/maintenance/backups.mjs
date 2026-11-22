@@ -10,6 +10,7 @@ import { absolutePath, maintenancePolicy, pathInMaintenanceHome, pathKey, refusa
 import { resolveVerifiedRelease } from './release.mjs';
 import { runLifecycle } from './storage.mjs';
 import { backupHash, canonical, captureBackupSnapshot, parsePageSize, publicTables, snapshotFingerprint } from '../local-system-backup.mjs';
+import { maintainAvailableRestore } from '../local-system-restore.mjs';
 
 const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const validId = value => typeof value === 'string' && /^point-[a-f0-9-]{36}$/.test(value);
@@ -754,7 +755,6 @@ export async function maintainAvailableBackups(event, context) {
   if (!['start', 'install', 'rollback'].includes(event)) return;
   const backup=await maintainBackups({ ...context, reason: 'routine' });
   // Even an unchanged-day backup receipt must not bypass a due restore.
-  const {maintainAvailableRestore}=await import('../local-system-restore.mjs');
   const restore=await maintainAvailableRestore(context);
   return {...backup,restore};
 }

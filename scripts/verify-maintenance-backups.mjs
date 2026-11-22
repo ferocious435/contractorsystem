@@ -17,7 +17,7 @@ import { nativeArchiveOperation, openBackupFile, catalogArchiveGroups, publishEv
 import { updateTask, readTask } from './maintenance/inventory.mjs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { publishLauncherBundle } from './maintenance/lifecycle.mjs';
+import { stageLauncherBundle } from './maintenance/lifecycle.mjs';
 import { runLifecycle } from './maintenance/storage.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -626,7 +626,10 @@ test('native prune rejects changed sidecar and rolls back a late refusal before 
 });
 test('installed bundle backup-status works outside the repository without its own node_modules', async t => {
   const home = await fixture(t), source = path.dirname(fileURLToPath(import.meta.url));
-  await withMaintenanceLock(home, 'bundle-fixture', lease => publishLauncherBundle({ home, lease, source }));
+  await withMaintenanceLock(home, 'bundle-fixture', async lease => {
+    const activate = await stageLauncherBundle({ home, lease, source });
+    await activate();
+  });
   const { stdout } = await promisify(execFile)(process.execPath,
     [path.join(home, 'launcher.mjs'), 'maintenance', 'backup-status', '--home', home, '--json'],
     { cwd: os.tmpdir(), windowsHide: true, timeout: 60000 });
