@@ -20,6 +20,7 @@ const commands = {
   task: ['--input'],
   backup: ['--reason', '--page-size', '--schema', '--env', '--destination', '--reuse'],
   'backup-status': ['--json'],
+  restore: ['--backup', '--destination'],
   'close-candidate': ['--task', '--release', '--result', '--source', '--dist'],
   'close-build': ['--task', '--source', '--result'],
 };
@@ -78,6 +79,12 @@ async function main(args) {
   if (command === 'backup') return withLifecycleLock(home, 'backup', lock => maintainBackups({ home, lease: lock,
     reason: flags.get('--reason') ?? 'routine', pageSize: flags.get('--page-size'), schemaPath: flags.get('--schema'),
     envPath: flags.get('--env'), destination: flags.get('--destination'), reuse: flags.get('--reuse') }), lease);
+  if(command==='restore')return withLifecycleLock(home,'restore',async lock=>{
+    const {restoreBackup}=await import('./local-system-restore.mjs');
+    const result=await restoreBackup({home,lease:lock,backup:required('--backup'),destination:flags.get('--destination')});
+    if(!result.passed)process.exitCode=1;
+    return result;
+  },lease);
   if (command === 'plan') {
     const destination = assertNarrowRoot(path.resolve(required('--output')));
     const plan = await prepareStoragePlan(options);

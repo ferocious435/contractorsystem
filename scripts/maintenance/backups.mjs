@@ -15,6 +15,14 @@ const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(va
 const validId = value => typeof value === 'string' && /^point-[a-f0-9-]{36}$/.test(value);
 const reasons = new Set(['routine', 'before-data-change', 'before-schema-change']);
 const format = 'backup-v2+zip-v1';
+// Agreed fallback: thirty elapsed days; no active dates are inferred.
+// Rotation and the post-availability restore route use this exact freshness rule.
+export function restoreDue({now=new Date().toISOString(),lastVerified,schemaHash,format:expectedFormat}={}) {
+  const proof=lastVerified?.proof??lastVerified;
+  const elapsed=Date.parse(now)-Date.parse(proof?.at);
+  return !(proof?.passed===true&&proof.status==='passed'&&proof.schemaHash===schemaHash&&proof.format===expectedFormat&&
+    Number.isFinite(elapsed)&&elapsed>=0&&elapsed<30*86400000);
+}
 const iso = value => { const date = new Date(value); if (!Number.isFinite(+date)) throw refusal('Invalid backup date'); return date.toISOString(); };
 const localDay = value => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso(value)));
 const when = value => typeof value === 'string' ? value : value?.at;
@@ -33,7 +41,7 @@ export function selectBackupRetention(backups, now = new Date().toISOString()) {
   const keep = new Set(), slots = { daily: [], weekly: [], monthly: [] };
   const complete = backups.filter(point => {
     if (point.archiveUnavailable || point.archiveRemoved) { keep.add(point.id); return false; }
-    if (point.legacy !== false || !point.complete || point.pinned || point.restored || point.lastRestored ||
+    if (point.legacy !== false || !point.complete || point.pinned || point.restorePins?.length || point.restored || point.lastRestored ||
         !Number.isFinite(Date.parse(point.at)) || Date.parse(point.at) > Date.parse(now)) keep.add(point.id);
     return point.legacy === false && point.complete && Date.parse(point.at) <= Date.parse(now);
   }).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || a.id.localeCompare(b.id));
@@ -118,7 +126,7 @@ export function rotationEvidenceMatches(proof, point, now) {
     validId(proof.backupId) && proof.backupId === point.id && proof.backupFingerprint === point.contentFingerprint &&
     validHash(proof.backupFingerprint) && proof.schemaHash === point.schemaHash && validHash(proof.schemaHash) &&
     proof.format === format && point.format === format && Number.isFinite(Date.parse(proof.at)) &&
-    Date.parse(proof.at) <= Date.parse(now) && Date.parse(now) - Date.parse(proof.at) <= 30 * 86400000 &&
+    !restoreDue({now,lastVerified:proof,schemaHash:point.schemaHash,format:point.format}) &&
     ['tables', 'storage', 'schema', 'permissions'].every(check => proof.checks?.[check] === true) &&
     Number.isSafeInteger(proof.counts?.tables) && proof.counts.tables === point.counts?.tables &&
     Number.isSafeInteger(proof.counts?.objects) && proof.counts.objects === point.counts?.objects);
@@ -414,7 +422,7 @@ async function terminalProtection(home, baseline, point, now, needsRestore) {
   const fresh = JSON.parse(records.get(indexFile(home)));
   if (fresh.version !== 1 || !Array.isArray(fresh.points) || canonical(fresh.lastComplete) !== canonical(baseline.lastComplete)) return false;
   const candidate = fresh.points.find(p => p.id === point.id);
-  if (!candidate?.complete || candidate.legacy !== false || candidate.pinned || candidate.archiveUnavailable ||
+  if (!candidate?.complete || candidate.legacy !== false || candidate.pinned || candidate.restorePins?.length || candidate.archiveUnavailable ||
       canonical(candidate) !== canonical(point)) return false;
   for (const name of names) {
     const task = JSON.parse(records.get(path.join(taskRoot, name)));
@@ -532,5 +540,9 @@ export async function backupCli(args = []) {
 
 export async function maintainAvailableBackups(event, context) {
   if (!['start', 'install', 'rollback'].includes(event)) return;
-  return maintainBackups({ ...context, reason: 'routine' });
+  const backup=await maintainBackups({ ...context, reason: 'routine' });
+  // Even an unchanged-day backup receipt must not bypass a due restore.
+  const {maintainAvailableRestore}=await import('../local-system-restore.mjs');
+  const restore=await maintainAvailableRestore(context);
+  return {...backup,restore};
 }

@@ -334,7 +334,7 @@ async function createCliFixture(base) {
   const schemaPath = path.join(base, 'alternate-schema.json'); await write(schemaPath, schema);
   const preload = path.join(base, 'preload.mjs');
   await write(preload, 'import fs from "node:fs/promises"; import {syncBuiltinESMExports} from "node:module"; fs.statfs=async()=>({bavail:100n*1024n**3n,bsize:1n});syncBuiltinESMExports();globalThis.fetch=async()=>new Response(' +
-    JSON.stringify('<script>self.__next_f.push([1,"{\\"b\\":\\"fixture-build\\"}"])</script>') + ',{status:200});');
+    JSON.stringify('<script>self.__next_f.push([1,"{\\"b\\":\\"fixture-build\\"}"])</script>') + ',{status:200});import cp from \"node:child_process\";const spawnBefore=cp.spawn;cp.spawn=(command,...args)=>{if(command===\"docker\")throw Error(\"synthetic engine unavailable\");return spawnBefore(command,...args)};syncBuiltinESMExports();');
   return { home, logical, preload, schemaPath, env: { ...process.env, LOCALAPPDATA: base } };
 }
 

@@ -525,7 +525,7 @@ export async function plainFiles(root) {
 
 export async function publishLauncherBundle({ home, lease, source, nodeExe }) {
   home = await requireHeldLease(home, lease);
-  const scripts = ['local-system-launch.mjs', 'local-system-maintenance.mjs', 'local-system-backup.mjs'];
+  const scripts = ['local-system-launch.mjs', 'local-system-maintenance.mjs', 'local-system-backup.mjs', 'local-system-restore.mjs'];
   const library = await plainFiles(path.join(source, 'maintenance'));
   const names = [...scripts, ...library.map(file => 'maintenance/' + file)];
   const bytes = await Promise.all(names.map(async name => {

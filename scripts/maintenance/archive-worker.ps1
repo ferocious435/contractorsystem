@@ -1043,6 +1043,108 @@ namespace ContractorStorage {
             }
         }
 
+        // Only an exact create-only restore scratch slot; transactional handles reject
+        // links, replacements, added/changed bytes and roll back interrupted deletion.
+        private static Entry GatherScratch(string file, string name, SafeFileHandle handle,
+            List<DeletionEntry> held, SafeFileHandle transaction) {
+            var before = Guard.ReadInfo(handle);
+            bool directory = (before.Attributes & DirectoryFlag) != 0;
+            var row = directory ? Folder(name) : PlainFile(name, handle, Stream.Null);
+            if (directory) {
+                foreach (var child in Children(file)) {
+                    CheckCleanupName(child);
+                    var next = Join(file, SafeName(child));
+                    var opened = Guard.OpenPlain(next, false, true, transaction: transaction);
+                    var retained = new DeletionEntry { Handle = opened };
+                    held.Add(retained);
+                    retained.Row = GatherScratch(next, AddPrefix(name, child), opened, held, transaction);
+                }
+                Guard.RequireUnchanged(before, handle);
+            }
+            return row;
+        }
+        private static object DeleteRestoreScratch(Request request) {
+            Require(Names.Equals(Path.GetDirectoryName(request.target), request.destination) &&
+                Names.Equals(Path.GetFileName(request.destination), "restore-scratch") &&
+                Names.Equals(Path.GetFileName(Path.GetDirectoryName(request.destination)), "maintenance-state") &&
+                Regex.IsMatch(Path.GetFileName(request.target), @"\Arestore-[a-f0-9-]{36}\z") &&
+                IsHash(request.targetFingerprint), "Only an owned restore scratch slot may be deleted");
+            using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                using (var root = new HeldPath(request.target, true, true, transaction: transaction)) {
+                    Require(Guard.Identity(root.Handle) == request.targetIdentity, "Owned scratch was replaced");
+                    var held = new List<DeletionEntry>();
+                    try {
+                        var folder = GatherScratch(request.target, "artifact", root.Handle, held, transaction);
+                        Require(Fingerprint(new[] { folder }.Concat(held.Select(x => x.Row)), "artifact") == request.targetFingerprint,
+                            "Owned scratch changed before cleanup");
+                        Console.WriteLine(@"{""ready"":true,""phase"":""stage""}");
+                        if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                        long bytes = held.Where(x => !x.Row.directory).Sum(x => x.Row.size);
+                        foreach (var item in held.Where(x => !x.Row.directory)) MarkDelete(item.Handle);
+                        foreach (var item in held.Where(x => x.Row.directory).OrderByDescending(x => x.Row.path.Count(c => c == '/'))) MarkDelete(item.Handle);
+                        MarkDelete(root.Handle);
+                        Console.WriteLine(@"{""ready"":true,""phase"":""commit""}");
+                        if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                        if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                        Require(!Present(request.target), "Owned scratch removal is unverified");
+                        return new { status = "completed", deletedBytes = bytes };
+                    } finally { foreach (var item in held) item.Dispose(); }
+                }
+            }
+        }
+
+        private static object ExportRestoreOutput(Request request) {
+            Require(Regex.IsMatch(Path.GetFileName(request.target), @"\Arestore-[a-f0-9-]{36}\z") &&
+                Names.Equals(Path.GetFileName(Path.GetDirectoryName(request.target)), "restore-scratch") &&
+                request.groups != null && request.groups.Length == 1 && request.groups[0].expectedFiles != null &&
+                request.writes != null && request.writes.Length == 1, "Only verified owned scratch objects can be exported");
+            using (var source = new HeldPath(request.target, true))
+            using (var parent = new HeldPath(Path.GetDirectoryName(request.destination), true)) {
+                Require(Guard.Identity(source.Handle) == request.targetIdentity, "Owned source was replaced");
+                CreateDirectory(request.destination);
+                using (var output = new HeldPath(request.destination, true)) {
+                    var objects = Join(request.destination, "objects");
+                    CreateDirectory(objects);
+                    foreach (var pair in request.groups[0].expectedFiles) {
+                        Require(Regex.IsMatch(pair.Key, @"\A[a-f0-9]{64}\z") && IsHash(pair.Value), "Invalid restore object");
+                        using (var input = new HeldPath(Join(Join(request.target, "objects"), pair.Key), false))
+                        using (var objectParent = new HeldPath(objects, true))
+                        using (var file = Create(Join(objects, pair.Key))) {
+                            Require(PlainFile(pair.Key, input.Handle, file).sha256 == pair.Value, "Explicit restore output differs");
+                            file.Flush(true); file.Position = 0;
+                            Require(CopyHash(file, Stream.Null, file.Length) == pair.Value, "Reread explicit object differs");
+                        }
+                    }
+                    using (var file = Create(Join(request.destination, "storage-paths-and-hashes.json"))) {
+                        var bytes = Utf8.GetBytes(request.writes[0].data);
+                        file.Write(bytes, 0, bytes.Length); file.Flush(true); file.Position = 0;
+                        using (var digest = SHA256.Create()) Require(CopyHash(file, Stream.Null, bytes.Length) == Hex(digest.ComputeHash(bytes)), "Reread restore manifest differs");
+                    }
+                    return new { identity = Guard.Identity(output.Handle), objects = request.groups[0].expectedFiles.Count };
+                }
+            }
+        }
+
+        private static object CopyRestoreObject(Request request) {
+            var objects = Path.GetDirectoryName(request.destination);
+            var slot = Path.GetDirectoryName(objects);
+            Require(Names.Equals(Path.GetFileName(objects), "objects") &&
+                Regex.IsMatch(Path.GetFileName(slot), @"\Arestore-[a-f0-9-]{36}\z") &&
+                Names.Equals(Path.GetFileName(Path.GetDirectoryName(slot)), "restore-scratch") &&
+                Regex.IsMatch(Path.GetFileName(request.destination), @"\A[a-f0-9]{64}\z") && IsHash(request.archiveSha256),
+                "Only a new object in an owned restore slot can be written");
+            using (var input = new HeldPath(request.file, false))
+            using (var parent = new HeldPath(objects, true))
+            using (var output = Create(request.destination)) {
+                var copied = PlainFile("object", input.Handle, output);
+                Require(copied.sha256 == request.archiveSha256, "Restored object differs");
+                output.Flush(true); output.Position = 0;
+                Require(CopyHash(output, Stream.Null, copied.size) == request.archiveSha256, "Reread restored object differs");
+                return new { bytes = copied.size, sha256 = copied.sha256 };
+            }
+        }
+
         private static object CountBackupTable(string file) {
             using (var held = new HeldPath(file, false)) {
                 var info = Guard.ReadInfo(held.Handle);
@@ -1279,6 +1381,15 @@ namespace ContractorStorage {
                     break;
                 case "extract":
                     result = Extract(request.file, request.destination);
+                    break;
+                case "restore-output":
+                    result = ExportRestoreOutput(request);
+                    break;
+                case "restore-copy":
+                    result = CopyRestoreObject(request);
+                    break;
+                case "restore-scratch-delete":
+                    result = DeleteRestoreScratch(request);
                     break;
                 case "delete":
                     result = Delete(request);
