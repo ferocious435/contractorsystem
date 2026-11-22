@@ -537,6 +537,39 @@ test('recovery R1 reports zero materialized progress and precise manifest create
     })));
   });
 });
+
+test('recovery R2 resumes the owned ZIP after its first publication move without rewriting bytes', async t => {
+  const { home, point } = await incompleteFixture(t), worker = fileURLToPath(new URL('./maintenance/archive-worker.ps1', import.meta.url));
+  const source = await fs.readFile(worker, 'utf8'), boundary = 'MoveNew(staging.Zip, destination);';
+  assert.ok(source.includes(boundary));
+  const faultWorker = path.join(home, 'fixture-worker.ps1');
+  await fs.writeFile(faultWorker, source.replace(boundary, boundary +
+    '\n                if (request.targetFingerprint != null) throw new IOException("fixture-publication-interrupted");'));
+  await withMaintenanceLock(home, 'half-publication', async lease => {
+    const options = { home, lease, now: day, resume: point.id, schemaBytes, getFreeBytes: async () => 100 * 1024 ** 3 };
+    const original = childProcess.spawn;
+    childProcess.spawn = function (...args) {
+      if (Array.isArray(args[1])) args[1] = args[1].map(value => value === worker ? faultWorker : value);
+      return original(...args);
+    };
+    syncBuiltinESMExports();
+    try { await assert.rejects(maintainBackups({ ...options, client: client() })); }
+    finally { childProcess.spawn = original; syncBuiltinESMExports(); }
+    const zip = path.join(home, 'backups', 'archives', point.id + '.zip');
+    const before = await fs.stat(zip, { bigint: true }), digest = hash(await fs.readFile(zip));
+    await assert.rejects(fs.access(zip + '.manifest.json'), { code: 'ENOENT' });
+    assert.equal((await backupStatus({ home })).points[0].complete, false);
+    const resumed = await maintainBackups({ ...options, client: client() });
+    assert.deepEqual(resumed.resumed, [point.id]);
+    const after = await fs.stat(zip, { bigint: true });
+    assert.equal(after.ino, before.ino); assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.equal(hash(await fs.readFile(zip)), digest);
+    const verified = await verifyArchive(zip); assert.equal(verified.sha256, digest);
+    const state = await backupStatus({ home }); assert.equal(state.points.length, 1);
+    assert.equal(state.points[0].complete, true); assert.equal(state.lastComplete.id, point.id);
+    assert.equal((await fs.readdir(path.dirname(zip))).filter(name => name.endsWith('.zip')).length, 1);
+  });
+});
 test('backup reservation excludes another backup while sibling finish can proceed', async t => {
   const home = await fixture(t);
   await withMaintenanceLock(home, 'reservation-fixture', async lease => {

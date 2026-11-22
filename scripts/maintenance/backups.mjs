@@ -531,7 +531,9 @@ async function preparePointArchive(home, lease, point, checked, progress = () =>
   const states = await probePaths([destination, destination + '.manifest.json']);
   let published;
   progress({ phase: 'archive-create' });
-  if (states.every(state => state === 'missing') && !point.archive) {
+  // Only native ResumePublication can prove ownership of a published ZIP and
+  // its still-staged sidecar after interruption between the two MoveNew calls.
+  if ((states.every(state => state === 'missing') && !point.archive) || (states[0] === 'plain' && states[1] === 'missing')) {
     const { groups } = await catalogArchiveGroups([{ source: point.directory, prefix: 'artifact' }]);
     published = await publishEvidenceArchive({ groups, destination,
       targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity });
