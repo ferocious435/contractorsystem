@@ -104,6 +104,7 @@ namespace ContractorStorage {
             public string targetFingerprint { get; set; }
             public string archiveSha256 { get; set; }
             public string archiveMetadataSha256 { get; set; }
+            public string archiveContentFingerprint { get; set; }
             public ProtectedBackup[] protectedBackups { get; set; }
             public long maximumBytes { get; set; }
             public bool resume { get; set; }
@@ -926,7 +927,7 @@ namespace ContractorStorage {
         }
 
         private static Entry GatherDeletion(string file, string name, SafeFileHandle handle,
-            IDictionary<string, Entry> expected, List<DeletionEntry> held, SafeFileHandle transaction) {
+            IDictionary<string, Entry> expected, List<DeletionEntry> held, SafeFileHandle transaction, bool cleanup = true) {
             var before = Guard.ReadInfo(handle);
             var isDirectory = (before.Attributes & DirectoryFlag) != 0;
             Entry saved;
@@ -936,14 +937,14 @@ namespace ContractorStorage {
             expected.Remove(name);
             if (isDirectory) {
                 foreach (var child in Children(file)) {
-                    CheckCleanupName(child);
+                    if (cleanup) CheckCleanupName(child);
                     var relative = AddPrefix(name, SafeName(child));
                     var childPath = Join(file, child);
                     var item = Guard.OpenPlain(childPath, false, true, transaction: transaction);
                     // Record ownership immediately, even when reading the entry fails.
                     var retained = new DeletionEntry { Handle = item };
                     held.Add(retained);
-                    retained.Row = GatherDeletion(childPath, relative, item, expected, held, transaction);
+                    retained.Row = GatherDeletion(childPath, relative, item, expected, held, transaction, cleanup);
                 }
                 Guard.RequireUnchanged(before, handle);
             }
@@ -1214,11 +1215,12 @@ namespace ContractorStorage {
             private HeldPath home;
             private readonly Stack<SafeFileHandle> chain = new Stack<SafeFileHandle>();
             public SafeFileHandle Handle { get { return chain.Peek(); } }
-            public HeldEvidence(string root, string file, SafeFileHandle transaction, byte[] data, string expectedHash) {
+            public HeldEvidence(string root, string file, SafeFileHandle transaction, byte[] data, string expectedHash,
+                                string subdirectory = "restore-evidence") {
                 try {
                     home = new HeldPath(root, true);
                     var state = Join(root, "maintenance-state");
-                    var directory = Join(state, "restore-evidence");
+                    var directory = Join(state, subdirectory);
                     Require(Names.Equals(Path.GetDirectoryName(file), directory), "Invalid evidence parent");
                     chain.Push(Guard.OpenPlain(state, true, shareWrite: true));
                     chain.Push(Guard.OpenPlain(directory, true, shareWrite: true));
@@ -1363,6 +1365,108 @@ namespace ContractorStorage {
                 Require(verified.Manifest.generated == null && verified.Bases.Count == 0, "A standalone backup archive is required");
                 return new { archive = verified.Receipt(request.file), manifest = BackupMetadataBytes(verified, "manifest.json"),
                     schema = BackupMetadataBytes(verified, "schema.json"), metadataSha256 = verified.MetadataSha256() };
+            }
+        }
+
+        private static void RequireBackupTarget(Request request) {
+            Require(Regex.IsMatch(request.destination ?? "", @"\Apoint-[a-f0-9-]{36}\z") &&
+                Names.Equals(Path.GetDirectoryName(request.outputTarget), Join(request.target, "backups")) &&
+                SafeName(request.file) == Path.GetFileName(request.outputTarget), "Invalid exact managed backup directory");
+        }
+
+        // Complete pins the verified immutable ZIP pair through the short CAS.
+        // Preserving-close pins its verified existing set and proof; later child
+        // names remain protected and are never claimed as a sealed whole tree.
+        // No MarkDelete, rename, or transaction commit is performed here.
+        private static object HoldBackupPublication(Request request) {
+            RequireBackupTarget(request);
+            if (request.archiveSha256 != null) {
+                Require(IsHash(request.archiveSha256) && IsHash(request.archiveMetadataSha256) &&
+                    IsHash(request.archiveContentFingerprint) && IsHash(request.targetFingerprint) &&
+                    request.writes != null && request.writes.Length == 0 && request.proofData == null,
+                    "An exact verified standalone ZIP pair is required for completion");
+                var file = Join(Join(Join(request.target, "backups"), "archives"), request.destination + ".zip");
+                using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                    if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    using (var source = new Verified(file, request.archiveSha256, false, transaction: transaction)) {
+                        Require(source.Manifest.generated == null && source.Bases.Count == 0 &&
+                            source.MetadataSha256() == request.archiveMetadataSha256 &&
+                            Fingerprint(source.Manifest.entries, "") == request.archiveContentFingerprint &&
+                            Fingerprint(source.Manifest.entries, "artifact") == request.targetFingerprint,
+                            "The immutable backup pair differs from the verified snapshot");
+                        Console.WriteLine(@"{""ready"":true,""phase"":""commit""}");
+                        if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                        return new { status = "completed" };
+                    }
+                }
+            }
+            var expected = OwnedEntries(request.ownedEntries);
+            Require(IsHash(request.targetFingerprint) && Fingerprint(request.ownedEntries, "artifact") == request.targetFingerprint &&
+                request.writes != null && request.writes.Length == 1, "Only preserving-close can publish from an ordinary directory");
+            using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                using (var root = new HeldPath(request.outputTarget, true, true, transaction: transaction)) {
+                    Require(Guard.Identity(root.Handle) == request.outputIdentity, "Backup publication root changed");
+                    var held = new List<DeletionEntry>(); HeldEvidence evidence = null; string proofHash = null;
+                    try {
+                        GatherDeletion(request.outputTarget, "artifact", root.Handle, expected, held, transaction, false);
+                        Require(expected.Count == 0, "Backup publication lost expected entries");
+                        if (request.writes.Length == 1) {
+                            var write = request.writes[0];
+                            Require(request.proofData != null && !write.overwrite && write.data == request.proofData &&
+                                Names.Equals(Path.GetDirectoryName(write.path), Join(Join(request.target, "maintenance-state"), "backup-failures")) &&
+                                Regex.IsMatch(Path.GetFileName(write.path), "\\A" + request.destination + @"-preserved-[a-f0-9-]{36}\.json\z"),
+                                "Invalid immutable backup proof");
+                            Console.WriteLine(@"{""ready"":true,""phase"":""proof-create""}");
+                            if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                            var bytes = Utf8.GetBytes(request.proofData);
+                            using (var digest = SHA256.Create()) proofHash = Hex(digest.ComputeHash(bytes));
+                            evidence = new HeldEvidence(request.target, write.path, transaction, bytes, proofHash, "backup-failures");
+                        } else Require(request.proofData == null, "Unexpected backup proof bytes");
+                        Console.WriteLine(Json.Serialize(new { ready = true, phase = "commit", proofSha256 = proofHash }));
+                        if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                        return new { status = "completed", proofSha256 = proofHash };
+                    } finally {
+                        if (evidence != null) evidence.Dispose();
+                        foreach (var item in held) item.Dispose();
+                    }
+                }
+            }
+        }
+
+        private static object InitializeBackup(Request request) {
+            RequireBackupTarget(request);
+            using (var parent = new HeldPath(Path.GetDirectoryName(request.outputTarget), true, shareWrite: true)) {
+                if (!Present(request.outputTarget)) CreateDirectory(request.outputTarget);
+                else Require(request.resume, "The new backup slot already exists");
+                string identity;
+                using (var bootstrap = new HeldPath(request.outputTarget, true, shareWrite: true)) {
+                    // Only a proven before-materialization record may reach this
+                    // branch. A partially initialized empty directory is resumable.
+                    foreach (var child in Children(request.outputTarget)) {
+                        Require(child == "tables" || child == "objects", "Pending backup has unexpected bytes");
+                        using (var item = new HeldPath(Join(request.outputTarget, child), true))
+                            Require(Children(Join(request.outputTarget, child)).Length == 0, "Pending backup already has payload");
+                    }
+                    foreach (var name in new[] { "tables", "objects" })
+                        if (!Present(Join(request.outputTarget, name))) CreateDirectory(Join(request.outputTarget, name));
+                    identity = Guard.Identity(bootstrap.Handle);
+                }
+                using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                    if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    using (var root = new HeldPath(request.outputTarget, true, true, transaction: transaction)) {
+                        Require(Guard.Identity(root.Handle) == identity, "Pending backup directory changed");
+                        var expected = OwnedEntries(new[] { Folder("artifact"), Folder("artifact/tables"), Folder("artifact/objects") });
+                        var held = new List<DeletionEntry>();
+                        try {
+                            GatherDeletion(request.outputTarget, "artifact", root.Handle, expected, held, transaction, false);
+                            Require(expected.Count == 0, "Pending backup directories changed");
+                            Console.WriteLine(Json.Serialize(new { ready = true, phase = "commit", identity }));
+                            if (Console.ReadLine() != "delete") return new { status = "skipped" };
+                            return new { status = "completed", identity };
+                        } finally { foreach (var item in held) item.Dispose(); }
+                    }
+                }
             }
         }
 
@@ -1576,6 +1680,12 @@ namespace ContractorStorage {
                     break;
                 case "backup-write":
                     result = WriteBackupFile(request);
+                    break;
+                case "backup-publication":
+                    result = HoldBackupPublication(request);
+                    break;
+                case "backup-initialize":
+                    result = InitializeBackup(request);
                     break;
                 case "backup-metadata":
                     result = BackupMetadata(request);

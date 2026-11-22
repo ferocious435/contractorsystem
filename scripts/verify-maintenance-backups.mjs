@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import * as syncFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -12,7 +13,7 @@ import { backupDue, selectBackupRetention, verifyBackupBytes, maintainBackups, r
 import { localHomes } from './maintenance/policy.mjs';
 import { captureBackupSnapshot, parsePageSize } from './local-system-backup.mjs';
 import { withMaintenanceLock, withReservationGate } from './maintenance/guard.mjs';
-import { nativeArchiveOperation, openBackupFile, catalogArchiveGroups, publishEvidenceArchive, deleteArchivedTarget, measureArchiveTargets } from './maintenance/archive.mjs';
+import { nativeArchiveOperation, openBackupFile, catalogArchiveGroups, publishEvidenceArchive, deleteArchivedTarget, measureArchiveTargets, verifyArchive } from './maintenance/archive.mjs';
 import { updateTask, readTask } from './maintenance/inventory.mjs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -77,6 +78,28 @@ async function incompleteFixture(t, change = async () => {}) {
   await fs.writeFile(path.join(home, 'maintenance-state', 'backup-index.json'), JSON.stringify({ version: 1,
     points: [point], lastComplete: null, lastAttempt: { at: day, reason: 'routine', passed: false } }));
   return { home, point };
+}
+async function nativeRequests(edit, work) {
+  const original = childProcess.spawn;
+  childProcess.spawn = function (...args) {
+    const child = original(...args);
+    for (const method of ['end', 'write']) {
+      const send = child.stdin[method].bind(child.stdin);
+      child.stdin[method] = function (chunk, ...tail) {
+        if (typeof chunk === 'string') {
+          const lines = chunk.trimEnd().split('\n');
+          try {
+            const request = JSON.parse(lines.at(-1));
+            if (request?.operation) { edit(request); lines[lines.length - 1] = JSON.stringify(request); chunk = lines.join('\n') + '\n'; }
+          } catch (error) { if (error instanceof assert.AssertionError) throw error; }
+        }
+        return send(chunk, ...tail);
+      };
+    }
+    return child;
+  };
+  syncBuiltinESMExports();
+  try { return await work(); } finally { childProcess.spawn = original; syncBuiltinESMExports(); }
 }
 
 test('changedDataCreatesAtMostOneRoutinePointPerDay', () => {
@@ -286,7 +309,7 @@ test('same-point recovery refuses source drift, unknown bytes, legacy diagnostic
       if (variant === 'marker') await fs.writeFile(path.join(point.directory, 'incomplete-manifest.json'),
         JSON.stringify({ version: 2, complete: false, at: day, error: 'Backup could not be verified' }, null, 2) + '\n');
       if (variant === 'replacement') {
-        await fs.rename(point.directory, point.directory + '-protected');
+        await fs.rename(point.directory, path.join(path.dirname(path.dirname(point.directory)), 'original-root'));
         await fs.mkdir(point.directory); await materialize(point.directory);
       }
       if (variant === 'partial') await fs.writeFile(path.join(point.directory, 'schema.json'), '{');
@@ -400,6 +423,118 @@ test('same-point recovery preserving-close permits one later ordinary point and 
     assert.equal(hash(await fs.readFile(closed.recovery.evidencePath)), closed.recovery.evidenceSha256);
     const repeated = await maintainBackups({ ...options, now: '2026-06-09T11:00:00Z' });
     assert.equal(repeated.due, false); assert.equal((await backupStatus({ home })).points.length, 2);
+  });
+});
+
+test('recovery R1 completion holds verified ZIP pair through CAS and preserves a new raw child', async t => {
+  const { home, point } = await incompleteFixture(t);
+  const blocked = []; let checked = false, archiveReady = false;
+  await nativeRequests(request => {
+    if (request.operation !== 'write' || checked) return;
+    const write = request.writes?.find(row => row.path.endsWith('backup-index.json'));
+    const published = write && JSON.parse(write.data).points.find(p => p.id === point.id && p.complete);
+    if (!published) return;
+    checked = true;
+    archiveReady = Boolean(published.archive);
+    if (published.archive) {
+      const zip = published.archive.path, sidecar = zip + '.manifest.json';
+      for (const attempt of [() => syncFs.renameSync(zip, zip + '.moved'), () => syncFs.writeFileSync(zip, 'changed'),
+        () => syncFs.writeFileSync(zip + ':late', 'stream'), () => syncFs.unlinkSync(sidecar),
+        () => syncFs.writeFileSync(sidecar + ':late', 'stream')]) {
+        try { attempt(); blocked.push(false); } catch { blocked.push(true); }
+      }
+    }
+    syncFs.writeFileSync(path.join(point.directory, 'objects/unknown'), 'new');
+  }, async () => withMaintenanceLock(home, 'completion-CAS', async lease => {
+    const result = await maintainBackups({ home, lease, now: day, client: client(), schemaBytes, resume: point.id,
+      getFreeBytes: async () => 100 * 1024 ** 3 }).catch(error => error);
+    assert.equal(archiveReady, true); assert.deepEqual(blocked, [true, true, true, true, true]);
+    assert.deepEqual(result.resumed, [point.id]);
+    const final = (await backupStatus({ home })).points[0]; assert.equal(final.complete, true); assert.equal(final.rawRemoved, false);
+    assert.equal(await fs.readFile(path.join(point.directory, 'objects/unknown'), 'utf8'), 'new');
+    const archive = await verifyArchive(final.archive.path);
+    assert.equal(archive.sha256, final.archive.sha256); assert.ok(!archive.entries.some(row => row.path.endsWith('/unknown')));
+  }));
+});
+
+test('recovery R1 preserving-close holds tree and immutable proof through index CAS', async t => {
+  const { home, point } = await incompleteFixture(t), blocked = []; let checked = false;
+  await nativeRequests(request => {
+    if (request.operation !== 'write' || checked) return;
+    const write = request.writes?.find(row => row.path.endsWith('backup-index.json'));
+    const closed = write && JSON.parse(write.data).points.find(p => p.id === point.id && p.recovery?.status === 'closed-preserved');
+    if (!closed) return; checked = true;
+    for (const attempt of [() => syncFs.unlinkSync(closed.recovery.evidencePath),
+      () => syncFs.renameSync(point.directory, path.join(home, 'moved-root')),
+      () => syncFs.writeFileSync(path.join(point.directory, 'schema.json') + ':late', 'stream'),
+      () => syncFs.writeFileSync(closed.recovery.evidencePath + ':late', 'stream')]) {
+      try { attempt(); blocked.push(false); } catch { blocked.push(true); }
+    }
+    syncFs.writeFileSync(path.join(point.directory, 'objects/unknown'), 'new');
+  }, async () => withMaintenanceLock(home, 'preserve-CAS', async lease => {
+    const result = await maintainBackups({ home, lease, now: day, preserveIncomplete: point.id }).catch(error => error);
+    assert.deepEqual(blocked, [true, true, true, true]); assert.deepEqual(result.preserved, [point.id]);
+    const final = (await backupStatus({ home })).points[0];
+    assert.equal(hash(await fs.readFile(final.recovery.evidencePath)), final.recovery.evidenceSha256);
+    const proof = JSON.parse(await fs.readFile(final.recovery.evidencePath));
+    assert.equal(proof.scope, 'verified-existing-set'); assert.equal(proof.complete, false);
+    assert.equal(await fs.readFile(path.join(point.directory, 'objects/unknown'), 'utf8'), 'new');
+  }));
+});
+
+test('recovery R1 archive failure leaves the same active incomplete point before complete publication', async t => {
+  const { home, point } = await incompleteFixture(t);
+  await nativeRequests(request => { if (request.operation === 'publish') request.operation = 'fixture-archive-refusal'; },
+    () => withMaintenanceLock(home, 'archive-before-complete', async lease => {
+      await assert.rejects(maintainBackups({ home, lease, now: day, resume: point.id, client: client(), schemaBytes,
+        getFreeBytes: async () => 100 * 1024 ** 3 }));
+      const state = await backupStatus({ home }); assert.equal(state.points.length, 1);
+      assert.equal(state.points[0].complete, false); assert.equal(state.lastComplete, null);
+      await verifyBackupBytes(point.directory);
+    }));
+});
+
+test('recovery R1 rejects a plain file root and unknown missing legacy point', async t => {
+  for (const variant of ['file', 'missing']) await t.test(variant, async sub => {
+    const { home, point } = await incompleteFixture(sub, async point => {
+      delete point.directoryIdentity;
+      await fs.rename(point.directory, path.join(path.dirname(path.dirname(point.directory)), 'original-root'));
+      if (variant === 'file') await fs.writeFile(point.directory, 'untouched');
+    });
+    await withMaintenanceLock(home, 'root-kind', async lease => {
+      await assert.rejects(maintainBackups({ home, lease, now: day, preserveIncomplete: point.id }));
+      assert.notEqual((await backupStatus({ home })).points[0].recovery?.status, 'closed-preserved');
+      if (variant === 'file') assert.equal(await fs.readFile(point.directory, 'utf8'), 'untouched');
+    });
+  });
+});
+
+test('recovery R1 resumes its preregistered absent directory after interruption before creation', async t => {
+  const home = await fixture(t), options = { home, now: day, client: client(), schemaBytes, getFreeBytes: async () => 100 * 1024 ** 3 };
+  await withMaintenanceLock(home, 'preregistered-missing', async lease => {
+    await nativeRequests(request => {
+      if (request.operation === 'backup-initialize' || request.operation === 'ensure-directories' &&
+          request.records?.some(file => /^point-/.test(path.basename(file)))) request.operation = 'fixture-before-directory-refusal';
+    }, () => assert.rejects(maintainBackups({ ...options, lease })));
+    const point = (await backupStatus({ home })).points[0];
+    await assert.rejects(fs.access(point.directory), { code: 'ENOENT' });
+    assert.equal(point.materialization?.state, 'directory-pending');
+    const receipt = await maintainBackups({ ...options, lease, client: client(), resume: point.id });
+    assert.deepEqual(receipt.resumed, [point.id]); assert.equal((await backupStatus({ home })).points.length, 1);
+  });
+});
+
+test('recovery R1 reports zero materialized progress and precise manifest create cause', async t => {
+  for (const file of ['schema.json', 'manifest.json']) await t.test(file, async sub => {
+    const home = await fixture(sub);
+    await withMaintenanceLock(home, 'create-cause', async lease => nativeRequests(request => {
+      if (request.operation === 'backup-write' && request.file === file) request.operation = 'fixture-file-create-refusal';
+    }, () => assert.rejects(maintainBackups({ home, lease, now: day, client: client(), schemaBytes,
+      getFreeBytes: async () => 100 * 1024 ** 3 }), error => {
+      assert.equal(error.receipt.failed[0].cause, 'FILE_CREATE_FAILED');
+      assert.equal(error.receipt.failed[0].phase, file === 'schema.json' ? 'file-create' : 'manifest-create');
+      assert.equal(error.receipt.failed[0].completedFiles, file === 'schema.json' ? 0 : 3); return true;
+    })));
   });
 });
 test('backup reservation excludes another backup while sibling finish can proceed', async t => {

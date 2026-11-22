@@ -80,7 +80,7 @@ export async function verifyBackupBytes(input) {
   if ((await probePaths([path.join(directory, 'incomplete-manifest.json')]))[0] !== 'missing') throw refusal('The backup is explicitly incomplete');
   const [before] = await measureArchiveTargets([directory]);
   if (!validHash(before?.fingerprint)) throw refusal('Backup tree bytes cannot be verified');
-  const { value: manifest } = await smallJson(path.join(directory, 'manifest.json'));
+  const { bytes: manifestBytes, value: manifest } = await smallJson(path.join(directory, 'manifest.json'));
   if (manifest.version !== 2 || !Array.isArray(manifest.errors) || manifest.errors.length ||
       !Array.isArray(manifest.tables) || !Array.isArray(manifest.objects) || !Array.isArray(manifest.buckets)) throw refusal('The backup is incomplete or unsupported');
   const { bytes: schemaBytes, value: schema } = await smallJson(path.join(directory, 'schema.json'));
@@ -112,11 +112,13 @@ export async function verifyBackupBytes(input) {
     files.push({ file: name, size: checked.size, sha256: checked.sha256 });
   }
   const { groups: [catalog] } = await catalogArchiveGroups([{ source: directory }]);
-  if (catalog.files.length !== names.size || catalog.files.some(name => !names.has(name.toLowerCase()))) throw refusal('Unmanifested backup bytes');
+  if (catalog.files.length !== names.size || catalog.files.some(name => !names.has(name.toLowerCase())) ||
+      catalog.directories.some(name => !['tables', 'objects'].includes(name))) throw refusal('Unmanifested backup bytes');
   const [after] = await measureArchiveTargets([directory]);
   if (after?.fingerprint !== before.fingerprint || after.identity !== before.identity) throw refusal('Backup bytes changed during verification');
   return { contentFingerprint: snapshotFingerprint(manifest, files), files, bytes: files.reduce((sum, f) => sum + f.size, 0),
-    schemaHash: manifest.schemaSha256, manifest, tree: after };
+    schemaHash: manifest.schemaSha256, manifest, tree: after, ownedEntries: treeEntries(catalog, [...files,
+      { file: 'manifest.json', size: manifestBytes.length, sha256: backupHash(manifestBytes) }]) };
 }
 
 // B2 must persist exact byte-backed restore evidence. A status-only/legacy proof
@@ -231,6 +233,46 @@ async function materializationSink(directory, expected, getFreeBytes, { existing
 }
 
 const incompleteFailure = () => Object.assign(Error('The incomplete backup remains protected; use its exact ID to resume or preserve it'), { code: 'INCOMPLETE_BACKUP' });
+function treeEntries(catalog, files) {
+  return [{ path: 'artifact', directory: true, size: 0 },
+    ...catalog.directories.map(name => ({ path: 'artifact/' + archiveName(name), directory: true, size: 0 })),
+    ...files.map(row => ({ path: 'artifact/' + archiveName(row.file), directory: false, size: row.size, sha256: row.sha256 }))];
+}
+function pendingDirectory(point) {
+  const trace = point.materialization;
+  return trace?.version === 1 && trace.state === 'directory-pending' && !point.directoryIdentity &&
+    validId('point-' + trace.nonce) && trace.at === point.at && trace.schemaHash === point.schemaHash &&
+    trace.contentFingerprint === point.contentFingerprint;
+}
+async function initializePoint(home, lease, index, point, { resume = false, progress = () => {} } = {}) {
+  if (!pendingDirectory(point)) throw incompleteFailure();
+  managedDirectory(home, point);
+  progress({ phase: 'file-create', completedFiles: 0, completedBytes: 0 });
+  const outcome = await nativeArchiveOperation('backup-initialize', { target: home, destination: point.id,
+    outputTarget: point.directory, file: point.originalName, resume }, async (phase, message) => {
+    if (phase !== 'commit' || typeof message.identity !== 'string') throw incompleteFailure();
+    const trace = point.materialization;
+    point.directoryIdentity = message.identity; point.materialization = { ...trace, state: 'ready' };
+    progress({ phase: 'index-publication' });
+    try { await saveIndexHeld(home, index); }
+    catch (error) { delete point.directoryIdentity; point.materialization = trace; throw error; }
+    return true;
+  }, run => withReservationGate(home, lease, run));
+  if (outcome.status !== 'completed' || outcome.identity !== point.directoryIdentity) throw incompleteFailure();
+}
+async function holdPointPublication(home, lease, point, checked, publish, { writes = [], proofData, progress = () => {} } = {}) {
+  const outcome = await nativeArchiveOperation('backup-publication', { target: home, destination: point.id,
+    file: point.originalName, outputTarget: managedDirectory(home, point), outputIdentity: checked.tree.identity,
+    targetFingerprint: checked.tree.fingerprint, ownedEntries: checked.ownedEntries, writes, proofData,
+    ...(proofData === undefined ? { archiveSha256: point.archive?.sha256, archiveMetadataSha256: point.archive?.metadataSha256,
+      archiveContentFingerprint: point.archive?.contentFingerprint } : {}) }, async (phase, message) => {
+    if (phase === 'proof-create') { progress({ phase: 'proof-create' }); return true; }
+    if (phase !== 'commit' || proofData !== undefined && message.proofSha256 !== backupHash(Buffer.from(proofData))) throw incompleteFailure();
+    progress({ phase: 'index-publication' });
+    await publish(); return true;
+  }, run => withReservationGate(home, lease, run));
+  if (outcome.status !== 'completed') throw incompleteFailure();
+}
 function managedDirectory(home, point) {
   if (!point?.directory || !validId(point.id) || pathKey(path.dirname(point.directory)) !== pathKey(path.join(home, 'backups')) ||
       path.basename(point.directory) !== point.originalName) throw incompleteFailure();
@@ -261,22 +303,32 @@ async function resumeFiles(home, point, snapshot) {
   if (before.fingerprint !== after.fingerprint || before.identity !== after.identity) throw incompleteFailure();
   return { existing: new Set(catalog.files), identity: after.identity };
 }
-async function preserveIncomplete(home, lease, index, id, now) {
+async function preserveIncomplete(home, lease, index, id, now, progress) {
   const active = index.points.filter(p => p.legacy === false && !p.complete && p.recovery?.status !== 'closed-preserved');
   if (active.length !== 1 || active[0].id !== id) throw incompleteFailure();
-  const point = active[0], tree = await measuredIncomplete(home, point);
+  const point = active[0];
+  if (pendingDirectory(point) && (await probePaths([managedDirectory(home, point)]))[0] === 'missing')
+    await initializePoint(home, lease, index, point, { resume: true, progress });
+  progress({ phase: 'preserve-verify' });
+  const tree = await measuredIncomplete(home, point);
+  const { groups: [catalog], omittedJunctions } = await catalogArchiveGroups([{ source: point.directory }]);
+  if (omittedJunctions.length) throw incompleteFailure();
+  const rows = await nativeArchiveOperation('backup-files', { records: catalog.files.map(name => path.join(point.directory, name)) });
+  const ownedEntries = treeEntries(catalog, rows.map((row, i) => ({ file: catalog.files[i], size: row.size, sha256: row.sha256 })));
   const evidencePath = path.join(home, 'maintenance-state', 'backup-failures', id + '-preserved-' + randomUUID() + '.json');
   await nativeArchiveOperation('ensure-directories', { records: [path.dirname(evidencePath)] });
   const proof = { version: 1, id, at: now, status: 'closed-preserved', complete: false, directory: point.directory,
-    identity: tree.identity, fingerprint: tree.fingerprint, files: tree.files, bytes: tree.bytes,
+    scope: 'verified-existing-set', laterEntries: 'protected-unexamined', identity: tree.identity,
+    verifiedSetFingerprint: tree.fingerprint, verifiedFiles: tree.files, verifiedBytes: tree.bytes, verifiedEntries: ownedEntries,
     sourceFingerprint: point.contentFingerprint, schemaHash: point.schemaHash, reason: point.reason };
-  await writeRecords([{ path: evidencePath, value: proof }]);
-  const after = await measuredIncomplete(home, point);
-  if (after.identity !== tree.identity || after.fingerprint !== tree.fingerprint) throw incompleteFailure();
-  point.recovery = { ...point.recovery, status: 'closed-preserved', at: now, evidencePath,
-    evidenceSha256: backupHash(Buffer.from(JSON.stringify(proof, null, 2) + '\n')) };
-  point.protected = true;
-  await saveIndex(home, lease, index);
+  const proofData = JSON.stringify(proof, null, 2) + '\n';
+  await holdPointPublication(home, lease, point, { tree, ownedEntries }, async () => {
+    const previous = { recovery: point.recovery, protected: point.protected };
+    point.recovery = { ...point.recovery, status: 'closed-preserved', at: now, evidencePath, evidenceSha256: backupHash(Buffer.from(proofData)) };
+    point.protected = true;
+    try { await saveIndexHeld(home, index); }
+    catch (error) { Object.assign(point, previous); throw error; }
+  }, { writes: [{ path: evidencePath, data: proofData, overwrite: false }], proofData, progress });
   return { version: 1, at: now, created: [], reused: [], archived: [], protected: [id], failed: [], preserved: [id] };
 }
 
@@ -284,7 +336,8 @@ function safeFailure(error, progress) {
   const code = ['LOW_DISK', 'INCOMPLETE_BACKUP', 'BUSY', 'REFUSED', 'ENOENT', 'EACCES', 'EPERM'].includes(error.code) ? error.code : 'FAILED';
   const cause = code === 'LOW_DISK' ? 'INSUFFICIENT_SPACE' : code === 'INCOMPLETE_BACKUP' ? 'PROTECTED_INCOMPLETE' :
     ['source-read', 'table-read', 'storage-list', 'storage-download', 'storage-read', 'source-verify'].includes(progress.phase) ? 'SOURCE_READ_FAILED' :
-    progress.phase === 'file-create' ? 'FILE_CREATE_FAILED' : progress.phase === 'file-write' || progress.phase === 'file-flush' ? 'FILE_WRITE_FAILED' :
+    ['file-create', 'manifest-create', 'proof-create'].includes(progress.phase) ? 'FILE_CREATE_FAILED' :
+    ['file-write', 'file-flush', 'manifest-write', 'manifest-flush'].includes(progress.phase) ? 'FILE_WRITE_FAILED' :
     progress.phase === 'index-publication' ? 'INDEX_PUBLICATION_FAILED' : progress.phase?.startsWith('archive') ? 'ARCHIVE_FAILED' : 'VERIFICATION_FAILED';
   return { code, cause, ...progress, ...(Number.isInteger(error.nativeCode) && error.nativeCode >= 0 && error.nativeCode <= 65535 ? { osCode: error.nativeCode } : {}) };
 }
@@ -302,7 +355,7 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
   const progress = value => Object.assign(progressState, value);
   try {
     index = await loadIndex(home);
-    if (preserveId) { receipt = await preserveIncomplete(home, lease, index, preserveId, now); passed = true; return receipt; }
+    if (preserveId) { receipt = await preserveIncomplete(home, lease, index, preserveId, now, progress); passed = true; return receipt; }
     if (await reconcileRemovalIntents(home, index, now)) await saveIndex(home, lease, index);
     await nativeArchiveOperation('ensure-directories', { records: [path.join(home, 'backups'), path.join(home, 'backups', 'archives')] });
     await legacyPoints(home, index);
@@ -329,6 +382,12 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
     let continuation;
     if (candidate) {
       progress({ phase: 'existing-files-verify' });
+      if (pendingDirectory(point)) {
+        if (point.schemaHash !== first.manifest.schemaSha256 || point.contentFingerprint !== first.contentFingerprint) {
+          point.recovery.status = 'needs-preserving-close'; throw incompleteFailure();
+        }
+        await initializePoint(home, lease, index, point, { resume: true, progress });
+      }
       try { continuation = await resumeFiles(home, point, first); }
       catch (error) { point.recovery.status = 'needs-preserving-close'; throw incompleteFailure(); }
       point.directoryIdentity = continuation.identity;
@@ -357,38 +416,50 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
           (await probePaths([directory]))[0] !== 'missing')) throw refusal('A new backup destination directly inside HOME/backups is required');
       const forecast = Math.ceil(first.bytes * 2.2) + 16 * 1024 ** 2 + Buffer.byteLength(canonical(first.manifest)) * 4;
       await runLifecycle('backup', { ...options, phase: 'resize', reservation, expectedAdditionalBytes: forecast });
+      progress({ completedFiles: 0, completedBytes: 0 });
       point ??= { id, originalName: path.basename(directory), legacy: false, complete: false, at: now, reason, format,
         schemaHash: first.manifest.schemaSha256, contentFingerprint: first.contentFingerprint, directory,
         provenance: binding.provenance, aliases: [{ name: path.basename(directory), at: now }], counts: {
-          tables: first.manifest.tables.length, objects: first.manifest.objects.length }, pinned: false };
+          tables: first.manifest.tables.length, objects: first.manifest.objects.length }, pinned: false,
+        materialization: { version: 1, state: 'directory-pending', nonce: randomUUID(), at: now,
+          schemaHash: first.manifest.schemaSha256, contentFingerprint: first.contentFingerprint } };
       if (!candidate) index.points.push(point);
       progress({ phase: 'index-publication' });
       await saveIndex(home, lease, index);
-      progress({ phase: 'file-create' });
-      if (!candidate) await nativeArchiveOperation('ensure-directories', { records: [directory, path.join(directory, 'tables'), path.join(directory, 'objects')] });
-      if (!point.directoryIdentity) { point.directoryIdentity = (await measuredIncomplete(home, point)).identity; await saveIndex(home, lease, index); }
+      if (!candidate) await initializePoint(home, lease, index, point, { progress });
+      progress({ completedFiles: 0, completedBytes: 0 });
       const materialized = await captureBackupSnapshot({ ...binding, pageSize, now: point.at, progress,
         sink: await materializationSink(directory, first, getFreeBytes, { ...continuation, identity: point.directoryIdentity, progress }) });
       if (materialized.contentFingerprint !== first.contentFingerprint) throw refusal('Backup snapshot changed before materialization completed');
-      progress({ phase: 'manifest-write' });
       if (!continuation?.existing.has('manifest.json')) {
         const bytes = Buffer.from(JSON.stringify(materialized.manifest, null, 2) + '\n');
+        progress({ phase: 'manifest-create' });
         const output = await openBackupFile({ directory, file: 'manifest.json', maximumBytes: bytes.length, directoryIdentity: point.directoryIdentity });
-        try { await output.write(bytes); await output.close(); }
+        try { progress({ phase: 'manifest-write' }); await output.write(bytes);
+          progress({ phase: 'manifest-flush' }); await output.close(); }
         catch (error) { await output.abort().catch(() => {}); throw error; }
       }
       progress({ phase: 'result-verify' });
       if ((await measuredIncomplete(home, point)).identity !== point.directoryIdentity) throw incompleteFailure();
       const checked = await verifyBackupBytes(directory);
       if (checked.contentFingerprint !== first.contentFingerprint || checked.tree.identity !== point.directoryIdentity) throw refusal('Materialized backup bytes differ');
-      point.complete = true; point.verifiedAt = now;
-      if (candidate) { point.recovery.status = 'completed'; receipt.resumed.push(id); }
-      index.lastComplete = { id, at: now, schemaHash: point.schemaHash };
-      index.lastAttempt = { at: now, reason, passed: true, created: id };
-      if (!candidate) receipt.created.push(id);
-      progress({ phase: 'index-publication' });
-      await saveIndex(home, lease, index);
       await freshBudget(home, Math.ceil(first.bytes * 1.1) + 16 * 1024 ** 2, getFreeBytes);
+      await preparePointArchive(home, lease, point, checked, progress);
+      await holdPointPublication(home, lease, point, checked, async () => {
+        const previous = { complete: point.complete, verifiedAt: point.verifiedAt, recovery: point.recovery,
+          lastComplete: index.lastComplete, lastAttempt: index.lastAttempt };
+        point.complete = true; point.verifiedAt = now;
+        if (candidate) point.recovery = { ...point.recovery, status: 'completed' };
+        index.lastComplete = { id, at: now, schemaHash: point.schemaHash };
+        index.lastAttempt = { at: now, reason, passed: true, ...(candidate ? { resumed: id } : { created: id }) };
+        try { await saveIndexHeld(home, index); }
+        catch (error) {
+          Object.assign(point, { complete: previous.complete, verifiedAt: previous.verifiedAt, recovery: previous.recovery });
+          index.lastComplete = previous.lastComplete; index.lastAttempt = previous.lastAttempt; throw error;
+        }
+      }, { progress });
+      if (candidate) receipt.resumed.push(id);
+      if (!candidate) receipt.created.push(id);
       progress({ phase: 'archive' });
       await compressPoint(home, lease, index, point, checked, receipt, progress);
     }
@@ -454,24 +525,38 @@ async function verifyPoint(home, point) {
   return checked;
 }
 
-async function compressPoint(home, lease, index, point, checked, receipt, progress = () => {}) {
+async function preparePointArchive(home, lease, point, checked, progress = () => {}) {
   await requireHeldLease(home, lease);
+  const destination = path.join(home, 'backups', 'archives', point.id + '.zip');
+  const states = await probePaths([destination, destination + '.manifest.json']);
+  let published;
   progress({ phase: 'archive-create' });
-  const { groups } = await catalogArchiveGroups([{ source: point.directory, prefix: 'artifact' }]);
-  const archive = await publishEvidenceArchive({ groups, destination: path.join(home, 'backups', 'archives', point.id + '.zip'),
-    targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity });
+  if (states.every(state => state === 'missing') && !point.archive) {
+    const { groups } = await catalogArchiveGroups([{ source: point.directory, prefix: 'artifact' }]);
+    published = await publishEvidenceArchive({ groups, destination,
+      targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity });
+  } else if (!states.every(state => state === 'plain')) throw refusal('The incomplete archive pair remains protected');
   progress({ phase: 'archive-verify' });
-  const verified = await verifyArchive(archive.path);
-  if (verified.sha256 !== archive.sha256 || verified.contentFingerprint !== archive.contentFingerprint) throw refusal('Archive reread differs');
-  point.archive = { format: verified.format, path: verified.path, sha256: verified.sha256,
+  const verified = await verifyArchive(destination);
+  for (const prior of [published, point.archive].filter(Boolean)) if (verified.sha256 !== prior.sha256 ||
+      verified.contentFingerprint !== prior.contentFingerprint || verified.metadataSha256 !== prior.metadataSha256) throw refusal('Archive reread differs');
+  const archive = { format: verified.format, path: verified.path, sha256: verified.sha256,
     contentFingerprint: verified.contentFingerprint, metadataSha256: verified.metadataSha256, verifiedAt: verified.verifiedAt };
+  await verifyPoint(home, { ...point, archive });
+  point.archive = archive;
+}
+
+async function compressPoint(home, lease, index, point, checked, receipt, progress = () => {}) {
+  if (!point.archive) await preparePointArchive(home, lease, point, checked, progress);
+  const verified = await verifyPoint(home, point);
   point.rawRemovalIntent = { at: receipt.at, directory: point.directory, archivePath: verified.path,
     archiveSha256: verified.sha256, targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity };
   progress({ phase: 'index-publication' });
   await saveIndex(home, lease, index);
   // Preserve the archived point before any source removal, including interruption.
   progress({ phase: 'source-removal' });
-  const removed = await deleteArchivedTarget({ archive: verified, target: point.directory,
+  let removed;
+  try { removed = await deleteArchivedTarget({ archive: verified, target: point.directory,
     targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity, resume: false }, async phase => {
     if (!await terminalProtection(home, index, point, receipt.at, false)) return false;
     if (phase === 'commit') {
@@ -479,10 +564,16 @@ async function compressPoint(home, lease, index, point, checked, receipt, progre
       await saveIndexHeld(home, index);
     }
     return true;
-  }, run => withReservationGate(home, lease, run));
+  }, run => withReservationGate(home, lease, run)); }
+  catch {
+    // Complete refers to the held verified ZIP pair. A later raw addition must
+    // survive intact and cannot authorize source removal or alter that archive.
+    removed = { status: 'protected' };
+    receipt.protected.push({ id: point.id, reason: 'raw-or-archive-not-reverified' });
+  }
   point.rawRemoved = removed.status === 'completed';
   point.rawRemovalOutcome = { at: new Date().toISOString(), status: removed.status, confirmedDeletion: point.rawRemoved };
-  receipt.archived.push({ id: point.id, archive: archive.path, sourceRemoved: point.rawRemoved });
+  receipt.archived.push({ id: point.id, archive: point.archive.path, sourceRemoved: point.rawRemoved });
 }
 
 async function rotationProof(home, index, current, now) {
