@@ -104,6 +104,7 @@ namespace ContractorStorage {
             public string targetFingerprint { get; set; }
             public string archiveSha256 { get; set; }
             public string archiveMetadataSha256 { get; set; }
+            public ProtectedBackup[] protectedBackups { get; set; }
             public long maximumBytes { get; set; }
             public bool resume { get; set; }
             public Group[] groups { get; set; }
@@ -121,6 +122,13 @@ namespace ContractorStorage {
             public string path { get; set; }
             public string data { get; set; }
             public bool overwrite { get; set; }
+        }
+
+        public sealed class ProtectedBackup {
+            public string id { get; set; }
+            public string file { get; set; }
+            public string sha256 { get; set; }
+            public string metadataSha256 { get; set; }
         }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
@@ -449,13 +457,14 @@ namespace ContractorStorage {
             public readonly List<KeyValuePair<Reference, Verified>> Bases = new List<KeyValuePair<Reference, Verified>>();
             private readonly List<Verified> rebuild = new List<Verified>();
 
-            public Verified(string file, string expected, bool permitReferences, string metadata = null, string referenceRoot = null) {
+            public Verified(string file, string expected, bool permitReferences, string metadata = null, string referenceRoot = null,
+                            SafeFileHandle transaction = null) {
                 try {
-                    manifestPath = new HeldPath(metadata ?? file + ".manifest.json", false);
+                    manifestPath = new HeldPath(metadata ?? file + ".manifest.json", false, transaction != null, transaction: transaction);
                     Manifest = Json.Deserialize<Manifest>(Utf8.GetString(ReadSmall(manifestPath.Handle)));
                     Require(Manifest != null && Manifest.format == "zip-v1" && IsHash(Manifest.sha256) &&
                         (expected == null || expected == Manifest.sha256), "Archive metadata or expected hash mismatch");
-                    archivePath = new HeldPath(file, false);
+                    archivePath = new HeldPath(file, false, transaction != null, transaction: transaction);
                     var info = Guard.ReadInfo(archivePath.Handle);
                     Require((info.Attributes & DirectoryFlag) == 0 && info.Links == 1, "ZIP path is not a plain single-link file");
                     stream = Reader(archivePath.Handle);
@@ -494,6 +503,10 @@ namespace ContractorStorage {
                 }
                 if (includeGenerated && Manifest.generated != null)
                     foreach (var row in Manifest.generated.entries) yield return row;
+            }
+
+            public string MetadataSha256() {
+                return PlainFile("metadata", manifestPath.Handle, Stream.Null).sha256;
             }
 
             public object Receipt(string file) {
@@ -1085,7 +1098,7 @@ namespace ContractorStorage {
             using (var verified = new Verified(request.file, request.archiveSha256, false)) {
                 Require(verified.Manifest.generated == null && verified.Bases.Count == 0, "A standalone backup archive is required");
                 return new { archive = verified.Receipt(request.file), manifest = BackupMetadataBytes(verified, "manifest.json"),
-                    schema = BackupMetadataBytes(verified, "schema.json") };
+                    schema = BackupMetadataBytes(verified, "schema.json"), metadataSha256 = verified.MetadataSha256() };
             }
         }
 
@@ -1123,6 +1136,16 @@ namespace ContractorStorage {
             var expected = Join(Join(Join(request.target, "backups"), "archives"), request.destination + ".zip");
             Require(Names.Equals(expected, request.file) && IsHash(request.archiveSha256) && IsHash(request.archiveMetadataSha256),
                 "Only an exact managed backup archive pair can be pruned");
+            Require(request.protectedBackups != null && request.protectedBackups.Length >= 1 &&
+                request.protectedBackups.Length <= 2, "Exact current and restored ZIP pairs are required");
+            var identifiers = new HashSet<string>(Names);
+            foreach (var anchor in request.protectedBackups) {
+                Require(anchor != null && Regex.IsMatch(anchor.id ?? "", @"\Apoint-[a-f0-9-]{36}\z") &&
+                    identifiers.Add(anchor.id) && !Names.Equals(anchor.id, request.destination), "Invalid or colliding protected backup");
+                var anchorFile = Join(Join(Join(request.target, "backups"), "archives"), anchor.id + ".zip");
+                Require(Names.Equals(anchor.file, anchorFile) && !Names.Equals(anchor.file, request.file) &&
+                    IsHash(anchor.sha256) && IsHash(anchor.metadataSha256), "Invalid protected backup pair path or hashes");
+            }
             using (var verified = new Verified(request.file, request.archiveSha256, false)) {
                 Require(verified.Manifest.generated == null && verified.Bases.Count == 0 &&
                     verified.Manifest.entries.Any(row => row.path == "artifact/manifest.json" && !row.directory) &&
@@ -1131,24 +1154,39 @@ namespace ContractorStorage {
             }
             using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
                 if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-                long bytes;
-                using (var zip = new HeldPath(request.file, false, true, transaction: transaction))
-                using (var metadata = new HeldPath(request.file + ".manifest.json", false, true, transaction: transaction)) {
-                    var zipEntry = PlainFile("backup.zip", zip.Handle, Stream.Null);
-                    var metadataEntry = PlainFile("backup.zip.manifest.json", metadata.Handle, Stream.Null);
-                    Require(zipEntry.sha256 == request.archiveSha256 && metadataEntry.sha256 == request.archiveMetadataSha256,
-                        "The managed backup archive pair changed");
-                    bytes = checked(zipEntry.size + metadataEntry.size);
-                    Console.WriteLine(@"{""ready"":true,""phase"":""stage""}");
+                var anchors = new List<Verified>();
+                try {
+                    // Transactional read/delete-access handles pin the whole file, including
+                    // named streams. These anchors are NEVER marked for deletion. Verify the
+                    // large ZIP bytes here, before either JS authorization or its short gate.
+                    foreach (var anchor in request.protectedBackups) {
+                        var held = new Verified(anchor.file, anchor.sha256, false, transaction: transaction);
+                        anchors.Add(held);
+                        Require(held.Manifest.generated == null && held.Bases.Count == 0 &&
+                            held.MetadataSha256() == anchor.metadataSha256 &&
+                            held.Manifest.entries.Any(row => row.path == "artifact/manifest.json" && !row.directory) &&
+                            held.Manifest.entries.Any(row => row.path == "artifact/schema.json" && !row.directory),
+                            "Protected backup bytes or metadata changed");
+                    }
+                    long bytes;
+                    using (var zip = new HeldPath(request.file, false, true, transaction: transaction))
+                    using (var metadata = new HeldPath(request.file + ".manifest.json", false, true, transaction: transaction)) {
+                        var zipEntry = PlainFile("backup.zip", zip.Handle, Stream.Null);
+                        var metadataEntry = PlainFile("backup.zip.manifest.json", metadata.Handle, Stream.Null);
+                        Require(zipEntry.sha256 == request.archiveSha256 && metadataEntry.sha256 == request.archiveMetadataSha256,
+                            "The managed backup archive pair changed");
+                        bytes = checked(zipEntry.size + metadataEntry.size);
+                        Console.WriteLine(@"{""ready"":true,""phase"":""stage""}");
+                        if (Console.ReadLine() != "delete") return new { status = "skipped", deletedBytes = 0L };
+                        MarkDelete(zip.Handle);
+                        MarkDelete(metadata.Handle);
+                    }
+                    Console.WriteLine(@"{""ready"":true,""phase"":""commit""}");
                     if (Console.ReadLine() != "delete") return new { status = "skipped", deletedBytes = 0L };
-                    MarkDelete(zip.Handle);
-                    MarkDelete(metadata.Handle);
-                }
-                Console.WriteLine(@"{""ready"":true,""phase"":""commit""}");
-                if (Console.ReadLine() != "delete") return new { status = "skipped", deletedBytes = 0L };
-                if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastWin32Error());
-                Require(!Present(request.file) && !Present(request.file + ".manifest.json"), "Backup prune outcome is unverified");
-                return new { status = "completed", deletedBytes = bytes };
+                    if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    Require(!Present(request.file) && !Present(request.file + ".manifest.json"), "Backup prune outcome is unverified");
+                    return new { status = "completed", deletedBytes = bytes };
+                } finally { foreach (var anchor in anchors) anchor.Dispose(); }
             }
         }
 

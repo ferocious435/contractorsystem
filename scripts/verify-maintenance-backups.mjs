@@ -131,11 +131,13 @@ test('old arbitrary restore receipts cannot authorize rotation', () => {
   const point = { id: 'p', contentFingerprint: hash('point'), schemaHash: hash('schema'), format: 'backup-v2' };
   assert.equal(rotationEvidenceMatches({ passed: true, at: day }, point, day), false);
   const exact = { id: 'point-' + randomUUID(), contentFingerprint: hash('data'), schemaHash: hash('schema'),
-    format: 'backup-v2+zip-v1', counts: { tables: 1, objects: 1 } };
+    format: 'backup-v2+zip-v1', archive: { format: 'zip-v1' }, counts: { tables: 1, objects: 1 } };
   const proof = { version: 1, status: 'passed', passed: true, at: day, backupId: exact.id,
     backupFingerprint: exact.contentFingerprint, schemaHash: exact.schemaHash, format: exact.format,
     counts: exact.counts, checks: { tables: true, storage: true, schema: true, permissions: true } };
   assert.equal(rotationEvidenceMatches(proof, exact, day), true);
+  assert.equal(rotationEvidenceMatches(proof, { ...exact, archive: undefined }, day), false);
+  assert.equal(rotationEvidenceMatches(proof, { ...exact, archive: { format: 'directory' } }, day), false);
   for (const changed of [{ schemaHash: hash('other') }, { backupFingerprint: hash('other') }, { format: 'unknown' },
     { at: '2026-06-10T00:00:00Z' }, { at: '2026-01-01T00:00:00Z' }, { status: 'unavailable' },
     { checks: { tables: true, storage: true, schema: true } }]) assert.equal(rotationEvidenceMatches({ ...proof, ...changed }, exact, day), false);
@@ -254,6 +256,7 @@ test('native prune rejects changed sidecar and rolls back a late refusal before 
   const archive = await publishEvidenceArchive({ groups, destination: path.join(archives, id + '.zip') });
   const sidecarPath = archive.path + '.manifest.json', original = await fs.readFile(sidecarPath);
   const request = { target: home, destination: id, file: archive.path, archiveSha256: archive.sha256, archiveMetadataSha256: hash(original) };
+  request.protectedBackups = [await copiedProtectedPair(home, archive)];
   await fs.writeFile(sidecarPath, Buffer.concat([original, Buffer.from(' ')]));
   let calls = 0;
   await assert.rejects(nativeArchiveOperation('backup-prune', request, async () => { calls++; return true; }), /pair changed/i);
@@ -416,6 +419,84 @@ async function tinyArchive(home, id = 'point-' + randomUUID()) {
     contentFingerprint: snapshot.contentFingerprint, counts: { tables: 1, objects: 1 }, archive, aliases: [] } };
 }
 
+async function capturedProtectedPair(id, original) {
+  const verified = await nativeArchiveOperation('backup-metadata', { file: original.path, archiveSha256: original.sha256 });
+  assert.equal(verified.metadataSha256, hash(await fs.readFile(original.path + '.manifest.json')));
+  return { id, file: original.path, sha256: verified.archive.sha256, metadataSha256: verified.metadataSha256 };
+}
+
+async function copiedProtectedPair(home, original) {
+  const id = 'point-' + randomUUID(), file = path.join(home, 'backups', 'archives', id + '.zip');
+  await fs.copyFile(original.path, file); await fs.copyFile(original.path + '.manifest.json', file + '.manifest.json');
+  return capturedProtectedPair(id, { path: file, sha256: original.sha256 });
+}
+
+test('round2 protected pair disappearance or replacement after early verification preserves the candidate', async t => {
+  const home = await fixture(t), original = await tinyArchive(home);
+  for (const [anchorIndex, suffix, action] of [[0, '', 'remove'], [0, '.manifest.json', 'replace'],
+    [1, '', 'replace'], [1, '.manifest.json', 'remove']]) {
+    const candidate = await copiedProtectedPair(home, original.archive);
+    const protectedBackups = [await copiedProtectedPair(home, original.archive), await copiedProtectedPair(home, original.archive)];
+    const changed = protectedBackups[anchorIndex].file + suffix;
+    if (action === 'remove') await fs.unlink(changed); else await fs.writeFile(changed, 'modeled replacement');
+    let callbacks = 0;
+    await assert.rejects(nativeArchiveOperation('backup-prune', { target: home, destination: candidate.id,
+      file: candidate.file, archiveSha256: candidate.sha256, archiveMetadataSha256: candidate.metadataSha256,
+      protectedBackups }, async () => { callbacks++; return true; }));
+    assert.equal(callbacks, 0);
+    await fs.access(candidate.file); await fs.access(candidate.file + '.manifest.json');
+  }
+});
+
+test('round2 native hold protects both anchor pairs through callbacks and rechecks each candidate', async t => {
+  const home = await fixture(t), original = await tinyArchive(home);
+  const candidate = await copiedProtectedPair(home, original.archive);
+  const protectedBackups = [await copiedProtectedPair(home, original.archive), await copiedProtectedPair(home, original.archive)];
+  const prune = (target, approve) => nativeArchiveOperation('backup-prune', { target: home, destination: target.id,
+    file: target.file, archiveSha256: target.sha256, archiveMetadataSha256: target.metadataSha256, protectedBackups }, approve);
+  const result = await prune(candidate, async phase => {
+    for (const anchor of protectedBackups) for (const file of [anchor.file, anchor.file + '.manifest.json']) {
+      await assert.rejects(fs.writeFile(file, 'late primary write'));
+      await assert.rejects(fs.rename(file, file + '.moved'));
+      await assert.rejects(fs.writeFile(file + ':late', 'late named stream'));
+      if (phase === 'commit') await assert.rejects(fs.unlink(file));
+    }
+    return true;
+  });
+  assert.equal(result.status, 'completed'); await assert.rejects(fs.access(candidate.file), { code: 'ENOENT' });
+  for (const anchor of protectedBackups) {
+    assert.equal(hash(await fs.readFile(anchor.file)), anchor.sha256);
+    assert.equal(hash(await fs.readFile(anchor.file + '.manifest.json')), anchor.metadataSha256);
+  }
+  const second = await copiedProtectedPair(home, original.archive);
+  await fs.unlink(protectedBackups[1].file + '.manifest.json');
+  await assert.rejects(prune(second, async () => true));
+  await fs.access(second.file); await fs.access(second.file + '.manifest.json');
+});
+
+test('round2 narrow anchor contract refuses missing duplicate colliding or unsupported inputs', async t => {
+  const home = await fixture(t), original = await tinyArchive(home);
+  const candidate = await copiedProtectedPair(home, original.archive), anchor = await copiedProtectedPair(home, original.archive);
+  let callbacks = 0;
+  const prune = refs => nativeArchiveOperation('backup-prune', { target: home, destination: candidate.id,
+    file: candidate.file, archiveSha256: candidate.sha256, archiveMetadataSha256: candidate.metadataSha256,
+    protectedBackups: refs }, async () => { callbacks++; return true; });
+  for (const refs of [undefined, [], [anchor, anchor], [candidate], [{ ...anchor, file: path.join(home, 'outside.zip') }],
+    [{ ...anchor, metadataSha256: undefined }]]) await assert.rejects(prune(refs));
+  assert.equal(callbacks, 0);
+  const stream = anchor.file + ':unsupported'; await fs.writeFile(stream, 'synthetic ADS');
+  await assert.rejects(prune([anchor])); await fs.unlink(stream);
+  const writer = await fs.open(anchor.file, 'r+');
+  try { await assert.rejects(prune([anchor])); } finally { await writer.close(); }
+  await fs.unlink(anchor.file); await fs.symlink(original.source, anchor.file, 'junction');
+  try { await assert.rejects(prune([anchor])); } finally { await fs.unlink(anchor.file); }
+  assert.equal(callbacks, 0); await fs.access(candidate.file); await fs.access(candidate.file + '.manifest.json');
+  await fs.copyFile(original.archive.path, anchor.file);
+  const succeeded = await prune([anchor]);
+  assert.equal(succeeded.status, 'completed'); assert.equal(callbacks, 2);
+  await fs.access(anchor.file); await fs.access(anchor.file + '.manifest.json');
+});
+
 test('round1 terminal gate rejects a late successful pin and proof update and excludes sibling writers', async t => {
   const home = await fixture(t), f = await tinyArchive(home);
   await withMaintenanceLock(home, 'terminal-fixture', async lease => {
@@ -424,7 +505,8 @@ test('round1 terminal gate rejects a late successful pin and proof update and ex
     await updateTask(home, lease, task);
     const sidecar = await fs.readFile(f.archive.path + '.manifest.json');
     const request = { target: home, destination: f.point.id, file: f.archive.path,
-      archiveSha256: f.archive.sha256, archiveMetadataSha256: hash(sidecar) };
+      archiveSha256: f.archive.sha256, archiveMetadataSha256: hash(sidecar),
+      protectedBackups: [await copiedProtectedPair(home, f.archive)] };
     let terminalEntered = false;
     const scope = async run => withReservationGate(home, lease, async () => { terminalEntered = true; return run(); });
     const pinned = await nativeArchiveOperation('backup-prune', request, async phase => {
@@ -482,7 +564,8 @@ test('round1 crash after native commits reconciles exact missing paths without c
       targetIdentity: f.checked.tree.identity, resume: false }, async () => true);
     assert.equal(raw.status, 'completed');
     const pair = await nativeArchiveOperation('backup-prune', { target: home, destination: pruning.id,
-      file: pruning.archive.path, archiveSha256: pruning.archive.sha256, archiveMetadataSha256: hash(sidecar) }, async () => true);
+      file: pruning.archive.path, archiveSha256: pruning.archive.sha256, archiveMetadataSha256: hash(sidecar),
+      protectedBackups: [await capturedProtectedPair(f.point.id, f.archive)] }, async () => true);
     assert.equal(pair.status, 'completed');
     // Simulated process loss: no post-commit index publication for either operation.
     await maintainBackups({ home, lease, now: day, getFreeBytes: async () => 100 * 1024 ** 3 });

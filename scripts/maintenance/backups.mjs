@@ -114,7 +114,7 @@ export async function verifyBackupBytes(input) {
 // B2 must persist exact byte-backed restore evidence. A status-only/legacy proof
 // never enables deletion, nor does a proof for an older schema or different point.
 export function rotationEvidenceMatches(proof, point, now) {
-  return Boolean(point && proof?.version === 1 && proof.passed === true && proof.status === 'passed' &&
+  return Boolean(point?.archive?.format === 'zip-v1' && proof?.version === 1 && proof.passed === true && proof.status === 'passed' &&
     validId(proof.backupId) && proof.backupId === point.id && proof.backupFingerprint === point.contentFingerprint &&
     validHash(proof.backupFingerprint) && proof.schemaHash === point.schemaHash && validHash(proof.schemaHash) &&
     proof.format === format && point.format === format && Number.isFinite(Date.parse(proof.at)) &&
@@ -323,7 +323,8 @@ async function verifyPoint(home, point) {
     if (manifest.version !== 2 || manifest.errors?.length !== 0 || backupHash(schemaBytes) !== point.schemaHash ||
         manifest.schemaSha256 !== point.schemaHash || manifest.tables?.length !== point.counts?.tables ||
         manifest.objects?.length !== point.counts?.objects || snapshotFingerprint(manifest, files) !== point.contentFingerprint) throw refusal('Archived backup fingerprint or schema differs');
-    return verified;
+    if (!validHash(metadata.metadataSha256)) throw refusal('The verified archive sidecar hash is missing');
+    return { ...verified, metadataSha256: metadata.metadataSha256 };
   }
   if (!point.directory || pathKey(path.dirname(point.directory)) !== pathKey(path.join(home, 'backups'))) throw refusal('The raw backup is outside its managed slot');
   const checked = await verifyBackupBytes(point.directory);
@@ -360,15 +361,19 @@ async function compressPoint(home, lease, index, point, checked, receipt) {
 
 async function rotationProof(home, index, current, now) {
   const record = index.lastVerified;
-  if (!current?.complete || current.archiveRemoved || !record || !validHash(record.evidenceSha256) || typeof record.evidencePath !== 'string' ||
+  if (!current?.complete || current.archiveRemoved || current.archive?.format !== 'zip-v1' || !record || !validHash(record.evidenceSha256) || typeof record.evidencePath !== 'string' ||
       relativeWithin(path.join(home, 'maintenance-state', 'restore-evidence'), record.evidencePath) === null) return null;
   const { bytes, value } = await smallJson(record.evidencePath);
   const restored = index.points.find(point => point.id === value.backupId);
-  if (!restored?.complete || restored.archiveRemoved || restored.schemaHash !== current.schemaHash || restored.format !== current.format ||
+  if (!restored?.complete || restored.archiveRemoved || restored.archive?.format !== 'zip-v1' || restored.schemaHash !== current.schemaHash || restored.format !== current.format ||
       backupHash(bytes) !== record.evidenceSha256 || canonical(value) !== canonical(record.proof) || !rotationEvidenceMatches(value, restored, now)) return null;
-  await verifyPoint(home, restored);
-  if (current.id !== restored.id) await verifyPoint(home, current);
-  return value;
+  const protectedBackups = [];
+  for (const point of [restored, ...(current.id === restored.id ? [] : [current])]) {
+    const verified = await verifyPoint(home, point);
+    if (verified.format !== 'zip-v1' || !validHash(verified.metadataSha256)) return null;
+    protectedBackups.push({ id: point.id, file: verified.path, sha256: verified.sha256, metadataSha256: verified.metadataSha256 });
+  }
+  return { proof: value, protectedBackups };
 }
 
 export function backupPinsPoint(home, point, pins) {
@@ -468,10 +473,11 @@ async function reconcileRemovalIntents(home, index, now) {
 async function rotatePoints(home, lease, index, now, receipt) {
   const current = index.points.find(p => p.id === index.lastComplete?.id);
   if (!current?.complete || localDay(index.lastComplete.at) !== localDay(now)) { receipt.protected.push('no-fresh-complete-backup'); return; }
-  let proof;
-  try { proof = await rotationProof(home, index, current, now); }
+  let verifiedSources;
+  try { verifiedSources = await rotationProof(home, index, current, now); }
   catch { receipt.protected.push('restore-evidence-or-source-unavailable'); return; }
-  if (!proof) { receipt.protected.push('matching-verified-restore-required'); return; }
+  if (!verifiedSources) { receipt.protected.push('matching-verified-restore-required'); return; }
+  const { proof, protectedBackups } = verifiedSources;
   const selected = selectBackupRetention(index.points.filter(p => !p.archiveRemoved && !p.archiveUnavailable).map(p => ({ ...p, restored: p.id === proof.backupId })), now);
   for (const id of selected.eligible) {
     const point = index.points.find(p => p.id === id);
@@ -490,6 +496,7 @@ async function rotatePoints(home, lease, index, now, receipt) {
       await saveIndex(home, lease, index);
       const outcome = await nativeArchiveOperation('backup-prune', { file: verified.path, archiveSha256: verified.sha256,
         archiveMetadataSha256: sidecar.sha256,
+        protectedBackups,
         target: home, destination: id }, async phase => {
         if (!await terminalProtection(home, index, point, now, true)) return false;
         if (phase === 'commit') {
