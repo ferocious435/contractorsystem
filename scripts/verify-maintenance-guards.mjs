@@ -264,6 +264,27 @@ if (process.argv[2] === '--inventory-worker') {
     await first.done;
   });
 
+  test('reservation helper holds its native handle beyond the handshake budget', { skip: !windows, timeout: 60000 }, async t => {
+    const { withMaintenanceLock, withReservationGate } = await guardModule();
+    const home = await sandbox(t);
+    const gate = path.join(home, 'maintenance-state', 'reservation-gate');
+    const timeout = 4000;
+    const oldTimeout = AbortSignal.timeout.bind(AbortSignal);
+    t.mock.method(AbortSignal, 'timeout', value => oldTimeout(value === 45 * 60 * 1000 ? timeout : value));
+    await withMaintenanceLock(home, 'long-reservation-fixture', async lease => {
+      const result = await withReservationGate(home, lease, async () => {
+        await delay(timeout + 250);
+        await assert.rejects(fs.readFile(gate), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
+        await assert.rejects(withReservationGate(home, lease, () => assert.fail('A contender entered the held gate'), { timeout }),
+          { code: 'BUSY' });
+        return 'operation completed';
+      }, { timeout });
+      assert.equal(result, 'operation completed');
+      assert.equal(JSON.parse(await fs.readFile(gate, 'utf8')).state, 'idle');
+      assert.equal(await withReservationGate(home, lease, () => 'next operation', { timeout }), 'next operation');
+    });
+  });
+
   // Fails if an expired heartbeat can take a lock whose original owner is still alive.
   test('expiredTimestampDoesNotUnlock', { timeout: 30000 }, async t => {
     const { withMaintenanceLock } = await guardModule();

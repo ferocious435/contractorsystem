@@ -255,8 +255,10 @@ async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo,
   });
   if (recoverOwn && !info) return;
   if (info && (!info.isFile() || info.nlink !== 1)) throw busy();
+  const controller = new AbortController();
+  const deadline = () => setTimeout(() => controller.abort(), timeout).unref();
   // FileShare.None holds the same gate path exclusively until the helper closes
-  // its handle, even after a process crash. The record remains for PID validation.
+  // its handle. On parent death, stdin closes and the owner record remains for PID validation.
   const { child, done, lines, send } = startWindowsHelper(String.raw`
     $query = ConvertFrom-Json -InputObject $env:CODEX_MAINTENANCE_QUERY
     $encoding = [Text.UTF8Encoding]::new($false, $true)
@@ -302,7 +304,8 @@ async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo,
     } finally {
       $stream.Dispose()
     }
-  `, { file, idle: idleGate, recoverOwn }, AbortSignal.timeout(timeout));
+  `, { file, idle: idleGate, recoverOwn }, controller.signal);
+  const handshake = deadline();
   let claimed = false;
   let sent = false;
   try {
@@ -316,11 +319,21 @@ async function withAcquisitionGate(file, lease, run, { recoverOwn = false, undo,
     await send(JSON.stringify(lease));
     if ((await lines.next()).value !== 'claimed') throw busy();
     claimed = true;
+    // The callback may legitimately run much longer than either protocol exchange.
+    clearTimeout(handshake);
     return await run();
   } finally {
-    child.stdin.end(claimed ? 'idle\n' : undefined);
-    const idle = claimed && (await lines.next()).value === 'idle';
-    if (await done !== 0 || (sent && !idle)) {
+    clearTimeout(handshake);
+    const release = deadline();
+    let released;
+    try {
+      child.stdin.end(claimed ? 'idle\n' : undefined);
+      const idle = claimed && (await lines.next()).value === 'idle';
+      released = await done === 0 && (!sent || idle);
+    } finally {
+      clearTimeout(release);
+    }
+    if (!released) {
       if (sent) await undo?.();
       throw busy();
     }
@@ -433,7 +446,7 @@ export function inheritedMaintenanceLease() {
   }
 }
 
-export async function withReservationGate(home, lease, run) {
+export async function withReservationGate(home, lease, run, { timeout } = {}) {
   home = await requireHeldLease(home, lease);
   const [actual] = await processSnapshot(process.pid);
   if (!actual?.processStartedAt) throw busy();
@@ -444,7 +457,7 @@ export async function withReservationGate(home, lease, run) {
     return await withAcquisitionGate(gate, owner, () => {
       started = true;
       return run();
-    }, { timeout: 45 * 60 * 1000 });
+    }, { timeout });
   } catch (error) {
     if (!started) throw busy();
     throw error;
