@@ -8,6 +8,8 @@
     "local:build": "node scripts/local-system-build.mjs",
     "local:package": "node scripts/local-system-package.mjs",
     "local:maintenance": "node scripts/local-system-maintenance.mjs",
+    "local:maintain": "node scripts/local-system-maintenance.mjs",
+    "local:context": "node scripts/local-system-maintenance.mjs context",
     "start": "next start",
     "verify:financials": "node scripts/verify-financial-invariants.mjs",
     "verify:auth-login": "node scripts/verify-auth-login.mjs",

@@ -54,6 +54,7 @@ next-env.d.ts
 /skills
 /global_archive_backup/
 /.superpowers/
+/docs/history/handoff-*.md
 
 # local server logs
 *.log

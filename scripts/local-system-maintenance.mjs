@@ -9,10 +9,12 @@ import { closeManagedBuild, closeManagedCandidate } from './maintenance/lifecycl
 import { assertNarrowRoot, pathKey, refusal } from './maintenance/policy.mjs';
 import { applyStorage, importLegacyEvidence, prepareStoragePlan, runStorageEvent } from './maintenance/storage.mjs';
 import { backupStatus, maintainBackups } from './maintenance/backups.mjs';
+import { checkContext } from './maintenance/context.mjs';
 
 const execute = promisify(execFile);
 const commands = {
   inspect: ['--json'],
+  context: [],
   plan: ['--output'],
   apply: ['--plan'],
   run: ['--event', '--task'],
@@ -71,10 +73,21 @@ async function input(file) {
 async function main(args) {
   const { command, flags, repos, required } = parseArgs(args);
   const override = flags.get('--home');
-  const home = await resolveMaintenanceHome({ explicitHome: override === undefined ? undefined : path.resolve(override) });
-  const options = { home, repoRoots: await repoRoots(repos) };
+  const explicitHome = override === undefined ? undefined : path.resolve(override);
+  const roots = await repoRoots(repos);
+  const context = () => checkContext({ repo: roots[0], home: explicitHome });
+  if (command === 'context') {
+    const result = await context();
+    if (!result.passed) process.exitCode = 1;
+    return result;
+  }
+  const home = await resolveMaintenanceHome({ explicitHome });
+  const options = { home, repoRoots: roots };
   const lease = inheritedMaintenanceLease();
-  if (command === 'inspect') return readInventory(options);
+  if (command === 'inspect') {
+    const [inventory, report] = await Promise.all([readInventory(options), context()]);
+    return { ...inventory, context: report };
+  }
   if (command === 'backup-status') return backupStatus({ home });
   if (command === 'backup') return withLifecycleLock(home, 'backup', lock => maintainBackups({ home, lease: lock,
     reason: flags.get('--reason') ?? 'routine', pageSize: flags.get('--page-size'), schemaPath: flags.get('--schema'),
@@ -122,7 +135,9 @@ async function main(args) {
   }
   const event = required('--event');
   const task = required('--task');
-  return withLifecycleLock(home, command + ':' + event, lock => runStorageEvent(event, task, { ...options, lease: lock }), lease);
+  const receipt = await withLifecycleLock(home, command + ':' + event,
+    lock => runStorageEvent(event, task, { ...options, lease: lock }), lease);
+  return { ...receipt, context: await context() };
 }
 
 export async function maintenanceMain(args = process.argv.slice(2)) {

@@ -64,6 +64,53 @@ export async function readTask(home, id) {
   return record;
 }
 
+// A handoff needs the pointer and task registry only. It can be checked while
+// another process owns the maintenance lease or is writing backup data.
+export async function readContextInventory(home, repo) {
+  const directory = path.join(home, 'maintenance-state', 'tasks');
+  const pointer = path.join(home, 'current.json');
+  const [pointerState, registryState] = await probePaths([pointer, directory]);
+  const readPointer = async () => {
+    if (pointerState !== 'plain') return null;
+    const bytes = process.platform === 'win32' ? (await readGuardedRecords([pointer])).get(pointer) : null;
+    const current = process.platform === 'win32' ? JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')) : await readJson(pointer);
+    return isReleaseId(current?.releaseId) ? {
+      releaseId: current.releaseId,
+      previousId: isReleaseId(current.previousId) ? current.previousId : null,
+      pid: pidIsValid(current.pid) ? current.pid : null,
+    } : null;
+  };
+  const readCandidates = async () => {
+    if (registryState === 'missing') return [];
+    if (registryState !== 'plain') return null;
+    const names = (await fs.readdir(directory)).filter(name => name.endsWith('.json'));
+    const files = names.map(name => path.join(directory, name));
+    const guarded = process.platform === 'win32' ? await readGuardedRecords(files) : null;
+    const tasks = await Promise.all(files.map(async file => {
+      if (!guarded) return readTask(home, path.basename(file, '.json'));
+      const task = JSON.parse(guarded.get(file).toString('utf8').replace(/^\uFEFF/, ''));
+      validateTask(task);
+      if (task.id + '.json' !== path.basename(file)) throw refusal('The task record has a different identity');
+      return task;
+    }));
+    if (tasks.includes(null)) return null;
+    const candidates = tasks.filter(task => task.status === 'active' && task.candidate && pathKey(task.worktree) === pathKey(repo))
+      .map(task => {
+        const candidate = pathInMaintenanceHome(home, task.candidate);
+        const id = path.basename(candidate);
+        if (!isReleaseId(id) || pathKey(path.dirname(candidate)) !== pathKey(path.join(home, 'releases'))) {
+          throw refusal('The registered candidate cannot be verified');
+        }
+        return id;
+      });
+    return [...new Set(candidates)].sort();
+  };
+  const [current, candidates] = await Promise.all([
+    readPointer().catch(() => null), readCandidates().catch(() => null),
+  ]);
+  return { current, candidates };
+}
+
 export async function updateTask(home, lease, record) {
   validateTask(record);
   const json = JSON.stringify(record, null, 2) + '\n';
