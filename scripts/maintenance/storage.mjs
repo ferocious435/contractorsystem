@@ -641,10 +641,10 @@ async function applyStorageWithHeldGate(plan, { home, lease, repoRoots = [], coo
           archive, target: action.path, targetFingerprint: action.expectedFingerprint,
           targetIdentity: action.expectedIdentity, resume: Boolean(previous),
           managedProofSha256: archive.managedProofSha256,
-        }, async () => {
+        }, async (_phase, _request, deleteWorker) => {
           await requireHeldLease(home, lease);
           if (await inputProtected(action.path)) return false;
-          const now = await readInventory({ ...options, pinnedTarget: action.path });
+          const now = await readInventory({ ...options, pinnedTarget: action.path, deleteWorker });
           const rechecked = expectedState === freshness(now) && reconcileAction(action, now, home, previous);
           if (!rechecked || (archive.generatedOmissions?.length &&
               (await proofFromInventory(rechecked))?.managedProofSha256 !== archive.managedProofSha256)) return false;

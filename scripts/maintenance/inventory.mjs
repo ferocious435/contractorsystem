@@ -1,7 +1,7 @@
 import { readLegacyProvenance } from './legacy.mjs';
 import { verifiedBuildClosure, verifiedCandidateClosure } from './lifecycle.mjs';
 import { readPackageStage, stagingDirectory } from './package-staging.mjs';
-import { readGuardedRecords } from './archive.mjs';
+import { isAuthorizingDeleteWorker, readGuardedRecords } from './archive.mjs';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
@@ -198,7 +198,7 @@ function needsOperationBinding(proc) {
   });
 }
 
-export async function readInventory({ home, repoRoots = [], pinnedTarget = null, coordinatorLease } = {}) {
+export async function readInventory({ home, repoRoots = [], pinnedTarget = null, coordinatorLease, deleteWorker } = {}) {
   const inventory = {
     at: new Date().toISOString(), current: null, acceptedReleases: [], tasks: [],
     artifacts: [], processes: [], uncertainties: [], freeBytes: null,
@@ -680,6 +680,7 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
   let unboundOperation = false;
   for (const proc of live) {
     if (coordinatorLease && proc.pid === process.pid) continue;
+    if (!savedPids.has(proc.pid) && isAuthorizingDeleteWorker(deleteWorker, pinnedTarget, proc)) continue;
     const matches = [];
     for (const artifact of items.values()) {
       const aliases = artifactPaths(artifact).flatMap(file => {

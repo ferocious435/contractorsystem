@@ -7,6 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { withMaintenanceLock } from './maintenance/guard.mjs';
 import {
@@ -180,6 +181,65 @@ async function releases(t, count = 4) {
   return { home, repo, evidence, ids, roots, index, record, importIndex, apply,
     plan: () => prepareStoragePlan(readOptions) };
 }
+
+filesystemTest('deletion disregards only its own archive worker inside a registered worktree', async t => {
+  for (const withForeignWorker of [false, true]) {
+    const f = await releases(t);
+    const scripts = path.join(f.repo, '.superpowers', 'worker', 'scripts');
+    await fs.mkdir(scripts, { recursive: true });
+    await fs.cp(new URL('./maintenance', import.meta.url), path.join(scripts, 'maintenance'), { recursive: true });
+    for (const name of ['local-system-backup.mjs', 'local-system-launch.mjs']) {
+      await fs.copyFile(new URL('./' + name, import.meta.url), path.join(scripts, name));
+    }
+    const local = name => import(pathToFileURL(path.join(scripts, 'maintenance', name)).href);
+    const guard = await local('guard.mjs');
+    const storage = await local('storage.mjs');
+    const options = { home: f.home, repoRoots: [f.repo] };
+    const forecast = await smallFixtureForecast(t, f);
+    await guard.withMaintenanceLock(f.home, 'worker fixture import', lease =>
+      storage.importLegacyEvidence(f.index, { ...options, lease }));
+    const plan = await storage.prepareStoragePlan(options);
+    const target = f.roots.get('v1');
+    const marker = path.join(target, 'a-unique.bin');
+    assert.deepEqual(plan.actions.map(action => action.path), [target]);
+
+    let foreign, closed;
+    const getFreeBytes = async () => {
+      if (withForeignWorker && !foreign) {
+        const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+        const worker = path.join(scripts, 'maintenance', 'archive-worker.ps1');
+        foreign = childProcess.spawn(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', worker],
+          { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+        closed = new Promise(resolve => foreign.once('close', resolve));
+        foreign.on('error', () => {});
+        foreign.stdin.on('error', () => {});
+        const [row] = await guard.processSnapshot(foreign.pid);
+        assert.equal(row?.parentPid, process.pid);
+        assert.ok(row.processStartedAt && row.commandLine.toLowerCase().includes(worker.toLowerCase()));
+      }
+      return forecast.getFreeBytes();
+    };
+    try {
+      const receipt = await guard.withMaintenanceLock(f.home, 'worker fixture apply', lease =>
+        storage.applyStorage(plan, { ...options, lease, getFreeBytes }));
+      assert.deepEqual(receipt.failed, []);
+      if (withForeignWorker) {
+        assert.ok(foreign);
+        assert.deepEqual(receipt.completed, []);
+        assert.equal(receipt.skipped[0]?.reason, 'protection-or-scope-changed');
+        assert.equal(await fs.readFile(marker, 'utf8'), 'unknown-v1');
+      } else {
+        assert.deepEqual(receipt.completed.map(action => action.id), ['release:v1']);
+        await notFound(marker);
+      }
+    } finally {
+      if (foreign) {
+        foreign.stdin.end();
+        await closed;
+      }
+    }
+  }
+});
 
 filesystemTest('round2 public archive apply excludes a sibling admission and lifecycle cleanup reuses its gate', async t => {
   const f = await releases(t, 5);

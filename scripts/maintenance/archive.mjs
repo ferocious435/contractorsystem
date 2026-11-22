@@ -3,17 +3,46 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { absolutePath, assertNarrowRoot, refusal, relativeWithin } from './policy.mjs';
+import { processSnapshot } from './guard.mjs';
+import { absolutePath, assertNarrowRoot, pathKey, refusal, relativeWithin } from './policy.mjs';
 import { windowsInspectionSource } from './windows-inspection.mjs';
 
 const workerFile = fileURLToPath(new URL('./archive-worker.ps1', import.meta.url));
 const validDigest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const authorizingWorkers = new WeakMap();
+const childIsLive = child => !child.killed && child.exitCode === null && child.signalCode === null;
+
+async function identifyDeleteWorker(child, executable, args, target) {
+  if (!child.pid || !childIsLive(child) || relativeWithin(target, workerFile) !== null ||
+      relativeWithin(target, executable) !== null) return null;
+  try {
+    const [row] = await processSnapshot(child.pid);
+    if (!childIsLive(child) || row?.parentPid !== process.pid || !Number.isFinite(Date.parse(row.processStartedAt)) ||
+        pathKey(row.executable) !== pathKey(executable)) return null;
+    const argv = row.commandLine?.match(/"[^"]*"|[^\s"]+/g)?.map(arg => arg.replace(/^"|"$/g, ''));
+    if (argv?.length !== args.length + 1 || pathKey(argv[0]) !== pathKey(executable) ||
+        args.some((arg, index) => arg !== argv[index + 1])) return null;
+    return { child, row, target: pathKey(target) };
+  } catch {
+    return null;
+  }
+}
+
+export function isAuthorizingDeleteWorker(proof, target, processRow) {
+  const worker = authorizingWorkers.get(proof);
+  if (!worker || !target || worker.target !== pathKey(target) || !childIsLive(worker.child)) return false;
+  const { row } = worker;
+  return row.pid === processRow.pid && row.parentPid === processRow.parentPid &&
+    row.processStartedAt === processRow.processStartedAt && row.executable === processRow.executable &&
+    row.commandLine === processRow.commandLine;
+}
 
 export async function nativeArchiveOperation(operation, payload, authorize, commitScope) {
   if (process.platform !== 'win32') throw refusal('The native ZIP helper is available on Windows');
   const system = absolutePath(process.env.SystemRoot || 'C:\\Windows');
   const executable = path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const child = spawn(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', workerFile], {
+  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', workerFile];
+  const child = spawn(executable, args, {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     signal: AbortSignal.timeout(40 * 60 * 1000),
@@ -29,6 +58,20 @@ export async function nativeArchiveOperation(operation, payload, authorize, comm
   const message = JSON.stringify(windowsInspectionSource) + '\n' + JSON.stringify({ operation, ...payload }) + '\n';
   if (authorize) child.stdin.write(message);
   else child.stdin.end(message);
+  let deleteWorker;
+  const authorizeRequest = async (phase, request) => {
+    if (operation !== 'delete' || !['stage', 'commit'].includes(phase)) return authorize(phase, request);
+    if (deleteWorker === undefined) deleteWorker = await identifyDeleteWorker(child, executable, args, payload.target);
+    if (!deleteWorker) return authorize(phase, request);
+    // Only this request may disregard the process holding its deletion transaction.
+    const proof = {};
+    authorizingWorkers.set(proof, deleteWorker);
+    try {
+      return await authorize(phase, request, proof);
+    } finally {
+      authorizingWorkers.delete(proof);
+    }
+  };
   const finish = async response => {
     if (!(await lines.next()).done || await done !== 0 || response.done) {
       throw refusal(spawnError?.message ?? (diagnostics.trim() || 'The native ZIP operation failed'));
@@ -41,11 +84,11 @@ export async function nativeArchiveOperation(operation, payload, authorize, comm
       if (!authorize) throw refusal('Unexpected native authorization request');
       const message = JSON.parse(response.value), { phase } = message;
       if (phase === 'commit' && commitScope) return await commitScope(async () => {
-        const authorized = await authorize(phase, message);
+        const authorized = await authorizeRequest(phase, message);
         child.stdin.write(authorized ? 'delete\n' : operation === 'restore-publication' ? 'rollback\n' : 'skip\n');
         return finish(await lines.next());
       });
-      const authorized = await authorize(phase, message);
+      const authorized = await authorizeRequest(phase, message);
       child.stdin.write(authorized ? 'delete\n' : operation === 'restore-publication' && phase === 'commit' ? 'rollback\n' : 'skip\n');
       response = await lines.next();
     }
