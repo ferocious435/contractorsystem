@@ -8,7 +8,7 @@ import { windowsInspectionSource } from './windows-inspection.mjs';
 const workerFile = fileURLToPath(new URL('./archive-worker.ps1', import.meta.url));
 const validDigest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
-export async function nativeArchiveOperation(operation, payload, authorize) {
+export async function nativeArchiveOperation(operation, payload, authorize, commitScope) {
   if (process.platform !== 'win32') throw refusal('The native ZIP helper is available on Windows');
   const system = absolutePath(process.env.SystemRoot || 'C:\\Windows');
   const executable = path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -28,19 +28,27 @@ export async function nativeArchiveOperation(operation, payload, authorize) {
   const message = JSON.stringify(windowsInspectionSource) + '\n' + JSON.stringify({ operation, ...payload }) + '\n';
   if (authorize) child.stdin.write(message);
   else child.stdin.end(message);
+  const finish = async response => {
+    if (!(await lines.next()).done || await done !== 0 || response.done) {
+      throw refusal(spawnError?.message ?? (diagnostics.trim() || 'The native ZIP operation failed'));
+    }
+    return JSON.parse(response.value);
+  };
   try {
     let response = await lines.next();
     while (!response.done && JSON.parse(response.value)?.ready === true) {
       if (!authorize) throw refusal('Unexpected native authorization request');
       const { phase } = JSON.parse(response.value);
+      if (phase === 'commit' && commitScope) return await commitScope(async () => {
+        const authorized = await authorize(phase);
+        child.stdin.write(authorized ? 'delete\n' : 'skip\n');
+        return finish(await lines.next());
+      });
       const authorized = await authorize(phase);
       child.stdin.write(authorized ? 'delete\n' : 'skip\n');
       response = await lines.next();
     }
-    if (!(await lines.next()).done || await done !== 0 || response.done) {
-      throw refusal(spawnError?.message ?? (diagnostics.trim() || 'The native ZIP operation failed'));
-    }
-    return JSON.parse(response.value);
+    return await finish(response);
   } finally {
     child.stdin.end();
     await done;
@@ -91,6 +99,10 @@ export async function openBackupFile({ directory, file, maximumBytes }) {
           throw refusal('The native backup output is incomplete');
         }
       } finally { child.stdin.end(); await done; }
+    },
+    async abort() {
+      if (closed) return; closed = true;
+      child.stdin.end(); await done;
     },
   };
 }
@@ -147,12 +159,12 @@ export async function measureArchiveTargets(files) {
   return nativeArchiveOperation('measure', { records: files.map(assertNarrowRoot) });
 }
 
-export async function deleteArchivedTarget({ archive, target, targetFingerprint, targetIdentity, resume, managedProofSha256 }, authorize) {
+export async function deleteArchivedTarget({ archive, target, targetFingerprint, targetIdentity, resume, managedProofSha256 }, authorize, commitScope) {
   if (!validDigest(archive.sha256) || !validDigest(targetFingerprint) || typeof targetIdentity !== 'string') {
     throw refusal('A verified archive and planned target are required');
   }
   return nativeArchiveOperation('delete', {
     file: zipPath(archive.path), archiveSha256: archive.sha256, target: assertNarrowRoot(target),
     targetIdentity, targetFingerprint, resume, managedProofSha256,
-  }, authorize);
+  }, authorize, commitScope);
 }

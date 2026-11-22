@@ -4,9 +4,10 @@ import path from 'node:path';
 import { archiveName, catalogArchiveGroups, deleteArchivedTarget, measureArchiveTargets, nativeArchiveOperation,
   openBackupFile, publishEvidenceArchive, readGuardedRecords, verifyArchive } from './archive.mjs';
 import { inheritedMaintenanceLease, probePaths, requireHeldLease, requirePlainPath, resolveMaintenanceHome,
-  withLifecycleLock } from './guard.mjs';
+  withLifecycleLock, withReservationGate } from './guard.mjs';
 import { guardedJson, writeRecords } from './lifecycle.mjs';
-import { maintenancePolicy, pathKey, refusal, relativeWithin } from './policy.mjs';
+import { absolutePath, maintenancePolicy, pathInMaintenanceHome, pathKey, refusal, relativeWithin } from './policy.mjs';
+import { resolveVerifiedRelease } from './release.mjs';
 import { runLifecycle } from './storage.mjs';
 import { backupHash, canonical, captureBackupSnapshot, parsePageSize, publicTables, snapshotFingerprint } from '../local-system-backup.mjs';
 
@@ -31,6 +32,7 @@ export function selectBackupRetention(backups, now = new Date().toISOString()) {
   iso(now);
   const keep = new Set(), slots = { daily: [], weekly: [], monthly: [] };
   const complete = backups.filter(point => {
+    if (point.archiveUnavailable || point.archiveRemoved) { keep.add(point.id); return false; }
     if (point.legacy !== false || !point.complete || point.pinned || point.restored || point.lastRestored ||
         !Number.isFinite(Date.parse(point.at)) || Date.parse(point.at) > Date.parse(now)) keep.add(point.id);
     return point.legacy === false && point.complete && Date.parse(point.at) <= Date.parse(now);
@@ -123,18 +125,39 @@ export function rotationEvidenceMatches(proof, point, now) {
 }
 
 const indexFile = home => path.join(home, 'maintenance-state', 'backup-index.json');
+const revisions = new WeakMap();
 async function loadIndex(home) {
   const file = indexFile(home), [state] = await probePaths([file]);
-  if (state === 'missing') return { version: 1, points: [], lastAttempt: null, lastComplete: null, lastVerified: null };
+  if (state === 'missing') {
+    const empty = { version: 1, points: [], lastAttempt: null, lastComplete: null, lastVerified: null };
+    revisions.set(empty, canonical(empty)); return empty;
+  }
   if (state !== 'plain') throw refusal('Backup index is unsafe');
   const index = await guardedJson(file);
   if (index.version !== 1 || !Array.isArray(index.points) || new Set(index.points.map(p => p.id)).size !== index.points.length) throw refusal('Backup index is invalid');
   for (const point of index.points) if (point.legacy === false && !validId(point.id)) throw refusal('Invalid managed backup identity');
-  return index;
+  revisions.set(index, canonical(index)); return index;
+}
+async function saveIndexHeld(home, index) {
+  const fresh = await loadIndex(home);
+  if (canonical(fresh) !== revisions.get(index)) throw Object.assign(Error('The backup index changed before publication'), { code: 'BUSY' });
+  await writeRecords([{ path: indexFile(home), value: index, overwrite: true }]);
+  revisions.set(index, canonical(index));
 }
 async function saveIndex(home, lease, index) {
-  await requireHeldLease(home, lease);
-  await writeRecords([{ path: indexFile(home), value: index, overwrite: true }]);
+  return withReservationGate(home, lease, () => saveIndexHeld(home, index));
+}
+// B2 proof/index writers use this same short gate and mutate a freshly loaded
+// index. Prepare/verify large evidence outside it; publish evidence + reference
+// together inside the callback. Never call this while already holding the gate.
+export async function updateBackupIndex(home, lease, update) {
+  home = await requireHeldLease(home, lease);
+  return withReservationGate(home, lease, async () => {
+    const index = await loadIndex(home);
+    const result = await update(index);
+    await saveIndexHeld(home, index);
+    return result;
+  });
 }
 async function legacyPoints(home, index) {
   const root = path.join(home, 'backups');
@@ -153,7 +176,6 @@ export async function backupStatus({ home } = {}) {
 }
 
 async function verifiedClient({ home, releaseId, schemaPath, envPath }) {
-  const { resolveVerifiedRelease } = await import('../local-system-launch.mjs');
   const binding = await resolveVerifiedRelease({ home, releaseId });
   const { parse } = binding.require('dotenv'), { createClient } = binding.require('@supabase/supabase-js');
   const config = envPath ?? path.join(home, 'config', 'system.env');
@@ -188,7 +210,7 @@ async function materializationSink(directory, expected, getFreeBytes) {
     return { async write(bytes) { written += bytes.length;
       if (written > limits.get(file)) throw refusal('Backup grew beyond the admitted snapshot');
       await freshBudget(directory, bytes.length, getFreeBytes); await output.write(bytes); },
-    close: () => output.close() };
+    close: () => output.close(), abort: () => output.abort() };
   };
 }
 
@@ -199,9 +221,10 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
   home = await requireHeldLease(home, lease);
   const options = { home, lease, event: 'backup', task: 'data-backup', cleanup: false, ...(getFreeBytes ? { getFreeBytes } : {}) };
   const reservation = await runLifecycle('backup', options);
-  let passed = false, index, receipt, point;
+  let passed = false, index, receipt, point, primaryFailure;
   try {
     index = await loadIndex(home);
+    if (await reconcileRemovalIntents(home, index, now)) await saveIndex(home, lease, index);
     await nativeArchiveOperation('ensure-directories', { records: [path.join(home, 'backups'), path.join(home, 'backups', 'archives')] });
     await legacyPoints(home, index);
     const due = backupDue({ now, lastAttempt: index.lastAttempt, lastComplete: index.lastComplete, reason });
@@ -215,7 +238,7 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
       : await verifiedClient({ home, releaseId, schemaPath, envPath });
     const first = await captureBackupSnapshot({ ...binding, pageSize, now });
     const previous = index.points.find(p => p.id === index.lastComplete?.id);
-    if (previous?.complete && previous.contentFingerprint === first.contentFingerprint) {
+    if (previous?.complete && !previous.archiveUnavailable && previous.contentFingerprint === first.contentFingerprint) {
       const previousCheck = await verifyPoint(home, previous);
       if (!previous.archive) {
         const forecast = Math.ceil(first.bytes * 1.1) + 16 * 1024 ** 2;
@@ -223,14 +246,16 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
         await freshBudget(home, forecast, getFreeBytes);
         await compressPoint(home, lease, index, previous, previousCheck, receipt);
       }
-      previous.aliases.push({ name: destination ? path.basename(destination) : 'unchanged-' + now, at: now });
+      previous.aliases.push({ name: destination ? path.basename(destination) : 'unchanged-' + now, at: now,
+        reason, provenance: binding.provenance, contentFingerprint: first.contentFingerprint,
+        schemaHash: first.manifest.schemaSha256, format, verifiedReference: previous.id });
       index.lastAttempt = { at: now, reason, passed: true, reused: previous.id };
       index.lastComplete = { id: previous.id, at: now, schemaHash: first.manifest.schemaSha256 };
       receipt.reused.push(previous.id);
       previous.verifiedAt = now;
     } else {
       const id = 'point-' + randomUUID();
-      const directory = destination ? path.resolve(destination) : path.join(home, 'backups', id);
+      const directory = destination ? pathInMaintenanceHome(home, path.resolve(destination)) : path.join(home, 'backups', id);
       if (pathKey(path.dirname(directory)) !== pathKey(path.join(home, 'backups')) ||
           (await probePaths([directory]))[0] !== 'missing') throw refusal('A new backup destination directly inside HOME/backups is required');
       const forecast = Math.ceil(first.bytes * 2.2) + 16 * 1024 ** 2 + Buffer.byteLength(canonical(first.manifest)) * 4;
@@ -266,12 +291,20 @@ export async function maintainBackups({ home, lease, reason = 'routine', now = n
     receipt ??= { version: 1, at: now, reason, created: [], reused: [], archived: [], protected: [], failed: [] };
     const failureReason = error.code === 'LOW_DISK' ? 'insufficient-space' : error.code === 'INCOMPLETE_BACKUP' ? 'incomplete-managed-slot' : 'backup-not-verified';
     receipt.failed.push({ code: error.code ?? 'FAILED', reason: failureReason });
+    if (error.cleanupFailures?.length) (receipt.cleanupFailures ??= []).push(...error.cleanupFailures);
     if (index) { index.lastReceipt = receipt; await saveIndex(home, lease, index).catch(() => {}); }
     if (point && !point.complete) await writeRecords([{ path: path.join(point.directory, 'incomplete-manifest.json'), value: { version: 2, complete: false, at: now, error: 'Backup could not be verified' } }]).catch(() => {});
-    throw Object.assign(Error(error.code === 'INCOMPLETE_BACKUP' ? error.message :
+    primaryFailure = Object.assign(Error(error.code === 'INCOMPLETE_BACKUP' ? error.message :
       'Backup could not be verified; the dependent maintenance operation must not continue'), { code: error.code ?? 'FAILED', receipt, cause: error });
+    throw primaryFailure;
   } finally {
-    await runLifecycle('backup', { ...options, phase: 'finish', reservation, passed });
+    try { await runLifecycle('backup', { ...options, phase: 'finish', reservation, passed }); }
+    catch (cleanup) {
+      (receipt.cleanupFailures ??= []).push({ operation: 'reservation-finish', code: cleanup.code ?? 'FAILED' });
+      if (index) { index.lastReceipt = receipt; await saveIndex(home, lease, index).catch(() => {}); }
+      if (!primaryFailure) throw Object.assign(Error('The backup receipt could not finish its reservation'), {
+        code: cleanup.code ?? 'FAILED', receipt, cause: cleanup });
+    }
   }
 }
 
@@ -307,13 +340,21 @@ async function compressPoint(home, lease, index, point, checked, receipt) {
   if (verified.sha256 !== archive.sha256 || verified.contentFingerprint !== archive.contentFingerprint) throw refusal('Archive reread differs');
   point.archive = { format: verified.format, path: verified.path, sha256: verified.sha256,
     contentFingerprint: verified.contentFingerprint, verifiedAt: verified.verifiedAt };
+  point.rawRemovalIntent = { at: receipt.at, directory: point.directory, archivePath: verified.path,
+    archiveSha256: verified.sha256, targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity };
   await saveIndex(home, lease, index);
   // Preserve the archived point before any source removal, including interruption.
   const removed = await deleteArchivedTarget({ archive: verified, target: point.directory,
-    targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity, resume: false }, async () => {
-    await requireHeldLease(home, lease); return true;
-  });
+    targetFingerprint: checked.tree.fingerprint, targetIdentity: checked.tree.identity, resume: false }, async phase => {
+    if (!await terminalProtection(home, index, point, receipt.at, false)) return false;
+    if (phase === 'commit') {
+      point.rawRemovalIntent.authorizedAt = new Date().toISOString();
+      await saveIndexHeld(home, index);
+    }
+    return true;
+  }, run => withReservationGate(home, lease, run));
   point.rawRemoved = removed.status === 'completed';
+  point.rawRemovalOutcome = { at: new Date().toISOString(), status: removed.status, confirmedDeletion: point.rawRemoved };
   receipt.archived.push({ id: point.id, archive: archive.path, sourceRemoved: point.rawRemoved });
 }
 
@@ -330,18 +371,98 @@ async function rotationProof(home, index, current, now) {
   return value;
 }
 
+export function backupPinsPoint(home, point, pins) {
+  const references = [point.directory, point.archive?.path, point.archive && point.archive.path + '.manifest.json'].filter(Boolean)
+    .map(file => pathInMaintenanceHome(home, file));
+  return pins.some(pin => {
+    if (pin === point.id) return true;
+    if (typeof pin !== 'string' || !path.isAbsolute(pin)) return false;
+    let actual = absolutePath(pin);
+    try { actual = pathInMaintenanceHome(home, actual); } catch { /* External ancestor/worktree pins keep their original path, as inventory. */ }
+    return references.some(ref => relativeWithin(actual, ref) !== null || relativeWithin(ref, actual) !== null);
+  });
+}
+
 async function taskPins(home, point) {
   const root = path.join(home, 'maintenance-state', 'tasks');
   const names = await nativeArchiveOperation('list', { target: root });
-  const references = [point.id, point.directory, point.archive?.path].filter(Boolean);
   for (const name of names) {
     if (!/^[a-z0-9][a-z0-9_-]{0,89}\.json$/i.test(name)) throw refusal('Unknown task protection record');
     const task = await guardedJson(path.join(root, name));
     if (!Array.isArray(task.pins)) throw refusal('Task pins cannot be verified');
-    if (task.pins.some(pin => references.some(ref => pin === ref || typeof pin === 'string' && path.isAbsolute(pin) &&
-        path.isAbsolute(ref) && (relativeWithin(pin, ref) !== null || relativeWithin(ref, pin) !== null)))) return true;
+    if (backupPinsPoint(home, point, task.pins)) return true;
   }
   return false;
+}
+
+// Large ZIP verification is finished before this metadata-only terminal check.
+// The native confirm+commit stays within the caller's reservation gate, shared
+// with updateTask and updateBackupIndex. No ZIP or source-body reads here.
+async function terminalProtection(home, baseline, point, now, needsRestore) {
+  const taskRoot = path.join(home, 'maintenance-state', 'tasks');
+  const names = await nativeArchiveOperation('list', { target: taskRoot });
+  if (names.some(name => !/^[a-z0-9][a-z0-9_-]{0,89}\.json$/i.test(name))) return false;
+  const evidencePath = needsRestore ? baseline.lastVerified?.evidencePath : null;
+  if (needsRestore && !evidencePath) return false;
+  const files = [indexFile(home), ...(evidencePath ? [evidencePath] : []), ...names.map(name => path.join(taskRoot, name))];
+  const records = await readGuardedRecords(files);
+  const fresh = JSON.parse(records.get(indexFile(home)));
+  if (fresh.version !== 1 || !Array.isArray(fresh.points) || canonical(fresh.lastComplete) !== canonical(baseline.lastComplete)) return false;
+  const candidate = fresh.points.find(p => p.id === point.id);
+  if (!candidate?.complete || candidate.legacy !== false || candidate.pinned || candidate.archiveUnavailable ||
+      canonical(candidate) !== canonical(point)) return false;
+  for (const name of names) {
+    const task = JSON.parse(records.get(path.join(taskRoot, name)));
+    if (!Array.isArray(task.pins) || backupPinsPoint(home, candidate, task.pins)) return false;
+  }
+  if (!needsRestore) return true;
+  const evidence = records.get(evidencePath);
+  if (!evidence || backupHash(evidence) !== baseline.lastVerified.evidenceSha256 ||
+      canonical(fresh.lastVerified) !== canonical(baseline.lastVerified)) return false;
+  const proof = JSON.parse(evidence), restored = fresh.points.find(p => p.id === proof.backupId);
+  const current = fresh.points.find(p => p.id === fresh.lastComplete?.id);
+  const originalCurrent = baseline.points.find(p => p.id === baseline.lastComplete?.id);
+  const originalRestored = baseline.points.find(p => p.id === proof.backupId);
+  return Boolean(restored?.complete && current?.complete && !restored.archiveUnavailable && !current.archiveUnavailable &&
+    canonical(proof) === canonical(fresh.lastVerified.proof) && rotationEvidenceMatches(proof, restored, now) &&
+    restored.schemaHash === current.schemaHash && restored.format === current.format &&
+    canonical(current) === canonical(originalCurrent) && canonical(restored) === canonical(originalRestored) &&
+    selectBackupRetention(fresh.points.filter(p => !p.archiveRemoved && !p.archiveUnavailable)
+      .map(p => ({ ...p, restored: p.id === proof.backupId })), now).eligible.includes(point.id));
+}
+
+async function reconcileRemovalIntents(home, index, now) {
+  let changed = false;
+  for (const point of index.points) {
+    if (point.legacy !== false || !validId(point.id) || !point.complete || !point.archive) continue;
+    const expected = path.join(home, 'backups', 'archives', point.id + '.zip');
+    if (pathKey(point.archive.path) !== pathKey(expected)) continue;
+    if (point.pruneIntent && !point.pruneOutcome && point.pruneIntent.archiveSha256 === point.archive.sha256) {
+      const intent = point.pruneIntent;
+      const exactAuthorization = intent.archivePath === expected && validHash(intent.metadataSha256) &&
+        validHash(intent.evidenceSha256) && Number.isFinite(Date.parse(intent.authorizedAt));
+      const states = await probePaths([expected, expected + '.manifest.json']);
+      const absent = states.every(state => state === 'missing');
+      point.pruneOutcome = { at: now, status: absent ? (exactAuthorization ? 'missing-after-authorized-intent' :
+        'missing-after-unconfirmed-intent') : states.every(state => state === 'plain') ? 'pair-present-after-interruption' : 'partial-pair-protected',
+      confirmedDeletion: false };
+      if (!states.every(state => state === 'plain')) point.archiveUnavailable = true;
+      changed = true;
+    }
+    if (!point.rawRemoved && !point.rawRemovalOutcome && point.directory &&
+        pathKey(path.dirname(point.directory)) === pathKey(path.join(home, 'backups'))) {
+      const [state] = await probePaths([point.directory]);
+      const intent = point.rawRemovalIntent;
+      const exactIntent = intent?.archivePath === expected && intent.directory === point.directory &&
+        intent.archiveSha256 === point.archive.sha256 && validHash(intent.targetFingerprint) && typeof intent.targetIdentity === 'string';
+      if (!exactIntent && state === 'plain') continue;
+      point.rawMissing = state === 'missing';
+      point.rawRemovalOutcome = { at: now, status: point.rawMissing ? (exactIntent ? 'missing-after-intent' : 'missing-without-authorized-intent') :
+        state === 'plain' ? 'source-present-after-interruption' : 'unverified-source-protected', confirmedDeletion: false };
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 async function rotatePoints(home, lease, index, now, receipt) {
@@ -351,7 +472,7 @@ async function rotatePoints(home, lease, index, now, receipt) {
   try { proof = await rotationProof(home, index, current, now); }
   catch { receipt.protected.push('restore-evidence-or-source-unavailable'); return; }
   if (!proof) { receipt.protected.push('matching-verified-restore-required'); return; }
-  const selected = selectBackupRetention(index.points.filter(p => !p.archiveRemoved).map(p => ({ ...p, restored: p.id === proof.backupId })), now);
+  const selected = selectBackupRetention(index.points.filter(p => !p.archiveRemoved && !p.archiveUnavailable).map(p => ({ ...p, restored: p.id === proof.backupId })), now);
   for (const id of selected.eligible) {
     const point = index.points.find(p => p.id === id);
     try {
@@ -359,25 +480,24 @@ async function rotatePoints(home, lease, index, now, receipt) {
         receipt.protected.push({ id, reason: 'different-schema-or-format-requires-own-restore' });
         continue;
       }
-      if (point.legacy !== false || !point.complete || !point.archive || !point.rawRemoved || point.archiveRemoved || point.pinned ||
+      if (point.legacy !== false || !point.complete || !point.archive || !(point.rawRemoved || point.rawMissing) || point.archiveRemoved || point.archiveUnavailable || point.pinned ||
           point.id === proof.backupId || await taskPins(home, point)) continue;
       const verified = await verifyPoint(home, point);
       const sidecar = await nativeArchiveOperation('hash-file', { target: verified.path + '.manifest.json' });
-      point.pruneIntent = { at: now, archiveSha256: verified.sha256, evidenceSha256: index.lastVerified.evidenceSha256 };
+      point.pruneIntent = { at: now, archivePath: verified.path, archiveSha256: verified.sha256,
+        metadataSha256: sidecar.sha256, evidenceSha256: index.lastVerified.evidenceSha256 };
+      delete point.pruneOutcome;
       await saveIndex(home, lease, index);
       const outcome = await nativeArchiveOperation('backup-prune', { file: verified.path, archiveSha256: verified.sha256,
         archiveMetadataSha256: sidecar.sha256,
-        target: home, destination: id }, async () => {
-        await requireHeldLease(home, lease);
-        const fresh = await loadIndex(home), candidate = fresh.points.find(p => p.id === id);
-        const freshCurrent = fresh.points.find(p => p.id === fresh.lastComplete?.id);
-        return Boolean(candidate?.complete && candidate.legacy === false && !candidate.pinned &&
-          candidate.schemaHash === proof.schemaHash && candidate.format === proof.format &&
-          canonical(fresh.lastVerified) === canonical(index.lastVerified) &&
-          candidate.rawRemoved && !candidate.archiveRemoved && candidate.archive?.sha256 === verified.sha256 &&
-          !await taskPins(home, candidate) && await rotationProof(home, fresh, freshCurrent, now) &&
-          selectBackupRetention(fresh.points.filter(p => !p.archiveRemoved).map(p => ({ ...p, restored: p.id === proof.backupId })), now).eligible.includes(id));
-      });
+        target: home, destination: id }, async phase => {
+        if (!await terminalProtection(home, index, point, now, true)) return false;
+        if (phase === 'commit') {
+          point.pruneIntent.authorizedAt = new Date().toISOString();
+          await saveIndexHeld(home, index);
+        }
+        return true;
+      }, run => withReservationGate(home, lease, run));
       if (outcome.status === 'completed') {
         point.prunedAt = now; point.archiveRemoved = true; receipt.archived.push({ id, pruned: true });
       } else receipt.protected.push({ id, reason: 'retention-protection-changed' });

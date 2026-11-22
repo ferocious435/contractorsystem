@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { pathKey, refusal } from './maintenance/policy.mjs';
 import { backupCli } from './maintenance/backups.mjs';
 
@@ -76,11 +76,19 @@ export async function captureBackupSnapshot({ client, schemaBytes, pageSize, sin
   async function record(file, produce, materialize = true) {
     const hash = createHash('sha256'); let size = 0;
     const output = materialize ? await sink?.(file) : null;
+    let failure;
     try {
       await produce(async chunk => { chunk = Buffer.from(chunk); size += chunk.length;
         if (!Number.isSafeInteger(size)) throw refusal('Backup input size is out of range');
         hash.update(chunk); await output?.write(chunk); });
-    } finally { await output?.close(); }
+    } catch (error) { failure = error; throw error; }
+    finally {
+      try { if (failure && output?.abort) await output.abort(); else await output?.close(); }
+      catch (cleanup) {
+        if (!failure) throw cleanup;
+        (failure.cleanupFailures ??= []).push({ operation: 'stream-close', code: cleanup.code ?? 'FAILED' });
+      }
+    }
     const entry = { file, size, sha256: hash.digest('hex') };
     if (materialize) files.push(entry);
     return entry;
@@ -145,7 +153,8 @@ export async function captureBackupSnapshot({ client, schemaBytes, pageSize, sin
 export async function backupMain(args = process.argv.slice(2)) {
   return backupCli(args);
 }
-if (process.argv[1] && pathKey(path.resolve(process.argv[1])) === pathKey(fileURLToPath(import.meta.url))) {
+const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
+if (entryUrl && (process.platform === 'win32' ? entryUrl.toLowerCase() === import.meta.url.toLowerCase() : entryUrl === import.meta.url)) {
   try { console.log(JSON.stringify(await backupMain(), null, 2)); }
   catch (error) { console.error(JSON.stringify({ code: error.code ?? 'FAILED', message: error.message })); process.exitCode = 1; }
 }

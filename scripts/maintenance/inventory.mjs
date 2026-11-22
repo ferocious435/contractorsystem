@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { probePaths, processSnapshot, requireHeldLease, requirePlainPath, resolveMaintenanceHome } from './guard.mjs';
+import { probePaths, processSnapshot, requireHeldLease, requirePlainPath, resolveMaintenanceHome, withReservationGate } from './guard.mjs';
 import {
   absolutePath, assertNarrowRoot, isBuildName, isReleaseId, localHomes, maintenancePolicy,
   pathInMaintenanceHome, pathKey, refusal, relativeWithin,
@@ -88,8 +88,7 @@ export async function updateTask(home, lease, record) {
     } finally {
       await handle.close();
     }
-    await requireHeldLease(home, lease);
-    await fs.rename(temp, target);
+    await withReservationGate(home, lease, () => fs.rename(temp, target));
   } finally {
     await fs.unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; });
   }
