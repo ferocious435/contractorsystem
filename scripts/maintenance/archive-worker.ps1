@@ -103,6 +103,8 @@ namespace ContractorStorage {
             public string targetIdentity { get; set; }
             public string targetFingerprint { get; set; }
             public string archiveSha256 { get; set; }
+            public string archiveMetadataSha256 { get; set; }
+            public long maximumBytes { get; set; }
             public bool resume { get; set; }
             public Group[] groups { get; set; }
             public string[] records { get; set; }
@@ -1028,6 +1030,128 @@ namespace ContractorStorage {
             }
         }
 
+        private static object CountBackupTable(string file) {
+            using (var held = new HeldPath(file, false)) {
+                var info = Guard.ReadInfo(held.Handle);
+                long count = 0;
+                var row = new StringBuilder();
+                int depth = 0;
+                bool opened = false, closed = false, quoted = false, escaped = false, separator = false;
+                using (var stream = Reader(held.Handle))
+                using (var reader = new StreamReader(stream, Utf8, false, 65536)) {
+                    int value;
+                    while ((value = reader.Read()) >= 0) {
+                        char ch = (char)value;
+                        if (!opened) { if (Char.IsWhiteSpace(ch)) continue; Require(ch == '[', "Invalid backup table JSON"); opened = true; continue; }
+                        if (closed) { Require(Char.IsWhiteSpace(ch), "Invalid trailing table bytes"); continue; }
+                        if (row.Length == 0 && Char.IsWhiteSpace(ch)) continue;
+                        if (row.Length == 0 && ch == ']') { Require(!separator, "Invalid table separator"); closed = true; continue; }
+                        if (row.Length == 0) Require(ch == '{', "Invalid table row");
+                        if (!quoted && depth == 0 && (ch == ',' || ch == ']')) {
+                            Require(Json.DeserializeObject(row.ToString()) is Dictionary<string, object>, "Invalid table row");
+                            count++; row.Length = 0; separator = ch == ','; closed = ch == ']'; continue;
+                        }
+                        row.Append(ch);
+                        Require(row.Length <= 16 * 1024 * 1024, "Backup table row exceeds its bound");
+                        separator = false;
+                        if (quoted) { if (escaped) escaped = false; else if (ch == '\\') escaped = true; else if (ch == '"') quoted = false; }
+                        else if (ch == '"') quoted = true;
+                        else if (ch == '{' || ch == '[') depth++;
+                        else if (ch == '}' || ch == ']') depth--;
+                        Require(depth >= 0, "Invalid table nesting");
+                    }
+                }
+                Require(opened && closed && row.Length == 0 && !quoted && depth == 0, "Incomplete table JSON");
+                Guard.RequireUnchanged(info, held.Handle);
+                return new { path = file, count };
+            }
+        }
+
+        private static Entry HashBackupFile(string file) {
+            using (var held = new HeldPath(file, false)) return PlainFile(file, held.Handle, Stream.Null);
+        }
+
+        private static string BackupMetadataBytes(Verified verified, string name) {
+            var entry = verified.Archive.GetEntry("artifact/" + name);
+            Require(entry != null && entry.Length <= MaxMetadataBytes, "Backup metadata is missing or too large");
+            using (var source = entry.Open())
+            using (var bytes = new MemoryStream()) {
+                CopyHash(source, bytes, entry.Length);
+                return Convert.ToBase64String(bytes.ToArray());
+            }
+        }
+
+        private static object BackupMetadata(Request request) {
+            using (var verified = new Verified(request.file, request.archiveSha256, false)) {
+                Require(verified.Manifest.generated == null && verified.Bases.Count == 0, "A standalone backup archive is required");
+                return new { archive = verified.Receipt(request.file), manifest = BackupMetadataBytes(verified, "manifest.json"),
+                    schema = BackupMetadataBytes(verified, "schema.json") };
+            }
+        }
+
+        private static object WriteBackupFile(Request request) {
+            var name = SafeName(request.file);
+            Require(name == "schema.json" || Regex.IsMatch(name, @"\Atables/[a-z_][a-z0-9_]*\.json\z") ||
+                Regex.IsMatch(name, @"\Aobjects/[a-f0-9]{64}\z"), "Invalid backup output file");
+            Require(request.maximumBytes >= 0, "Invalid backup write bound");
+            var file = Join(request.target, name);
+            using (var parent = new HeldPath(Path.GetDirectoryName(file), true, shareWrite: true))
+            using (var stream = Create(file)) {
+                long written = 0;
+                Console.WriteLine(@"{""ready"":true,""phase"":""write""}");
+                for (;;) {
+                    var line = Console.ReadLine();
+                    Require(line != null, "Interrupted backup write");
+                    if (line == "end") break;
+                    Require(line.Length <= 90000, "Backup chunk exceeds its bound");
+                    var bytes = Convert.FromBase64String(line);
+                    written = checked(written + bytes.Length);
+                    Require(written <= request.maximumBytes, "Backup bytes exceed the admitted file");
+                    stream.Write(bytes, 0, bytes.Length);
+                }
+                Require(written == request.maximumBytes, "Incomplete backup output file");
+                stream.Flush(true);
+                return new { written };
+            }
+        }
+
+        // Deliberately limited to one managed backup ZIP and its sidecar. The
+        // controller rechecks retention, pins and byte-backed restore evidence
+        // at both transaction authorization boundaries. No recursive delete.
+        private static object PruneBackup(Request request) {
+            Require(Regex.IsMatch(request.destination ?? "", @"\Apoint-[a-f0-9-]{36}\z"), "Invalid managed backup identity");
+            var expected = Join(Join(Join(request.target, "backups"), "archives"), request.destination + ".zip");
+            Require(Names.Equals(expected, request.file) && IsHash(request.archiveSha256) && IsHash(request.archiveMetadataSha256),
+                "Only an exact managed backup archive pair can be pruned");
+            using (var verified = new Verified(request.file, request.archiveSha256, false)) {
+                Require(verified.Manifest.generated == null && verified.Bases.Count == 0 &&
+                    verified.Manifest.entries.Any(row => row.path == "artifact/manifest.json" && !row.directory) &&
+                    verified.Manifest.entries.Any(row => row.path == "artifact/schema.json" && !row.directory),
+                    "A complete standalone backup archive is required");
+            }
+            using (var transaction = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero)) {
+                if (transaction.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                long bytes;
+                using (var zip = new HeldPath(request.file, false, true, transaction: transaction))
+                using (var metadata = new HeldPath(request.file + ".manifest.json", false, true, transaction: transaction)) {
+                    var zipEntry = PlainFile("backup.zip", zip.Handle, Stream.Null);
+                    var metadataEntry = PlainFile("backup.zip.manifest.json", metadata.Handle, Stream.Null);
+                    Require(zipEntry.sha256 == request.archiveSha256 && metadataEntry.sha256 == request.archiveMetadataSha256,
+                        "The managed backup archive pair changed");
+                    bytes = checked(zipEntry.size + metadataEntry.size);
+                    Console.WriteLine(@"{""ready"":true,""phase"":""stage""}");
+                    if (Console.ReadLine() != "delete") return new { status = "skipped", deletedBytes = 0L };
+                    MarkDelete(zip.Handle);
+                    MarkDelete(metadata.Handle);
+                }
+                Console.WriteLine(@"{""ready"":true,""phase"":""commit""}");
+                if (Console.ReadLine() != "delete") return new { status = "skipped", deletedBytes = 0L };
+                if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                Require(!Present(request.file) && !Present(request.file + ".manifest.json"), "Backup prune outcome is unverified");
+                return new { status = "completed", deletedBytes = bytes };
+            }
+        }
+
         private static object ReadRecords(string[] files, string pinnedRoot) {
             return files.Select(file => {
                 try {
@@ -1120,6 +1244,21 @@ namespace ContractorStorage {
                     break;
                 case "delete":
                     result = Delete(request);
+                    break;
+                case "backup-prune":
+                    result = PruneBackup(request);
+                    break;
+                case "backup-write":
+                    result = WriteBackupFile(request);
+                    break;
+                case "backup-metadata":
+                    result = BackupMetadata(request);
+                    break;
+                case "backup-table-counts":
+                    result = request.records.Select(file => CountBackupTable(file)).ToArray();
+                    break;
+                case "backup-files":
+                    result = request.records.Select(file => HashBackupFile(file)).ToArray();
                     break;
                 case "read":
                     result = ReadRecords(request.records, request.target);

@@ -8,6 +8,7 @@ import { readInventory, updateTask } from './maintenance/inventory.mjs';
 import { closeManagedBuild, closeManagedCandidate } from './maintenance/lifecycle.mjs';
 import { assertNarrowRoot, pathKey, refusal } from './maintenance/policy.mjs';
 import { applyStorage, importLegacyEvidence, prepareStoragePlan, runStorageEvent } from './maintenance/storage.mjs';
+import { backupStatus, maintainBackups } from './maintenance/backups.mjs';
 
 const execute = promisify(execFile);
 const commands = {
@@ -17,6 +18,8 @@ const commands = {
   run: ['--event', '--task'],
   'import-legacy': ['--input'],
   task: ['--input'],
+  backup: ['--reason', '--page-size', '--schema', '--env', '--destination', '--reuse'],
+  'backup-status': ['--json'],
   'close-candidate': ['--task', '--release', '--result', '--source', '--dist'],
   'close-build': ['--task', '--source', '--result'],
 };
@@ -71,6 +74,10 @@ async function main(args) {
   const options = { home, repoRoots: await repoRoots(repos) };
   const lease = inheritedMaintenanceLease();
   if (command === 'inspect') return readInventory(options);
+  if (command === 'backup-status') return backupStatus({ home });
+  if (command === 'backup') return withLifecycleLock(home, 'backup', lock => maintainBackups({ home, lease: lock,
+    reason: flags.get('--reason') ?? 'routine', pageSize: flags.get('--page-size'), schemaPath: flags.get('--schema'),
+    envPath: flags.get('--env'), destination: flags.get('--destination'), reuse: flags.get('--reuse') }), lease);
   if (command === 'plan') {
     const destination = assertNarrowRoot(path.resolve(required('--output')));
     const plan = await prepareStoragePlan(options);

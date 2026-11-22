@@ -701,7 +701,7 @@ export async function runStorageEvent(event, task, context) {
 
 const gib = 1024 ** 3;
 const heavyOperations = new Set(['build', 'package']);
-const lifecycleEvents = new Set(['build', 'package', 'start', 'verify', 'install', 'rollback', 'adopt', 'stop']);
+const lifecycleEvents = new Set(['build', 'package', 'start', 'verify', 'install', 'rollback', 'adopt', 'stop', 'backup']);
 const emptyLifecycle = () => ({ version: 1, leaseToken: null, active: [], lastBytes: {}, lastReceipt: null });
 
 export function mayStart({ freeGiB, estimatedGiB, reservedGiB = 0 }) {
@@ -769,6 +769,9 @@ async function lifecycleReservation(event, context) {
   state.leaseToken = lease.token;
   const startedAt = new Date().toISOString();
   const operation = state.active.find(item => item.id === context.reservation?.id);
+  if (event === 'backup' && !context.phase && state.active.some(item => item.event === 'backup')) {
+    throw Object.assign(new Error('A backup attempt already owns the materialization slot'), { code: 'BUSY' });
+  }
   if (context.phase && (!operation || operation.event !== event || operation.task !== context.task)) {
     throw refusal('The operation has no matching disk reservation');
   }

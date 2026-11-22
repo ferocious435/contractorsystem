@@ -6,6 +6,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { archiveName } from './maintenance/archive.mjs';
+import { maintainAvailableBackups } from './maintenance/backups.mjs';
 import { inheritedMaintenanceLease, processSnapshot, resolveMaintenanceHome, withLifecycleLock } from './maintenance/guard.mjs';
 import {
   completeStandaloneVerification, guardedJson, hasObservedStandalone, packagedRelease, registerInstalledRelease, withLifecycleOperation,
@@ -433,7 +434,7 @@ export async function runLauncher(args = process.argv.slice(2), options = {}) {
 
 export async function launcherMain(args = process.argv.slice(2)) {
   try {
-    const result = await runLauncher(args, { lease: inheritedMaintenanceLease() });
+    const result = await runLauncher(args, { lease: inheritedMaintenanceLease(), onAvailable: maintainAvailableBackups });
     if (result) console.log(JSON.stringify(result));
   } catch (error) {
     console.error(error.message);

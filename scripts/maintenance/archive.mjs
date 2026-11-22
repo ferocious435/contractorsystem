@@ -56,6 +56,45 @@ export function archiveName(value) {
   return value;
 }
 
+// A streaming, create-only backup sink. The native process keeps the complete
+// plain directory chain and output handle pinned until the last bounded chunk.
+export async function openBackupFile({ directory, file, maximumBytes }) {
+  if (process.platform !== 'win32' || !Number.isSafeInteger(maximumBytes) || maximumBytes < 0) throw refusal('Invalid native backup write');
+  archiveName(file);
+  const system = absolutePath(process.env.SystemRoot || 'C:\\Windows');
+  const child = spawn(path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', workerFile],
+    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], signal: AbortSignal.timeout(40 * 60 * 1000) });
+  child.stderr.on('data', () => {});
+  child.on('error', () => {}); child.stdin.on('error', () => {});
+  const done = new Promise(resolve => child.once('close', resolve));
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const send = value => new Promise((resolve, reject) => child.stdin.write(value + '\n', error => error ? reject(refusal('Native backup write failed')) : resolve()));
+  await send(JSON.stringify(windowsInspectionSource));
+  await send(JSON.stringify({ operation: 'backup-write', target: assertNarrowRoot(directory), file, maximumBytes }));
+  const ready = await lines.next();
+  if (ready.done || JSON.parse(ready.value).phase !== 'write') {
+    child.stdin.end(); await done; throw refusal('The backup output cannot be created safely');
+  }
+  let closed = false;
+  return {
+    async write(bytes) {
+      if (closed) throw refusal('The backup sink is closed');
+      for (let offset = 0; offset < bytes.length; offset += 65536) await send(bytes.subarray(offset, offset + 65536).toString('base64'));
+    },
+    async close() {
+      if (closed) return; closed = true;
+      try {
+        await send('end'); child.stdin.end();
+        const response = await lines.next(), extra = await lines.next();
+        if (response.done || !extra.done || await done !== 0 || JSON.parse(response.value).written !== maximumBytes) {
+          throw refusal('The native backup output is incomplete');
+        }
+      } finally { child.stdin.end(); await done; }
+    },
+  };
+}
+
 function zipPath(file) {
   const result = assertNarrowRoot(file);
   if (!result.toLowerCase().endsWith('.zip')) throw refusal('A ZIP path is required');

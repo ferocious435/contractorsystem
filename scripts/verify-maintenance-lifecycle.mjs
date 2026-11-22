@@ -609,6 +609,7 @@ windowsTest('installedLauncherResolvesOwnLibrary', async t => {
   await write(path.join(source, 'local-system-launch.mjs'),
     "import { value } from './maintenance/proof.mjs'; console.log(value);");
   await write(path.join(source, 'local-system-maintenance.mjs'), 'export {};');
+  await write(path.join(source, 'local-system-backup.mjs'), 'export {};');
   await write(path.join(source, 'maintenance', 'proof.mjs'), "export const value = 'own bundle';");
   await withMaintenanceLock(f.home, 'fixture', async lease => {
     await publishLauncherBundle({ home: f.home, lease, source });
