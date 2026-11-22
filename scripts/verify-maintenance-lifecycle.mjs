@@ -304,6 +304,130 @@ windowsTest('standalone flags and a fabricated process cannot detach the build',
   });
 });
 
+windowsTest('round2 initial preparation failures preserve unknown bytes and allow exact missing retry', async t => {
+  const f = await fixture(t);
+  const { openPackageStage, readPackageStage } = await import('./maintenance/package-staging.mjs');
+  const { closeManagedCandidate } = await import('./maintenance/lifecycle.mjs');
+  await withMaintenanceLock(f.home, 'initial boundary fixture', async lease => {
+    const context = { home: f.home, lease };
+    const descriptor = { releaseId: 'initial-candidate', task: f.task.id, owner: { id: f.task.id, worktree: f.repo },
+      source: f.repo, dist: '.next-initial-fixture', recipe: sha256('initial boundary') };
+    const fault = async (descriptor, after) => {
+      const mkdir = fs.mkdir;
+      let reached = false;
+      fsBindings.mkdir = async (file, ...options) => {
+        if (typeof file === 'string' && path.dirname(file) === path.join(f.home, 'package-staging')) {
+          reached = true;
+          if (after) await mkdir(file, ...options);
+          throw Object.assign(Error(after ? 'fixture failure after mkdir before identity' : 'fixture failure before mkdir'), { code: 'EIO' });
+        }
+        return mkdir(file, ...options);
+      };
+      syncBuiltinESMExports();
+      try { await assert.rejects(openPackageStage(context, descriptor), /fixture failure/); }
+      finally { fsBindings.mkdir = mkdir; syncBuiltinESMExports(); }
+      assert.equal(reached, true);
+    };
+    await fault(descriptor, true);
+    const directory = path.join(f.home, 'maintenance-state', 'package-attempts');
+    const slot = (await fs.readdir(directory)).find(name => /^[a-f0-9]{64}\.json$/.test(name)).slice(0, -5);
+    const initial = await readPackageStage(f.home, slot);
+    assert.equal(initial.record.status, 'initial');
+    assert.equal(initial.record.identity, undefined);
+    const marker = path.join(initial.record.stage, 'unknown.fixture');
+    await write(marker, 'unknown bytes after the preparation interruption');
+    const bytes = await fs.readFile(marker), diagnostic = await fs.readFile(initial.evidence.path);
+    await assert.rejects(openPackageStage(context, descriptor), /taken over|unverified|unfinished/i);
+    const close = taskId => closeManagedCandidate({ ...context, taskId, releaseId: descriptor.releaseId, result: 'unused' });
+    await assert.rejects(close(f.task.id), /closed task/i);
+    await updateTask(f.home, lease, { ...f.task, status: 'closed' });
+    await updateTask(f.home, lease, { ...f.task, id: 'foreign-initial-owner', status: 'closed' });
+    await assert.rejects(close('foreign-initial-owner'), /matching|belong/i);
+    const closed = await close(f.task.id);
+    assert.equal(closed.stageUnverified, true);
+    assert.deepEqual(await fs.readFile(marker), bytes);
+    assert.deepEqual(await fs.readFile(closed.diagnostic.path), diagnostic);
+    await assert.rejects(openPackageStage(context, { ...descriptor, releaseId: 'another-id' }));
+    const plan = await prepareStoragePlan({ home: f.home, repoRoots: [f.repo] });
+    assert.equal(plan.actions.some(action => action.path === initial.record.stage), false);
+    assert.ok(plan.protected.some(item => item.path === initial.record.stage));
+
+    const task = { ...f.task, id: 'missing-initial-owner' };
+    await updateTask(f.home, lease, task);
+    const missing = { ...descriptor, task: task.id, owner: { id: task.id, worktree: f.repo }, releaseId: 'missing-initial' };
+    await fault(missing, false);
+    const before = (await fs.readdir(directory)).filter(name => /^[a-f0-9]{64}\.json$/.test(name));
+    const own = (await Promise.all(before.map(name => readPackageStage(f.home, name.slice(0, -5)))))
+      .find(item => item.record.task === task.id);
+    const original = await fs.readFile(own.evidence.path);
+    await assert.rejects(openPackageStage(context, { ...missing, releaseId: 'wrong-id' }), /unfinished|match|initial/i);
+    assert.deepEqual(await fs.readFile(own.evidence.path), original);
+    const resumed = await openPackageStage(context, missing);
+    assert.equal(resumed.status, 'copying');
+    assert.equal(resumed.startedAt, own.record.startedAt);
+    assert.equal(typeof resumed.identity, 'string');
+  });
+});
+
+windowsTest('round2 stale staging callbacks cannot overwrite publication or a newer attempt', async t => {
+  const f = await fixture(t);
+  const { openPackageStage, markPackageReady, markPackagePublished, recordPackageStageFailure } = await import('./maintenance/package-staging.mjs');
+  const { measureArchiveTargets } = await import('./maintenance/archive.mjs');
+  await withMaintenanceLock(f.home, 'stale stage fixture', async lease => {
+    const context = { home: f.home, lease };
+    const descriptor = { releaseId: 'race-candidate', task: f.task.id, owner: { id: f.task.id, worktree: f.repo },
+      source: f.repo, dist: '.next-race-fixture', recipe: sha256('race attempt') };
+    const first = await openPackageStage(context, descriptor);
+    const stale = await openPackageStage(context, descriptor);
+    const [payload] = await measureArchiveTargets([first.stage]);
+    const ready = await markPackageReady(context, first, payload, sha256('manifest'));
+    const staleReady = await openPackageStage(context, descriptor);
+    await markPackagePublished(context, ready);
+    const file = path.join(f.home, 'maintenance-state', 'package-attempts', first.slot + '.json');
+    const published = await fs.readFile(file);
+    const failure = await recordPackageStageFailure(context, stale, Error('late failure from the old copying attempt'));
+    assert.equal((await fs.readFile(file)).equals(published), true, 'a stale copying callback must preserve the published record');
+    assert.equal(failure.stale, true);
+    assert.match(await fs.readFile(failure.diagnostic.path, 'utf8'), /late failure from the old copying attempt/);
+    const retained = await fs.readFile(failure.diagnostic.path);
+    const next = await openPackageStage(context, { ...descriptor, releaseId: 'newer-candidate', recipe: sha256('newer attempt') });
+    const newer = await fs.readFile(file);
+    await assert.rejects(markPackageReady(context, stale, payload, sha256('old manifest')), /stale|changed/i);
+    await assert.rejects(markPackagePublished(context, staleReady), /stale|changed/i);
+    await recordPackageStageFailure(context, stale, Error('late failure after slot reuse'));
+    assert.deepEqual(await fs.readFile(file), newer);
+    assert.deepEqual(await fs.readFile(failure.diagnostic.path), retained);
+    assert.deepEqual(await fs.readdir(next.stage), []);
+  });
+});
+
+windowsTest('round2 package admissions exclude matching slots sources and final releases', async t => {
+  const f = await fixture(t);
+  const guard = new URL('./maintenance/guard.mjs', import.meta.url).href;
+  const storage = new URL('./maintenance/storage.mjs', import.meta.url).href;
+  const program = "const {withLifecycleLock,inheritedMaintenanceLease}=await import(process.argv[1]);" +
+    "const {runLifecycle}=await import(process.argv[2]);const c=JSON.parse(process.argv[3]);" +
+    "try{const r=await withLifecycleLock(c.home,'package-admission',lease=>runLifecycle('package',{...c,lease,cleanup:false,getFreeBytes:async()=>40*1024**3}),inheritedMaintenanceLease());console.log(JSON.stringify({ok:true,result:r}));}" +
+    "catch(e){console.log(JSON.stringify({ok:false,code:e.code}));}";
+  await withMaintenanceLock(f.home, 'package admission parent', async lease => {
+    const child = async context => JSON.parse((await execute(process.execPath,
+      ['--input-type=module', '-e', program, guard, storage, JSON.stringify({ home: f.home, ...context })],
+      { windowsHide: true, env: { ...process.env, CONTRACTOR_MAINTENANCE_LEASE: JSON.stringify(lease) } })).stdout.trim());
+    const one = { task: f.task.id, packageSlot: sha256(JSON.stringify(['task', f.task.id])),
+      build: path.join(f.repo, '.next-one'), releaseId: 'one-candidate' };
+    assert.equal((await child(one)).ok, true);
+    const sameSlot = await child({ ...one, build: path.join(f.repo, '.next-two'), releaseId: 'two-candidate' });
+    assert.deepEqual(sameSlot, { ok: false, code: 'BUSY' });
+    const other = { task: 'other-package-task', packageSlot: sha256(JSON.stringify(['task', 'other-package-task'])),
+      build: path.join(f.repo, '.next-two'), releaseId: 'two-candidate' };
+    assert.deepEqual(await child({ ...other, build: one.build }), { ok: false, code: 'BUSY' });
+    assert.deepEqual(await child({ ...other, releaseId: one.releaseId.toUpperCase() }), { ok: false, code: 'BUSY' });
+    const distinct = await child(other);
+    assert.equal(distinct.ok, true);
+    assert.equal(distinct.result.reservedBytes, 2 * gib);
+  });
+});
+
 windowsTest('an owned missing stage can close without an archive and retains its diagnostic bytes', async t => {
   const f = await fixture(t);
   const { openPackageStage, readPackageStage, recordPackageStageFailure } = await import('./maintenance/package-staging.mjs');

@@ -14,7 +14,7 @@ import { assertNarrowRoot, isBuildName, isReleaseId, pathKey, refusal } from './
 import { runLifecycle } from './maintenance/storage.mjs';
 import {
   markPackagePublished, markPackageReady, openPackageStage, packageTree, plainFileHash as fileHash,
-  recordPackageStageFailure, resumableCopy,
+  recordPackageStageFailure, resumableCopy, packageStageSlot,
 } from './maintenance/package-staging.mjs';
 
 const scripts = ['local-system-backup.mjs', 'local-system-restore.mjs', 'local-system-launch.mjs',
@@ -253,7 +253,8 @@ export async function runPackage({ id, source, dist, dependencies = path.resolve
     await markPackagePublished(context, attempt);
     return result;
   };
-  return withLifecycleOperation('package', { home, lease, task, repoRoots, build: buildRoot, releaseId: id, getFreeBytes },
+  const packageSlot = packageStageSlot({ source, dist, owner: managed || taskId ? { id: task } : null });
+  return withLifecycleOperation('package', { home, lease, task, repoRoots, build: buildRoot, releaseId: id, packageSlot, getFreeBytes },
     (context, reservation) => perform(context, reservation).catch(async error => {
       await recordPackageStageFailure(context, attempt, error).catch(receiptError => {
         process.stderr.write('The staged package failure could not be recorded: ' + receiptError.message + '\n');

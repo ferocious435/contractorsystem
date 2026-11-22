@@ -563,7 +563,11 @@ async function freeSpace(home) {
 
 const archiveSpace = () => Object.assign(new Error('Insufficient verified disk space for the complete archive'), { code: 'ARCHIVE_SPACE' });
 
-export async function applyStorage(plan, { home, lease, repoRoots = [], coordinatorLease, protectedInputs = [],
+export async function applyStorage(plan, context) {
+  return withReservationGate(context.home, context.lease, () => applyStorageWithHeldGate(plan, context));
+}
+
+async function applyStorageWithHeldGate(plan, { home, lease, repoRoots = [], coordinatorLease, protectedInputs = [],
   prospectiveBytes = 0, getFreeBytes = freeSpace }) {
   validatePlan(plan);
   home = await requireHeldLease(home, lease);
@@ -700,7 +704,8 @@ async function lifecycleState(file) {
   const bytes = (await readGuardedRecords([file])).get(file);
   const saved = bytes && JSON.parse(bytes.toString('utf8'));
   if (saved?.version !== 1 || !Array.isArray(saved.active) ||
-      saved.active.some(row => typeof row?.id !== 'string' || !validBytes(row.bytes)) ||
+      saved.active.some(row => typeof row?.id !== 'string' || !validBytes(row.bytes) ||
+        (row.packageSlot != null && !hashIsValid(row.packageSlot))) ||
       !saved.lastBytes || typeof saved.lastBytes !== 'object' ||
       Object.values(saved.lastBytes).some(bytes => !validBytes(bytes))) {
     throw refusal('The maintenance reservations cannot be verified');
@@ -752,6 +757,15 @@ async function lifecycleReservation(event, context) {
     await saveState(file, state, true);
     return result;
   }
+  const packageSlot = context.packageSlot ?? null;
+  if (packageSlot !== null && !hashIsValid(packageSlot)) throw refusal('The package slot is invalid');
+  if (event === 'package' && !context.phase && state.active.some(item => item.event === 'package' && (
+    (packageSlot && item.packageSlot === packageSlot) ||
+    (context.build && item.build && pathKey(context.build) === pathKey(item.build)) ||
+    (typeof context.releaseId === 'string' && typeof item.releaseId === 'string' &&
+      context.releaseId.toLowerCase() === item.releaseId.toLowerCase())))) {
+    throw Object.assign(new Error('A package operation already holds this slot, source or final release'), { code: 'BUSY' });
+  }
   const requested = context.expectedAdditionalBytes ?? 0;
   if (!validBytes(requested)) throw refusal('The requested disk reservation is invalid');
   const estimated = Math.ceil((state.lastBytes[event] ?? 0) * 1.25);
@@ -773,7 +787,7 @@ async function lifecycleReservation(event, context) {
         return !isOperationInput(action.path, protectedInputs);
       });
       if (plan.actions.length) {
-        cleanup = await applyStorage(plan, options);
+        cleanup = await applyStorageWithHeldGate(plan, options);
         freeBytes = capacity(await Promise.all(volumes.map(getFreeBytes)));
       }
     } catch (error) {
@@ -791,7 +805,7 @@ async function lifecycleReservation(event, context) {
     return operation;
   }
   const reservation = { id: randomUUID(), event, task: context.task, build: context.build ?? null,
-    releaseId: context.releaseId ?? null, startedAt, freeBytes, bytes, reservedBytes };
+    releaseId: context.releaseId ?? null, packageSlot, startedAt, freeBytes, bytes, reservedBytes };
   state.active.push(reservation);
   state.lastReceipt = { ...reservation, maintenanceError };
   await requireHeldLease(home, lease);

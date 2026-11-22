@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { archiveName, catalogArchiveGroups, measureArchiveTargets, nativeArchiveOperation, readGuardedRecords } from './archive.mjs';
-import { probePaths, requireHeldLease } from './guard.mjs';
+import { probePaths, requireHeldLease, withReservationGate } from './guard.mjs';
 import { assertNarrowRoot, isBuildName, isReleaseId, pathKey, refusal } from './policy.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -15,6 +15,7 @@ const stateFile = (home, slot) => path.join(evidenceDirectory(home), slot + '.js
 const secretFile = home => path.join(evidenceDirectory(home), 'seal.json');
 export const stagingDirectory = home => path.join(home, 'package-staging');
 const slotFor = ({ source, dist, owner }) => hash(JSON.stringify(owner ? ['task', owner.id.toLowerCase()] : ['legacy', pathKey(source), dist.toLowerCase()]));
+export const packageStageSlot = slotFor;
 const stageFor = (home, slot) => path.join(stagingDirectory(home), slot);
 const openStages = new WeakMap();
 
@@ -61,7 +62,9 @@ function stamp(key, value) {
 function validReceipt(home, slot, record) {
   return record.version === 1 && record.home === home && record.slot === slot && isReleaseId(record.releaseId) &&
     isBuildName(record.dist) && typeof record.task === 'string' && hashShape(record.recipe) &&
-    states.includes(record.status) && slotFor(record) === slot && record.stage === stageFor(home, slot);
+    states.includes(record.status) && slotFor(record) === slot && record.stage === stageFor(home, slot) &&
+    (record.revision === undefined || (Number.isSafeInteger(record.revision) && record.revision > 0)) &&
+    (record.attemptId === undefined || /^[a-f0-9]{32}$/.test(record.attemptId));
 }
 
 export async function readPackageStage(home, slot) {
@@ -85,47 +88,70 @@ async function save(context, record, overwrite) {
     key = randomBytes(32).toString('hex');
     await write(keyFile, { key });
   }
-  await write(stateFile(home, record.slot), { ...record, seal: stamp(key, record).toString('hex') }, overwrite);
-  return record;
+  const next = { ...record, revision: (record.revision ?? 0) + 1 };
+  await write(stateFile(home, record.slot), { ...next, seal: stamp(key, next).toString('hex') }, overwrite);
+  return next;
 }
 
 export async function openPackageStage(context, descriptor) {
+  return withReservationGate(context.home, context.lease, () => openPackageStageWithHeldGate(context, descriptor));
+}
+
+async function openPackageStageWithHeldGate(context, descriptor) {
   const home = await requireHeldLease(context.home, context.lease);
   const slot = slotFor(descriptor), stage = stageFor(home, slot);
   const old = (await readPackageStage(home, slot))?.record;
   const [seen] = await probePaths([stage]);
   if (seen === 'unverified') throw refusal('The package staging directory is unsafe');
-  if (old && (old.status === 'copying' || old.status === 'ready')) {
+  if (old && ['initial', 'copying', 'ready'].includes(old.status)) {
     if (old.releaseId !== descriptor.releaseId || old.recipe !== descriptor.recipe ||
         pathKey(old.source) !== pathKey(descriptor.source) || old.dist !== descriptor.dist ||
         JSON.stringify(old.owner) !== JSON.stringify(descriptor.owner)) {
       throw refusal('An unfinished package occupies this staging slot');
     }
+    if (old.status === 'initial' && seen !== 'missing') throw refusal('An unfinished initial stage is unverified and must be preserved');
     if (old.status === 'copying' && seen === 'missing') throw refusal('The recorded package staging directory is missing');
-    if (seen === 'plain') {
+    if (old.status !== 'initial' && seen === 'plain') {
       const [snapshot] = await measureArchiveTargets([stage]);
       if (snapshot?.identity !== old.identity || !snapshot.fingerprint) throw refusal('The package staging directory changed');
     }
-    return hold(context, old);
+    if (old.status !== 'initial') return hold(context, old);
   }
+  if (old?.stageUnverified === true && old.stageMissing !== true) throw refusal('The closed unverified stage requires an explicit resolution');
   if (seen !== 'missing') throw refusal('A package staging directory cannot be taken over');
   if ((await probePaths([path.join(home, 'releases', descriptor.releaseId)]))[0] !== 'missing') {
     throw refusal('Release already exists; it will not be overwritten');
   }
-  if (old?.status === 'closed' && old.stageMissing === true) await retainMissingClosure(context, old);
-  const record = await save(context, { version: 1, home, slot, stage, ...descriptor, status: 'initial',
-    startedAt: new Date().toISOString() }, Boolean(old));
-  await nativeArchiveOperation('ensure-directories', { records: [stagingDirectory(home)] });
-  await fs.mkdir(stage);
-  const [snapshot] = await measureArchiveTargets([stage]);
-  if (!snapshot?.identity || snapshot.files !== 0 || (await fs.readdir(stage)).length) {
-    throw refusal('The newly prepared staging directory cannot be verified');
+  if (old?.status === 'closed' && old.stageMissing === true) await retainStageClosure(context, old);
+  const record = old?.status === 'initial' ? old : await save(context, { version: 1, home, slot, stage, ...descriptor,
+    status: 'initial', attemptId: randomBytes(16).toString('hex'), startedAt: new Date().toISOString() }, Boolean(old));
+  try {
+    await nativeArchiveOperation('ensure-directories', { records: [stagingDirectory(home)] });
+    await fs.mkdir(stage);
+    const [snapshot] = await measureArchiveTargets([stage]);
+    if (!snapshot?.identity || snapshot.files !== 0 || (await fs.readdir(stage)).length) {
+      throw refusal('The newly prepared staging directory cannot be verified');
+    }
+    return hold(context, await save(context, { ...record, status: 'copying', identity: snapshot.identity }, true));
+  } catch (error) {
+    await recordStageFailureWithHeldGate(context, record, error).catch(() => {});
+    throw error;
   }
-  return hold(context, await save(context, { ...record, status: 'copying', identity: snapshot.identity }, true));
 }
 
 export async function markPackageReady(context, record, payload, manifestSha256) {
+  return withReservationGate(context.home, context.lease, () => markPackageReadyWithHeldGate(context, record, payload, manifestSha256));
+}
+
+async function assertCurrentStage(context, record) {
+  const current = await readPackageStage(context.home, record.slot);
+  if (!current || JSON.stringify(current.record) !== JSON.stringify(record)) throw refusal('The held package attempt is stale or changed');
+  return current;
+}
+
+async function markPackageReadyWithHeldGate(context, record, payload, manifestSha256) {
   requireOpen(context, record, 'copying');
+  await assertCurrentStage(context, record);
   const ready = await save(context, { ...record, status: 'ready', payloadIdentity: payload.identity,
     payloadFingerprint: payload.fingerprint, manifestSha256 }, true);
   openStages.delete(record);
@@ -133,7 +159,12 @@ export async function markPackageReady(context, record, payload, manifestSha256)
 }
 
 export async function markPackagePublished(context, record) {
+  return withReservationGate(context.home, context.lease, () => markPackagePublishedWithHeldGate(context, record));
+}
+
+async function markPackagePublishedWithHeldGate(context, record) {
   requireOpen(context, record, 'ready');
+  await assertCurrentStage(context, record);
   // The two prepared children were moved to their final locations. An unexpected
   // child prevents rmdir; it is never removed or overwritten here.
   await fs.rmdir(record.stage).catch(error => { if (error.code !== 'ENOENT') throw error; });
@@ -144,7 +175,27 @@ export async function markPackagePublished(context, record) {
 export async function recordPackageStageFailure(context, record, error) {
   if (!record) return;
   requireOpen(context, record);
+  return withReservationGate(context.home, context.lease, () => recordStageFailureWithHeldGate(context, record, error));
+}
+
+async function recordStageFailureWithHeldGate(context, record, error) {
+  const current = await readPackageStage(context.home, record.slot);
+  if (!current || JSON.stringify(current.record) !== JSON.stringify(record)) {
+    const home = await requireHeldLease(context.home, context.lease);
+    const key = JSON.parse(await rawRecord(secretFile(home)))?.key;
+    const value = { version: 1, kind: 'stale-package-failure', home, slot: record.slot,
+      releaseId: record.releaseId, expectedStateSha256: hash(JSON.stringify(record)),
+      current: current?.evidence ?? null, at: new Date().toISOString(), error: error.message };
+    const sealed = { ...value, seal: stamp(key, value).toString('hex') };
+    const bytes = Buffer.from(JSON.stringify(sealed, null, 2) + '\n');
+    const file = path.join(evidenceDirectory(home), 'stale-failure-' + hash(bytes) + '.json');
+    const prior = await rawRecord(file);
+    if (prior && !prior.equals(bytes)) throw refusal('A stale package diagnostic contains different bytes');
+    if (!prior) await write(file, sealed);
+    return { stale: true, diagnostic: { path: file, bytes: bytes.length, sha256: hash(bytes) } };
+  }
   await save(context, { ...record, failure: { at: new Date().toISOString(), error: error.message } }, true);
+  return { stale: false };
 }
 
 async function retainStageState(context, record, prefix) {
@@ -162,21 +213,25 @@ async function retainStageState(context, record, prefix) {
   return { path: file, bytes: bytes.length, sha256: hash(bytes) };
 }
 
-async function retainMissingClosure(context, record) {
+async function retainStageClosure(context, record) {
   const diagnostic = record.diagnostic;
   const expected = hashShape(diagnostic?.sha256)
     ? path.join(evidenceDirectory(context.home), 'diagnostic-' + diagnostic.sha256 + '.json') : null;
   if (!expected || diagnostic.path !== expected || !Number.isSafeInteger(diagnostic.bytes) || diagnostic.bytes < 1) {
-    throw refusal('The missing stage diagnostic is not bound to this attempt');
+    throw refusal('The stage diagnostic is not bound to this attempt');
   }
   const bytes = await rawRecord(expected);
   if (!bytes || bytes.length !== diagnostic.bytes || hash(bytes) !== diagnostic.sha256) {
-    throw refusal('The retained missing stage diagnostic is missing or changed');
+    throw refusal('The retained stage diagnostic is missing or changed');
   }
   return retainStageState(context, record, 'closed');
 }
 
 export async function closePackageStage(context, { taskId, releaseId, source, dist, result, task }) {
+  return withReservationGate(context.home, context.lease, () => closePackageStageWithHeldGate(context, { taskId, releaseId, source, dist, result, task }));
+}
+
+async function closePackageStageWithHeldGate(context, { taskId, releaseId, source, dist, result, task }) {
   const home = await requireHeldLease(context.home, context.lease);
   if (!isReleaseId(releaseId)) throw refusal('Invalid release identity');
   if (!['superseded', 'rejected', 'unused'].includes(result)) throw refusal('An explicit staged package conclusion is required');
@@ -191,7 +246,7 @@ export async function closePackageStage(context, { taskId, releaseId, source, di
   if (!found || found.releaseId !== releaseId || found.task !== taskId ||
       (owner ? pathKey(found.owner?.worktree) !== pathKey(owner.worktree) :
         found.owner !== null || pathKey(found.source) !== pathKey(source) || found.dist !== dist) ||
-      !['copying', 'ready', 'closed'].includes(found.status)) {
+      !['initial', 'copying', 'ready', 'closed'].includes(found.status)) {
     throw refusal('No matching signed unfinished package belongs to this subject');
   }
   const release = path.join(home, 'releases', releaseId);
@@ -209,11 +264,24 @@ export async function closePackageStage(context, { taskId, releaseId, source, di
       closed = await save(context, { ...found, result, status: 'closed', closedAt: found.closedAt ?? at,
         stageMissing: true, stageMissingAt: at, diagnostic }, true);
     }
-    const receipt = await retainMissingClosure(context, closed);
+    const receipt = await retainStageClosure(context, closed);
     return { task: taskId, release: releaseId, result, staged: true, stageMissing: true,
       diagnostic: closed.diagnostic, receipt };
   }
   if (found.stageMissing === true) throw refusal('A reappeared package staging tree must be preserved');
+  if (found.status === 'initial' || found.stageUnverified === true) {
+    if ((await probePaths([release]))[0] !== 'missing') throw refusal('A published or unverified release must be preserved');
+    if (found.status === 'closed' && found.result !== result) throw refusal('The package already has a different conclusion');
+    let closed = found;
+    if (found.stageUnverified !== true) {
+      const diagnostic = await retainStageState(context, found, 'diagnostic');
+      closed = await save(context, { ...found, result, status: 'closed', closedAt: new Date().toISOString(),
+        stageUnverified: true, diagnostic }, true);
+    }
+    const receipt = await retainStageClosure(context, closed);
+    return { task: taskId, release: releaseId, result, staged: true, stageUnverified: true,
+      diagnostic: closed.diagnostic, receipt };
+  }
   const [snapshot] = await measureArchiveTargets([found.stage]);
   if (!snapshot?.fingerprint || snapshot.identity !== found.identity) throw refusal('The staged package ownership cannot be verified');
   if ((await probePaths([path.join(home, 'releases', releaseId)]))[0] !== 'missing') {

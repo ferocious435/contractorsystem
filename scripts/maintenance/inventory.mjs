@@ -455,6 +455,8 @@ export async function readInventory({ home, repoRoots = [], pinnedTarget = null,
       const owner = record.owner && inventory.tasks.find(task => task.id === record.owner.id);
       if (record.stageMissing === true) {
         protection(artifact, 'package-stage-reappeared');
+      } else if (record.stageUnverified === true) {
+        protection(artifact, 'package-stage-initial-unverified');
       } else if (record.status !== 'closed' || !record.identity || !isDate(record.closedAt) ||
           (record.owner && (owner?.status !== 'closed' || pathKey(owner.worktree) !== pathKey(record.owner.worktree)))) {
         protection(artifact, 'package-attempt-unfinished');

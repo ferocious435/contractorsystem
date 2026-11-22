@@ -7,6 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 import { withMaintenanceLock } from './maintenance/guard.mjs';
 import {
   catalogArchiveGroups, createVerifiedArchive, deleteArchivedTarget, extractVerifiedArchive, measureArchiveTargets,
@@ -26,6 +27,7 @@ const windows = process.platform === 'win32';
 const filesystemTest = (name, run) => test(name, { skip: !windows }, run);
 const notFound = file => assert.rejects(fs.access(file), { code: 'ENOENT' });
 const lockfile = '{"name":"fixture","lockfileVersion":3}';
+const execute = promisify(childProcess.execFile);
 
 filesystemTest('Windows named streams on a file or directory prevent archiving and measuring', async t => {
   const base = await directory(t);
@@ -178,6 +180,80 @@ async function releases(t, count = 4) {
   return { home, repo, evidence, ids, roots, index, record, importIndex, apply,
     plan: () => prepareStoragePlan(readOptions) };
 }
+
+filesystemTest('round2 public archive apply excludes a sibling admission and lifecycle cleanup reuses its gate', async t => {
+  const f = await releases(t, 5);
+  await f.importIndex();
+  const measured = await measureArchiveTargets([f.home, f.repo]);
+  const fixtureBytes = measured.reduce((sum, row) => sum + row.bytes, 0);
+  assert.ok(Number.isSafeInteger(fixtureBytes) && fixtureBytes < 4 * 1024 ** 2);
+  t.diagnostic(JSON.stringify({ fixtureBytes, modeledFreeBytes: 14 * gib }));
+  const plan = await f.plan();
+  assert.equal(plan.actions.length, 2);
+  plan.actions = plan.actions.slice(0, 1);
+  const root = path.dirname(f.home);
+  const files = Object.fromEntries(['plan', 'budget', 'entered', 'release'].map(name => [name, path.join(root, name + '.fixture')]));
+  await json(files.plan, plan);
+  await write(files.budget, String(14 * gib));
+  const guard = new URL('./maintenance/guard.mjs', import.meta.url).href;
+  const storage = new URL('./maintenance/storage.mjs', import.meta.url).href;
+  const program = [
+    "const fs=await import('node:fs/promises');",
+    "const {withLifecycleLock,inheritedMaintenanceLease}=await import(process.argv[1]);",
+    "const {applyStorage,runLifecycle}=await import(process.argv[2]);",
+    "const c=JSON.parse(process.argv[3]); let entered=false;",
+    "try { const result=await withLifecycleLock(c.home,'budget-child',async lease=>{",
+    "const free=async()=>Number(await fs.readFile(c.budget,'utf8'));",
+    "if(c.mode==='build') return runLifecycle('build',{home:c.home,lease,task:'sibling-build',cleanup:false,getFreeBytes:free});",
+    "return applyStorage(JSON.parse(await fs.readFile(c.plan,'utf8')),{home:c.home,repoRoots:[c.repo],lease,coordinatorLease:lease,getFreeBytes:async()=>{",
+    "if(!entered){entered=true;await fs.writeFile(c.entered,'ready');const until=Date.now()+120000;",
+    "while(!await fs.access(c.release).then(()=>true,()=>false)){if(Date.now()>until)throw Error('fixture barrier timeout');await new Promise(r=>setTimeout(r,20));}}return free();}});",
+    "},inheritedMaintenanceLease());console.log(JSON.stringify({ok:true,result}));}",
+    "catch(e){console.log(JSON.stringify({ok:false,code:e.code,message:e.message}));}",
+  ].join('');
+  await withMaintenanceLock(f.home, 'archive admission parent', async lease => {
+    const child = async mode => JSON.parse((await execute(process.execPath,
+      ['--input-type=module', '-e', program, guard, storage, JSON.stringify({ home: f.home, repo: f.repo, ...files, mode })],
+      { windowsHide: true, env: { ...process.env, CONTRACTOR_MAINTENANCE_LEASE: JSON.stringify(lease) } })).stdout.trim());
+    const archive = child('apply');
+    let sibling;
+    let setupFailure;
+    try {
+      const ready = async () => {
+        const until = Date.now() + 120000;
+        while (!await fs.access(files.entered).then(() => true, () => false)) {
+          if (Date.now() > until) throw Error('fixture apply did not reach its budget check');
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      };
+      await Promise.race([ready(), archive.then(result => { throw Error('archive ended before barrier: ' + JSON.stringify(result)); })]);
+      sibling = await child('build');
+    } catch (error) {
+      setupFailure = error;
+    } finally {
+      await write(files.release, 'continue');
+    }
+    const applied = await archive;
+    if (setupFailure) throw setupFailure;
+    assert.equal(sibling.ok, false, 'an archive and a sibling build cannot both obtain the shared forecast');
+    assert.equal(sibling.code, 'BUSY');
+    assert.equal(applied.ok, true, JSON.stringify(applied));
+    assert.equal(applied.result.completed.length, 1, JSON.stringify(applied));
+    const archiveRoot = path.join(f.home, 'maintenance-state', 'evidence-archives');
+    const written = (await Promise.all((await fs.readdir(archiveRoot)).map(async name => (await fs.stat(path.join(archiveRoot, name))).size)))
+      .reduce((sum, bytes) => sum + bytes, 0);
+    assert.ok(written > 0);
+    await write(files.budget, String(14 * gib - written));
+    const after = await child('build');
+    assert.equal(after.ok, false);
+    assert.equal(after.code, 'LOW_DISK');
+    const { runLifecycle } = await import('./maintenance/storage.mjs');
+    const nested = await runLifecycle('build', { home: f.home, repoRoots: [f.repo], lease,
+      task: 'nested-cleanup', getFreeBytes: async () => 40 * gib });
+    assert.equal(nested.cleanup?.completed.length, 1, JSON.stringify(nested));
+    await runLifecycle('build', { home: f.home, lease, task: 'nested-cleanup', phase: 'finish', reservation: nested, passed: true });
+  });
+});
 
 filesystemTest('preservesThreeAcceptedReleases over twenty real tiny packages', async t => {
   const f = await releases(t, 20);

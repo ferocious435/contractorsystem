@@ -58,12 +58,17 @@ function fixture(t, { assets = true, dll = true } = {}) {
   const run = () => runPackage({ id: 'reader-fixture', source, home, dist: '.next-fixture',
     dependencies: path.join(directory, 'deps'), checks, nodeExecutable, codexExe: nodeExecutable,
     getFreeBytes: async () => 40 * 1024 ** 3 });
-  return { source, release: path.join(home, 'releases', 'reader-fixture'), run };
+  return { source, home, release: path.join(home, 'releases', 'reader-fixture'), run };
 }
 
 windowsTest('a packaged release contains the fallback reader and its runtime in the sealed manifest', async t => {
   const f = fixture(t);
   await f.run();
+  const costs = JSON.parse(fs.readFileSync(path.join(f.home, 'maintenance-state', 'lifecycle-costs.json')));
+  const attempts = path.join(f.home, 'maintenance-state', 'package-attempts');
+  const slot = fs.readdirSync(attempts).find(name => /^[a-f0-9]{64}\.json$/.test(name));
+  assert.equal(costs.lastReceipt.packageSlot, JSON.parse(fs.readFileSync(path.join(attempts, slot))).slot);
+  assert.equal(costs.active.length, 0);
   const release = JSON.parse(fs.readFileSync(path.join(f.release, 'release.json')));
   for (const name of ['kreuzberg.exe', 'onnxruntime.dll', 'LICENSE']) {
     const relative = toolPath + '/' + name, source = fs.readFileSync(path.join(f.source, relative));
