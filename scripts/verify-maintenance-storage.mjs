@@ -255,6 +255,121 @@ filesystemTest('round2 public archive apply excludes a sibling admission and lif
   });
 });
 
+filesystemTest('round3 an admitted sibling finishes after public apply refuses without writes', async t => {
+  const f = await releases(t);
+  await f.importIndex();
+  const forecast = await smallFixtureForecast(t, f);
+  const plan = await f.plan();
+  assert.equal(plan.actions.length, 1);
+  const base = path.dirname(f.home);
+  const files = Object.fromEntries(['ticket', 'release'].map(name => [name, path.join(base, name + '.fixture')]));
+  const guard = new URL('./maintenance/guard.mjs', import.meta.url).href;
+  const lifecycle = new URL('./maintenance/lifecycle.mjs', import.meta.url).href;
+  const storage = new URL('./maintenance/storage.mjs', import.meta.url).href;
+  const packageContext = { home: f.home, task: 'admitted-package', packageSlot: hash('admitted-package'),
+    build: path.join(f.repo, '.next-admitted'), releaseId: 'admitted-release' };
+  const program = "const fs=await import('node:fs/promises');" +
+    "const {inheritedMaintenanceLease}=await import(process.argv[1]);const {withLifecycleOperation}=await import(process.argv[2]);" +
+    "const c=JSON.parse(process.argv[3]);try{const result=await withLifecycleOperation('package',{...c,lease:inheritedMaintenanceLease(),cleanup:false,getFreeBytes:async()=>40*1024**3},async(o,r)=>{" +
+    "await fs.writeFile(c.ticket,JSON.stringify(r));const until=Date.now()+120000;while(!await fs.access(c.release).then(()=>true,()=>false)){if(Date.now()>until)throw Error('package barrier timeout');await new Promise(r=>setTimeout(r,20));}return {passed:true};});console.log(JSON.stringify({ok:true,result}));}" +
+    "catch(e){console.log(JSON.stringify({ok:false,code:e.code,message:e.message}));}";
+  const snapshot = async () => {
+    const rows = [];
+    const visit = async folder => {
+      for (const name of (await fs.readdir(folder)).sort()) {
+        const file = path.join(folder, name), info = await fs.lstat(file);
+        assert.equal(info.isSymbolicLink(), false);
+        rows.push([path.relative(f.home, file), info.isDirectory() ? 'directory' : hash(await fs.readFile(file))]);
+        if (info.isDirectory()) await visit(file);
+      }
+    };
+    await visit(f.home);
+    return rows;
+  };
+  await withMaintenanceLock(f.home, 'admitted package parent', async lease => {
+    const env = { ...process.env, CONTRACTOR_MAINTENANCE_LEASE: JSON.stringify(lease) };
+    const child = execute(process.execPath, ['--input-type=module', '-e', program, guard, lifecycle,
+      JSON.stringify({ ...packageContext, ...files })], { windowsHide: true, env });
+    let failure;
+    let ticket;
+    try {
+      const until = Date.now() + 120000;
+      while (!await fs.access(files.ticket).then(() => true, () => false)) {
+        if (Date.now() > until) throw Error('package admission did not finish');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      ticket = JSON.parse(await fs.readFile(files.ticket, 'utf8'));
+      const before = await snapshot();
+      const applyProgram = "const {withLifecycleLock,inheritedMaintenanceLease}=await import(process.argv[1]);const {applyStorage}=await import(process.argv[2]);const c=JSON.parse(process.argv[3]);" +
+        "try{const result=await withLifecycleLock(c.home,'public-apply-child',lease=>applyStorage(c.plan,{home:c.home,repoRoots:[c.repo],lease,getFreeBytes:async()=>{throw Error('apply reached archive budget');}}),inheritedMaintenanceLease());console.log(JSON.stringify({ok:true,result}));}catch(e){console.log(JSON.stringify({ok:false,code:e.code,message:e.message}));}";
+      const applied = JSON.parse((await execute(process.execPath, ['--input-type=module', '-e', applyProgram, guard, storage,
+        JSON.stringify({ home: f.home, repo: f.repo, plan })], { windowsHide: true, env })).stdout.trim());
+      assert.equal(applied.ok, false, JSON.stringify(applied));
+      assert.equal(applied.code, 'BUSY');
+      assert.deepEqual(await snapshot(), before, 'refused apply must not write archives journals receipts or reservations');
+    } catch (error) { failure = error; }
+    finally { await write(files.release, 'finish'); }
+    const finished = await child;
+    assert.equal(JSON.parse(finished.stdout.trim()).ok, true, finished.stdout);
+    assert.equal(finished.stderr, '', 'the operation must record its finish successfully');
+    const costs = JSON.parse(await fs.readFile(path.join(f.home, 'maintenance-state', 'lifecycle-costs.json'), 'utf8'));
+    assert.deepEqual(costs.active, []);
+    assert.equal(costs.lastReceipt.id, ticket.id);
+    if (failure) throw failure;
+    const { runLifecycle } = await import('./maintenance/storage.mjs');
+    const next = await runLifecycle('package', { ...packageContext, lease, cleanup: false, getFreeBytes: async () => 40 * gib });
+    assert.notEqual(next.id, ticket.id);
+    await runLifecycle('package', { ...packageContext, lease, phase: 'finish', reservation: next, passed: true });
+    const applied = await applyStorage(plan, { home: f.home, repoRoots: [f.repo], lease, ...forecast });
+    assert.equal(applied.completed.length, 1, JSON.stringify(applied));
+  });
+});
+
+filesystemTest('round3 finish recovers a real short gate collision for only its matching reservation', async t => {
+  const base = await directory(t), home = path.join(base, 'home');
+  await fs.mkdir(home);
+  const collision = path.join(base, 'gate-collision.fixture');
+  const { withReservationGate } = await import('./maintenance/guard.mjs');
+  const { runLifecycle } = await import('./maintenance/storage.mjs');
+  const context = { home, task: 'finishing-package', packageSlot: hash('finishing-package'), cleanup: false,
+    getFreeBytes: async () => 40 * gib };
+  const guard = new URL('./maintenance/guard.mjs', import.meta.url).href;
+  const storage = new URL('./maintenance/storage.mjs', import.meta.url).href;
+  const program = "const cp=(await import('node:child_process')).default;const {writeFileSync}=await import('node:fs');const {syncBuiltinESMExports}=await import('node:module');const c=JSON.parse(process.argv[3]);let collisions=0;const spawn=cp.spawn;" +
+    "cp.spawn=(exe,args,options)=>{const child=spawn(exe,args,options);const q=JSON.parse(options.env?.CODEX_MAINTENANCE_QUERY??'null');if(q?.file?.endsWith('reservation-gate'))child.once('close',code=>{if(code!==0){collisions++;writeFileSync(c.collision,'failed native exclusive open');}});return child;};syncBuiltinESMExports();" +
+    "const {withLifecycleLock,inheritedMaintenanceLease}=await import(process.argv[1]);const {runLifecycle}=await import(process.argv[2]);try{const result=await withLifecycleLock(c.home,'finish-child',lease=>runLifecycle('package',{...c,lease,phase:'finish',passed:true}),inheritedMaintenanceLease());console.log(JSON.stringify({ok:true,result,collisions}));}catch(e){console.log(JSON.stringify({ok:false,code:e.code,collisions}));}";
+  await withMaintenanceLock(home, 'finish collision parent', async lease => {
+    const first = await runLifecycle('package', { ...context, lease });
+    const other = await runLifecycle('build', { home, task: 'unrelated-build', lease, cleanup: false, getFreeBytes: context.getFreeBytes });
+    let finish;
+    await withReservationGate(home, lease, async () => {
+      finish = execute(process.execPath, ['--input-type=module', '-e', program, guard, storage,
+        JSON.stringify({ home, task: context.task, reservation: first, collision })],
+      { windowsHide: true, env: { ...process.env, CONTRACTOR_MAINTENANCE_LEASE: JSON.stringify(lease) } });
+      const until = Date.now() + 120000;
+      while (!await fs.access(collision).then(() => true, () => false)) {
+        if (Date.now() > until) throw Error('finish did not encounter the held native gate');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    });
+    const result = JSON.parse((await finish).stdout.trim());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.ok(result.collisions >= 1, 'the real exclusive gate open must have failed before recovery');
+    assert.equal(result.result.id, first.id);
+    const file = path.join(home, 'maintenance-state', 'lifecycle-costs.json');
+    const costs = JSON.parse(await fs.readFile(file, 'utf8'));
+    assert.deepEqual(costs.active.map(row => row.id), [other.id]);
+    const before = await fs.readFile(file);
+    await assert.rejects(runLifecycle('package', { ...context, lease, phase: 'finish', reservation: other }), /matching disk reservation/);
+    assert.ok((await fs.readFile(file)).equals(before));
+    const next = await runLifecycle('package', { ...context, lease });
+    assert.notEqual(next.id, first.id);
+    await runLifecycle('package', { ...context, lease, phase: 'finish', reservation: next });
+    await runLifecycle('build', { home, task: 'unrelated-build', lease, phase: 'finish', reservation: other });
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).active, []);
+  });
+});
+
 filesystemTest('preservesThreeAcceptedReleases over twenty real tiny packages', async t => {
   const f = await releases(t, 20);
   await f.importIndex();

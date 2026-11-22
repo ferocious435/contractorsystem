@@ -564,7 +564,19 @@ async function freeSpace(home) {
 const archiveSpace = () => Object.assign(new Error('Insufficient verified disk space for the complete archive'), { code: 'ARCHIVE_SPACE' });
 
 export async function applyStorage(plan, context) {
-  return withReservationGate(context.home, context.lease, () => applyStorageWithHeldGate(plan, context));
+  await requireHeldLease(context.home, context.lease);
+  const requireIdle = async () => {
+    if ((await activeReservations(context.home, context.lease)).length) {
+      throw Object.assign(new Error('An admitted operation must finish before public storage maintenance'), { code: 'BUSY' });
+    }
+  };
+  // Avoid competing with an existing operation's finish; recheck atomically for
+  // an admission that completed between this read and acquisition of the gate.
+  await requireIdle();
+  return withReservationGate(context.home, context.lease, async () => {
+    await requireIdle();
+    return applyStorageWithHeldGate(plan, context);
+  });
 }
 
 async function applyStorageWithHeldGate(plan, { home, lease, repoRoots = [], coordinatorLease, protectedInputs = [],
@@ -731,7 +743,21 @@ export async function runLifecycle(event, context) {
     const home = await resolveMaintenanceHome({ explicitHome: context.home });
     return withLifecycleLock(home, event, lease => runLifecycle(event, { ...context, home, lease }));
   }
-  return withReservationGate(context.home, context.lease, () => lifecycleReservation(event, context));
+  for (let attempt = 0; ; attempt++) {
+    let entered = false;
+    try {
+      return await withReservationGate(context.home, context.lease, () => {
+        entered = true;
+        return lifecycleReservation(event, context);
+      });
+    } catch (error) {
+      // Only a finish whose state transition never began may retry a short gate
+      // collision. The exact reservation is checked again inside the same gate.
+      if (context.phase !== 'finish' || entered || error.code !== 'BUSY' || attempt >= 2) throw error;
+      await requireHeldLease(context.home, context.lease);
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
 }
 
 async function lifecycleReservation(event, context) {
