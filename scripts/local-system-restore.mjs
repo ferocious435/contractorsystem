@@ -273,9 +273,21 @@ await scratch.objects();for(const object of manifest.objects)await scratch.copyO
     if(pinnedId||detail.output)await recordRestore(home,detail,{lease,pin:token});
     return detail;
   }catch(error){
-    if(error.code!=='RESTORE_PUBLICATION_UNCERTAIN')await updateBackupIndex(home,lease,async index=>{index.lastRestoreAttempt={at:new Date().toISOString(),status:signal?.aborted?'interrupted':'failed',backupId:pinnedId??null,runId:token,code:error.code??'FAILED',cleanupEvidence};});
+    primary=error;
+    if(error.code!=='RESTORE_PUBLICATION_UNCERTAIN')try{
+      await updateBackupIndex(home,lease,async index=>{index.lastRestoreAttempt={at:new Date().toISOString(),status:signal?.aborted?'interrupted':'failed',backupId:pinnedId??null,runId:token,code:error.code??'FAILED',cleanupEvidence};});
+    }catch(statusError){
+      error.cleanupProblems=[...(error.cleanupProblems||[]),{stage:'restore-attempt-status',code:statusError.code??'FAILED'}];
+    }
     throw error;
-  }finally{if(pinnedId)await updateBackupIndex(home,lease,async index=>{const p=index.points.find(p=>p.id===pinnedId);if(p)p.restorePins=(p.restorePins||[]).filter(pin=>pin!==token);});}
+  }finally{
+    if(pinnedId)try{
+      await updateBackupIndex(home,lease,async index=>{const p=index.points.find(p=>p.id===pinnedId);if(p)p.restorePins=(p.restorePins||[]).filter(pin=>pin!==token);});
+    }catch(error){
+      const result=primary??detail;
+      result.cleanupProblems=[...(result.cleanupProblems||[]),{stage:'restore-pin',code:error.code??'FAILED',releaseConfirmed:false,backupId:pinnedId,runId:token}];
+    }
+  }
 }
 
 export async function recordRestore(home,receipt,{lease,pin}={}) {
@@ -367,7 +379,8 @@ export async function maintainAvailableRestore({home,lease,engine,signal,now=new
   if(!restoreDue({now,lastVerified:previous,schemaHash:point.schemaHash,format:point.format}))return {status:'not-due',passed:false};
   let result;
   try{result=await restoreBackup({home,lease,backup:point.archive.path,...(engine?{engine}:{}),signal});}
-  catch(error){result={status:signal?.aborted||error.code==='INTERRUPTED'?'interrupted':'failed',passed:false,code:error.code??'FAILED'};}
+  catch(error){result={status:signal?.aborted||error.code==='INTERRUPTED'?'interrupted':'failed',passed:false,code:error.code??'FAILED',
+    ...(error.cleanupProblems?.length?{cleanupProblems:error.cleanupProblems}:{})};}
   if(!result.passed&&result.code!=='RESTORE_PUBLICATION_UNCERTAIN')await updateBackupIndex(home,lease,async fresh=>{fresh.lastRestoreAttempt={...fresh.lastRestoreAttempt,at:now,status:result.status,backupId:point.id,code:result.code??null};});
   return result;
 }
