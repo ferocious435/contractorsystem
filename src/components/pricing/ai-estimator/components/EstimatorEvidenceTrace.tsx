@@ -8,6 +8,38 @@ import type { AIPricingEvaluationResponse, AIPricingEvidenceReference, AIPricing
 import { normalizeDocumentPage } from '@/components/features/contradiction-radar/utils/documentPage';
 
 type Scope = NonNullable<AIPricingEvaluationResponse['scope_review']>;
+type DrawingDimension = NonNullable<Scope['drawingDimension']>;
+
+const DRAWING_UNITS = { m: 'מ׳', cm: 'ס״מ', mm: 'מ״מ' };
+const DRAWING_BASIS: Record<Exclude<DrawingDimension['basis'], 'UNKNOWN'>, string> = {
+    DIMENSION: 'היחידה מצוינת ליד המידה',
+    DETAIL: 'היחידה נקבעה לפי ההערה לפרט',
+    SHEET: 'היחידה נקבעה לפי הוראה בגיליון',
+    DESCRIPTION: 'היחידה נקבעה לפי תיאור מקושר',
+    CONVENTION: 'מידה משוערת לפי סוג השרטוט',
+};
+const DRAWING_CLARIFICATION: Record<NonNullable<DrawingDimension['reason']>, string> = {
+    ambiguous_dimension: 'יש לבחור איזה קטע או פרט למדוד בשרטוט.',
+    conflicting_units: 'נמצאו הוראות סותרות. יש לברר איזו יחידת מידה חלה על הקטע.',
+    unknown_unit: 'יש לברר אם המידה מסומנת במטרים, בסנטימטרים או במילימטרים.',
+};
+
+export function DrawingDimensionSummary({ dimension }: { dimension: DrawingDimension }) {
+    const { label, value, unit, basis, reason } = dimension;
+    const resolved = value !== null && unit !== null && basis !== 'UNKNOWN';
+    return (
+        <p className="text-sm text-gray-300">
+            <strong>מידה מהשרטוט</strong>
+            {label && <> · <bdi>{label}</bdi></>}
+            {resolved && <> · <bdi>{value} {DRAWING_UNITS[unit]}</bdi></>}
+            {' · '}
+            {resolved ? DRAWING_BASIS[basis] : (
+                <span className="text-amber-300">{DRAWING_CLARIFICATION[reason ?? 'unknown_unit']}</span>
+            )}
+        </p>
+    );
+}
+
 export function scopeSourceReference(scope: Scope, position: Scope['positions'][number], anchor: { documentId: string; quote: string; page?: number | null }, finding: Pick<ContradictionItem, 'target_contract_doc_id'>): AIPricingEvidenceReference {
     const direct = scope.requirements.some(item => item.evidence.some(evidence => evidence.documentId === anchor.documentId)) || anchor.documentId === finding.target_contract_doc_id;
     const documentId = direct ? anchor.documentId : position.documentId || undefined;
@@ -99,6 +131,9 @@ function EstimatorEvidenceTrace({
         return null;
     }, [contradiction]);
     const scope = estimateData?.scope_review;
+    const drawingDimension = scope?.drawingDimension;
+    const drawingBasisSourceLabel = drawingDimension?.basis === 'CONVENTION' ? 'פתח מקור לסוג השרטוט'
+        : drawingDimension?.reason === 'ambiguous_dimension' ? 'פתח מקור נוסף' : 'פתח מקור יחידה';
     const scopeLabels = { FULL: 'התאמה מלאה', PARTIAL: 'כיסוי חלקי', REJECTED: 'הסעיף אינו מתאים', NEEDS_REVIEW: 'נדרשת בדיקה' };
 
     return (
@@ -106,6 +141,24 @@ function EstimatorEvidenceTrace({
             {scope && (
                 <div className="rounded-3xl border border-blue-500/20 bg-blue-500/5 p-5 space-y-4">
                     <div className="font-bold text-blue-300">בדיקת התאמה והרכב העבודה · {scopeLabels[scope.status]}</div>
+                    {drawingDimension && (
+                        <div className="rounded-2xl border border-white/10 p-4">
+                            <DrawingDimensionSummary dimension={drawingDimension} />
+                            {drawingDimension.evidence.map((anchor, index) => (
+                                <div key={`${anchor.documentId}-${anchor.start}-${index}`} className="mt-3 rounded-xl bg-black/30 p-3 text-sm text-gray-300">
+                                    {anchor.page !== null && <div className="text-xs text-gray-400">עמוד {anchor.page}</div>}
+                                    <blockquote className="mt-2 whitespace-pre-wrap leading-6">{anchor.quote}</blockquote>
+                                    <Button variant="text" className="mt-2 text-xs text-blue-300" onClick={() => onViewSource({
+                                        document_id: anchor.documentId,
+                                        quote: anchor.quote,
+                                        page: anchor.page,
+                                    })}>
+                                        {index === 0 ? 'פתח מקור מידה' : drawingBasisSourceLabel}
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                     {scope.uncoveredRequirementIds.length > 0 && (
                         <p className="text-sm text-amber-300">טרם כוסה במחיר: {scope.uncoveredRequirementIds.map(id =>
                             scope.requirements.find(item => item.id === id)?.description || id).join(', ')}</p>

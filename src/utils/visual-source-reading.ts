@@ -27,6 +27,7 @@ export type ReadingMethod = 'native-match'|'local-ocr-match'|'visual-double-pass
 export type VerifiedView = {
     viewId:string;imageHash:string;textHash:string;method:ReadingMethod;confirmationHash:string;
     reading:UnitReading;confirmation:UnitReading|null;emptyPageProof?:RenderedEmptyPageProof;
+    drawingDimensionNotesHash?:string;
     initialReading?:UnitReading;
     recognitionVersion?:typeof BRANDING_RECOGNITION_VERSION;
     readingImage?:Omit<RenderedView,'id'|'bytes'>;confirmationImage?:Omit<RenderedView,'id'|'bytes'>;
@@ -185,6 +186,7 @@ export function assessVisualReading(registry:unknown,source:DocumentSourceInput)
             viewIds.add(view.id);
             const matches=proofs.filter(p=>object(p)&&p.viewId===view.id),proof=matches[0];
             if(matches.length!==1||!object(proof)||proof.imageHash!==view.sha256||!validReadingHash(proof.textHash)
+                ||proof.drawingDimensionNotesHash!==undefined&&(!validReadingHash(proof.drawingDimensionNotesHash)||proof.method!=='visual-double-pass')
                 ||!validReadingHash(proof.confirmationHash)||!(branding?proof.method==='branding-recognition'&&proof.recognitionVersion===BRANDING_RECOGNITION_VERSION
                     &&proof.textHash==='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
                     &&proof.confirmationHash===proof.textHash&&view.rect.x===0&&view.rect.y===0&&view.rect.width===1&&view.rect.height===1

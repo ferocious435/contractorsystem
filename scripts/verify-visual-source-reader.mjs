@@ -85,6 +85,71 @@ test('second_numeric_read_is_blind',async()=>fixture(async()=>{
  const result=await read(manifest([value]),scope,execution(async input=>{calls.push(input);return JSON.stringify(unitResponse(value,{text:'Quantity '+token}));}));
  assert.equal(calls.length,2);assert.equal(calls[1].text.includes(token),false);assert.equal(result.units[0].views[0].method,'visual-double-pass');assert.equal(result.units[0].complete,true);
 }));
+const drawingDimensionNote = value => 'DRAWING_DIMENSION '+JSON.stringify(value);
+const drawingDimension = {label:'12.00', printed:'12.00', target:'center tick to rightmost tick', targetQuote:'Cable trench', context:'SITE_PLAN', role:'LINEAR_DIMENSION'};
+test('a drawing dimension requires an independent visual witness even when native text matches',async()=>fixture(async()=>{
+ const text='Cable trench\n12.00', value=await unit('pdf:6',{locations:[{page:6}],localText:text,contextText:'Separate untrusted context'}), calls=[];
+ const checkManifest=manifest([value]);
+ const result=await read(checkManifest,scope,execution(async input=>{
+  calls.push(input);
+  return JSON.stringify(unitResponse(value,{contentRole:'CONTENT',text,visualDescription:'A dimension line above a cable trench.',nonBlockingNotes:[drawingDimensionNote(drawingDimension)]}));
+ }));
+ assert.equal(calls.length,2);
+ assert.ok(calls.every(call=>call.text.includes('DRAWING_DIMENSION')));
+ assert.ok(!calls[1].text.includes('Separate untrusted context'));
+ assert.ok(!calls[1].text.includes('12.00'));
+ assert.equal(result.units[0].complete,true);
+ assert.equal(result.units[0].text,text);
+ assert.deepEqual(result.units[0].nonBlockingNotes??[],[]);
+ const dimensions=await load('../src/utils/drawing-dimension-visual-evidence.ts');
+ const registryUnit=assembleDocumentReading(checkManifest,result.units).verification.expectedUnits[0];
+ assert.deepEqual(dimensions.getVerifiedDrawingDimensions(result.units[0],registryUnit),[{
+  label:'12.00',printed:'12.00',target:'center tick to rightmost tick',targetQuote:'Cable trench',context:'SITE_PLAN',viewId:'pdf:6:full',rect:{x:0,y:0,width:1,height:1},
+ }]);
+ const edited=structuredClone(result.units[0]);
+ for (const witness of [edited.views[0].reading,edited.views[0].confirmation]) {
+  witness.nonBlockingNotes=[drawingDimensionNote({...drawingDimension,target:'leftmost tick to rightmost tick'})];
+ }
+ assert.deepEqual(dimensions.getVerifiedDrawingDimensions(edited,registryUnit),[],'Changing both saved observations must invalidate their original registry evidence');
+}));
+test('a verified dimension crop preserves its printed unit and does not certify a partial page',async()=>fixture(async()=>{
+ const text='Pipe support\n1200 mm', rect={x:.1,y:.2,width:.5,height:.4};
+ const value=await unit('pdf:6',{locations:[{page:6}],localText:text});
+ const crop=await sharp({create:{width:40,height:20,channels:3,background:'white'}}).png().toBuffer();
+ value.views.push({id:'pdf:6:crop',sha256:digest(crop),bytes:crop,width:40,height:20,rect});
+ const checkManifest=manifest([value]);
+ const result=await read(checkManifest,scope,execution(async input=>{
+  const {viewId}=JSON.parse(input.text.split('SOURCE REGION: ')[1].split('\n')[0]);
+  const isCrop=viewId==='pdf:6:crop';
+  return JSON.stringify(unitResponse(value,{viewId,contentRole:'CONTENT',text,
+   uncertainties:isCrop?[]:['Unclear note at bottom of page'],
+   nonBlockingNotes:isCrop?[drawingDimensionNote({label:'1200',printed:'1200 mm',target:'between the two outer edges',targetQuote:'Pipe support',context:'STEEL_DETAIL',role:'LINEAR_DIMENSION'})]:[],
+  }));
+ }));
+ const registryUnit=assembleDocumentReading(checkManifest,result.units).verification.expectedUnits[0];
+ assert.equal(registryUnit.status,'REQUIRES_REVIEW');
+ const dimensions=await load('../src/utils/drawing-dimension-visual-evidence.ts');
+ assert.deepEqual(dimensions.getVerifiedDrawingDimensions(result.units[0],registryUnit),[{
+  label:'1200',printed:'1200 mm',target:'between the two outer edges',targetQuote:'Pipe support',context:'STEEL_DETAIL',viewId:'pdf:6:crop',rect,
+ }]);
+}));
+for(const [name,text,first,second] of [
+ ['different endpoint','Cable trench\n12.00',drawingDimension,{...drawingDimension,target:'leftmost tick to rightmost tick'}],
+ ['elevation','Cable trench\n12.00',{...drawingDimension,role:'ELEVATION'},{...drawingDimension,role:'ELEVATION'}],
+ ['longer numeric token','Cable trench\n112.00',drawingDimension,drawingDimension],
+ ['elevation sign','Cable trench\n+12.00',drawingDimension,drawingDimension],
+ ['two identical labels','Cable trench\n12.00\n12.00',drawingDimension,drawingDimension],
+ ['unsupported target quotation','Other trench\n12.00',drawingDimension,drawingDimension],
+ ['unsupported printed unit','Cable trench\n12.00', {...drawingDimension,printed:'12.00 m'}, {...drawingDimension,printed:'12.00 m'}],
+])test(`a drawing dimension remains unknown for ${name}`,async()=>fixture(async()=>{
+ const value=await unit('pdf:6',{locations:[{page:6}],localText:text}), checkManifest=manifest([value]);
+ let calls=0;
+ const result=await read(checkManifest,scope,execution(async()=>JSON.stringify(unitResponse(value,{contentRole:'CONTENT',text,nonBlockingNotes:[drawingDimensionNote(calls++===0?first:second)]}))));
+ assert.equal(result.units[0].complete,true);
+ const dimensions=await load('../src/utils/drawing-dimension-visual-evidence.ts');
+ const registryUnit=assembleDocumentReading(checkManifest,result.units).verification.expectedUnits[0];
+ assert.deepEqual(dimensions.getVerifiedDrawingDimensions(result.units[0],registryUnit),[]);
+}));
 for(const [kind,format,locations]of [
  ['PDF_PAGE','PDF',[{page:1}]],
  ['DOCX_IMAGE','DOCX',[{part:'word/document.xml',anchor:'word/document.xml#rId1:1',mediaName:'word/media/table.png'}]],

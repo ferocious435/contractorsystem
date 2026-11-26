@@ -75,3 +75,23 @@ test('full source text is retained even when the prompt will select only relevan
   const context = await load(pricingDatabase(tables));
   assert.ok(context.sources.find(row => row.id === 'work').extracted_text.endsWith(tail));
 });
+
+test('the drawing description is retrieved by sheet and revision even without work keywords', async () => {
+  const tables = sourceTables();
+  const work = 'יש לבצע הנחת סיב בקטע הגשר\nקו מידה: 12.00';
+  tables.documents[0].title = 'Plan.pdf';
+  tables.documents[0].extracted_text = `Sheet Q-42 Rev D\n${work}\n-- 1 of 2 --\nDimensions in mm.\n-- 2 of 2 --`;
+  tables.documents[0].parsed_json = { source_reading: { version: 'page-coverage-v1', complete: true,
+      totalPages: 2, readPages: [1, 2], unreadablePages: [] } };
+  tables.contradictions[0].evidence_data = { work_quote: work, work_page: 1 };
+  for (const [id, rev, unit] of [['linked-description', 'D', 'm'], ['superseded-description', 'C', 'cm']]) {
+    tables.documents.push({ id, project_id: 'p', title: id, category: 'EXECUTION', doc_type: 'execution',
+      extracted_text: `Sheet Q-42 Rev ${rev}\nDimensions in ${unit}.`, ocr_status: 'COMPLETED', parsed_json: {} });
+  }
+  const db = pricingDatabase(tables);
+  const context = await load(db);
+  assert.equal(context.workPage, 1);
+  assert.ok(context.sources.some(source => source.id === 'linked-description' && source.allowed));
+  assert.ok(!context.sources.some(source => source.id === 'superseded-description'));
+  assert.equal(db.writes.length, 0);
+});

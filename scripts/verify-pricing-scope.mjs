@@ -2,6 +2,83 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pricingFixture, partialFixture, mismatchFixture } from './fixtures/pricing-scope-fixtures.mjs';
 import { validatePricingScope, validatePricingCompatibility } from '../src/utils/pricing-scope-review.ts';
+import { cachedPricingScope, pricingScopeSignature } from '../src/utils/pricing-scope-signature.ts';
+
+function drawingPricingFixture(caption, title = 'תכנית פיתוח') {
+    const fixture = pricingFixture();
+    const work = `יש לבצע הנחת צינור בקטע A\nקו מידה: ${caption}`;
+    const price = 'הנחת צינור. יחידה מטר. מחיר 75 ש"ח ללא מע"מ.';
+    fixture.context.workQuote = work;
+    fixture.context.sources[0].extracted_text = `${title}\n${work}\nיש לבצע הנחת צינור בקטע B`;
+    fixture.context.sources[1].extracted_text = price;
+    Object.assign(fixture.context.candidates[0], { unit: 'מטר', text: price });
+    fixture.draft.requirements[0].evidence = [{ documentId: 'work', quote: 'הנחת צינור בקטע A' }];
+    fixture.draft.positions[0].evidence = [...fixture.draft.requirements[0].evidence, { documentId: 'price', quote: price }];
+    fixture.draft.lines[0].quantity = { value: 999, basis: 'SOURCE', evidence: [{ documentId: 'work', quote: work }] };
+    return fixture;
+}
+
+test('a length is recomputed in the price unit from a caption in the selected work, even with an invented quantity', () => {
+    const fixture = drawingPricingFixture('1200 מ"מ');
+    const result = review(fixture);
+    assert.equal(result.drawingDimension?.label, '1200');
+    assert.equal(result.lines[0]?.quantity.value, 1.2);
+    assert.equal(result.totalExclVat, 90);
+    const signature = pricingScopeSignature(fixture.context);
+    assert.deepEqual(cachedPricingScope({ scope_source_signature: signature, scope_review: result }, signature, fixture.context), result);
+    const forged = { ...result, drawingDimension: { ...result.drawingDimension, evidence: [] } };
+    assert.equal(cachedPricingScope({ scope_source_signature: signature, scope_review: forged }, signature, fixture.context), null);
+});
+
+test('a convention shows the suggested unit without authorising payment', () => {
+    const fixture = drawingPricingFixture('12.00');
+    const result = review(fixture);
+    assert.equal(result.drawingDimension?.unit, 'm');
+    assert.equal(result.drawingDimension?.basis, 'CONVENTION');
+    assert.equal(result.lines[0]?.quantity.value, null);
+    assert.equal(result.totalExclVat, null);
+});
+
+test('a known length does not price another segment on the same sheet or an area item', () => {
+    const fixture = drawingPricingFixture('1200 מ"מ');
+    fixture.draft.requirements[0].evidence[0].quote = 'הנחת צינור בקטע B';
+    assert.equal(review(fixture).totalExclVat, null);
+    assert.equal(review(fixture).lines[0]?.quantity.value, null);
+    const area = drawingPricingFixture('1200 מ"מ');
+    area.context.candidates[0].unit = 'מ"ר';
+    assert.equal(review(area).lines[0]?.quantity.value, null);
+});
+
+test('a nearby dimension caption alone cannot establish work on a named route or detail', () => {
+  for (const [work, dimension] of [
+    ['Install east route.', 'Dimension for west route: 12 m'],
+    ['Install northeast route.', 'Dimension for east route: 12 m'],
+    ['Install east route, replacing the west route.', 'Dimension for west route: 12 m'],
+    ['Install east route.', 'Detail B: Dimension: 12 m'],
+  ]) {
+    const fixture = drawingPricingFixture('12 m');
+    const { context, draft } = fixture;
+    context.workQuote = `${work}\n${dimension}`;
+    context.sources[0].extracted_text = context.workQuote;
+    draft.requirements[0].evidence[0].quote = work;
+    assert.equal(review(fixture).lines[0]?.quantity.value, null);
+    assert.equal(review(fixture).totalExclVat, null);
+  }
+});
+
+test('a revised applicable description invalidates the previously cached measurement', () => {
+    const { context, draft } = drawingPricingFixture('12.00', 'Sheet A-12 Rev B');
+    context.sources.push({ id: 'spec', title: 'Specification', role: 'REFERENCE', allowed: true,
+        extracted_text: 'Sheet A-12 Rev B\nDimensions in m.' });
+    const signature = pricingScopeSignature(context);
+    const result = validatePricingScope(context, draft);
+    assert.equal(result.totalExclVat, 900);
+    context.sources.at(-1).extracted_text = 'Sheet A-12 Rev C\nDimensions in cm.';
+    const newSignature = pricingScopeSignature(context);
+    assert.notEqual(newSignature, signature);
+    assert.equal(cachedPricingScope({ scope_source_signature: signature, scope_review: result }, newSignature, context), null);
+    assert.equal(validatePricingScope(context, draft).totalExclVat, null);
+});
 
 const review = fixture => validatePricingScope(fixture.context, fixture.draft);
 

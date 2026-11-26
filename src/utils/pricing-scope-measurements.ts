@@ -1,6 +1,9 @@
 import type { PricingScopeContext, PricingScopeNumber } from './pricing-scope-review.ts';
 import { findEvidenceAnchor } from './radar-evidence-assessment.ts';
 import { assessDocumentSourceReadiness } from './document-source-readiness.ts';
+import { drawingUnit, isDrawingLabel, METRES_PER_UNIT, resolveDrawingDimension, selectedWorkAnchor, type DrawingDimension } from './drawing-dimension.ts';
+
+export { resolveDrawingDimension };
 
 const UNKNOWN = (): PricingScopeNumber => ({ value: null, basis: 'UNKNOWN', evidence: [] });
 const UNITS: Array<[RegExp, string]> = [
@@ -14,13 +17,24 @@ const UNITS: Array<[RegExp, string]> = [
 ];
 
 /** Parse only an unambiguous printed measurement; a band or a missing value stays unknown. */
+export function drawingPricingQuantity(dimension: DrawingDimension, unit: string | null | undefined): PricingScopeNumber {
+    const targetUnit = drawingUnit(unit || '');
+    if (!targetUnit || !dimension.unit || dimension.value === null || ['CONVENTION', 'UNKNOWN'].includes(dimension.basis)) return UNKNOWN();
+    const ratio = METRES_PER_UNIT[dimension.unit] / METRES_PER_UNIT[targetUnit];
+    const value = Number((dimension.value * ratio).toPrecision(15));
+    return { value, basis: 'SOURCE', evidence: dimension.evidence };
+}
+
 export function explicitPricingQuantity(context: PricingScopeContext, unit: string | null | undefined): PricingScopeNumber {
+    const dimension = resolveDrawingDimension(context);
+    if (dimension) return drawingPricingQuantity(dimension, unit);
     const pattern = UNITS.find(([test]) => test.test(String(unit || '').trim()))?.[1];
     if (!pattern) return UNKNOWN();
     const found: Array<{ value: number; evidence: PricingScopeNumber['evidence'] }> = [];
     for (const source of context.sources.filter(item => context.workSourceIds.includes(item.id))) {
         if (!source.allowed || !assessDocumentSourceReadiness(source).canCompare) continue;
-        const focused = context.workQuote ? findEvidenceAnchor(source, context.workQuote) : findEvidenceAnchor(source, source.extracted_text || '');
+        const focused = context.workQuote ? context.workPage ? selectedWorkAnchor(context, source) : findEvidenceAnchor(source, context.workQuote)
+            : findEvidenceAnchor(source, source.extracted_text || '');
         if (!focused) continue;
         const body = focused.quote;
         const matches = pattern === 'PIECE'
@@ -29,6 +43,8 @@ export function explicitPricingQuantity(context: PricingScopeContext, unit: stri
                     && !/^\s*(?:%|אחוז|ש["״]?ח|₪|NIS)/iu.test(body.slice(match.index + match[0].length)))
             : [...body.matchAll(new RegExp(`(?<![\\p{L}\\d.\\-/])(\\d+(?:[.,]\\d+)?)\\s*${pattern}(?![\\p{L}\\d])`, 'giu'))];
         for (const match of matches) {
+            const lineStart = body.lastIndexOf('\n', match.index - 1) + 1;
+            if (isDrawingLabel(body.slice(lineStart, match.index))) continue;
             const before = body.slice(Math.max(0, match.index - 22), match.index);
             if (pattern === 'PIECE' && /(?:מספר|מס[.׳']|סעיף|טופס|גרסה|שנת|\b(?:number|no\.?|section|form|version|year))\s*[:#־-]?\s*$/iu.test(before)) continue;
             if (/(?:עד|לכל היותר|בערך|כ[־-]|up to|at most|about|max(?:imum)?)\s*$/iu.test(before)) continue;

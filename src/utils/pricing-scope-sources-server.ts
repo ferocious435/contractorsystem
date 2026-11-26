@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { createHash } from 'node:crypto';
 import { loadProjectReferenceAuthority, REFERENCE_AUTHORITY_DOCUMENT_COLUMNS, type AuthorityProjectDocument } from '@/utils/document-reference-authority-server';
 import { buildBoundReferenceDocuments } from '@/utils/bound-reference-comparison';
 import { assessDocumentSourceReadiness } from '@/utils/document-source-readiness';
@@ -8,9 +9,12 @@ import { isLikelyContractBoqPricelist } from '@/utils/pricing-ledger-contract-sy
 import { rankSupportCandidates } from '@/utils/support-source-enrichment';
 import type { PricingScopeCandidate, PricingScopeContext, PricingScopeSource } from './pricing-scope-review.ts';
 import { buildWorkChangePacket } from './work-change-sources.ts';
+import { applicableDrawingDescription, type VerifiedDrawingCaption } from './drawing-dimension.ts';
+import { getVerifiedDrawingDimensions } from './drawing-dimension-visual-evidence.ts';
+import { assessVisualReading, VISUAL_READING_VERSION, type VisualReadingVerification } from './visual-source-reading.ts';
 
 type Row = Record<string, unknown>;
-type ProjectDocument = AuthorityProjectDocument & { deleted_at?: string | null };
+type ProjectDocument = AuthorityProjectDocument & { deleted_at?: string | null; project_id?: string; content_hash?: string | null; extracted_text_hash?: string | null };
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const object = (value: unknown): Row => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : {};
 
@@ -67,13 +71,32 @@ function searchFilter(query: string) {
     return [...codes.map(code => `item_code.eq.${code}`), ...terms.map(term => `description.ilike.%${term}%`)].join(',');
 }
 
+function verifiedCaptions(source: PricingScopeSource): VerifiedDrawingCaption[] {
+    const parsed = object(source.parsed_json);
+    const registry = parsed.source_reading as VisualReadingVerification | undefined;
+    if (!source.allowed || registry?.version !== VISUAL_READING_VERSION || registry.format !== 'PDF'
+        || !Array.isArray(parsed.source_reading_units) || !source.extracted_text
+        || createHash('sha256').update(source.extracted_text).digest('hex') !== registry.currentTextHash) return [];
+    const coverage = assessVisualReading(registry, source);
+    if (!coverage.complete) return [];
+    const units = parsed.source_reading_units;
+    return registry.expectedUnits.filter(unit => unit.kind === 'PDF_PAGE' && coverage.verifiedUnitIds.includes(unit.id)).flatMap(unit => {
+        const page = unit.locations.length === 1 ? unit.locations[0].page : undefined;
+        if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1) return [];
+        const saved = units.filter(value => object(value).unitId === unit.id);
+        if (saved.length !== 1) return [];
+        return getVerifiedDrawingDimensions(saved[0], unit).map(({ label, printed, targetQuote, context, rect }) =>
+            ({ documentId: source.id, page, label, printed, targetQuote, context, rect }));
+    });
+}
+
 /** Read-only project context. Candidate retrieval never establishes suitability. */
 export async function loadPricingScopeContext(args: {
     supabase: SupabaseClient; projectId: string; findingId: string;
 }): Promise<PricingScopeContext> {
     const { supabase, projectId, findingId } = args;
     const [rawDocuments, findingResult, books] = await Promise.all([
-        allRows((start, end) => supabase.from('documents').select(`${REFERENCE_AUTHORITY_DOCUMENT_COLUMNS}, deleted_at`)
+        allRows((start, end) => supabase.from('documents').select(`${REFERENCE_AUTHORITY_DOCUMENT_COLUMNS}, deleted_at, project_id, content_hash, extracted_text_hash`)
             .eq('project_id', projectId).order('id').range(start, end)),
         supabase.from('contradictions').select('id, title, description, source_execution_doc_id, target_contract_doc_id, evidence_data')
             .eq('project_id', projectId).eq('id', findingId).maybeSingle(),
@@ -101,10 +124,18 @@ export async function loadPricingScopeContext(args: {
     const casePacket = buildWorkChangePacket({ ...finding, id: findingId, project_id: projectId,
         source_execution_doc_id: text(finding.source_execution_doc_id), evidence_data: evidence },
         documents.map(document => ({ ...document, project_id: projectId })));
-    const relatedSourceIds = casePacket.sources.filter(source => source.role === 'RELATED').map(source => source.id);
-    const sources: PricingScopeSource[] = documents.filter(document => contractIds.has(document.id) || workIds.has(document.id) || excerptIds.has(document.id) || relatedSourceIds.includes(document.id))
-        .map(document => ({ ...document, title: document.title || document.id, role: excerptIds.has(document.id) && !contractIds.has(document.id)
+    const related = new Set(casePacket.sources.filter(source => source.role === 'RELATED').map(source => source.id));
+    const available: PricingScopeSource[] = documents.map(document => ({ ...document, title: document.title || document.id,
+        role: excerptIds.has(document.id) && !contractIds.has(document.id)
             ? 'PRICE' : contractIds.has(document.id) ? 'CONTRACT' : 'WORK', allowed: assessDocumentSourceReadiness(document).canCompare }));
+    const drawings = available.filter(source => workIds.has(source.id) && source.allowed && source.role !== 'PRICE');
+    for (const source of available) {
+        if (!related.has(source.id) && drawings.some(drawing => applicableDrawingDescription(drawing, source))) related.add(source.id);
+    }
+    const relatedSourceIds = [...related];
+    const sources = available.filter(document => contractIds.has(document.id) || workIds.has(document.id)
+        || excerptIds.has(document.id) || related.has(document.id));
+    const verifiedDrawingCaptions = drawings.flatMap(verifiedCaptions);
     const filter = searchFilter(query);
     const itemResult = books.length && filter ? await supabase.from('pricelist_items')
         .select('id, pricelist_id, item_type, item_code, description, unit, rate, page_number, source_excerpt, parent_item_id, metadata')
@@ -172,6 +203,9 @@ export async function loadPricingScopeContext(args: {
     }
     const selectedSourceIds = new Set([...selected.flatMap(candidate => [candidate.sourceId, ...candidate.noteSourceIds]),
         ...sources.filter(source => source.role !== 'PRICE' || workIds.has(source.id)).map(source => source.id)]);
-    return { query, workQuote: text(evidence.work_quote) || undefined, workSourceIds: [...workIds].filter(id => sources.some(source => source.id === id && source.role !== 'PRICE')), relatedSourceIds,
+    const page = evidence.work_page;
+    const workPage = typeof page === 'number' && Number.isSafeInteger(page) && page > 0 ? page : undefined;
+    return { query, workQuote: text(evidence.work_quote) || undefined, workPage, verifiedDrawingCaptions,
+        workSourceIds: [...workIds].filter(id => sources.some(source => source.id === id && source.role !== 'PRICE')), relatedSourceIds,
         sources: sources.filter(source => selectedSourceIds.has(source.id)), candidates: selected };
 }

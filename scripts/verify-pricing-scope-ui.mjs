@@ -31,6 +31,7 @@ const { saveLedgerItem } = await import('../src/app/api/pricing/save-ledger/save
 const { toPricingScopeForm, applyPricingScopeFormEdit, getPricingFormAmounts, getReviewedPricingFormAmounts, getPricingFormApproval } = await import('../src/components/pricing/ai-estimator/pricingScopeForm.ts');
 const { default: Summary } = await import('../src/components/pricing/ai-estimator/components/EstimatorFinancialSummary.tsx');
 const { default: EvidenceTrace } = await import('../src/components/pricing/ai-estimator/components/EstimatorEvidenceTrace.tsx');
+const { default: PricingBreakdown } = await import('../src/components/pricing/ai-estimator/components/EstimatorPricingBreakdown.tsx');
 const { default: PricingForm } = await import('../src/components/pricing/ai-estimator/components/EstimatorPricingForm.tsx');
 const { loadPricingScopeContext } = await import('../src/utils/pricing-scope-sources-server.ts');
 const { buildPricingScopeEvaluation } = await import('../src/utils/pricing-scope-evaluation.ts');
@@ -125,6 +126,99 @@ test('the scope panel names the price source, item, available page and original 
   assert.ok(html.includes('עמוד 7')); assert.ok(html.includes('התאמה מלאה'));
   assert.ok(html.includes('חומר מילוי נברר מסוג C'));
   assert.ok(!html.includes('אין מקור ישיר מאומת לפריט זה'), 'Do not contradict the verified scope source with a legacy missing-source warning');
+});
+
+function drawingEstimate(overrides = {}) {
+  const review = scope();
+  return {
+    scope_review: {
+      ...review,
+      drawingDimension: {
+        label: '12.00', value: 12, unit: 'm', basis: 'DESCRIPTION',
+        evidence: [
+          { documentId: 'drawing', quote: '12.00', start: 61, end: 66, page: 6 },
+          { documentId: 'drawing-description', quote: 'כל המידות במטרים', start: 11, end: 27, page: 9 },
+        ],
+        ...overrides,
+      },
+    },
+  };
+}
+
+function renderEvidence(estimateData, onViewSource = () => {}, inspect) {
+  const props = { estimateData, onViewSource, contradiction: { id: 'finding', evidence_data: {}, source_execution_doc_id: 'work' } };
+  if (!inspect) return renderToStaticMarkup(React.createElement(EvidenceTrace, props));
+
+  // Server rendering exercises the real component but drops event handlers from HTML.
+  function InspectEvidence() {
+    const view = EvidenceTrace.type(props);
+    function visit(element) {
+      if (!React.isValidElement(element)) return;
+      inspect(element.props);
+      React.Children.forEach(element.props.children, visit);
+    }
+    visit(view);
+    return view;
+  }
+  return renderToStaticMarkup(React.createElement(InspectEvidence));
+}
+
+test('the drawing evidence explains the original dimension and opens each source at its own page', () => {
+  const opened = [];
+  const buttons = new Map();
+  const html = renderEvidence(drawingEstimate(), evidence => opened.push(evidence), props => {
+    if (typeof props.onClick === 'function') buttons.set(props.children, props.onClick);
+  });
+  assert.match(html, /12\.00/u);
+  assert.match(html, /12 מ׳/u);
+  assert.match(html, /תיאור מקושר/u);
+  assert.match(html, /כל המידות במטרים/u);
+  assert.match(html, /עמוד 6/u);
+  assert.match(html, /עמוד 9/u);
+  assert.ok(buttons.has('פתח מקור מידה'));
+  assert.ok(buttons.has('פתח מקור יחידה'));
+  buttons.get('פתח מקור מידה')();
+  buttons.get('פתח מקור יחידה')();
+  assert.deepEqual(opened, [
+    { document_id: 'drawing', quote: '12.00', page: 6 },
+    { document_id: 'drawing-description', quote: 'כל המידות במטרים', page: 9 },
+  ]);
+});
+
+test('drawing convention is shown as a preliminary length in the breakdown without setting the manual quantity', () => {
+  const estimateData = { ...drawingEstimate({ basis: 'CONVENTION', evidence: [
+    { documentId: 'drawing', quote: '12.00', start: 61, end: 66, page: 6 },
+    { documentId: 'drawing', quote: 'תכנית תוואי', start: 0, end: 11, page: 6 },
+  ] }), suggested_quantity: null };
+  const html = renderToStaticMarkup(React.createElement(PricingBreakdown, { estimateData }));
+  assert.match(html, /12\.00/u);
+  assert.match(html, /12 מ׳/u);
+  assert.match(html, /מידה משוערת לפי סוג השרטוט/u);
+  let form = toPricingScopeForm(estimateData);
+  assert.equal(form.quantity, null);
+  form = applyPricingScopeFormEdit(form, 'quantity', '12');
+  assert.equal(form.quantity, 12);
+  assert.deepEqual(form.manualPricingInputs, { quantity: 12 });
+});
+
+test('unresolved drawing units tell the user what to clarify while retaining the source evidence', () => {
+  const estimateData = drawingEstimate({ value: 12, unit: null, basis: 'UNKNOWN', reason: 'conflicting_units' });
+  estimateData.scope_review.drawingDimension.evidence.push(
+    { documentId: 'other-drawing-description', quote: 'כל המידות במילימטרים', start: 25, end: 45, page: 4 },
+  );
+  const html = renderEvidence(estimateData);
+  assert.match(html, /12\.00/u);
+  assert.match(html, /יש לברר איזו יחידת מידה חלה על הקטע/u);
+  assert.match(html, /כל המידות במטרים/u);
+  assert.match(html, /כל המידות במילימטרים/u);
+  assert.doesNotMatch(html, /12 מ׳/u);
+});
+
+test('a saved scope without drawing dimensions keeps the standard breakdown', () => {
+  const estimateData = { scope_review: scope(), pricing_breakdown: [{ description: 'סעיף ישן', quantity: 2 }] };
+  const html = renderToStaticMarkup(React.createElement(PricingBreakdown, { estimateData }));
+  assert.match(html, /סעיף ישן/u);
+  assert.doesNotMatch(html + renderEvidence(estimateData), /מידה מהשרטוט/u);
 });
 
 test('a known rate with unknown quantity does not ask the user to enter the already known rate', () => {

@@ -3,7 +3,8 @@ import { findEvidenceAnchor, type EvidenceAnchor } from './radar-evidence-assess
 import { readEvidenceMeaning, type StatementRole } from './radar-evidence-meaning.ts';
 import { getLedgerRowAmount, getMoneySum } from './project-financials.ts';
 import type { SupportCandidate } from './support-source-enrichment.ts';
-import { explicitPricingQuantity } from './pricing-scope-measurements.ts';
+import { drawingPricingQuantity, explicitPricingQuantity, resolveDrawingDimension } from './pricing-scope-measurements.ts';
+import { selectedDrawingWork, selectedWorkAnchor, type DrawingDimension, type VerifiedDrawingCaption } from './drawing-dimension.ts';
 
 export type PricingScopeStatus = 'FULL' | 'PARTIAL' | 'REJECTED' | 'NEEDS_REVIEW';
 export type PricingScopeSource = DocumentSourceInput & {
@@ -18,6 +19,8 @@ export type PricingScopeContext = {
     relatedSourceIds?: string[];
     query?: string;
     workQuote?: string;
+    workPage?: number;
+    verifiedDrawingCaptions?: VerifiedDrawingCaption[];
 };
 export type PricingScopeNumber = {
     value: number | null; basis: 'SOURCE' | 'MANUAL' | 'UNKNOWN'; evidence: EvidenceAnchor[];
@@ -38,6 +41,7 @@ export type PricingScopeResult = {
     version: 'price-scope-v1'; status: PricingScopeStatus; requirements: PricingScopeRequirement[];
     positions: PricingScopePosition[]; lines: PricingScopeLine[]; uncoveredRequirementIds: string[];
     issues: string[]; totalExclVat: number | null; requiresReview: boolean;
+    drawingDimension?: DrawingDimension;
 };
 export type PricingCompatibility = {
     candidateId: string; status: 'MATCH' | 'MISMATCH' | 'UNKNOWN'; dimension: string; reason: string; evidence: EvidenceAnchor[];
@@ -58,9 +62,12 @@ function verifiedAnchors(context: PricingScopeContext, value: unknown, allowedId
     for (const raw of list(value)) {
         const citation = record(raw);
         const source = context.sources.find(item => item.id === citation.documentId);
+        const restrictToSelectedPage = Boolean(source && context.workPage && context.workSourceIds.includes(source.id));
+        const focused = source && restrictToSelectedPage ? selectedWorkAnchor(context, source) : null;
         const anchor = source && source.allowed && (!allowedIds || allowedIds.has(source.id))
             && assessDocumentSourceReadiness(source).canCompare && text(citation.quote)
-            ? findEvidenceAnchor(source, text(citation.quote)) : null;
+            ? restrictToSelectedPage ? focused && findEvidenceAnchor(source, text(citation.quote), focused)
+                : findEvidenceAnchor(source, text(citation.quote)) : null;
         if (anchor) anchors.push(anchor); else valid = false;
     }
     return { valid, anchors };
@@ -183,6 +190,8 @@ function sourcedCoefficient(context: PricingScopeContext, value: unknown, source
 /** Semantic proposals are useful only after source, coverage and number checks. No I/O or model calls here. */
 export function validatePricingScope(context: PricingScopeContext, draft: unknown): PricingScopeResult {
     const proposal = record(draft);
+    const drawingDimension = resolveDrawingDimension(context);
+    const drawingWork = drawingDimension && selectedDrawingWork(context, drawingDimension);
     const issues: string[] = [];
     const requirements = requirementsFrom(context, proposal.requirements, issues);
     const positions = list(proposal.positions).map(raw => reviewPosition(context, raw, requirements));
@@ -206,11 +215,18 @@ export function validatePricingScope(context: PricingScopeContext, draft: unknow
         }
         chargedCandidates.add(candidateId);
         requirementIds.forEach(id => covered.add(id));
-        const quantitySources = new Set(requirements.filter(item => requirementIds.includes(item.id))
-            .flatMap(item => item.evidence.map(anchor => anchor.documentId)));
-        const suppliedQuantity = sourcedNumber(context, line.quantity, quantitySources);
-        const measurement = explicitPricingQuantity(context, candidate.unit);
-        const quantity = suppliedQuantity.value !== null && suppliedQuantity.value === measurement.value ? suppliedQuantity : unknownNumber();
+        const lineRequirements = requirements.filter(item => requirementIds.includes(item.id));
+        let quantity = unknownNumber();
+        if (drawingDimension) {
+            if (drawingWork && lineRequirements.every(item => item.evidence.some(anchor =>
+                anchor.documentId === drawingWork.documentId && anchor.start >= drawingWork.start && anchor.end <= drawingWork.end))) {
+                quantity = drawingPricingQuantity(drawingDimension, candidate.unit);
+            }
+        } else {
+            const quantitySources = new Set(lineRequirements.flatMap(item => item.evidence.map(anchor => anchor.documentId)));
+            const supplied = sourcedNumber(context, line.quantity, quantitySources);
+            if (supplied.value !== null && supplied.value === explicitPricingQuantity(context, candidate.unit).value) quantity = supplied;
+        }
         const unitPriceExclVat = candidatePrice(context, candidate, line.unitPriceExclVat);
         const coefficientSources = new Set([candidate.sourceId, ...candidate.noteSourceIds,
             ...context.sources.filter(item => item.role === 'CONTRACT').map(item => item.id)]);
@@ -239,5 +255,6 @@ export function validatePricingScope(context: PricingScopeContext, draft: unknow
     const status: PricingScopeStatus = allRejected ? 'REJECTED' : requirements.length > 0 && uncoveredRequirementIds.length > 0 && lines.length > 0
         ? 'PARTIAL' : requiresReview ? 'NEEDS_REVIEW' : 'FULL';
     return { version: 'price-scope-v1', status, requirements, positions, lines, uncoveredRequirementIds,
-        issues: [...new Set(issues)], totalExclVat: requiresReview ? null : getMoneySum(lines.map(line => line.amountExclVat)), requiresReview };
+        issues: [...new Set(issues)], totalExclVat: requiresReview ? null : getMoneySum(lines.map(line => line.amountExclVat)), requiresReview,
+        ...(drawingDimension ? { drawingDimension } : {}) };
 }

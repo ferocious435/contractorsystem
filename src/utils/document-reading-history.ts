@@ -40,6 +40,7 @@ export function assembleDocumentReading(manifest:SourceManifest,units:VerifiedUn
         return {id:unit.id,kind:unit.kind,locations:unit.locations,views:unit.views.map(viewWithoutBytes),status:complete?'READ' as const:'REQUIRES_REVIEW' as const,
             inputHash:verified?.inputHash||'',textHash:verified?.textHash||'',literalHasBody:hasDocumentBodyText(verified?.text||''),visualHasContent:Boolean(verified?.visualDescription.trim()),
             verifiedViews:(verified?.views||[]).map(proof=>({viewId:proof.viewId,imageHash:proof.imageHash,textHash:proof.textHash,method:proof.method,confirmationHash:proof.confirmationHash,
+                ...(proof.drawingDimensionNotesHash?{drawingDimensionNotesHash:proof.drawingDimensionNotesHash}:{}),
                 ...(proof.readingImage?{readingImage:proof.readingImage}:{}),...(proof.confirmationImage?{confirmationImage:proof.confirmationImage}:{}),
                 ...(proof.emptyPageProof?{emptyPageProof:proof.emptyPageProof}:{}),...(proof.recognitionVersion?{recognitionVersion:proof.recognitionVersion}:{})})),uncertainties:verified?.uncertainties||['Unit not read'],
             ...(verified?.composition&&scope?{composition:{version:verified.composition.version,baseEvidenceHash:verified.composition.baseEvidenceHash,evidenceHash:verified.composition.evidenceHash,scope:{...scope},
